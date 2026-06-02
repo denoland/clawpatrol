@@ -1,8 +1,18 @@
 {
-  "human_on_timeout": "deny",
-  "human_timeout": 600,
-  "llm_cache_ttl": 300,
-  "llm_fail_mode": "closed",
+  "defaults": {
+    "human_on_timeout": "deny",
+    "human_timeout": 600,
+    "llm_cache_ttl": 300,
+    "llm_fail_mode": "closed",
+    "unknown_host": "passthrough"
+  },
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "approvers": {
       "billing": {
@@ -44,8 +54,8 @@
       "k8s-exec-content-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
-          "Policy": "k8s-exec-content"
+          "Credential": "anthropic-ops",
+          "Policy": "Inspect the kubectl exec command (each ?command= argv element).\nDeny if it dumps env vars (env, printenv, set, export, cat\n/proc/*/environ). Deny if it reads sensitive host-mount files\n(kubelet pod tokens, certs, private keys, kubeconfig,\n/etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,\nmount, dmesg, top, and apt-get install for debugging.\n"
         },
         "type": "llm_approver"
       },
@@ -76,24 +86,24 @@
       "pg-secret-columns-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
-          "Policy": "pg-secret-columns"
+          "Credential": "anthropic-ops",
+          "Policy": "Deny if the SELECT projects (directly, via *, or via aggregates\nlike json_agg / encode) any of:\n  - github_identities.access_token or .refresh_token\n  - tokens.hash\n  - email_confirmations.token\n  - authorizations.exchange_token, .code, .challenge\n  - domain_certificates.private_key\n  - database_instances.certificate\n  - database_instances.connection_config password / secret keys\n  - env_vars.value when is_secret = true (allow when restricted\n    to is_secret = false explicitly)\nAllow reads of every other column.\n"
         },
         "type": "llm_approver"
       },
       "pg-secret-named-defense-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
-          "Policy": "pg-secret-named-defense"
+          "Credential": "anthropic-ops",
+          "Policy": "Decide whether this SELECT actually returns secret data — i.e.\nit projects or aggregates a column whose name suggests a secret.\nApprove if the secret-named identifier appears only as a string\nliteral or in a non-projected predicate.\n"
         },
         "type": "llm_approver"
       },
       "reply-content-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops-sub",
-          "Policy": "reply-content"
+          "Credential": "anthropic-ops",
+          "Policy": "The JSON body has a `body` field containing a customer support\nreply. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
         },
         "type": "llm_approver"
       },
@@ -112,8 +122,8 @@
       "slack-block-kit-shape-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops-sub",
-          "Policy": "slack-block-kit-shape"
+          "Credential": "anthropic-ops",
+          "Policy": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_reply_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Reply\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
         },
         "type": "llm_approver"
       },
@@ -135,72 +145,75 @@
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "amem",
         "type": "bearer_token"
+      },
+      "anthropic-ops": {
+        "body": {},
+        "endpoint": "anthropic-ops",
+        "type": "anthropic_oauth_subscription"
       },
       "anthropic-ops-key": {
         "body": {},
+        "endpoint": "anthropic-ops",
         "type": "anthropic_manual_key"
-      },
-      "anthropic-ops-sub": {
-        "body": {},
-        "type": "anthropic_oauth_subscription"
       },
       "ch-o11y": {
         "body": {
-          "User": "ops"
+          "User": "ops",
+          "Database": ""
         },
-        "type": "clickhouse_credential"
-      },
-      "ch-o11y-dev": {
-        "body": {
-          "User": "dev_app"
-        },
-        "type": "clickhouse_credential"
-      },
-      "ch-o11y-prod": {
-        "body": {
-          "User": "prod_app"
-        },
+        "endpoints": [
+          "ch-o11y-https",
+          "ch-o11y-native"
+        ],
         "type": "clickhouse_credential"
       },
       "checkly-alice": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "checkly",
         "type": "bearer_token"
       },
-      "gemini-bob-cred": {
+      "gemini-bob": {
         "body": {},
+        "endpoint": "gemini",
         "type": "gemini_api_key"
       },
-      "github-alice-pat": {
+      "github-alice": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       },
-      "github-bob-pat": {
+      "github-bob": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       },
-      "github-ops-pat": {
+      "github-ops": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       },
-      "grafana-token": {
+      "grafana": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "grafana",
         "type": "bearer_token"
       },
       "helpdesk-alice": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "helpdesk",
         "type": "bearer_token"
       },
       "honeycomb-alice": {
@@ -208,42 +221,51 @@
           "Header": "x-honeycomb-team",
           "Prefix": ""
         },
+        "endpoint": "honeycomb",
         "type": "header_token"
       },
-      "k8s-dev-iad-mtls": {
+      "k8s-dev-iad": {
         "body": {},
+        "endpoint": "k8s-dev-iad",
         "type": "mtls_credential"
       },
-      "k8s-dev-sfo-mtls": {
+      "k8s-dev-sfo": {
         "body": {},
+        "endpoint": "k8s-dev-sfo",
         "type": "mtls_credential"
       },
-      "k8s-eks-corp-aws": {
+      "k8s-eks-corp": {
         "body": {},
+        "endpoint": "k8s-eks-corp-prod",
         "type": "aws_credential"
       },
       "notion-corp": {
         "body": {},
+        "endpoint": "notion",
         "type": "notion_oauth"
       },
-      "openai-codex-bob-cred": {
+      "openai-codex-bob": {
         "body": {},
+        "endpoint": "openai-codex",
         "type": "openai_codex_oauth"
       },
-      "openai-codex-carol-cred": {
+      "openai-codex-carol": {
         "body": {},
+        "endpoint": "openai-codex",
         "type": "openai_codex_oauth"
       },
-      "orb-prod-key": {
+      "orb-prod": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "orb",
         "type": "bearer_token"
       },
-      "orb-test-key": {
+      "orb-test": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "orb",
         "type": "bearer_token"
       },
       "pagerduty-alice": {
@@ -251,88 +273,93 @@
           "Header": "authorization",
           "Prefix": "Token token="
         },
+        "endpoint": "pagerduty",
         "type": "header_token"
       },
       "pg-corp-ro": {
         "body": {
-          "User": "corp_ro"
+          "User": "corp_ro",
+          "Database": ""
         },
+        "endpoint": "pg-corp",
         "type": "postgres_credential"
       },
       "pg-corp-rw": {
         "body": {
-          "User": "corp_rw"
+          "User": "corp_rw",
+          "Database": ""
         },
+        "endpoint": "pg-corp",
         "type": "postgres_credential"
       },
-      "pg-scheduler-cred": {
+      "pg-scheduler": {
         "body": {
-          "User": "scheduler"
+          "User": "scheduler",
+          "Database": ""
         },
+        "endpoint": "pg-scheduler",
         "type": "postgres_credential"
       },
       "posthog-alice": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "posthog",
         "type": "bearer_token"
       },
-      "slack-alice-cred": {
+      "slack-alice": {
         "body": {},
+        "endpoint": "slack",
         "type": "slack_tokens"
       },
-      "slack-bob-cred": {
+      "slack-bob": {
         "body": {},
+        "endpoint": "slack",
         "type": "slack_tokens"
       },
-      "slack-ops-cred": {
+      "slack-ops": {
         "body": {},
+        "endpoint": "slack",
         "type": "slack_tokens"
       },
       "smithery-alice": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "smithery",
         "type": "bearer_token"
       },
-      "stripe-live-key": {
+      "stripe-live": {
         "body": {
           "IdempotencyKey": true
         },
+        "endpoint": "stripe",
         "type": "bearer_token"
       },
-      "support-console-pat": {
+      "support-console": {
         "body": {
           "CookieName": "session"
         },
+        "endpoint": "support-console",
         "type": "cookie_token"
       },
-      "telegram-bob-cred": {
+      "telegram-bob": {
         "body": {},
+        "endpoint": "telegram",
         "type": "telegram_bot_token"
       },
-      "telegram-carol-cred": {
+      "telegram-carol": {
         "body": {},
+        "endpoint": "telegram",
         "type": "telegram_bot_token"
       }
     },
     "endpoints": {
-      "alice-helpdesk": {
-        "body": {
-          "Hosts": [
-            "helpdesk.example.com"
-          ],
-          "Credential": "helpdesk-alice"
-        },
-        "family": "http",
-        "type": "https"
-      },
       "amem": {
         "body": {
           "Hosts": [
             "api.amem.ai"
-          ],
-          "Credential": "amem-alice"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -341,17 +368,6 @@
         "body": {
           "Hosts": [
             "api.anthropic.com"
-          ],
-          "Credential": "",
-          "Credentials": [
-            {
-              "placeholder": "PH_anthropic_ops_apikey",
-              "credential": "anthropic-ops-key"
-            },
-            {
-              "placeholder": "PH_anthropic_ops_subscription",
-              "credential": "anthropic-ops-sub"
-            }
           ]
         },
         "family": "http",
@@ -362,24 +378,6 @@
           "Hosts": [
             "clickhouse-o11y.example",
             "ch-o11y.internal.example"
-          ],
-          "Credential": "",
-          "Credentials": [
-            {
-              "databases": [
-                "prod"
-              ],
-              "credential": "ch-o11y-prod"
-            },
-            {
-              "databases": [
-                "dev"
-              ],
-              "credential": "ch-o11y-dev"
-            },
-            {
-              "credential": "ch-o11y"
-            }
           ]
         },
         "family": "sql",
@@ -392,25 +390,7 @@
           ],
           "Port": 0,
           "TLS": false,
-          "AcceptInvalidCertificate": false,
-          "Credential": "",
-          "Credentials": [
-            {
-              "databases": [
-                "prod"
-              ],
-              "credential": "ch-o11y-prod"
-            },
-            {
-              "databases": [
-                "dev"
-              ],
-              "credential": "ch-o11y-dev"
-            },
-            {
-              "credential": "ch-o11y"
-            }
-          ]
+          "AcceptInvalidCertificate": false
         },
         "family": "sql",
         "type": "clickhouse_native"
@@ -419,51 +399,26 @@
         "body": {
           "Hosts": [
             "api.checklyhq.com"
-          ],
-          "Credential": "checkly-alice"
+          ]
         },
         "family": "http",
         "type": "https"
       },
-      "gemini-bob": {
+      "gemini": {
         "body": {
           "Hosts": [
             "generativelanguage.googleapis.com"
-          ],
-          "Credential": "gemini-bob-cred"
+          ]
         },
         "family": "http",
         "type": "https"
       },
-      "github-alice": {
+      "github": {
         "body": {
           "Hosts": [
             "api.github.com",
             "github.com"
-          ],
-          "Credential": "github-alice-pat"
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "github-bob": {
-        "body": {
-          "Hosts": [
-            "api.github.com",
-            "github.com"
-          ],
-          "Credential": "github-bob-pat"
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "github-ops": {
-        "body": {
-          "Hosts": [
-            "api.github.com",
-            "github.com"
-          ],
-          "Credential": "github-ops-pat"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -472,8 +427,16 @@
         "body": {
           "Hosts": [
             "grafana.example.com"
-          ],
-          "Credential": "grafana-token"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "helpdesk": {
+        "body": {
+          "Hosts": [
+            "helpdesk.example.com"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -482,8 +445,7 @@
         "body": {
           "Hosts": [
             "api.honeycomb.io"
-          ],
-          "Credential": "honeycomb-alice"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -495,8 +457,7 @@
           "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nZXN0MIGdMA0GCSqGSIb3DQEBAQUAA4GLADCBhwKBgQDZ5j4t2UE5nZ3Y1+Q4xY5e\nTESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_THIS_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
           "Description": "admin@dev-iad.example",
           "ClusterName": "",
-          "Region": "",
-          "Credential": "k8s-dev-iad-mtls"
+          "Region": ""
         },
         "family": "k8s",
         "type": "kubernetes"
@@ -508,8 +469,7 @@
           "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nORD_TESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
           "Description": "admin@dev-sfo.example",
           "ClusterName": "",
-          "Region": "",
-          "Credential": "k8s-dev-sfo-mtls"
+          "Region": ""
         },
         "family": "k8s",
         "type": "kubernetes"
@@ -523,8 +483,7 @@
           "CACert": "",
           "Description": "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod",
           "ClusterName": "corp-prod",
-          "Region": "us-east-2",
-          "Credential": "k8s-eks-corp-aws"
+          "Region": "us-east-2"
         },
         "family": "k8s",
         "type": "kubernetes"
@@ -534,30 +493,17 @@
           "Hosts": [
             "api.notion.com",
             "mcp.notion.com"
-          ],
-          "Credential": "notion-corp"
+          ]
         },
         "family": "http",
         "type": "https"
       },
-      "openai-codex-bob": {
+      "openai-codex": {
         "body": {
           "Hosts": [
             "chatgpt.com",
             "auth.openai.com"
-          ],
-          "Credential": "openai-codex-bob-cred"
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "openai-codex-carol": {
-        "body": {
-          "Hosts": [
-            "chatgpt.com",
-            "auth.openai.com"
-          ],
-          "Credential": "openai-codex-carol-cred"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -566,17 +512,6 @@
         "body": {
           "Hosts": [
             "api.withorb.com"
-          ],
-          "Credential": "",
-          "Credentials": [
-            {
-              "placeholder": "PH_orb_test",
-              "credential": "orb-test-key"
-            },
-            {
-              "placeholder": "PH_orb_prod",
-              "credential": "orb-prod-key"
-            }
           ]
         },
         "family": "http",
@@ -586,8 +521,7 @@
         "body": {
           "Hosts": [
             "api.pagerduty.com"
-          ],
-          "Credential": "pagerduty-alice"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -595,18 +529,7 @@
       "pg-corp": {
         "body": {
           "Host": "corp-prod.cluster.example:5432",
-          "SSLMode": "",
-          "Credential": "",
-          "Credentials": [
-            {
-              "placeholder": "PH_pg_corp_ro",
-              "credential": "pg-corp-ro"
-            },
-            {
-              "placeholder": "PH_pg_corp_rw",
-              "credential": "pg-corp-rw"
-            }
-          ]
+          "SSLMode": ""
         },
         "family": "sql",
         "type": "postgres"
@@ -614,8 +537,7 @@
       "pg-scheduler": {
         "body": {
           "Host": "scheduler-prod.cluster.example:5432",
-          "SSLMode": "",
-          "Credential": "pg-scheduler-cred"
+          "SSLMode": ""
         },
         "family": "sql",
         "type": "postgres"
@@ -625,44 +547,18 @@
           "Hosts": [
             "us.i.posthog.com",
             "us.posthog.com"
-          ],
-          "Credential": "posthog-alice"
+          ]
         },
         "family": "http",
         "type": "https"
       },
-      "slack-alice": {
+      "slack": {
         "body": {
           "Hosts": [
             "slack.com",
             "www.slack.com",
             "api.slack.com"
-          ],
-          "Credential": "slack-alice-cred"
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "slack-bob": {
-        "body": {
-          "Hosts": [
-            "slack.com",
-            "www.slack.com",
-            "api.slack.com"
-          ],
-          "Credential": "slack-bob-cred"
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "slack-ops": {
-        "body": {
-          "Hosts": [
-            "slack.com",
-            "www.slack.com",
-            "api.slack.com"
-          ],
-          "Credential": "slack-ops-cred"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -671,8 +567,7 @@
         "body": {
           "Hosts": [
             "smithery.ai"
-          ],
-          "Credential": "smithery-alice"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -681,8 +576,7 @@
         "body": {
           "Hosts": [
             "api.stripe.com"
-          ],
-          "Credential": "stripe-live-key"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -691,100 +585,94 @@
         "body": {
           "Hosts": [
             "admin.example.com"
-          ],
-          "Credential": "support-console-pat"
+          ]
         },
         "family": "http",
         "type": "https"
       },
-      "telegram-bob": {
+      "telegram": {
         "body": {
           "Hosts": [
             "api.telegram.org"
-          ],
-          "Credential": "telegram-bob-cred"
+          ]
         },
         "family": "http",
         "type": "https"
-      },
-      "telegram-carol": {
-        "body": {
-          "Hosts": [
-            "api.telegram.org"
-          ],
-          "Credential": "telegram-carol-cred"
-        },
-        "family": "http",
-        "type": "https"
-      }
-    },
-    "policies": {
-      "k8s-exec-content": {
-        "text": "Inspect the kubectl exec command (each ?command= argv element).\nDeny if it dumps env vars (env, printenv, set, export, cat\n/proc/*/environ). Deny if it reads sensitive host-mount files\n(kubelet pod tokens, certs, private keys, kubeconfig,\n/etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,\nmount, dmesg, top, and apt-get install for debugging.\n"
-      },
-      "pg-secret-columns": {
-        "text": "Deny if the SELECT projects (directly, via *, or via aggregates\nlike json_agg / encode) any of:\n  - github_identities.access_token or .refresh_token\n  - tokens.hash\n  - email_confirmations.token\n  - authorizations.exchange_token, .code, .challenge\n  - domain_certificates.private_key\n  - database_instances.certificate\n  - database_instances.connection_config password / secret keys\n  - env_vars.value when is_secret = true (allow when restricted\n    to is_secret = false explicitly)\nAllow reads of every other column.\n"
-      },
-      "pg-secret-named-defense": {
-        "text": "Decide whether this SELECT actually returns secret data — i.e.\nit projects or aggregates a column whose name suggests a secret.\nApprove if the secret-named identifier appears only as a string\nliteral or in a non-projected predicate.\n"
-      },
-      "reply-content": {
-        "text": "The JSON body has a `body` field containing a customer support\nreply. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
-      },
-      "slack-block-kit-shape": {
-        "text": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_reply_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Reply\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
       }
     },
     "profiles": {
       "alice": {
-        "endpoints": [
+        "credentials": [
           "github-alice",
           "slack-alice",
           "telegram-carol",
           "openai-codex-carol",
-          "notion",
+          "notion-corp",
           "grafana",
-          "ch-o11y-https",
-          "ch-o11y-native",
+          "ch-o11y",
           "k8s-dev-iad",
           "k8s-dev-sfo",
-          "smithery",
-          "amem",
-          "checkly",
-          "posthog",
-          "honeycomb",
-          "pagerduty",
-          "alice-helpdesk"
+          "smithery-alice",
+          "amem-alice",
+          "checkly-alice",
+          "posthog-alice",
+          "honeycomb-alice",
+          "pagerduty-alice",
+          "helpdesk-alice"
         ]
       },
       "bob": {
-        "endpoints": [
+        "credentials": [
           "github-bob",
           "slack-bob",
           "telegram-bob",
           "gemini-bob",
           "openai-codex-bob",
           "openai-codex-carol"
-        ]
+        ],
+        "disambiguators": {
+          "openai-codex-bob": {
+            "placeholder": "PH_openai_codex_bob"
+          },
+          "openai-codex-carol": {
+            "placeholder": "PH_openai_codex_carol"
+          }
+        }
       },
       "ops": {
-        "endpoints": [
+        "credentials": [
+          "anthropic-ops-key",
           "anthropic-ops",
           "github-ops",
           "slack-ops",
           "support-console",
-          "stripe",
-          "orb",
-          "notion",
+          "stripe-live",
+          "orb-test",
+          "orb-prod",
+          "notion-corp",
           "grafana",
-          "pg-corp",
+          "pg-corp-ro",
+          "pg-corp-rw",
           "pg-scheduler",
           "k8s-dev-iad",
           "k8s-dev-sfo",
-          "k8s-eks-corp-prod",
-          "ch-o11y-https",
-          "ch-o11y-native"
-        ]
+          "k8s-eks-corp",
+          "ch-o11y"
+        ],
+        "disambiguators": {
+          "anthropic-ops": {
+            "placeholder": "PH_anthropic_ops_subscription"
+          },
+          "anthropic-ops-key": {
+            "placeholder": "PH_anthropic_ops_apikey"
+          },
+          "orb-prod": {
+            "placeholder": "PH_orb_prod"
+          },
+          "orb-test": {
+            "placeholder": "PH_orb_test"
+          }
+        }
       }
     },
     "rules": {
@@ -799,19 +687,6 @@
           "priority": -100,
           "verdict": "deny",
           "reason": "ClickHouse access is read-only"
-        }
-      },
-      "clickhouse-prod-readonly": {
-        "body": {
-          "name": "clickhouse-prod-readonly",
-          "family": "sql",
-          "endpoints": [
-            "ch-o11y-https",
-            "ch-o11y-native"
-          ],
-          "priority": 10,
-          "condition": "sql.database == 'prod' && sql.verb in ['select', 'show', 'describe', 'explain']",
-          "verdict": "allow"
         }
       },
       "clickhouse-reads": {
@@ -1149,7 +1024,7 @@
             "orb"
           ],
           "condition": "http.method == 'DELETE'",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "verdict": "deny",
           "reason": "Orb deletes go through approval flow as POST"
         }
@@ -1162,7 +1037,7 @@
             "orb"
           ],
           "condition": "http.method == 'GET'",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "verdict": "allow"
         }
       },
@@ -1174,7 +1049,7 @@
             "orb"
           ],
           "condition": "http.method in ['POST', 'PUT', 'PATCH']",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "approve": [
             {
               "name": "billing"
@@ -1189,7 +1064,7 @@
           "endpoints": [
             "orb"
           ],
-          "credential": "orb-test-key",
+          "credential": "orb-test",
           "verdict": "allow"
         }
       },
@@ -1383,9 +1258,10 @@
           "name": "slack-ops-approve-reply-shape",
           "family": "http",
           "endpoints": [
-            "slack-ops"
+            "slack"
           ],
           "condition": "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')",
+          "credential": "slack-ops",
           "approve": [
             {
               "name": "slack-block-kit-shape-judge"
@@ -1527,6 +1403,5 @@
         }
       }
     }
-  },
-  "unknown_host": "passthrough"
+  }
 }

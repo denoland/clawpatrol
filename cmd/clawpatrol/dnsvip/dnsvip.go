@@ -209,11 +209,11 @@ func (a *Allocator) persistLocked() error {
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("dnsvip: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM dnsvip_allocations`); err != nil {
-		return err
+		return fmt.Errorf("dnsvip: delete allocations: %w", err)
 	}
 	// Sort for determinism; aids replica diffing + log scanning.
 	entries := make([]*entry, 0, len(a.byName))
@@ -226,10 +226,13 @@ func (a *Allocator) persistLocked() error {
 			`INSERT INTO dnsvip_allocations (id, hostname, v4, v6) VALUES (?, ?, ?, ?)`,
 			e.ID, e.Hostname, e.V4.String(), e.V6.String(),
 		); err != nil {
-			return err
+			return fmt.Errorf("dnsvip: insert id=%d host=%q: %w", e.ID, e.Hostname, err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("dnsvip: commit: %w", err)
+	}
+	return nil
 }
 
 // vipForID derives the (v4, v6) pair for an ID. v4 occupies the last

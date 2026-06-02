@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { decideHITL, getHITLPending, type HITLPending, type HITLResolveResult } from "../lib/api";
 import { Button } from "./Button";
 
-// HITL pending-approvals table. Polls /api/hitl/pending — list is
-// short-lived (60s default), so SSE plumbing isn't worth it.
-export function HITLBar() {
+// agentIP, when set, scopes the bar to a single device's pending
+// approvals (used on the device page); unset shows every device's
+// (the home page).
+export function HITLBar({ agentIP }: { agentIP?: string } = {}) {
   const [pending, setPending] = useState<HITLPending[]>([]);
+  const [justResolved, setJustResolved] = useState<HITLPending[]>([]);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -13,7 +15,17 @@ export function HITLBar() {
     async function tick() {
       try {
         const r = await getHITLPending();
-        if (!cancelled) setPending(r ?? []);
+        if (!cancelled) {
+          const incoming = (r ?? []).filter((p) => !agentIP || p.agent_ip === agentIP);
+          // Detect >0 → 0 transition: briefly flash green "Approved" cards.
+          setPending((prev) => {
+            if (prev.length > 0 && incoming.length === 0) {
+              setJustResolved(prev);
+              setTimeout(() => setJustResolved([]), 2500);
+            }
+            return incoming;
+          });
+        }
       } catch {
         /* ignore transient */
       }
@@ -24,9 +36,10 @@ export function HITLBar() {
       cancelled = true;
       clearInterval(t);
     };
-  }, []);
+  }, [agentIP]);
 
-  async function decide(id: string, allow: boolean) {
+  async function decide(id: string, allow: boolean, confirmMsg: string) {
+    if (!confirm(confirmMsg)) return;
     setNotice("");
     setPending((p) => p.filter((x) => x.id !== id));
     try {
@@ -37,150 +50,124 @@ export function HITLBar() {
     }
   }
 
-  if (pending.length === 0 && !notice) return null;
+  if (pending.length === 0 && justResolved.length === 0 && !notice) return null;
 
   return (
-    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
-      <div className="px-4 py-2.5 text-xs font-mono uppercase tracking-wider text-navy font-bold flex items-center bg-navy-100 border-b border-navy">
-        <span>Pending approvals</span>
-        <span className="ml-2 text-rust-500 tabular-nums">● {pending.length}</span>
-      </div>
+    <div className="space-y-1.5">
       {notice && (
-        <div className="px-4 py-2 text-xs text-rust-700 bg-rust-50 border-t border-rust-200">
+        <div className="px-4 py-2 text-xs text-rust-700 bg-canvas border-1.5 border-rust-200">
           {notice}
         </div>
       )}
-      {pending.length > 0 && (
-        <table className="w-full table-fixed border-collapse">
-          <colgroup>
-            <col style={{ width: 140 }} />
-            <col style={{ width: 60 }} />
-            <col />
-            <col style={{ width: 160 }} />
-          </colgroup>
-          <tbody>
-            {pending.map((p) => {
-              const ep = p.endpoint || p.host;
-              // HTTPS paths start with `/` and concatenate cleanly into
-              // a URL ("api.anthropic.com/v1/messages"). SQL / k8s
-              // paths don't start with `/`; insert a space so we get
-              // "users-db UPDATE ..." rather than "users-dbUPDATE ...".
-              const sep = p.path && !p.path.startsWith("/") ? " " : "";
-              const approval = hitlApprovalDisplay(p);
-              return (
-                <tr
-                  key={p.id}
-                  className="border-b border-canvas-muted last:border-b-0 hover:bg-navy-50"
-                >
-                  <Td className="text-xs text-text-muted tabular-nums truncate">{p.agent_ip}</Td>
-                  <Td className="font-mono text-xs uppercase font-semibold text-rust-700">
-                    {p.method}
-                  </Td>
-                  <Td>
-                    <span className="text-xs text-text truncate block" title={ep + sep + p.path}>
-                      <span className="text-text-muted">
-                        {ep}
-                        {sep}
-                      </span>
-                      <span>{p.path}</span>
-                    </span>
-                    {p.reason && (
-                      <div className="text-2xs text-text-muted truncate">{p.reason}</div>
-                    )}
-                    {approval && (
-                      <div className="mt-1 flex gap-2 text-2xs leading-snug text-text-muted">
-                        <span className="shrink-0 rounded-sm border border-navy-200 bg-navy-50 px-1.5 py-0.5 font-mono uppercase tracking-wide text-navy">
-                          {approval.label}
-                        </span>
-                        <span className="whitespace-pre-line">{approval.message}</span>
-                      </div>
-                    )}
-                  </Td>
-                  <Td className="text-right">
-                    <div className="flex gap-1.5 justify-end">
-                      <Button variant="outline" onClick={() => decide(p.id, false)}>
-                        deny
-                      </Button>
-                      <Button onClick={() => decide(p.id, true)}>
-                        {approval?.approveLabel ?? "allow"}
-                      </Button>
-                    </div>
-                  </Td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {justResolved.map((r) => (
+        <ResolvedCard key={r.id} item={r} />
+      ))}
+      {pending.map((p) => (
+        <PendingCard key={p.id} item={p} onDecide={decide} />
+      ))}
+    </div>
+  );
+}
+
+function PendingCard({
+  item,
+  onDecide,
+}: {
+  item: HITLPending;
+  onDecide: (id: string, allow: boolean, msg: string) => void;
+}) {
+  const ep = item.endpoint || item.host;
+  const sep = item.path && !item.path.startsWith("/") ? " " : "";
+  const target = `${item.method} ${ep}${sep}${item.path}`;
+  // Verb matches the Slack "Approve" button and the "approved" status
+  // badge — the dashboard previously said "allow" here, which read as
+  // a different action from the same decision shown elsewhere.
+  const approveLabel =
+    item.approval_effect === "create_retry_grant" || item.operation_state === "pending_approval"
+      ? "approve retry"
+      : "approve";
+
+  return (
+    <div className="border-l-4 border-butter-400 bg-canvas border-y border-r border-navy overflow-hidden">
+      <div className="px-4 py-3 flex items-center gap-3 min-w-0">
+        {/* status badge */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="w-2 h-2 rounded-full bg-butter-400 animate-pulse" />
+          <span className="font-mono text-2xs font-bold uppercase tracking-wider text-butter-700 whitespace-nowrap">
+            awaiting approval
+          </span>
+        </div>
+        {/* request */}
+        <span className="font-mono text-xs font-semibold text-text-muted shrink-0">
+          {item.method}
+        </span>
+        <span className="font-mono text-xs text-text truncate flex-1 min-w-0" title={target}>
+          {ep}
+          {sep}
+          {item.path}
+        </span>
+        {/* actions */}
+        <div className="flex gap-1.5 shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => onDecide(item.id, false, `Deny this request?\n\n${target}`)}
+          >
+            deny
+          </Button>
+          <Button
+            onClick={() => {
+              const cap = approveLabel.charAt(0).toUpperCase() + approveLabel.slice(1);
+              onDecide(item.id, true, `${cap}?\n\n${target}`);
+            }}
+          >
+            {approveLabel}
+          </Button>
+        </div>
+      </div>
+      {(item.body_sample || item.ua || item.reason) && (
+        <div className="px-4 pb-2.5 pt-1.5 border-t border-canvas-muted space-y-0.5">
+          {item.body_sample && (
+            <div className="font-mono text-2xs text-text truncate">{item.body_sample}</div>
+          )}
+          <div className="text-2xs text-text-muted truncate">
+            {item.ua && (
+              <span>
+                requested by <span className="font-mono text-text">{item.ua}</span>
+              </span>
+            )}
+            {item.ua && item.reason && <span className="mx-1.5">·</span>}
+            {item.reason && <span>{item.reason}</span>}
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-function hitlApprovalDisplay(
-  p: HITLPending,
-): { label: string; message: string; approveLabel: string } | null {
-  const effect = p.approval_effect;
-  const state = p.operation_state;
-  const message = (
-    p.approval_message || hitlApprovalFallbackMessage(state, effect, p.upstream_called)
-  ).trim();
-  if (!message && !state && !effect) return null;
-  if (effect === "create_retry_grant" || state === "pending_approval") {
-    return {
-      label: "retry grant",
-      message:
-        message || "Upstream has not been called. Approval allows one matching client retry.",
-      approveLabel: "approve retry",
-    };
-  }
-  if (p.upstream_called) {
-    return {
-      label: "upstream called",
-      message: message || "The approved request has been retried and forwarded upstream.",
-      approveLabel: "allow",
-    };
-  }
-  return {
-    label: state === "sync_waiting" ? "sync wait" : humanizeHITLState(state || "pending"),
-    message: message || "Approval sends this request upstream immediately while the client waits.",
-    approveLabel: "allow",
-  };
-}
-
-function hitlApprovalFallbackMessage(
-  state: HITLPending["operation_state"],
-  effect: HITLPending["approval_effect"],
-  upstreamCalled?: boolean,
-): string {
-  if (upstreamCalled) return "The approved request has been retried and forwarded upstream.";
-  if (effect === "create_retry_grant" || state === "pending_approval") {
-    return "Upstream has not been called. Approve will not send the request upstream now; it only allows one matching client retry.";
-  }
-  if (state === "approved_waiting_for_retry") {
-    return "Approved. Waiting for the client to retry the original request. Upstream has not been called yet.";
-  }
-  if (state === "denied" || state === "expired" || state === "client_disconnected") {
-    return "Upstream was not called.";
-  }
-  if (state === "sync_waiting" || effect === "execute_upstream") {
-    return "Approval sends this request upstream immediately while the client waits.";
-  }
-  return "";
-}
-
-function humanizeHITLState(state: string): string {
-  return state.replaceAll("_", " ");
+function ResolvedCard({ item }: { item: HITLPending }) {
+  const ep = item.endpoint || item.host;
+  const sep = item.path && !item.path.startsWith("/") ? " " : "";
+  return (
+    <div className="border-l-4 border-success-500 bg-canvas border-y border-r border-navy px-4 py-3 flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="w-2 h-2 rounded-full bg-success-500" />
+        <span className="font-mono text-2xs font-bold uppercase tracking-wider text-success-700 whitespace-nowrap">
+          approved
+        </span>
+      </div>
+      <span className="font-mono text-xs font-semibold text-text-muted shrink-0">
+        {item.method}
+      </span>
+      <span className="font-mono text-xs text-text truncate flex-1 min-w-0">
+        {ep}
+        {sep}
+        {item.path}
+      </span>
+    </div>
+  );
 }
 
 function hitlDecisionNotice(result: HITLResolveResult): string {
   const detail = result.reason || result.state || "unknown";
   return `HITL request is no longer active: ${detail}`;
-}
-
-function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <td className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}>
-      {children}
-    </td>
-  );
 }

@@ -41,7 +41,6 @@ type renderer struct {
 func (r *renderer) run() (string, error) {
 	r.writeHeader()
 	r.writeOperational()
-	r.writeFixedKind("policy", "config", "PolicyText", `policy "<name>"`)
 	r.writeProfile()
 
 	for _, kind := range []config.Kind{
@@ -57,11 +56,11 @@ func (r *renderer) run() (string, error) {
 }
 
 func (r *renderer) writeHeader() {
-	r.out.WriteString(`# HCL config reference
+	r.out.WriteString(`# Config Reference
 
-A clawpatrol gateway config mixes **operational** fields (top-level
-plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+A clawpatrol gateway config mixes **operational** settings in the
+required top-level ` + "`gateway { ... }`" + ` block with **policy** blocks.
+Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -70,9 +69,11 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` are scalar
   literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
-  bare-name reference to another block of that kind (e.g.
-  ` + "`credential = github-pat`" + `); ` + "`[]ref(<kind>)`" + ` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (` + "`<type>.<name>`" + ` for
+  two-label kinds like ` + "`credential = bearer_token.github`" + `,
+  ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`rule = rule.no-pii`" + `);
+  ` + "`[]ref(<kind>)`" + ` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
@@ -106,75 +107,59 @@ func stripIdentPrefix(doc, ident string) string {
 		{"is the ", "The "},
 		{"is a ", "A "},
 		{"is an ", "An "},
+		{"is ", ""},
 		{"are the ", "The "},
 		{"are ", ""},
 	}
 	for _, l := range linkers {
 		if strings.HasPrefix(rest, l.from) {
-			return l.to + rest[len(l.from):]
+			rest = upperFirst(l.to + rest[len(l.from):])
+			break
 		}
 	}
 	if rest == "" {
 		return rest
 	}
-	first := rest[0]
-	if first >= 'a' && first <= 'z' {
-		rest = strings.ToUpper(rest[:1]) + rest[1:]
-	}
+	rest = upperFirst(rest)
 	// Drop the stub "Is part of the clawpatrol plugin API." sentence
 	// that's auto-generated as a placeholder doc-comment on plugin
 	// types. It conveys nothing to a reader of the HCL reference.
-	if rest == "Is part of the clawpatrol plugin API." {
+	if rest == "Is part of the clawpatrol plugin API." ||
+		rest == "Part of the clawpatrol plugin API." {
 		return ""
 	}
+	rest = strings.TrimPrefix(rest, "Is part of the clawpatrol plugin API.\n\n")
+	rest = strings.TrimPrefix(rest, "Part of the clawpatrol plugin API.\n\n")
 	return rest
 }
 
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	first := s[0]
+	if first >= 'a' && first <= 'z' {
+		return strings.ToUpper(s[:1]) + s[1:]
+	}
+	return s
+}
+
 func (r *renderer) writeOperational() {
-	r.out.WriteString("## Top-level fields\n\n")
-	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
+	r.out.WriteString("## Top-level blocks\n\n")
+	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 }
 
-// writeFixedKind documents a one-label kind with a fixed, non-plugin
-// schema (defaults, policy). The body struct lives in package
-// `config`.
-func (r *renderer) writeFixedKind(kind, pkg, typeName, headerSuffix string) {
-	header := fmt.Sprintf("`%s {}`", kind)
-	if headerSuffix != "" {
-		header = fmt.Sprintf("`%s { ... }`", headerSuffix)
-	}
-	fmt.Fprintf(&r.out, "## %s\n\n", header)
-	if doc := stripIdentPrefix(r.docs.typeDoc(pkg, typeName), typeName); doc != "" {
-		r.out.WriteString(doc)
-		r.out.WriteString("\n\n")
-	}
-	rt := reflectTypeFor(pkg, typeName)
-	r.writeStructTable(pkg, typeName, rt)
-	r.writeExample(kind, "", rt, false)
-}
-
-func reflectTypeFor(pkg, name string) reflect.Type {
-	switch pkg + "." + name {
-	case "config.Gateway":
-		return reflect.TypeOf(config.Gateway{})
-	case "config.PolicyText":
-		return reflect.TypeOf(config.PolicyText{})
-	}
-	return nil
-}
-
 // writeProfile documents the `profile "<name>" {}` block. The body
-// struct is unexported (config.profileBody), so we inline its single
-// field rather than going through reflection.
+// is decoded manually (mixed-shape `credentials` list), so we inline
+// its attributes rather than going through reflection.
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
-	r.out.WriteString("Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
+	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n")
-	r.out.WriteString("| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints          = [github, postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
+	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────
@@ -334,6 +319,9 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		if hasOpt(opts, "remain") || hasOpt(opts, "label") {
 			continue
 		}
+		if skipPublicConfigReferenceField(pkgName, typeName, f.Name) {
+			continue
+		}
 
 		typeStr := formatGoType(f.Type)
 		if hasOpt(opts, "block") {
@@ -350,10 +338,14 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		} else if override := ctyTypeOverride(name); override != "" && typeStr == "object" {
 			typeStr = override
 		}
+		required := fieldRequired(f.Type, opts)
+		if pkgName == "config" && typeName == "Gateway" && f.Name == "Settings" {
+			required = true
+		}
 		row := fieldRow{
 			Name:        name,
 			Type:        typeStr,
-			Required:    fieldRequired(f.Type, opts),
+			Required:    required,
 			Block:       hasOpt(opts, "block"),
 			GoFieldName: f.Name,
 			Doc:         stripIdentPrefix(r.docs.fieldDoc(pkgName, typeName, f.Name), f.Name),
@@ -361,6 +353,15 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func skipPublicConfigReferenceField(pkgName, typeName, fieldName string) bool {
+	switch pkgName + "." + typeName + "." + fieldName {
+	case "approvers.HumanApprover.SyncWaitTimeout",
+		"approvers.HumanApprover.AsyncGrant":
+		return true
+	}
+	return false
 }
 
 // fieldRefs returns Go-field-path → "kind" annotations sourced from
@@ -388,8 +389,11 @@ func fieldRequired(rt reflect.Type, opts []string) bool {
 	if hasOpt(opts, "optional") {
 		return false
 	}
-	if hasOpt(opts, "block") && rt.Kind() == reflect.Pointer {
-		return false
+	if hasOpt(opts, "block") {
+		switch rt.Kind() {
+		case reflect.Pointer, reflect.Slice:
+			return false
+		}
 	}
 	return true
 }
@@ -428,8 +432,6 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 	switch {
 	case typ != "" && typed:
 		head = fmt.Sprintf(`%s "%s" "example"`, kind, typ)
-	case kind == "policy":
-		head = `policy "example"`
 	default:
 		head = kind
 	}
@@ -497,17 +499,15 @@ func exampleValue(t reflect.Type, fieldName string) string {
 		case "cookie_name":
 			return `"session"`
 		case "credential":
-			return "example-credential"
+			return "bearer_token.example"
 		case "endpoint":
-			return "example-endpoint"
+			return "https.example"
 		case "policy":
-			return "example-policy"
+			return "<<-EOT\n    Example policy text.\n  EOT"
 		case "verdict":
 			return `"deny"`
 		case "reason":
 			return `"example reason"`
-		case "text":
-			return "<<-EOT\n    Example policy text.\n  EOT"
 		}
 		return `"example"`
 	case reflect.Bool:

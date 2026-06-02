@@ -9,30 +9,35 @@ export function AgentsTable({
   agents,
   integrations,
   onSelect,
+  sortBy = "ip",
 }: {
   agents: Agent[];
   integrations?: Integration[];
   onSelect?: (ip: string) => void;
+  // "ip": ascending IP — stable, default.
+  // "activity": most-recently-active first, bucketed to the hour so
+  // ordering doesn't reshuffle on every ping. IP tiebreak.
+  sortBy?: "ip" | "activity";
 }) {
   const byId = new Map<string, Integration>();
   for (const i of integrations ?? []) byId.set(i.id, i);
-  const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
+  const stable = sortAgents(agents ?? [], sortBy);
   return (
-    <table className="w-full table-fixed border-collapse" style={{ minWidth: 650 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 720 }}>
       <colgroup>
-        <col style={{ width: 240 }} />
+        <col />
         <col style={{ width: 140 }} />
         <col style={{ width: 200 }} />
-        <col style={{ width: 60 }} />
-        <col />
+        <col style={{ width: 70 }} />
+        <col style={{ width: 200 }} />
       </colgroup>
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
           <Th>Device</Th>
-          <Th className="hidden md:table-cell">Profile</Th>
+          <Th>Profile</Th>
           <Th>Activity</Th>
           <Th className="text-right">Reqs</Th>
-          <Th className="hidden lg:table-cell">IP</Th>
+          <Th>IP</Th>
         </tr>
       </thead>
       <tbody>
@@ -54,7 +59,7 @@ export function AgentsTable({
             <tr
               key={a.ip}
               onClick={() => onSelect?.(a.ip)}
-              className="border-b border-canvas-muted cursor-pointer hover:bg-navy-50 transition-colors"
+              className="border-b border-canvas-muted cursor-pointer hover:bg-canvas-muted transition-colors"
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -75,13 +80,8 @@ export function AgentsTable({
                     {a.hostname || a.ip}
                   </span>
                 </div>
-                <div className="md:hidden text-2xs text-text-subtle truncate mt-0.5">
-                  {a.profile || "—"}
-                </div>
               </Td>
-              <Td className="hidden md:table-cell text-xs text-text-muted truncate">
-                {a.profile || "—"}
-              </Td>
+              <Td className="text-xs text-text-muted truncate">{a.profile || "—"}</Td>
               <Td>
                 <div className="flex items-center gap-2">
                   <Sparkline data={a.activity} width={120} height={16} />
@@ -92,7 +92,7 @@ export function AgentsTable({
               </Td>
               <Td className="text-xs text-text-muted tabular-nums text-right">{a.reqs}</Td>
               <Td
-                className="hidden lg:table-cell text-xs text-text-muted tabular-nums truncate"
+                className="text-xs text-text-muted tabular-nums truncate"
                 title={
                   [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`
                 }
@@ -105,6 +105,23 @@ export function AgentsTable({
       </tbody>
     </table>
   );
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+export function sortAgents(agents: Agent[], by: "ip" | "activity"): Agent[] {
+  const out = [...agents];
+  if (by === "ip") {
+    out.sort((a, b) => a.ip.localeCompare(b.ip));
+    return out;
+  }
+  out.sort((a, b) => {
+    const ba = Math.floor((Date.parse(a.last_at) || 0) / HOUR_MS);
+    const bb = Math.floor((Date.parse(b.last_at) || 0) / HOUR_MS);
+    if (ba !== bb) return bb - ba;
+    return a.ip.localeCompare(b.ip);
+  });
+  return out;
 }
 
 // needsAction returns true when a declared credential is missing its
@@ -129,7 +146,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold " +
+        "px-3 sm:px-3.5 py-2.5 text-left text-xs font-mono uppercase tracking-wider text-navy font-bold " +
         className
       }
     >
@@ -148,10 +165,7 @@ function Td({
   title?: string;
 }) {
   return (
-    <td
-      className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}
-      {...rest}
-    >
+    <td className={"px-3 sm:px-3.5 py-2.5 align-middle overflow-hidden " + className} {...rest}>
       {children}
     </td>
   );

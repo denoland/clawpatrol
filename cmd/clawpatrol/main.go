@@ -18,11 +18,13 @@ import (
 	_ "net/http/pprof"
 	"net/netip"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/denoland/clawpatrol/cmd/clawpatrol/dnsvip"
@@ -50,8 +52,8 @@ type JoinConfig = config.JoinConfig
 // (clawpatrol.db) coexists with the client-side ca.crt that lives
 // in the same dir on dev machines.
 func resolveStateDir(cfg *config.Gateway) string {
-	if cfg.StateDir != "" {
-		return cfg.StateDir
+	if d := cfg.StateDir(); d != "" {
+		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -108,6 +110,34 @@ func warnIfStateLooselyPermissioned(stateDir string) {
 	check(filepath.Join(stateDir, "clawpatrol.db"), 0o600)
 }
 
+// seedAgentsFromDevices pre-populates the agent registry from the
+// persisted devices table so the dashboard renders every onboarded
+// device on boot, before any traffic arrives.
+//
+// Defined as its own function so the *sql.Rows cleanup is scoped to
+// this read instead of riding on runGateway's lifetime (i.e. process
+// lifetime). The previous in-place loop tied the pooled sql.Conn to
+// the rows handle for the entire gateway run — harmless on shutdown
+// but wasted a connection-pool slot for no reason.
+func seedAgentsFromDevices(db *sql.DB, agents *AgentRegistry) error {
+	rows, err := db.Query("SELECT id FROM devices")
+	if err != nil {
+		return fmt.Errorf("query devices: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return fmt.Errorf("scan device row: %w", err)
+		}
+		agents.Seed(canonicalPeerIP(ip))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate devices: %w", err)
+	}
+	return nil
+}
+
 // emit a terminal request event to both the SSE sink and OTel.
 // ev.Action and ev.Ms must be populated. Non-request events (e.g.
 // hitl_pending) call g.sink.Emit directly to stay out of the
@@ -162,18 +192,6 @@ func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 	gw, diags := config.Load(path)
 	if diags.HasErrors() {
 		return nil, nil, fmt.Errorf("%s", diags.Error())
-	}
-	if gw.Listen == "" {
-		if isTailscaleControlMode(gw.Control) {
-			// tsnet listener on the tailnet IP; 443 is the historical
-			// default and is unprivileged inside the tsnet stack.
-			gw.Listen = ":443"
-		} else {
-			// WireGuard mode: socket is loopback-only anyway (see
-			// tailscale.go's openListener). Use 8443 so the gateway can
-			// run rootless.
-			gw.Listen = "127.0.0.1:8443"
-		}
 	}
 	cp, err := config.Compile(gw)
 	if err != nil {
@@ -326,10 +344,15 @@ type Gateway struct {
 	certs    *CertCache
 	dialer   *net.Dialer
 	sink     *Sink
-	oauth    *OAuthRegistry
-	agents   *AgentRegistry
-	hitl     *HITLRegistry
-	onboard  *onboardRegistry
+	// blobs is the gateway-side plugin blob store (sqlite-backed).
+	// Used by endpoint plugins that need per-endpoint persistent
+	// bytes — SSH host keys today, future JWT signing keys.
+	// Exposed to plugins via ConnHandle.Blobs.
+	blobs   runtime.BlobStore
+	oauth   *OAuthRegistry
+	agents  *AgentRegistry
+	hitl    *HITLRegistry
+	onboard *onboardRegistry
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
@@ -426,29 +449,69 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
 			return p
 		}
-		// Lazy IPv6 → IPv4 resolution: whole-machine tsnet traffic
-		// often arrives on the peer's fd7a:115c:a1e0::/48 ULA. If the
-		// onboard table only has the IPv4 entry (peers registered
-		// before seedTsnetIPv6Alias existed), resolve via tsnet WhoIs
-		// once and stamp the alias.
-		if g.tsnetLC != nil && strings.HasPrefix(peerIP, "fd7a:") {
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			if w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0")); err == nil && w != nil && w.Node != nil {
-				for _, addr := range w.Node.Addresses {
-					ip := addr.Addr()
-					if !ip.Is4() {
-						continue
-					}
-					if p := g.onboard.ProfileForIP(ip.String()); p != "" {
-						g.onboard.RegisterIPAlias(peerIP, ip.String())
-						return p
-					}
+		// Lazy alias resolution via tsnet WhoIs. Two cases this catches:
+		//
+		//   1. Same Tailscale node, different address family — whole-
+		//      machine tsnet traffic arrives on the peer's IPv6 ULA
+		//      (fd7a:115c:a1e0::/48) but only the IPv4 is registered.
+		//   2. Same logical host, new Tailscale node — the host rejoined
+		//      the tailnet and got a fresh 100.x; without coalescing the
+		//      dashboard sprouts a phantom row per rejoin.
+		//
+		// ClaimAliasResolve guards against re-running WhoIs per packet
+		// for peers that have no matching device.
+		if g.tsnetLC != nil && g.onboard.ClaimAliasResolve(peerIP, 5*time.Minute) {
+			if canonical := g.resolveTsnetAlias(peerIP); canonical != "" {
+				if p := g.onboard.ProfileForIP(canonical); p != "" {
+					return p
 				}
 			}
 		}
 	}
 	return defaultProfileName(g.cfg.Policy)
+}
+
+// resolveTsnetAlias does a one-shot tsnet WhoIs for peerIP and, on a
+// match, registers an alias from peerIP onto the existing device IP.
+// Returns the canonical device IP on success, or "" when no match is
+// found. Both passes (address-match and hostname-match) only consider
+// IPs that already have a devices row, so an unknown tailnet peer with
+// no devices entry can never accidentally absorb traffic from another
+// peer.
+//
+// Hostname matches require exactly one devices row with that name (see
+// UniqueIPForHostname) so ephemeral pools that share a hostname — e.g.
+// the clawpatrol-run-* nodes Tailscale auto-suffixes on collision — are
+// never collapsed into one another.
+func (g *Gateway) resolveTsnetAlias(peerIP string) string {
+	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0"))
+	if err != nil || w == nil || w.Node == nil {
+		return ""
+	}
+	for _, addr := range w.Node.Addresses {
+		ip := addr.Addr().String()
+		if ip == peerIP {
+			continue
+		}
+		if g.onboard.HasDevice(ip) {
+			g.onboard.RegisterIPAlias(peerIP, ip)
+			return ip
+		}
+	}
+	hostname := w.Node.ComputedName
+	if hostname == "" && w.Node.Hostinfo.Valid() {
+		hostname = w.Node.Hostinfo.Hostname()
+	}
+	if canonical := g.onboard.UniqueIPForHostname(hostname); canonical != "" && canonical != peerIP {
+		g.onboard.RegisterIPAlias(peerIP, canonical)
+		return canonical
+	}
+	return ""
 }
 
 // seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
@@ -487,10 +550,19 @@ func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 // under a single device in the dashboard.
 func (g *Gateway) agentIPFor(c net.Conn) string {
 	ip := peerIP(c)
-	if g.onboard != nil {
-		return g.onboard.AgentIPFor(ip)
+	if g.onboard == nil {
+		return ip
 	}
-	return ip
+	// Mirror the lazy WhoIs lookup in profileFor here so callers that
+	// reach agentIPFor without first going through profileFor (e.g. the
+	// LLM-session bookkeeping paths) still benefit from alias resolution.
+	// Both functions use the same ClaimAliasResolve guard, so the WhoIs
+	// runs at most once per peer per 5-minute window regardless of which
+	// one is called first.
+	if g.tsnetLC != nil && g.onboard.ClaimAliasResolve(ip, 5*time.Minute) {
+		g.resolveTsnetAlias(ip)
+	}
+	return g.onboard.AgentIPFor(ip)
 }
 
 // defaultProfileName returns the profile a freshly-onboarded peer
@@ -567,20 +639,21 @@ func logDashboardAuthState(db *sql.DB, cfg *config.Gateway) {
 		log.Printf("dashboard auth: UNKNOWN — lookup failed: %v", err)
 		return
 	}
-	tailnetMode := isTailscaleControlMode(cfg.Control)
-	allowlist := len(cfg.DashboardOperators) > 0
+	tailnetMode := cfg.IsTailscaleEnabled()
+	operators := cfg.Operators()
+	allowlist := len(operators) > 0
 
 	switch {
 	case rootSet && allowlist && tailnetMode:
-		log.Printf("dashboard auth: enabled (root password + %d-entry tailnet operator allowlist)", len(cfg.DashboardOperators))
+		log.Printf("dashboard auth: enabled (root password + %d-entry tailnet operator allowlist)", len(operators))
 	case rootSet && allowlist && !tailnetMode:
-		log.Printf("dashboard auth: enabled (root password); dashboard_operators is set but ignored — control mode %q has no tailnet whois", cfg.Control)
+		log.Printf("dashboard auth: enabled (root password); operators is set but ignored — no tailscale block, no tailnet whois")
 	case rootSet:
 		log.Printf("dashboard auth: enabled (root password)")
 	case !rootSet && allowlist && tailnetMode:
 		log.Printf("dashboard auth: pending — no root password yet; tailnet operator allowlist alone cannot bootstrap. Open the dashboard or run `clawpatrol gateway --set-dashboard-password <pw>`.")
 	default:
-		log.Printf("dashboard auth: pending — no root password yet. Open the dashboard at info_listen %q to set one, or run `clawpatrol gateway --set-dashboard-password <pw>`.", cfg.InfoListen)
+		log.Printf("dashboard auth: pending — no root password yet. Open the dashboard at dashboard_listen %q to set one, or run `clawpatrol gateway --set-dashboard-password <pw>`.", cfg.DashboardListen())
 	}
 }
 
@@ -1336,7 +1409,7 @@ func truncate(s string, n int) string {
 	return s
 }
 
-func (g *Gateway) handle(raw net.Conn, dstIP string) {
+func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
@@ -1348,10 +1421,10 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 			c := wrapPeek(raw, prefix)
 			pip := peerIP(c)
 			profile := g.profileFor(pip)
-			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
+			ep, authority, certHost := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 			if ep != nil && isHTTPSMITMFamily(ep.Family) {
-				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
-				g.mitmHTTPS(c, dstIP, ep)
+				log.Printf("sni-fallback: %s → %s", authority, ep.Name)
+				g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 				return
 			}
 		}
@@ -1362,7 +1435,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	log.Printf("sni-peek: %s", host)
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
-	ep := runtime.HostEndpoint(g.Policy(), profile, host)
+	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
 		// Host isn't bound to this profile's endpoint set. Apply the
 		// `defaults.unknown_host` policy: passthrough today (matches
@@ -1376,7 +1449,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		// and runs the request loop through mitmHTTPS. The facet's
 		// PrepareRequest hook derives any per-family metadata
 		// (URL → Meta for k8s) before the matcher walks.
-		g.mitmHTTPS(c, host, ep)
+		g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 		return
 	}
 	// Wire-protocol families (postgres / clickhouse_* / future
@@ -1386,6 +1459,36 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	// transport — splice through.
 	log.Printf("endpoint %s family %q: no https-mitm transport; passthrough", ep.Name, ep.Family)
 	g.splice(c, host)
+}
+
+func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16) bool {
+	if dstPort == 443 {
+		return true
+	}
+	if dstIP == "" || dstPort == 0 {
+		return false
+	}
+	profile := g.profileFor(peerIP(c))
+	ep, _, _ := g.httpsMITMEndpoint(profile, dstIP, dstPort)
+	return ep != nil && isHTTPSMITMFamily(ep.Family)
+}
+
+func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
+	policy := g.Policy()
+	exact := runtime.HostEndpoint(policy, profile, host)
+	if exact != nil && isHTTPSMITMFamily(exact.Family) {
+		return exact, host, host
+	}
+	if host != "" && dstPort != 0 {
+		authority := net.JoinHostPort(host, strconv.Itoa(int(dstPort)))
+		if ep := runtime.HostEndpoint(policy, profile, authority); ep != nil {
+			return ep, authority, host
+		}
+	}
+	if exact != nil {
+		return exact, host, host
+	}
+	return nil, host, host
 }
 
 // isHTTPSMITMFamily reports whether the facet registered for family
@@ -1434,8 +1537,10 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	// the connection to an unrelated database (e.g. an RDS hostname
 	// silently terminating on a Cloud SQL tunnel).
 	var ep *config.CompiledEndpoint
+	var hostname string
 	if g.dnsvip != nil {
-		if _, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
+		if hn, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
+			hostname = hn
 			cand := make([]*config.CompiledEndpoint, 0, len(hits))
 			for _, h := range hits {
 				if h.Endpoint != nil {
@@ -1466,6 +1571,14 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	}
 
 	upstreamAddr := dstIP + ":5432"
+	// Event Host carries the agent-dialed hostname when the dst is a
+	// dnsvip VIP (tunneled endpoint), else the raw dst IP. Without
+	// this the dashboard shows the synthetic VIP (e.g. fdXX::N) and
+	// the operator can't tell which database the connection hits.
+	eventHost := hostname
+	if eventHost == "" {
+		eventHost = dstIP
+	}
 	ch := &runtime.ConnHandle{
 		Conn:     c,
 		Endpoint: ep,
@@ -1473,6 +1586,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		Profile:  profile,
 		PeerIP:   pip,
 		Secrets:  g.secrets,
+		Blobs:    g.blobs,
 		DialUpstream: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
 			// dialing the original upstream IP the WG forwarder
@@ -1489,7 +1603,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
+				Mode: "pg", Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
@@ -1501,7 +1615,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
-				AgentIP: agentPip, Host: dstIP, Method: req.Verb, Path: req.Summary,
+				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
 			})
@@ -1627,6 +1741,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		Profile:      profile,
 		PeerIP:       pip,
 		Secrets:      g.secrets,
+		Blobs:        g.blobs,
 		StateDir:     g.stateDir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
@@ -1894,12 +2009,19 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated 
 // over plain TLS with credential injection applied by the credential
 // plugin's HTTPCredentialRuntime / HTTPRequestSigner / WebSocket hooks.
 func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
+	g.mitmHTTPSWithCertHost(c, host, host, ep)
+}
+
+func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
 	profile := g.profileFor(agentAddr)
 	agentAddr = g.agentIPFor(c)
-	cert, err := g.certs.mint(host)
+	if certHost == "" {
+		certHost = host
+	}
+	cert, err := g.certs.mint(certHost)
 	if err != nil {
-		log.Printf("mint %s: %v", host, err)
+		log.Printf("mint %s: %v", certHost, err)
 		return
 	}
 	tc := tls.Server(c, &tls.Config{
@@ -2064,8 +2186,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
-				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
-				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
+				ThreadTS:      req.Header.Get("X-HITL-Thread-TS"),
+				NotifyChannel: req.Header.Get("X-HITL-Channel"),
+				Endpoint:      ep, Rule: cr, Profile: profile, Request: mreq,
 				AsyncOperationID: asyncOp.ID, AsyncPendingOnSyncTimeout: asyncOp.ID != "", AsyncSyncWaitTimeout: asyncSyncWait,
 			})
 			if v.Decision != "allow" {
@@ -2077,7 +2200,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 						asyncOp = updated
 					}
 					_ = tc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-					if err := writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL); err != nil {
+					if err := writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL()); err != nil {
 						log.Printf("hitl async pending response write %s: %v", asyncOp.ID, err)
 					}
 					_ = tc.SetWriteDeadline(time.Time{})
@@ -2169,6 +2292,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
 				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
 				"X-HITL-Thread-TS",
+				"X-HITL-Channel",
 			} {
 				req.Header.Del(h)
 			}
@@ -2231,7 +2355,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
 		var reqBodySecretRedactions []string
-		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
+		if cc := runtime.ResolveCredential(g.Policy(), profile, ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
@@ -2524,6 +2648,7 @@ type runApproveCtx struct {
 	BodySample                string
 	Reason                    string
 	ThreadTS                  string
+	NotifyChannel             string
 	Endpoint                  *config.CompiledEndpoint
 	Rule                      *config.CompiledRule
 	Profile                   string
@@ -2558,10 +2683,15 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		if ar == nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway", ApproverName: st.Name}
 		}
+		stageCtx := ctx
+		var stageCancel context.CancelFunc = func() {}
 		if c.AsyncPendingOnSyncTimeout && c.AsyncSyncWaitTimeout > 0 && c.AsyncOperationID != "" {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, c.AsyncSyncWaitTimeout)
-			defer cancel()
+			// Per-stage timeout: scope to the iteration so cancels don't
+			// accumulate via deferred-in-loop. A long approve chain
+			// (rare but legal) previously held one CancelFunc on the
+			// defer stack per stage; releasing each stage's context as
+			// soon as the call returns keeps memory bounded.
+			stageCtx, stageCancel = context.WithTimeout(ctx, c.AsyncSyncWaitTimeout)
 		}
 		req := runtime.ApproveRequest{
 			Stage:                     st,
@@ -2578,15 +2708,18 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			BodySample:                c.BodySample,
 			Reason:                    c.Reason,
 			ThreadTS:                  c.ThreadTS,
+			NotifyChannel:             c.NotifyChannel,
 			AsyncOperationID:          c.AsyncOperationID,
 			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
 			Pool:                      g.hitl,
 			Secrets:                   g.secrets,
-			DashboardURL:              g.cfg.PublicURL,
+			DashboardURL:              g.cfg.PublicURL(),
 			Policy:                    policy,
 			MessageUpdateSink:         g.recordHITLOperationMessageRef,
+			PendingMessageUpdateSink:  g.hitl.RecordMessageRef,
 		}
-		v, err := ar.Approve(ctx, req)
+		v, err := ar.Approve(stageCtx, req)
+		stageCancel()
 		// Stamp the entity name + plugin type on every verdict so the
 		// dispatcher labels its `approved` / `denied` events with the
 		// deciding approver — runtimes don't have to remember.
@@ -2627,12 +2760,16 @@ func main() {
 	switch os.Args[1] {
 	case "gateway":
 		runGateway(os.Args[2:])
-	case "login":
-		runLogin(os.Args[2:])
 	case "join":
 		runJoin(os.Args[2:])
 	case "run":
 		runRun(os.Args[2:])
+	case "daemon-internal":
+		// internal: re-exec'd by `clawpatrol run` (Linux only) to host
+		// the per-user tsnet daemon. Hidden from usage(); name carries
+		// the -internal suffix so it doesn't read like a user-facing
+		// command if it leaks into help text or shell history.
+		runDaemon(os.Args[2:])
 	case "relay-supervisor":
 		// internal: re-exec'd by `clawpatrol run` to host the auto-expose
 		// supervisor in the host netns. Hidden from usage.
@@ -2728,7 +2865,9 @@ usage:
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
                   --whole-machine        bring up wg-quick (route all traffic)
-  clawpatrol login                       onboard this machine (tailscale path)
+                  --login                interactive tailnet login for gateways
+                                         with no public URL (creds discarded
+                                         once join completes)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
@@ -2755,9 +2894,29 @@ flags:
                                   then start. The next dashboard request will
                                   re-run first-run setup.
 
-Start from gateway.example.hcl in the repo, or see the HCL reference:
+Start from the example config:
+  https://github.com/denoland/clawpatrol/blob/main/examples/gateway.example.hcl
+
+HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
+// runGateway is the entry point for the `clawpatrol gateway` subcommand.
+//
+// Exit-site discipline:
+//   - usage errors (bad/missing config path) use `os.Exit(2)` — the
+//     flag package's convention for "invalid invocation".
+//   - boot-time failures that leave the gateway in an unusable state
+//     (config parse, state-dir create, DB open, CA load, sink init,
+//     OAuth registry init, dnsvip init, onboard load, WG init,
+//     listener bind) use `log.Fatalf` — there's no usable partial
+//     state to recover into, and dragging the process forward only
+//     hides the root cause in later errors.
+//   - SIGINT / SIGTERM is the clean-exit path: installGatewayShutdown
+//     flushes telemetry + closes the DB, then `os.Exit(0)`.
+//
+// The retained Fatal sites are deliberate; do not "clean them up" into
+// `return err` without owning the new contract for what the caller is
+// supposed to do with a half-initialized gateway.
 func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	setDashboardPassword := fs.String("set-dashboard-password", "",
@@ -2825,8 +2984,9 @@ func runGateway(args []string) {
 		stateDir: stateDir,
 		db:       db,
 		certs:    certs,
-		dialer:   newUpstreamDialer(cfg.Resolver),
+		dialer:   newUpstreamDialer(cfg.Resolver()),
 		sink:     sink,
+		blobs:    blobs,
 		oauth:    oauthReg,
 		agents:   NewAgentRegistry(),
 		hitl:     newHITLRegistry(sink),
@@ -2849,6 +3009,7 @@ func runGateway(args []string) {
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
+	g.hitl.pendingMessageUpdater = g.updatePendingHITLMessage
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
@@ -2882,18 +3043,11 @@ func runGateway(args []string) {
 	// Clean fd77:: ghost rows (WG) and fd7a:: ghost rows (Tailscale IPv6)
 	// left by builds that upserted IPv6 peer addresses as separate device
 	// IDs. Drop them on every boot — the v4 row carries the same metadata.
-	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'")
-	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var ip string
-			if rows.Scan(&ip) == nil {
-				g.agents.Seed(canonicalPeerIP(ip))
-			}
-		}
-		if err := rows.Err(); err != nil {
-			log.Printf("seed devices: %v", err)
-		}
+	if _, err := db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'"); err != nil {
+		log.Printf("gateway: prune ghost device rows: %v", err)
+	}
+	if err := seedAgentsFromDevices(db, g.agents); err != nil {
+		log.Printf("gateway: seed agents from devices: %v", err)
 	}
 
 	// Sessions: rehydrate persisted rows + start the sweeper.
@@ -2902,7 +3056,7 @@ func runGateway(args []string) {
 	// Sessions can revive on new activity at any time, so there's no
 	// "closed" intermediate state — keep is the only knob.
 	g.agents.LoadSessions(db)
-	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 10*time.Minute))
+	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep(), 10*time.Minute))
 
 	// Toolgate: GC decided tool-call approvals so the store map doesn't
 	// grow without bound in a long-lived gateway. Ticks every minute,
@@ -2913,45 +3067,56 @@ func runGateway(args []string) {
 	// (config/plugins/approvers); the registry's Add hook emits
 	// the SSE event for the dashboard.
 
-	if _, err := StartOtel(g); err != nil {
+	otelShutdown, err := StartOtel(g)
+	if err != nil {
 		log.Printf("otel: %v", err)
 	}
 
 	startTelemetry(g)
 
+	// Graceful-shutdown handler. SIGINT / SIGTERM flushes telemetry
+	// (so traces / metrics buffered in BatchSpanProcessor don't get
+	// dropped at process exit) and closes the SQLite handle (so WAL
+	// checkpointing finishes before the file descriptor goes away).
+	// The listen loop below blocks runGateway, so the goroutine
+	// terminates via os.Exit — preserves the daemon-style single-
+	// exit-site discipline (the loop never returns).
+	installGatewayShutdown(g, otelShutdown)
+
 	seedHook.Run(context.Background(), g)
 
-	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
-		log.Printf("dashboard: http://%s", cfg.InfoListen)
+	dashListen := cfg.DashboardListen()
+	if dashListen != "" {
+		mux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+		go serveHTTPLogged("dashboard", dashListen, mux)
+		log.Printf("dashboard: http://%s", dashListen)
 	}
 	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
 
-	// Embedded userspace WireGuard server. When operator sets
-	// tailscale.control=wireguard, the clawpatrol process becomes the
-	// WG endpoint — peers established at onboard time route ALL
-	// traffic into our netstack (AllowedIPs=0.0.0.0/0). The
-	// promiscuous forwarder accepts SYNs to any dst IP/port:
+	// Embedded userspace WireGuard server. When the `wireguard {}`
+	// block is present, the clawpatrol process becomes the WG endpoint
+	// — peers established at onboard time route ALL traffic into our
+	// netstack (AllowedIPs=0.0.0.0/0). The promiscuous forwarder
+	// accepts SYNs to any dst IP/port:
 	//   - 443    → MITM (g.handle does SNI peek + rule dispatch)
 	//   - dash   → dashboard mux
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
-	if strings.EqualFold(cfg.Control, "wireguard") {
+	if cfg.IsWireGuardEnabled() {
 		wg, err := StartWGServer(cfg.Join())
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-		dashPort := portOf(cfg.InfoListen)
+		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+		dashPort := portOf(dashListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
-			case dstPort == 443:
-				g.handle(c, dstIP)
+			case g.shouldHandleHTTPSMITM(c, dstIP, dstPort):
+				g.handle(c, dstIP, dstPort)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
 			case dstPort == 53:
@@ -2993,15 +3158,15 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("gateway listening on %s, %d endpoints across %d profiles",
-		ln.Addr(), len(policy.Endpoints), len(policy.Profiles))
+	if ln != nil {
+		log.Printf("gateway listening on %s, %d endpoints across %d profiles",
+			ln.Addr(), len(policy.Endpoints), len(policy.Profiles))
+	} else {
+		log.Printf("gateway listening on tsnet (exit-node routed), %d endpoints across %d profiles",
+			len(policy.Endpoints), len(policy.Profiles))
+	}
 
-	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
-	// header carrying the original 4-tuple so we can dispatch by dst port/IP
-	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
-	// connection starts with "PROXY " use full dispatch; otherwise it is a
-	// direct admin/dashboard connection.
-	if tsnetServer != nil && cfg.Funnel && cfg.PublicURL == "" {
+	if tsnetServer != nil && cfg.Funnel() && cfg.PublicURL() == "" {
 		// Auto-derive public_url from the tsnet cert domain so that
 		// join responses, HITL status links, and OAuth redirect URIs use
 		// the correct internet-reachable URL when funnel = true. Cert
@@ -3011,8 +3176,8 @@ func runGateway(args []string) {
 			deadline := time.Now().Add(60 * time.Second)
 			for time.Now().Before(deadline) {
 				if domain := tsnetCertDomain(tsnetServer); domain != "" {
-					cfg.PublicURL = domain
-					log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
+					cfg.SetPublicURL(domain)
+					log.Printf("tsnet: funnel public_url auto-derived: %s", domain)
 					return
 				}
 				time.Sleep(2 * time.Second)
@@ -3020,8 +3185,8 @@ func runGateway(args []string) {
 			log.Printf("tsnet: funnel public_url not derived after 60s — dashboard will show the loopback URL in join hints")
 		}()
 	}
-	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-	tsnetDashPort := portOf(cfg.InfoListen)
+	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+	tsnetDashPort := portOf(dashListen)
 	if tsnetServer != nil {
 		// Seed gateway tailscale IP for /api/join responses so clients
 		// know the tailnet-direct URL without a DNS lookup.
@@ -3073,18 +3238,23 @@ func runGateway(args []string) {
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
-		// Serve the info/dashboard mux on tsnet's virtual network so
-		// clawpatrol-run clients connecting to this tsnet IP on the info
-		// port can mint ephemeral auth keys and reach the dashboard.
-		if infoPort := portOf(cfg.InfoListen); infoPort != 0 {
-			if tsnetInfoLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", infoPort)); err != nil {
-				log.Printf("tsnet: info listen :%d: %v", infoPort, err)
+		// Serve the dashboard mux on tsnet's virtual network so
+		// clawpatrol-run clients connecting to this tsnet IP on the
+		// dashboard port can mint ephemeral auth keys and reach the
+		// dashboard.
+		if dashPort := portOf(dashListen); dashPort != 0 {
+			if tsnetDashLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", dashPort)); err != nil {
+				log.Printf("tsnet: dashboard listen :%d: %v", dashPort, err)
 			} else {
-				go http.Serve(tsnetInfoLn, tsnetDashMux)
-				log.Printf("tsnet: info/dashboard also listening on tsnet :%d", infoPort)
+				go func() {
+					if err := http.Serve(tsnetDashLn, tsnetDashMux); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						log.Printf("tsnet: dashboard serve: %v", err)
+					}
+				}()
+				log.Printf("tsnet: dashboard also listening on tsnet :%d", dashPort)
 			}
 		}
-		if cfg.Funnel {
+		if cfg.Funnel() {
 			startFunnelListener(tsnetServer, tsnetDashMux)
 		}
 		// UDP/53 DNS server on the tsnet node. Whole-machine clients with
@@ -3113,17 +3283,24 @@ func runGateway(args []string) {
 				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
 				serveTsnetDNSUDP(pc, g.dnsvip)
 			}()
+			// Layer a UDP/53 catch-all onto tsnet's underlying netstack so
+			// exit-node clients whose system resolver targets a public IP
+			// (8.8.8.8, 1.1.1.1) still reach dnsvip — the IP-bound listener
+			// above only catches packets aimed at the gateway's own tailnet
+			// IP. tsnet has no public UDP fallback hook, so this reaches
+			// through Sys().Netstack (see installTsnetUDPDNSCatchAll).
+			g.installTsnetUDPDNSCatchAll(tsnetServer)
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
 		// as the per-process PROXY-header path and the WG promiscuous forwarder.
-		tsnetServer.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+		tsnetServer.RegisterFallbackTCPHandler(func(_, dst netip.AddrPort) (func(net.Conn), bool) {
 			dstIP := dst.Addr().String()
 			dstPort := dst.Port()
 			return func(c net.Conn) {
 				switch {
-				case dstPort == 443:
-					g.handle(c, dstIP)
+				case g.shouldHandleHTTPSMITM(c, dstIP, dstPort):
+					g.handle(c, dstIP, dstPort)
 				case dstPort == 5432:
 					g.handlePostgresConn(c, dstIP)
 				case dstPort == 53:
@@ -3141,6 +3318,13 @@ func runGateway(args []string) {
 			}, true
 		})
 	}
+	if ln == nil {
+		// Tailscale mode: nothing more to accept here. All client TCP
+		// arrives via the tsnet fallback handler above; UDP/53 via the
+		// dnsvip listener; HTTPS/info via the Funnel + tsnet info
+		// listeners. Block forever so runGateway doesn't return.
+		select {}
+	}
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -3148,75 +3332,106 @@ func runGateway(args []string) {
 			continue
 		}
 		go func(c net.Conn) {
-			dstIP, dstPort, conn, err := readProxyHeader(c)
-			if err != nil {
-				_ = c.Close()
-				return
-			}
-			if dstPort == 0 {
-				// No PROXY header — direct connection (admin dashboard, curl, join).
-				g.serveTSNetDirect(conn, tsnetDashMux)
-				return
-			}
-			switch {
-			case dstPort == 443:
-				g.handle(conn, dstIP)
-			case dstPort == 5432:
-				g.handlePostgresConn(conn, dstIP)
-			case dstPort == 53:
-				g.handleDNSTCPConn(conn, dstIP)
-			case g.dnsvip.IsVIP(dstIP):
-				g.handleVIPConn(conn, dstIP, dstPort)
-			case tsnetDashPort != 0 && int(dstPort) == tsnetDashPort:
-				_ = http.Serve(&oneShotListener{c: conn}, tsnetDashMux)
-			default:
-				if g.tryDirectIPConn(conn, dstIP, dstPort) {
-					return
-				}
-				g.wgRelay(conn, dstIP, int(dstPort))
-			}
+			// Host-local TCP listener (only opened when wireguard is
+			// enabled). Used by single-host deployments where the
+			// gateway runs under one user account and clawpatrol-run
+			// is invoked from another on the same machine — both
+			// loop back through 127.0.0.1:8443. No PROXY framing in
+			// this mode — terminate TLS, serve the dashboard mux.
+			g.serveTSNetDirect(c, tsnetDashMux)
 		}(c)
 	}
 }
-
-// readProxyHeader peeks at c for a HAProxy PROXY v1 line.
-// If "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n" is present it is consumed
-// and the original dst IP/port returned. If absent, dstPort==0 and the conn
-// is returned with all peeked bytes still readable.
-func readProxyHeader(c net.Conn) (dstIP string, dstPort uint16, conn net.Conn, _ error) {
-	br := bufio.NewReaderSize(c, 128)
-	hdr, err := br.Peek(5)
-	bc := &bufferedConn{Reader: br, Conn: c}
-	if err != nil || string(hdr) != "PROXY" {
-		return "", 0, bc, nil
-	}
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("proxy header read: %w", err)
-	}
-	// "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n"
-	fields := strings.Fields(strings.TrimRight(line, "\r\n"))
-	if len(fields) != 6 {
-		return "", 0, nil, fmt.Errorf("malformed proxy header: %q", line)
-	}
-	port, err := strconv.ParseUint(fields[5], 10, 16)
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("proxy header port: %w", err)
-	}
-	return fields[3], uint16(port), bc, nil
-}
-
-type bufferedConn struct {
-	*bufio.Reader
-	net.Conn
-}
-
-func (b *bufferedConn) Read(p []byte) (int, error) { return b.Reader.Read(p) }
 
 func serveHTTPLogged(name, addr string, handler http.Handler) {
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		logHTTPServerExit(name, addr, err)
 	}
+}
+
+// installGatewayShutdown spawns a goroutine that waits for SIGINT or
+// SIGTERM, flushes telemetry, drains the action sink, closes tunnels
+// and the DB handle, then exits the process. otelShutdown may be nil
+// when otel was not configured.
+//
+// Why a goroutine + os.Exit rather than threading shutdown back into
+// runGateway: the gateway's main accept loop (ln.Accept inside
+// runGateway) is intentionally infinite — letting it return would
+// drop any pending sweeper / config-watch / sink-drain goroutines on
+// the floor without their own cleanup. The signal handler is the
+// single exit site; everything that needs to flush hooks into it.
+//
+// Best-effort: each step has its own budget so one wedged collaborator
+// can't block the rest. Order is load-bearing — Sink.Close has to
+// drain into the DB before db.Close, and TunnelManager.CloseAll has
+// to run while goroutines still have a chance to react (Tailscale
+// logout in particular wants a live tsnet.Server).
+const (
+	gatewayOtelShutdownTimeout   = 5 * time.Second
+	gatewaySinkShutdownTimeout   = 5 * time.Second
+	gatewayTunnelShutdownTimeout = 5 * time.Second
+)
+
+func installGatewayShutdown(g *Gateway, otelShutdown func(context.Context) error) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("gateway: received %s, shutting down", sig)
+		runGatewayShutdown(g, otelShutdown)
+		log.Printf("gateway: shutdown complete")
+		os.Exit(0)
+	}()
+}
+
+// runGatewayShutdown executes the shutdown sequence in dependency
+// order. Extracted from the signal-handler goroutine so the order is
+// testable without the surrounding os.Exit wrapper. Each step is
+// best-effort: any single failure logs and moves on so a wedged
+// collaborator can't strand WAL checkpointing.
+func runGatewayShutdown(g *Gateway, otelShutdown func(context.Context) error) {
+	runShutdownFlush(otelShutdown, gatewayOtelShutdownTimeout)
+	if g != nil && g.sink != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), gatewaySinkShutdownTimeout)
+		if err := g.sink.Close(ctx); err != nil {
+			log.Printf("gateway: sink drain: %v", err)
+		}
+		cancel()
+	}
+	if g != nil && g.tunnels != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), gatewayTunnelShutdownTimeout)
+		if err := g.tunnels.CloseAll(ctx); err != nil {
+			log.Printf("gateway: tunnel close: %v", err)
+		}
+		cancel()
+	}
+	if g != nil && g.db != nil {
+		if err := g.db.Close(); err != nil {
+			log.Printf("gateway: db close: %v", err)
+		}
+	}
+}
+
+// runShutdownFlush invokes the otel shutdown closure (when non-nil)
+// under a bounded context, logging any error. Split out from
+// installGatewayShutdown so the timeout-and-error contract is testable
+// without the surrounding signal / os.Exit wrapper.
+func runShutdownFlush(otelShutdown func(context.Context) error, timeout time.Duration) {
+	if err := runShutdownFlushErr(otelShutdown, timeout); err != nil {
+		log.Printf("gateway: otel shutdown: %v", err)
+	}
+}
+
+// runShutdownFlushErr is the pure variant: returns the flush error
+// instead of logging it. Used by tests; the production wrapper above
+// pipes the error to the log.
+func runShutdownFlushErr(otelShutdown func(context.Context) error, timeout time.Duration) error {
+	if otelShutdown == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return otelShutdown(ctx)
 }
 
 func logHTTPServerExit(name, addr string, err error) {
@@ -3286,30 +3501,49 @@ func (l *oneShotListener) Addr() net.Addr {
 // Emits a sink Event so transparently-relayed flows show up in the
 // dashboard request history alongside MITM traffic — without this,
 // ssh / git-over-ssh / arbitrary-port connections went silent.
+//
+// Analytics are gated on the peer being a known device. The tsnet
+// fallback handler catches every TCP forwarded through the gateway's
+// exit-node advertisement, which includes stray probes from every
+// other tailnet peer on the network. Without the gate, each new
+// probing tailnet IP mints a synthetic "agent" row in the dashboard
+// and the actions table fills up with thousands of phantom devices
+// that never appear in the device list. The dial still runs for
+// unknown peers (relay behavior unchanged); only the sink event is
+// suppressed.
 func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer func() { _ = c.Close() }()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
 	agentPip := g.agentIPFor(c)
+	known := g.onboard == nil || g.onboard.HasDevice(pip) || g.onboard.HasDevice(agentPip)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
 	start := time.Now()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
 	if err != nil {
-		g.sink.Emit(Event{
-			Mode: "relay", AgentIP: agentPip, Agent: profile,
-			Host: host, Action: "deny", Reason: err.Error(),
-			Ms: time.Since(start).Milliseconds(),
-		})
+		if known {
+			g.sink.Emit(Event{
+				Mode: "relay", AgentIP: agentPip, Agent: profile,
+				Host: host, Action: "deny", Reason: err.Error(),
+				Ms: time.Since(start).Milliseconds(),
+			})
+		}
 		return
 	}
 	defer func() { _ = up.Close() }()
-	rx, tx := pipeProgress(c, up, g.streamTracker(agentPip, host))
-	g.sink.Emit(Event{
-		Mode: "relay", AgentIP: agentPip, Agent: profile,
-		Host: host, Action: "allow",
-		In: rx, Out: tx,
-		Ms: time.Since(start).Milliseconds(),
-	})
+	var tracker func(rx, tx int64)
+	if known {
+		tracker = g.streamTracker(agentPip, host)
+	}
+	rx, tx := pipeProgress(c, up, tracker)
+	if known {
+		g.sink.Emit(Event{
+			Mode: "relay", AgentIP: agentPip, Agent: profile,
+			Host: host, Action: "allow",
+			In: rx, Out: tx,
+			Ms: time.Since(start).Milliseconds(),
+		})
+	}
 }
 
 // streamTracker returns a pipeProgress onTick callback that feeds the

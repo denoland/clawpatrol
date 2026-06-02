@@ -40,12 +40,11 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
-	// Approvers / Policies / Credentials surface the same entities
-	// from the Policy struct under a runtime-friendly typed alias —
-	// they're pointers into the same Entity records, no copies.
+	// Approvers / Credentials surface the same entities from the
+	// Policy struct under a runtime-friendly typed alias — they're
+	// pointers into the same Entity records, no copies.
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
-	Policies    map[string]*PolicyText
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -55,12 +54,30 @@ type CompiledPolicy struct {
 // lookup. HostPatterns captures wildcard `*.suffix` declarations the
 // dispatcher walks when HostIndex misses. CompiledEndpoint.Hosts keeps
 // the operator-declared strings unchanged.
+//
+// Endpoint membership is the transitive closure
+// profile → credentials → endpoints: a profile names credentials, and
+// each credential names the endpoint(s) it authenticates against.
+// Credentials surfaces the raw HCL list (one entry per name as
+// written); Endpoints surfaces the resolved set, deduplicated when
+// multiple listed credentials bind the same endpoint.
+//
+// EndpointCredentials is the profile-scoped credential dispatch table:
+// for each endpoint reached via this profile, the *CompiledCredential
+// entries that the request-time placeholder detector matches against.
+// The Placeholder string on each entry comes from the profile's
+// inline `{ placeholder = "...", credential = ... }` entries, so two
+// profiles binding the same endpoint with the same credentials may
+// carry different (or no) placeholders depending on whether the
+// binding is ambiguous in that profile.
 type CompiledProfile struct {
-	Name            string
-	Endpoints       map[string]*CompiledEndpoint
-	HostIndex       map[string]*CompiledEndpoint
-	HostPatterns    []HostPattern
-	HITLAsyncGrants bool
+	Name                string
+	Credentials         []*Entity
+	Endpoints           map[string]*CompiledEndpoint
+	HostIndex           map[string]*CompiledEndpoint
+	HostPatterns        []HostPattern
+	EndpointCredentials map[string][]*CompiledCredential
+	HITLAsyncGrants     bool
 }
 
 // HostPattern is one wildcard host binding inside a CompiledProfile.
@@ -78,14 +95,21 @@ type HostPattern struct {
 // Body is whatever the endpoint plugin's Build returned (e.g.
 // *endpoints.HTTPSEndpoint) — runtime callers type-assert based on
 // Family.
+//
+// Credentials is the global set of credential Entities whose
+// `endpoint` / `endpoints` framework attr names this endpoint. The
+// list is profile-agnostic — used by code that inspects an endpoint's
+// binding (TLS cert lookup, dashboard cards). Per-request credential
+// dispatch reads CompiledProfile.EndpointCredentials instead, because
+// the placeholder discriminator lives on the profile in v15.
 type CompiledEndpoint struct {
 	Name        string
 	Family      string // "http" | "sql" | "k8s"
 	Plugin      *Plugin
 	Body        any
 	Hosts       []string
-	Credentials []*CompiledCredential // resolved to Entity records
-	Rules       []*CompiledRule       // sorted by priority desc
+	Credentials []*Entity       // credentials globally bound to this endpoint
+	Rules       []*CompiledRule // sorted by priority desc
 
 	// Tunnel is the resolved tunnel this endpoint dials through, or
 	// nil for endpoints reached over the gateway's plain dialer.
@@ -168,27 +192,18 @@ type CompiledTunnel struct {
 // log it.
 const KeepaliveAlwaysSentinel = time.Duration(-1)
 
-// CompiledCredential expands an endpoint's `credential = X` or
-// `credentials = [...]` binding into a flat list. Each entry carries
-// up to two dispatch constraints — a placeholder string (matched by
-// the endpoint's PlaceholderDetector) and a list of databases
-// (matched against match.Request.Database). Both empty = catchall.
+// CompiledCredential expands a credential's `endpoint = X` /
+// `endpoints = [...]` binding into a per-endpoint entry. The
+// Disambiguators map carries the merged dispatch discriminators
+// (block-side values from the credential body's
+// CredentialDisambiguatorBody + framework-peeled `placeholder`,
+// overlaid with profile-side values from `{ credential = X,
+// <field> = "..." }` inline entries). An empty / nil map marks the
+// no-constraint catchall entry. Dispatch picks the most-specific
+// matching entry per request — see runtime.ResolveCredential.
 type CompiledCredential struct {
-	Placeholder string
-	Databases   []string
-	Credential  *Entity
-}
-
-// CredBinding is one (placeholder, databases, credential bare-name)
-// triple. Endpoint plugins return these via the EndpointCredentials()
-// interface so the compile pass can resolve credential names against
-// the symbol table without knowing each endpoint type. Named (rather
-// than anonymous) type is what lets every endpoint impl reuse the
-// same return type without restating the field set.
-type CredBinding struct {
-	Placeholder string
-	Databases   []string
-	Credential  string
+	Disambiguators map[string]string
+	Credential     *Entity
 }
 
 // CompiledRule is one priority-sorted rule attached to an endpoint.
@@ -235,18 +250,21 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		return &CompiledPolicy{}, nil
 	}
 	p := gw.Policy
+	d := gw.Defaults
+	if d == nil {
+		d = &Defaults{}
+	}
 	cp := &CompiledPolicy{
-		UnknownHost:    gw.UnknownHost,
-		LLMFailMode:    gw.LLMFailMode,
-		LLMCacheTTL:    gw.LLMCacheTTL,
-		HumanTimeout:   gw.HumanTimeout,
-		HumanOnTimeout: gw.HumanOnTimeout,
+		UnknownHost:    d.UnknownHost,
+		LLMFailMode:    d.LLMFailMode,
+		LLMCacheTTL:    d.LLMCacheTTL,
+		HumanTimeout:   d.HumanTimeout,
+		HumanOnTimeout: d.HumanOnTimeout,
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
-		Policies:       p.Policies,
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve
@@ -255,15 +273,27 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		return nil, err
 	}
 
-	// Compile every endpoint once into a CompiledEndpoint with
-	// resolved credentials and (placeholder) rule list. Rules attach
-	// in the next pass.
+	// Compile every endpoint once into a CompiledEndpoint with the
+	// (placeholder) rule list. Credentials attach in the next pass —
+	// the credential→endpoint inversion means each credential names
+	// its endpoint(s), so the per-endpoint credential list is built
+	// by walking p.Credentials and pushing entries into the target
+	// endpoints. Rules attach after that.
 	for name, ent := range p.Endpoints {
-		ce, err := compileEndpoint(name, ent, p, cp)
+		ce, err := compileEndpoint(name, ent, cp)
 		if err != nil {
 			return nil, fmt.Errorf("endpoint %q: %w", name, err)
 		}
 		cp.Endpoints[name] = ce
+	}
+
+	// Invert credential→endpoint refs into per-endpoint credential
+	// lists. This is the global, profile-agnostic view used by
+	// code that inspects an endpoint's binding (TLS cert lookup,
+	// dashboard cards). Per-request dispatch tables live on each
+	// CompiledProfile and are built below.
+	if err := attachCredentials(cp, p); err != nil {
+		return nil, err
 	}
 
 	// Compile rules and attach to each endpoint they target. The
@@ -298,44 +328,63 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		})
 	}
 
-	// Build per-profile views. A profile's Endpoints map points at
-	// the SAME *CompiledEndpoint instances as cp.Endpoints — rules
-	// don't fork per profile.
+	// Build per-profile views. A profile names credentials; endpoint
+	// membership is the transitive closure profile → credential →
+	// endpoint. Pointers into cp.Endpoints are shared — rules don't
+	// fork per profile. EndpointCredentials is the profile-scoped
+	// dispatch table; the Placeholder string comes from this profile's
+	// inline `{ placeholder = "...", credential = ... }` entries.
 	for name, pr := range p.Profiles {
 		profile := &CompiledProfile{
-			Name:            name,
-			Endpoints:       map[string]*CompiledEndpoint{},
-			HostIndex:       map[string]*CompiledEndpoint{},
-			HITLAsyncGrants: pr.HITLAsyncGrants,
+			Name:                name,
+			Endpoints:           map[string]*CompiledEndpoint{},
+			HostIndex:           map[string]*CompiledEndpoint{},
+			EndpointCredentials: map[string][]*CompiledCredential{},
+			HITLAsyncGrants:     pr.HITLAsyncGrants,
 		}
-		for _, epName := range pr.Endpoints {
-			ce, ok := cp.Endpoints[epName]
+		for _, credName := range pr.Credentials {
+			credEnt, ok := p.Credentials[credName]
 			if !ok {
 				continue
 			}
-			profile.Endpoints[epName] = ce
-			// DNS hostnames are case-insensitive; index lowercase
-			// so a SNI-peek lookup (TLS clients usually lowercase
-			// SNI on the wire) matches a config-declared host
-			// regardless of its casing.
-			for _, h := range ce.Hosts {
-				host, _, hpErr := hostmatch.SplitHostPort(h)
-				if hpErr != nil || host == "" {
+			profile.Credentials = append(profile.Credentials, credEnt)
+			merged := mergeDisambig(blockDisambiguators(credEnt), pr.Disambiguators[credName])
+			for _, epName := range CredentialEndpointTargets(credEnt) {
+				ce, ok := cp.Endpoints[epName]
+				if !ok {
 					continue
 				}
-				if hostmatch.IsWildcardHost(host) {
-					// Wildcard patterns route on the SNI/authority
-					// host alone (no port), so collapse port-qualified
-					// `*.foo.com:443` and bare `*.foo.com` to a single
-					// pattern keyed on the host portion. Duplicates
-					// from listing both forms are removed below.
-					profile.HostPatterns = append(profile.HostPatterns, HostPattern{
-						Pattern:  strings.ToLower(host),
-						Endpoint: ce,
-					})
-					continue
+				profile.Endpoints[epName] = ce
+				// DNS hostnames are case-insensitive; index lowercase
+				// so a SNI-peek lookup (TLS clients usually lowercase
+				// SNI on the wire) matches a config-declared host
+				// regardless of its casing.
+				for _, h := range ce.Hosts {
+					host, _, hpErr := hostmatch.SplitHostPort(h)
+					if hpErr != nil || host == "" {
+						continue
+					}
+					if hostmatch.IsWildcardHost(host) {
+						// Wildcard patterns route on the SNI/authority
+						// host alone (no port), so collapse port-qualified
+						// `*.foo.com:443` and bare `*.foo.com` to a single
+						// pattern keyed on the host portion. Duplicates
+						// from listing both forms are removed below.
+						profile.HostPatterns = append(profile.HostPatterns, HostPattern{
+							Pattern:  strings.ToLower(host),
+							Endpoint: ce,
+						})
+						continue
+					}
+					profile.HostIndex[strings.ToLower(h)] = ce
 				}
-				profile.HostIndex[strings.ToLower(h)] = ce
+				profile.EndpointCredentials[epName] = append(
+					profile.EndpointCredentials[epName],
+					&CompiledCredential{
+						Disambiguators: merged,
+						Credential:     credEnt,
+					},
+				)
 			}
 		}
 		// Add default-port TLS aliases only after every exact host is
@@ -343,11 +392,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		// keeping the alias attached to the HTTPS-family endpoint that
 		// declared it even if another endpoint collides on the exact
 		// host:port string.
-		for _, epName := range pr.Endpoints {
-			ce, ok := cp.Endpoints[epName]
-			if !ok {
-				continue
-			}
+		for _, ce := range profile.Endpoints {
 			for _, h := range ce.Hosts {
 				if bare, ok := bareHostAlias(ce, h); ok {
 					bare = strings.ToLower(bare)
@@ -368,32 +413,96 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	return cp, nil
 }
 
-func compileEndpoint(name string, ent *Entity, p *Policy, cp *CompiledPolicy) (*CompiledEndpoint, error) {
+// CredentialEndpointTargets returns the endpoint names a credential
+// binds. Reads either the singular `endpoint` framework attr or the
+// list-form `endpoints`; cross-credential validation has already
+// rejected the both-set case.
+//
+// This is the canonical "credentials bind endpoints" direction.
+// CompiledEndpoint.Credentials is the inverted index built from these
+// targets — callers asking "which endpoints does credential C declare?"
+// should use this function, not walk every endpoint's Credentials list.
+func CredentialEndpointTargets(ent *Entity) []string {
+	if ent == nil {
+		return nil
+	}
+	if list := ent.Framework.RefList("endpoints"); len(list) > 0 {
+		return list
+	}
+	if single := ent.Framework.Ref("endpoint"); single != "" {
+		return []string{single}
+	}
+	return nil
+}
+
+// attachCredentials walks every loaded credential and appends its
+// *Entity to each endpoint it binds. Order of appended entries is
+// deterministic by following p.Order (the source declaration
+// sequence) so dashboards / dumps render stable lists across loads.
+//
+// Placeholder dispatch information is NOT attached here — it lives on
+// the profile in v15 and is materialised onto each CompiledProfile in
+// the Compile loop below.
+func attachCredentials(cp *CompiledPolicy, p *Policy) error {
+	walk := func(credName string) error {
+		ent, ok := p.Credentials[credName]
+		if !ok {
+			return nil
+		}
+		targets := CredentialEndpointTargets(ent)
+		if len(targets) == 0 {
+			return nil
+		}
+		for _, epName := range targets {
+			ce, ok := cp.Endpoints[epName]
+			if !ok {
+				return fmt.Errorf("credential %q references endpoint %q which is not declared", credName, epName)
+			}
+			ce.Credentials = append(ce.Credentials, ent)
+		}
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, name := range p.Order {
+		if _, ok := p.Credentials[name]; !ok {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if err := walk(name); err != nil {
+			return err
+		}
+	}
+	// Defensive: any credential missed by Order.
+	for name := range p.Credentials {
+		if seen[name] {
+			continue
+		}
+		if err := walk(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEndpoint, error) {
 	ce := &CompiledEndpoint{
 		Name:   name,
 		Family: ent.Plugin.Family,
 		Plugin: ent.Plugin,
 		Body:   ent.Body,
 	}
-	// Hosts and credential refs live on the plugin's typed body.
-	// We cross-cut via a small interface so the compile pass doesn't
-	// have to know every endpoint type — plugins that satisfy this
-	// interface contribute their hosts + credential entries.
+	// Hosts live on the plugin's typed body. We cross-cut via a small
+	// interface so the compile pass doesn't have to know every
+	// endpoint type — plugins that satisfy this interface contribute
+	// their hosts. Credential bindings come from the inverted walk
+	// (attachCredentials), not from the endpoint body anymore.
 	if hp, ok := ent.Body.(interface{ HostList() []string }); ok {
 		ce.Hosts = hp.HostList()
 	} else {
 		ce.Hosts = extractHosts(ent.Body)
-	}
-	for _, cb := range extractCredentialBindings(ent.Body) {
-		credEnt, ok := p.Credentials[cb.Credential]
-		if !ok {
-			return nil, fmt.Errorf("credential %q not declared", cb.Credential)
-		}
-		ce.Credentials = append(ce.Credentials, &CompiledCredential{
-			Placeholder: cb.Placeholder,
-			Databases:   cb.Databases,
-			Credential:  credEnt,
-		})
 	}
 	if tn := ent.Framework.Ref("tunnel"); tn != "" {
 		ct, ok := cp.Tunnels[tn]
@@ -491,22 +600,11 @@ func MatchHostPattern(patterns []HostPattern, hostname string) *CompiledEndpoint
 	return nil
 }
 
-// hostExtractor / credentialExtractor are the small cross-cut readers
-// used by compileEndpoint. They live on the endpoint plugin types but
-// are referenced via interface here to keep imports clean.
-
 // extractHosts mirrors the per-type hosts field via interface dispatch.
 // The universe of endpoint types is closed; reflect would be overkill.
 func extractHosts(body any) []string {
 	if h, ok := body.(interface{ EndpointHosts() []string }); ok {
 		return h.EndpointHosts()
-	}
-	return nil
-}
-
-func extractCredentialBindings(body any) []CredBinding {
-	if h, ok := body.(interface{ EndpointCredentials() []CredBinding }); ok {
-		return h.EndpointCredentials()
 	}
 	return nil
 }

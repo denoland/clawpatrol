@@ -61,7 +61,7 @@ export function CredentialSecretsModal({
             untouched slots blank to keep them unchanged.
           </p>
         )}
-        <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-rust-100 bg-rust-50 px-3 py-2 text-xs">
+        <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-canvas-300 bg-canvas-muted px-3 py-2 text-xs">
           <dt className="text-text-muted font-bold font-sans">Credential</dt>
           <dd className="min-w-0 truncate font-mono text-text" title={integration.id}>
             {integration.id}
@@ -100,7 +100,7 @@ export function CredentialSecretsModal({
         ))}
         {err && <div className="text-xs text-danger-500">{err}</div>}
       </div>
-      <div className="flex justify-end gap-2 px-4 py-3 border-t border-navy">
+      <div className="flex justify-end gap-2 px-4 py-3">
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>

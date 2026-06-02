@@ -90,6 +90,15 @@ func (p *captureHITLPool) wasDiscarded() bool {
 	return p.discarded
 }
 
+type captureNotifier struct {
+	notified chan runtime.HITLTarget
+}
+
+func (n *captureNotifier) NotifyHITL(_ context.Context, _ runtime.ApproveRequest, target runtime.HITLTarget) error {
+	n.notified <- target
+	return nil
+}
+
 func TestHumanApproverAsyncSyncWaitTimeoutLeavesPromptPendingForRetryGrant(t *testing.T) {
 	pool := newCaptureHITLPool()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -156,6 +165,47 @@ func TestHumanApproverPendingIncludesSyncApprovalGuidance(t *testing.T) {
 	}
 	if !strings.Contains(pending.ApprovalMessage, "send this request upstream immediately") {
 		t.Fatalf("ApprovalMessage = %q, want immediate upstream guidance", pending.ApprovalMessage)
+	}
+}
+
+func TestHumanApproverForwardsPendingMessageUpdateSinkToNotifier(t *testing.T) {
+	pool := newCaptureHITLPool()
+	notifier := &captureNotifier{notified: make(chan runtime.HITLTarget, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	sink := runtime.HITLPendingMessageUpdateSink(func(context.Context, string, string) error { return nil })
+	go func() {
+		_, err := (&HumanApprover{Credential: "slack", Channel: "C123", Timeout: 60}).Approve(ctx, runtime.ApproveRequest{
+			Pool:                     pool,
+			Policy:                   &config.CompiledPolicy{Credentials: map[string]*config.Entity{"slack": {Body: notifier}}},
+			ApproverName:             "ops",
+			Method:                   "POST",
+			Host:                     "api.example.test",
+			Path:                     "/v1/write",
+			PendingMessageUpdateSink: sink,
+		})
+		done <- err
+	}()
+
+	select {
+	case target := <-notifier.notified:
+		if target.PendingID != pool.id {
+			t.Fatalf("target PendingID = %q, want %q", target.PendingID, pool.id)
+		}
+		if target.PendingMessageUpdateSink == nil {
+			t.Fatal("target PendingMessageUpdateSink is nil; sync HITL Slack prompts cannot record message refs")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human approver did not notify credential")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Approve error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human approver did not return after context cancellation")
 	}
 }
 

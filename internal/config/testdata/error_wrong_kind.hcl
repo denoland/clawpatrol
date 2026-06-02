@@ -1,19 +1,29 @@
-credential "bearer_token" "shared-creds" {}
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
 
-endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = shared-creds
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
 }
 
-# `endpoint = shared-creds` references the credential, not the
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "shared" {
+  endpoint = https.github
+}
+
+# `endpoint = shared` references the credential, not the
 # endpoint. The diagnostic should disambiguate by pointing at the
 # credential's declaration site.
 rule "broken" {
-  endpoint  = shared-creds
+  endpoint  = bearer_token.shared
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 
 profile "default" {
-  endpoints = [github]
+  credentials = [bearer_token.shared]
 }

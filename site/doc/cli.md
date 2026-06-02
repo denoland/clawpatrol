@@ -19,7 +19,7 @@ source instead (requires Go + `gh auth login`).
 ### `clawpatrol gateway`
 
 Run the gateway daemon against an HCL config. Start from
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/examples/gateway.example.hcl)
 — see [Getting Started](/docs/getting-started/) for the operational
 fields you need to edit.
 
@@ -101,7 +101,7 @@ report verdict drift.
 clawpatrol test <config.hcl> <fixture.json | fixture-dir>
 ```
 
-See [`clawpatrol-test`](clawpatrol-test) for the fixture format and
+See [Testing](clawpatrol-test) for the fixture format and
 CI integration. Exit 0 = all match, 1 = drift, 2 = usage/config
 error.
 

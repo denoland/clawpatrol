@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
@@ -18,27 +17,13 @@ import (
 
 // HTTPSEndpoint is part of the clawpatrol plugin API.
 type HTTPSEndpoint struct {
-	Hosts          []string  `hcl:"hosts"`
-	Credential     string    `hcl:"credential,optional"`
-	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
-
-	// Credentials is populated by Validate from CredentialsRaw. Stable
-	// JSON shape for goldens.
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	// Hosts is the set of HTTPS hostnames or host:port pairs this
+	// endpoint intercepts.
+	Hosts []string `hcl:"hosts"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *HTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *HTTPSEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
-
-func (e *HTTPSEndpoint) credentialAndRaw() (string, cty.Value) {
-	return e.Credential, e.CredentialsRaw
-}
-func (e *HTTPSEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
 
 // HTTPSEndpointRuntime detects placeholders in an HTTP request's
 // Authorization header. Plain-substring scan rather than strict
@@ -83,14 +68,12 @@ func init() {
 		Type:     "https",
 		Family:   "http",
 		New:      func() any { return &HTTPSEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
 		Runtime:  HTTPSEndpointRuntime{},
+		Validate: hostsValidate,
 		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*HTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }

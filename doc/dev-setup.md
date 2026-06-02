@@ -41,6 +41,7 @@ for the full system-extension build walkthrough.
 
 ```sh
 make            # builds dashboard SPA + Go binary -> ./clawpatrol
+make release    # release-shaped build: dashboard + go build -ldflags '-s -w' -trimpath
 make test       # go test ./...
 make fmt        # gofmt + dashboard formatter
 make fmt-check  # CI's format gate
@@ -52,6 +53,13 @@ Under the hood, the dashboard build runs `deno install && deno task
 build` in `dashboard/`. Skip it (`go build ./cmd/clawpatrol` directly)
 and the Go embed ships a placeholder.
 
+`make build` keeps debug symbols and DWARF for panics with file:line
+info. `make release` matches what `.github/workflows/release.yml`
+ships and what `install.sh` builds from source: stripped (`-s -w`)
+and trimpath'd, which roughly drops the binary from ~88 MB to ~62 MB
+on Linux/amd64. See [doc/binary-size.md](binary-size.md) for the
+size baseline and the list of intentionally heavy dependencies.
+
 ## Quick start
 
 Copy the example config into a local data directory, edit the
@@ -60,7 +68,7 @@ operational fields (listen ports, `public_url`, `wg_endpoint`,
 
 ```sh
 mkdir -p ./data
-cp cmd/clawpatrol/gateway.example.hcl ./data/gateway.hcl
+cp examples/gateway.example.hcl ./data/gateway.hcl
 $EDITOR ./data/gateway.hcl
 ./clawpatrol gateway ./data/gateway.hcl
 ```

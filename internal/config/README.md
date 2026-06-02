@@ -8,6 +8,12 @@ is the canonical syntax reference; the runtime semantics live in
 
 A complete example fixture lives at [`testdata/full.hcl`](testdata/full.hcl).
 
+`Load` accepts either a single `.hcl` file or a directory of `.hcl`
+files. Directory-mode discovery (Terraform-style: include every
+direct child whose name ends in `.hcl`, sorted lexicographically,
+merged into one body) and the merge contract are documented in
+[`doc/multi-file-config.md`](../../doc/multi-file-config.md).
+
 ## Top-level structure
 
 A policy file mixes **operational** fields (gateway plumbing) with
@@ -15,43 +21,45 @@ A policy file mixes **operational** fields (gateway plumbing) with
 blocks dispatch to plugins by their first label.
 
 ```hcl
-# Top-level singletons — read by the gateway daemon at boot.
-# Listen / paths / public URL:
-listen      = "0.0.0.0:8443"
-log_path    = "/opt/clawpatrol/gateway.log"
-state_dir   = "/opt/clawpatrol/state"
-public_url  = "http://gateway.internal:8080"
-admin_email = "ops@example.com"
+# Top-level blocks read by the gateway daemon at boot.
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  log_path         = "/opt/clawpatrol/gateway.log"
+  state_dir        = "/opt/clawpatrol/state"
+  public_url       = "http://gateway.internal:8080"
 
-# Control-plane joining:
-control     = "wireguard"
-wg_endpoint = "203.0.113.10:51820"
+  # Transport block presence selects the transport. Both may be enabled.
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "203.0.113.10:51820"
+  }
+}
 
-# Policy fallbacks:
-unknown_host  = "passthrough"
-llm_fail_mode = "closed"
+# Optional policy defaults.
+defaults {
+  unknown_host  = "passthrough"
+  llm_fail_mode = "closed"
+}
 
 # Labeled policy blocks — dispatched to plugins.
 approver "<type>" "<name>" { ... }
-policy   "<name>" { ... }
 credential "<type>" "<name>" { ... }
 endpoint "<type>" "<name>" { ... }
-rule "<type>" "<name>" { ... }
+rule "<name>" { ... }
 profile "<name>" { ... }
-device "<ip>" { rule ... ... { ... } }
 ```
 
 ## Names + references
 
-Every named entity (approver, policy, credential, endpoint, rule,
-profile) shares **one flat namespace**. Names are globally unique;
+Every named entity (approver, credential, endpoint, rule, profile)
+shares **one flat namespace**. Names are globally unique;
 collisions are a load error.
 
 References are **bare names** — no kind prefix, no type prefix:
 
 ```hcl
 endpoint    = pg-deployng        # not  postgres.pg-deployng
-credentials = [github-pat]       # not  credential.bearer_token...
+endpoint    = github             # credential.endpoint reference
 approve     = [content-safety]   # not  approver.llm_approver.fast
 ```
 
@@ -79,30 +87,25 @@ human_on_timeout = "deny"          # "deny" | "allow"
 
 Who arbitrates `approve = [...]` chains. Built-in types:
 
-- `llm_approver` — Claude / GPT proctor. `model = "..."`.
+- `llm_approver` — Claude / GPT proctor. Carries `model = "..."`,
+  the `credential` used to call the model API, and the inline
+  `policy` prose the model judges requests against (heredoc-friendly).
 - `human_approver` — Slack channel + optional N-of-N quorum.
   `channel = "#..."`, `timeout = <seconds>`,
   `require_approvers = <int>`.
 
 ```hcl
-approver "llm_approver" "fast" { model = "claude-haiku-4-5-20251001" }
-approver "human_approver" "billing-strict" {
-  channel           = "#billing-approvals"
-  require_approvers = 2
-}
-```
-
-### `policy "<name>" { text = "..." }`
-
-Reusable LLM proctor prompt. Referenced from approve-chain stages.
-Heredoc-friendly:
-
-```hcl
-policy "k8s-exec-content" {
-  text = <<-EOT
+approver "llm_approver" "k8s-exec-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     Inspect the kubectl exec command (each ?command= argv element).
     Deny if it dumps env vars, reads sensitive host-mount files...
   EOT
+}
+approver "human_approver" "billing-strict" {
+  channel           = "#billing-approvals"
+  require_approvers = 2
 }
 ```
 
@@ -133,7 +136,9 @@ off disk (`@/etc/k8s/cert.pem`).
 
 ### `endpoint "<type>" "<name>" { ... }`
 
-Typed upstream binding. Built-in types map to protocol families:
+Typed network target — hosts + protocol-family connection params
+only. No credential refs, no dispatch table; the credential block
+declares the binding. Built-in types map to protocol families:
 
 | Type | Family | Runtime status |
 |------|--------|----------------|
@@ -153,25 +158,17 @@ paste `access_key_id` / `secret_access_key` (+ optional
 requests without auth and the gateway adds the Authorization header
 before forwarding.
 
-Credential binding has two shapes:
-
 ```hcl
-# Singular — agent sends nothing special; gateway always injects.
-endpoint "https" "github" {
-  hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
+endpoint "https" "orb"      { hosts = ["api.withorb.com"] }
+endpoint "postgres" "pg" {
+  host     = "pg.internal.example:5432"
+  database = "appdb"
 }
-
-# Multi-credential dispatch via placeholder. Agent embeds the
-# placeholder string in the auth slot; gateway swaps it for the
-# matching real secret. The trailing no-placeholder entry is the
-# fallback when no agent-side placeholder matched.
-endpoint "https" "orb" {
-  hosts = ["api.withorb.com"]
-  credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
-  ]
+endpoint "kubernetes" "k8s-eks" {
+  hosts        = ["*.eks.amazonaws.com"]
+  cluster_name = "prod"
+  region       = "us-east-2"
 }
 ```
 
@@ -179,6 +176,58 @@ Family-specific extras: postgres has `host` (with port) + `database`;
 kubernetes has `server` / `ca_cert` / `description` (file-include
 markers like `<<file:k8s-ca.pem>>` resolve at load relative to the
 config file's directory).
+
+#### Credential binding
+
+Each `credential` block declares which endpoint(s) it authenticates
+against. Two shapes:
+
+```hcl
+# Singular — common case.
+credential "bearer_token" "github" {
+  endpoint = github
+}
+
+# Singleton-or-list — same secret material at multiple protocol
+# endpoints of one upstream (ClickHouse HTTPS + native, for example).
+credential "clickhouse_credential" "ch-o11y" {
+  endpoints = [ch-o11y-https, ch-o11y-native]
+  user      = "ops"
+}
+```
+
+#### Multi-credential dispatch (placeholder, on the profile)
+
+When a profile wields more than one credential at the same endpoint,
+the credentials list mixes bare-name entries with inline `{
+placeholder = "PH_...", credential = name }` objects that name the
+dispatch discriminator. At request time the gateway scans the request
+for one of the placeholders and substitutes the matching credential's
+real secret. A bare-name entry in the same profile is the
+no-placeholder fallback for that (profile, endpoint) pair — at most
+one fallback per pair.
+
+Placeholders live on the profile, not on the credential, because the
+disambiguation is only needed when a single identity actively wields
+multiple credentials at one endpoint. Per-user-fanout endpoints
+typically have many credentials globally but each profile uses just
+one; declaring placeholders on every such credential would add noise
+that no profile consults.
+
+```hcl
+endpoint "https" "orb" { hosts = ["api.withorb.com"] }
+
+credential "bearer_token" "orb-test" { endpoint = orb }
+credential "bearer_token" "orb-prod" { endpoint = orb }
+
+profile "ops" {
+  credentials = [
+    { placeholder = "PH_orb_test", credential = orb-test },
+    { placeholder = "PH_orb_prod", credential = orb-prod },
+    # ...
+  ]
+}
+```
 
 ### `rule "<type>" "<name>" { ... }`
 
@@ -230,18 +279,20 @@ approve = [
 ]
 ```
 
-### `profile "<name>" { endpoints = [...] }`
+### `profile "<name>" { credentials = [...] }`
 
-Endpoint membership list. A device gets exactly the endpoints its
-profile names; rules ride along automatically because they're
-attached to endpoints.
+Credential membership list. Endpoint membership rides along as the
+transitive closure `profile → credentials → endpoints`; rules attach
+to endpoints (so they ride along too). A device gets exactly the
+credentials its profile names, and (transitively) every endpoint
+those credentials bind.
 
 ```hcl
 profile "kaju" {
-  endpoints = [
+  credentials = [
     github-kaju,
     slack-kaju,
-    notion,           # shared with other profiles
+    notion-corp,         # shared with other profiles
     grafana,
     k8s-dev-ams,
   ]
@@ -270,7 +321,7 @@ device "10.55.0.2" {
     endpoint = deno
     match    = { method = "POST" }
     approve  = [dashboard]
-    reason   = "POSTs to deno.com require approval"
+    reason   = "POSTs to example.com require approval"
   }
 }
 ```

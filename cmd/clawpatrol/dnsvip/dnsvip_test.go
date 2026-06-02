@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -580,5 +581,36 @@ func TestForwardUpstreamRelaysOtherTypes(t *testing.T) {
 	if resp.Rcode != dns.RcodeServerFailure {
 		t.Errorf("rcode = %d (%s), want SERVFAIL — TXT should have hit relayUpstream's empty-dstIP guard",
 			resp.Rcode, dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestPersistLockedWrapsErrors closes the DB out from under an
+// allocator that's already been seeded with an allocation, then drives
+// a rebuild that has to call persistLocked. The closed connection
+// surfaces as a sql.ErrConnDone (or similar); we just need the dnsvip
+// wrapper to keep its "dnsvip: ..." prefix so operators can tell the
+// VIP allocator is the source.
+func TestPersistLockedWrapsErrors(t *testing.T) {
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.RebuildFromPolicy(fakePolicy(t, []string{"a.example.com:22"})); err != nil {
+		t.Fatalf("seed Rebuild: %v", err)
+	}
+
+	// Close the db. The next RebuildFromPolicy will mutate the
+	// in-memory state and then try to persistLocked, which has to
+	// surface a wrapped error rather than the bare driver text.
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close: %v", err)
+	}
+	err = a.RebuildFromPolicy(fakePolicy(t, []string{"b.example.com:22"}))
+	if err == nil {
+		t.Fatal("Rebuild against closed db: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "dnsvip:") {
+		t.Errorf("persist error not wrapped with dnsvip prefix: %v", err)
 	}
 }

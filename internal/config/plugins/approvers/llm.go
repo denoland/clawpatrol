@@ -41,14 +41,19 @@ Reply with JSON only — no markdown fences, no other text:
 {"ticket_id":"<ticket id from path or body, or empty string>","classification":"<label per policy>","confidence":<0-100>,"summary":"<one sentence>"}`
 
 // LLMApprover carries the model + the credential used to authenticate
-// the call to the model API + the policy text the model judges
-// against. Inline `policy` is a bare-name reference to a `policy
-// "<name>" { text = ... }` block — operator declares the prompt once
-// and reuses across multiple judges.
+// the call to the model API + the inline policy text the model judges
+// against. `policy` is a heredoc-friendly string attribute on the
+// approver block itself — no separate `policy "<name>" {}` block.
 type LLMApprover struct {
-	Model      string `hcl:"model"`
+	// Model is the model id used for policy judgment, such as a
+	// claude-*, gpt-*, or o*-prefixed model.
+	Model string `hcl:"model"`
+	// Credential references the HTTP credential used to authenticate
+	// the model API call.
 	Credential string `hcl:"credential"`
-	Policy     string `hcl:"policy,optional"`
+	// Policy is the prose the model judges requests against. Typically
+	// a heredoc on the approver block.
+	Policy string `hcl:"policy,optional"`
 }
 
 // Approve is part of the clawpatrol plugin API.
@@ -62,19 +67,11 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	if req.Policy == nil {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "no policy on request"}, nil
 	}
-	var policyText string
-	if a.Policy != "" {
-		pt, ok := req.Policy.Policies[a.Policy]
-		if !ok {
-			return runtime.ApproveVerdict{Decision: "deny", Reason: "policy " + a.Policy + " not declared"}, nil
-		}
-		policyText = pt.Text
-	}
 	if _, ok := req.Policy.Credentials[a.Credential]; !ok {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " not declared"}, nil
 	}
 
-	user := buildJudgePrompt(req, policyText)
+	user := buildJudgePrompt(req, a.Policy)
 
 	var (
 		hreq   *http.Request
@@ -278,19 +275,11 @@ func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest)
 	if req.Policy == nil {
 		return nil, fmt.Errorf("no policy on request")
 	}
-	var policyText string
-	if a.Policy != "" {
-		pt, ok := req.Policy.Policies[a.Policy]
-		if !ok {
-			return nil, fmt.Errorf("policy %s not declared", a.Policy)
-		}
-		policyText = pt.Text
-	}
 	if _, ok := req.Policy.Credentials[a.Credential]; !ok {
 		return nil, fmt.Errorf("credential %s not declared", a.Credential)
 	}
 
-	user := buildClassifierPrompt(req, policyText)
+	user := buildClassifierPrompt(req, a.Policy)
 
 	var (
 		hreq   *http.Request
@@ -371,15 +360,15 @@ func init() {
 		Runtime: (*LLMApprover)(nil),
 		Refs: []config.RefSpec{
 			{Path: "Credential", Kind: config.KindCredential},
-			{Path: "Policy", Kind: config.KindPolicy, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*LLMApprover)
+			ri := config.EmitRefIndex()
 			b.SetAttributeValue("model", cty.StringVal(a.Model))
-			config.SetIdent(b, "credential", a.Credential)
+			config.SetIdent(b, "credential", ri.Ref(config.KindCredential, a.Credential))
 			if a.Policy != "" {
-				config.SetIdent(b, "policy", a.Policy)
+				b.SetAttributeValue("policy", cty.StringVal(a.Policy))
 			}
 		},
 	})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,8 +10,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
+
+type captureApproveRequestApprover struct {
+	got chan runtime.ApproveRequest
+}
+
+func (a captureApproveRequestApprover) Approve(_ context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
+	a.got <- req
+	return runtime.ApproveVerdict{Decision: "allow"}, nil
+}
+
+func TestGatewayRunApproveChainWiresPendingMessageUpdateSink(t *testing.T) {
+	approver := captureApproveRequestApprover{got: make(chan runtime.ApproveRequest, 1)}
+	g := &Gateway{cfg: &config.Gateway{}, hitl: newHITLRegistry(nil)}
+	g.policy.Store(&config.CompiledPolicy{Approvers: map[string]*config.Entity{"ops": {Body: approver}}})
+
+	verdict := g.runApproveChain(context.Background(), []config.ApproveStage{{Name: "ops"}}, runApproveCtx{Host: "api.example.test", Method: "POST", Path: "/v1/write"})
+	if verdict.Decision != "allow" {
+		t.Fatalf("runApproveChain verdict = %#v, want allow", verdict)
+	}
+	select {
+	case req := <-approver.got:
+		if req.PendingMessageUpdateSink == nil {
+			t.Fatal("ApproveRequest PendingMessageUpdateSink is nil; sync HITL Slack prompts cannot record terminal-update message refs")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("approver was not invoked")
+	}
+}
 
 func TestHITLRegistryAsyncPendingApprovalCreatesRetryGrantInsteadOfSendingChannelDecision(t *testing.T) {
 	registry := newHITLRegistry(nil)
@@ -150,6 +180,77 @@ func TestHITLRegistryCancelRecordsClientDisconnected(t *testing.T) {
 	}
 }
 
+func TestHITLRegistryCancelUpdatesRecordedMessageRefs(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	var gotPending runtime.HITLPending
+	var gotRef string
+	var gotResult runtime.HITLResolveResult
+	updated := make(chan struct{}, 1)
+	registry.pendingMessageUpdater = func(_ context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+		gotPending = pending
+		gotRef = ref
+		gotResult = result
+		updated <- struct{}{}
+	}
+	id, _ := registry.Add(runtime.HITLPending{
+		Host:      "api.example.test",
+		Method:    "POST",
+		Path:      "/v1/write",
+		CreatedAt: time.Now(),
+	})
+	if err := registry.RecordMessageRef(context.Background(), id, `{"type":"slack","channel":"C123","ts":"1778764174.925659"}`); err != nil {
+		t.Fatalf("RecordMessageRef returned error: %v", err)
+	}
+
+	result := registry.Cancel(id, runtime.HITLStateTimedOut, "approver timed out; upstream request was not sent")
+	if !result.OK {
+		t.Fatalf("Cancel OK = false, want true: %#v", result)
+	}
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not update recorded message ref")
+	}
+	if gotPending.ID != id || gotPending.Host != "api.example.test" || gotPending.Method != "POST" || gotPending.Path != "/v1/write" {
+		t.Fatalf("updated pending = %#v, want original sync HITL request", gotPending)
+	}
+	if gotRef == "" || !strings.Contains(gotRef, "1778764174.925659") {
+		t.Fatalf("updated ref = %q, want recorded Slack message ref", gotRef)
+	}
+	if gotResult.State != runtime.HITLStateTimedOut || !strings.Contains(gotResult.Reason, "upstream request was not sent") {
+		t.Fatalf("updated result = %#v, want timed-out upstream-not-sent terminal result", gotResult)
+	}
+}
+
+func TestHITLRegistryLateMessageRefUpdateUsesFreshContext(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	updated := make(chan error, 1)
+	registry.pendingMessageUpdater = func(ctx context.Context, _ runtime.HITLPending, _ string, _ runtime.HITLResolveResult) {
+		updated <- ctx.Err()
+	}
+	id, _ := registry.Add(runtime.HITLPending{
+		Host:      "api.example.test",
+		Method:    "POST",
+		Path:      "/v1/write",
+		CreatedAt: time.Now(),
+	})
+	registry.Cancel(id, runtime.HITLStateTimedOut, "approver timed out; upstream request was not sent")
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := registry.RecordMessageRef(canceledCtx, id, `{"type":"slack","channel":"C123","ts":"1778764174.925659"}`); err != nil {
+		t.Fatalf("RecordMessageRef returned error: %v", err)
+	}
+	select {
+	case err := <-updated:
+		if err != nil {
+			t.Fatalf("late updater ctx err = %v, want live context", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late RecordMessageRef did not update terminal message")
+	}
+}
+
 // TestHITLRegistryListIsOrderedAndStableAcrossUpdates pins the
 // dashboard contract that pending approvals stay in oldest-first
 // order across polls, even when an entry's approval mode flips from
@@ -163,7 +264,7 @@ func TestHITLRegistryListIsOrderedAndStableAcrossUpdates(t *testing.T) {
 	ids := make([]string, 0, 8)
 	for i := 0; i < 8; i++ {
 		id, _ := registry.Add(runtime.HITLPending{
-			Host:      "console.deno.com",
+			Host:      "console.example.com",
 			Method:    "POST",
 			Path:      fmt.Sprintf("/api/admin.supportTickets.replyOnBehalf/%d", i),
 			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),

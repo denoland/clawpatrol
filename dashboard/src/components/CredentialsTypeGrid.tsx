@@ -20,6 +20,7 @@ import {
 import { fmtExpiry } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
+import { Tag } from "./Tag";
 
 type Group = {
   type: string;
@@ -290,8 +291,8 @@ function TypeCard({
     <button
       onClick={onClick}
       className={
-        "group flex flex-col items-start gap-2 px-3 py-3 bg-canvas-light text-left transition-colors border-1.5 " +
-        (active ? "border-text bg-navy-50" : "border-navy hover:bg-navy-50 cursor-pointer")
+        "group flex flex-col items-start gap-2 px-3 py-3 bg-canvas text-left transition-colors border-1.5 " +
+        (active ? "border-text bg-navy-50" : "border-navy hover:bg-canvas-muted cursor-pointer")
       }
     >
       <div className="flex items-center gap-2 w-full">
@@ -338,14 +339,14 @@ function DetailsPanel({
   ).sort();
   const rows = sortDetailRows(group.items);
   return (
-    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <div className="bg-canvas border-1.5 border-navy overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-navy-100 border-b border-navy">
         <div className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
           {group.label} · {group.total} declared · {group.connected} connected
         </div>
         <button
           onClick={onClose}
-          className="text-text-subtle hover:text-text text-sm leading-none px-1"
+          className="text-text text-sm leading-none px-1 cursor-pointer"
           title="fold"
         >
           ✕
@@ -471,9 +472,7 @@ function CellList({ items }: { items: string[] }) {
   return (
     <div className="flex flex-wrap gap-1 max-w-[18rem]">
       {items.map((n) => (
-        <span key={n} className="font-mono text-text bg-canvas-dark/30 px-1.5 py-0.5 rounded">
-          {n}
-        </span>
+        <Tag key={n}>{n}</Tag>
       ))}
     </div>
   );

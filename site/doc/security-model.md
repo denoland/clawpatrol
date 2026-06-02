@@ -1,4 +1,4 @@
-# Security model
+# Security Model
 
 Claw Patrol is a forward proxy that intercepts outbound traffic
 (HTTPS, SSH, Postgres, …), injects credentials on behalf of the
@@ -192,14 +192,17 @@ before the dashboard ever serves a request:
 clawpatrol gateway --set-dashboard-password '<pw>' gateway.hcl
 ```
 
-### Tailnet operator allowlist (tailscale mode)
+### Tailnet operator allowlist (tailscale block)
 
-In tailscale-control mode the gateway can additionally accept
-requests on the strength of a Tailscale whois identity, gated by an
-explicit allowlist in `gateway.hcl`:
+When the `tailscale {}` block is declared the gateway can additionally
+accept requests on the strength of a Tailscale whois identity, gated
+by an explicit allowlist inside the same block:
 
 ```hcl
-dashboard_operators = ["alice@example.com", "*@example.com"]
+tailscale {
+  authkey   = "{{secret:TS_AUTHKEY}}"
+  operators = ["alice@example.com", "*@example.com"]
+}
 ```
 
 The gateway pulls the whois login directly off the tsnet socket
@@ -220,7 +223,7 @@ A subtle failure mode worth calling out: if the gateway ever minted
 a Tailscale auth key with an empty `tags` list, the resulting node
 would be "owner-associated" — whois on its requests would return
 the OAuth client owner’s user login, not a tag. With
-`dashboard_operators = ["*@example.com"]` configured, that node
+`tailscale { operators = ["*@example.com"] }` configured, that node
 would silently match the allowlist and inherit operator powers.
 
 The auth-key minting path

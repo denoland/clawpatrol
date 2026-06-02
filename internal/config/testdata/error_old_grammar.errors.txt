@@ -1,0 +1,3 @@
+error: error_old_grammar.hcl:23:19: Missing required argument — The argument "credentials" is required, but no definition was found.
+error: error_old_grammar.hcl:24:3: Unsupported argument — An argument named "endpoints" is not expected here.
+error: error_old_grammar.hcl:20:3: Unsupported argument — An argument named "credential" is not expected here.

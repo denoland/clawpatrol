@@ -1,0 +1,1 @@
+error: Invalid operators entry — operators[0] = "bert": operator must be "user@domain" (got "bert"). Use "user@domain" or "*@domain".

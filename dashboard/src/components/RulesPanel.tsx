@@ -22,7 +22,7 @@ export function RulesPanel({ profile }: { deviceIP?: string; profile?: string })
   );
 
   return (
-    <div className="bg-canvas-light border-1.5 border-navy">
+    <div className="bg-canvas border-1.5 border-navy">
       {err && <div className="px-4 py-3 text-xs text-rust-700">{err}</div>}
       <Section title="Rules" rows={visible} />
     </div>
@@ -105,7 +105,7 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
   return (
     <div
       className={
-        "flex items-start gap-3 px-4 py-2 border-t border-canvas-muted hover:bg-navy-50 " +
+        "flex items-start gap-3 px-4 py-2 border-t border-canvas-muted hover:bg-canvas-muted " +
         (r.disabled ? "opacity-50" : "")
       }
     >
@@ -123,7 +123,7 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         </div>
       </div>
       <div className="flex flex-col items-end gap-0.5 shrink-0">
-        <span className="text-xs text-text-subtle truncate max-w-[160px]" title={r.name}>
+        <span className="text-xs text-text-subtle truncate max-w-[10rem]" title={r.name}>
           {r.name}
         </span>
         {(r.priority ?? 0) !== 0 && (

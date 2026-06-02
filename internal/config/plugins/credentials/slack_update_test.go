@@ -11,6 +11,62 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
+func TestSlackNotifyHITLRecordsMessageRefForSyncPendingRequest(t *testing.T) {
+	var recordedPendingID, recordedRef string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer xoxb-test" {
+			t.Fatalf("Authorization header = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1778764174.925659"}`))
+	}))
+	defer server.Close()
+
+	oldURL := slackPostMessageURL
+	oldClient := slackHTTPClient
+	oldBackoff := slackNotifyRetryBackoff
+	slackPostMessageURL = server.URL
+	slackHTTPClient = server.Client()
+	slackNotifyRetryBackoff = 0
+	defer func() {
+		slackPostMessageURL = oldURL
+		slackHTTPClient = oldClient
+		slackNotifyRetryBackoff = oldBackoff
+	}()
+
+	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
+		Secrets: testSecretStore{
+			"slack-approvals": {Extras: map[string]string{"bot": "xoxb-test"}},
+		},
+		Method: "POST",
+		Host:   "api.example.test",
+		Path:   "/v1/resources/update",
+	}, runtime.HITLTarget{
+		CredentialName: "slack-approvals",
+		Channel:        "C123",
+		PendingID:      "pending-123",
+		Interactive:    true,
+		PendingMessageUpdateSink: func(_ context.Context, pendingID, ref string) error {
+			recordedPendingID = pendingID
+			recordedRef = ref
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NotifyHITL returned error: %v", err)
+	}
+	if recordedPendingID != "pending-123" {
+		t.Fatalf("recorded pending ID = %q", recordedPendingID)
+	}
+	ref, ok := decodeSlackMessageRef(recordedRef)
+	if !ok {
+		t.Fatalf("recorded ref did not decode: %q", recordedRef)
+	}
+	if ref.Credential != "slack-approvals" || ref.Channel != "C123" || ref.TS != "1778764174.925659" || ref.PendingID != "pending-123" || !ref.Interactive {
+		t.Fatalf("recorded ref = %#v", ref)
+	}
+}
+
 func TestSlackNotifyHITLRecordsMessageRefForAsyncOperation(t *testing.T) {
 	var recordedOperationID, recordedRef string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +126,7 @@ func TestSlackNotifyHITLRecordsMessageRefForAsyncOperation(t *testing.T) {
 
 func TestSlackNotifyHITLRecordsMessageOverrideForUpdates(t *testing.T) {
 	var recordedRef string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1778764174.925659"}`))
 	}))
@@ -183,7 +239,7 @@ func TestSlackUpdateHITLMessageUsesChatUpdate(t *testing.T) {
 
 func TestSlackUpdateHITLMessageRetriesTransientChatUpdateFailure(t *testing.T) {
 	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		attempts++
 		w.Header().Set("Content-Type", "application/json")
 		if attempts == 1 {
@@ -222,6 +278,24 @@ func TestSlackUpdateHITLMessageRetriesTransientChatUpdateFailure(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("chat.update attempts = %d, want retry after transient failure", attempts)
+	}
+}
+
+func TestSlackUpdateHITLMessageClientDisconnectedCopyMatchesSyncHITL(t *testing.T) {
+	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
+		State:          runtime.HITLOperationStateClientDisconnected,
+		Method:         "POST",
+		Host:           "api.example.test",
+		Path:           "/v1/resources/update",
+		UpstreamCalled: false,
+	}, slackMessageRef{Credential: "slack-approvals", Channel: "C123", TS: "1778764174.925659"})
+	buf, _ := json.Marshal(blocks)
+	text := string(buf)
+	if !strings.Contains(text, "Original client disconnected before approval") || !strings.Contains(text, "upstream request was not sent") {
+		t.Fatalf("client-disconnected update blocks = %s, want sync HITL upstream-not-sent copy", text)
+	}
+	if strings.Contains(text, "async polling handle") {
+		t.Fatalf("client-disconnected update kept async-only wording: %s", text)
 	}
 }
 

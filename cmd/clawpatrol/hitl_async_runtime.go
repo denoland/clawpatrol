@@ -74,7 +74,7 @@ func (g *Gateway) asyncHumanApproverFor(stages []config.ApproveStage) (string, h
 }
 
 func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsyncOperationInput) (hitlAsyncOperationStart, bool, error) {
-	if g == nil || g.db == nil || g.cfg == nil || g.cfg.PublicURL == "" || in.HTTPRequest == nil || in.Endpoint == nil || in.Rule == nil || in.Approver == nil {
+	if g == nil || g.db == nil || g.cfg == nil || g.cfg.PublicURL() == "" || in.HTTPRequest == nil || in.Endpoint == nil || in.Rule == nil || in.Approver == nil {
 		return hitlAsyncOperationStart{}, false, nil
 	}
 	if in.ProfileID == "" || in.PrincipalID == "" || in.ApproverID == "" || in.MatchReq == nil {
@@ -95,7 +95,7 @@ func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsync
 	if err != nil {
 		return hitlAsyncOperationStart{}, false, err
 	}
-	cc := runtime.ResolveCredential(in.Endpoint, in.MatchReq)
+	cc := runtime.ResolveCredential(policy, in.ProfileID, in.Endpoint, in.MatchReq)
 	authBindingID, err := buildHITLAuthBindingID(ctx, g.db, in.ProfileID, cc)
 	if err != nil {
 		return hitlAsyncOperationStart{}, false, err
@@ -236,6 +236,70 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 		LastError:      op.LastError,
 	}); err != nil {
 		log.Printf("hitl async operation message update %s: %v", op.ID, err)
+	}
+}
+
+func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+	if g == nil || ref == "" {
+		return
+	}
+	policy := g.Policy()
+	if policy == nil {
+		return
+	}
+	credName := ""
+	for _, approverName := range pending.Approvers {
+		approver := policy.Approvers[approverName]
+		if approver == nil {
+			continue
+		}
+		if h, ok := approver.Body.(runtime.HITLHumanCredentialer); ok {
+			credName = h.HumanApproverCredential()
+			if credName != "" {
+				break
+			}
+		}
+	}
+	if credName == "" {
+		return
+	}
+	cred := policy.Credentials[credName]
+	if cred == nil {
+		return
+	}
+	updater, ok := cred.Body.(runtime.HITLMessageUpdater)
+	if !ok {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state := runtime.HITLOperationStateExpired
+	switch result.State {
+	case runtime.HITLStateClientDisconnected:
+		state = runtime.HITLOperationStateClientDisconnected
+	case runtime.HITLStateApproved:
+		state = runtime.HITLOperationStateApprovedWaitingForRetry
+	case runtime.HITLStateDenied:
+		state = runtime.HITLOperationStateDenied
+	case runtime.HITLStateTimedOut:
+		state = runtime.HITLOperationStateExpired
+	}
+	path := pending.Path
+	if path == "" {
+		path = pending.Endpoint
+	}
+	if err := updater.UpdateHITLMessage(ctx, g.secrets, runtime.HITLMessageUpdate{
+		MessageRef:     ref,
+		OperationID:    pending.OperationID,
+		State:          state,
+		Method:         pending.Method,
+		Host:           pending.Host,
+		Path:           path,
+		UpstreamCalled: pending.UpstreamCalled,
+		LastError:      result.Reason,
+	}); err != nil {
+		log.Printf("hitl pending message update %s: %v", pending.ID, err)
 	}
 }
 

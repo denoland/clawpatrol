@@ -8,9 +8,10 @@ import {
   type Integration,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
-import { DeviceIcon } from "./Logos";
+import { HITLBar } from "./HITLBar";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
+import { DeviceIcon } from "./Logos";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
 import { RulesPanel } from "./RulesPanel";
@@ -66,8 +67,8 @@ export function DevicePage({
   if (!a) {
     return (
       <Main>
-        <PageTitle trail={[{ label: "clawpatrol", href: "#/" }, { label: ip }]} />
-        <div className="bg-canvas-light border-1.5 border-navy px-5 py-8 text-center text-xs text-text-subtle">
+        <PageTitle trail={[{ label: "Devices", href: "#/devices" }, { label: ip }]} />
+        <div className="bg-canvas border-1.5 border-navy px-5 py-8 text-center text-xs text-text-subtle">
           no agent with ip {ip}
         </div>
       </Main>
@@ -81,7 +82,7 @@ export function DevicePage({
   async function remove() {
     if (
       !confirm(
-        `Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`,
+        `Remove ${dev.hostname || dev.ip} from Claw Patrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`,
       )
     )
       return;
@@ -97,7 +98,7 @@ export function DevicePage({
   return (
     <Main>
       <PageTitle
-        trail={[{ label: "clawpatrol", href: "#/" }, { label: dev.hostname || dev.ip }]}
+        trail={[{ label: "Devices", href: "#/devices" }, { label: dev.hostname || dev.ip }]}
         actions={
           <>
             <ProfilePicker
@@ -122,7 +123,7 @@ export function DevicePage({
             <a
               href={`#/analytics/${encodeURIComponent(ip)}`}
               title="analytics"
-              className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors"
+              className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-navy-100 transition-colors"
             >
               <svg
                 width="16"
@@ -142,7 +143,7 @@ export function DevicePage({
               type="button"
               onClick={remove}
               title="forget this device"
-              className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-danger-500 hover:text-danger-500 transition-colors"
+              className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-danger-400 transition-colors cursor-pointer"
             >
               <svg
                 width="16"
@@ -166,7 +167,7 @@ export function DevicePage({
       />
 
       {/* device header card */}
-      <section className="bg-canvas-light border-1.5 border-navy">
+      <section className="bg-canvas border-1.5 border-navy">
         <div className="flex items-center gap-3 px-5 py-4">
           <DeviceIcon
             os={a.os}
@@ -205,6 +206,11 @@ export function DevicePage({
         </div>
       </section>
 
+      {/* pending approvals awaiting a decision for this device — same
+          cards as the home page, scoped to this device's agent IP.
+          Renders nothing when there are none. */}
+      <HITLBar agentIP={a.ip} />
+
       {/* agents (sessions) running on this device */}
       <SessionsTable sessions={a.sessions ?? []} />
 
@@ -214,7 +220,7 @@ export function DevicePage({
       {/* credentials for this device's profile — header makes the
           profile→credentials linkage explicit and points operators at
           gateway.hcl since the dashboard is read-only for declarations. */}
-      <section className="bg-canvas-light border-1.5 border-navy">
+      <section className="bg-canvas border-1.5 border-navy">
         <div className="flex items-center px-4 py-2.5 bg-navy-100 border-b border-navy gap-2">
           <div className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
             Credentials
@@ -269,27 +275,37 @@ function ProfilePicker({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         title={`profile: ${current || "—"}`}
-        className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors disabled:opacity-50"
+        className={
+          "inline-flex items-center justify-between gap-2 min-w-40 " +
+          "pl-2.5 pr-1.5 py-1 border-1.5 border-navy bg-canvas text-sm text-text " +
+          "hover:bg-canvas-muted transition-colors disabled:opacity-50 " +
+          "disabled:cursor-not-allowed"
+        }
       >
+        <span className="font-mono text-xs uppercase tracking-wider truncate">
+          {current || "—"}
+        </span>
         <svg
-          width="16"
-          height="16"
+          width="14"
+          height="14"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden="true"
+          className={"shrink-0 transition-transform " + (open ? "rotate-180" : "")}
         >
-          <path d="M12 2 2 7l10 5 10-5-10-5z" />
-          <path d="M2 17l10 5 10-5" />
-          <path d="M2 12l10 5 10-5" />
+          <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-canvas-light border-1.5 border-navy rounded shadow-lg py-1">
-          <div className="font-mono px-3 py-1.5 text-2xs uppercase tracking-wider text-text-subtle border-b border-canvas-muted">
+        <div className="absolute right-0 top-[calc(100%+0.375rem)] z-20 min-w-50 bg-canvas border-1.5 border-navy shadow-lg py-1">
+          <div className="font-mono px-3 py-1.5 text-2xs uppercase tracking-wider text-text border-b border-canvas-muted">
             choose profile
           </div>
           {profiles.length === 0 ? (

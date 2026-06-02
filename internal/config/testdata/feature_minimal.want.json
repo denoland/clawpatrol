@@ -1,6 +1,15 @@
 {
-  "listen": "0.0.0.0:8443",
-  "llm_fail_mode": "closed",
+  "defaults": {
+    "llm_fail_mode": "closed",
+    "unknown_host": "passthrough"
+  },
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "approvers": {
       "ops": {
@@ -17,10 +26,11 @@
       }
     },
     "credentials": {
-      "github-pat": {
+      "github": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       }
     },
@@ -30,8 +40,7 @@
           "Hosts": [
             "api.github.com",
             "github.com"
-          ],
-          "Credential": "github-pat"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -39,7 +48,7 @@
     },
     "profiles": {
       "default": {
-        "endpoints": [
+        "credentials": [
           "github"
         ]
       }
@@ -72,6 +81,5 @@
         }
       }
     }
-  },
-  "unknown_host": "passthrough"
+  }
 }

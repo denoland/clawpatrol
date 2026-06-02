@@ -6,28 +6,36 @@
 //
 // Edit any rule below and re-run to see a mismatch.
 
-// admin_email is required by config.Compile; the runner doesn't
-// consult it.
-admin_email = "you@example.com"
+schema_version = 1
 
-credential "bearer_token" "github_pat" {}
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = github_pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "github" {
+  endpoint = https.github
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { credentials = [bearer_token.github] }

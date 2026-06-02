@@ -20,8 +20,19 @@ type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
   "group inline-block font-mono font-semibold uppercase relative isolate z-10 " +
-  "tracking-wider cursor-pointer transition-colors outline-1.5 outline-navy " +
-  "-outline-offset-1.5 disabled:opacity-50 disabled:cursor-not-allowed";
+  "tracking-wider cursor-pointer transition-colors " +
+  // Solid navy outline. CSS outline (not box-shadow) because outline
+  // renders outside the stacking context — so the Background div
+  // can't paint over it. `!` on the offset to defeat any UA
+  // `:focus { outline-offset:… }` rule that would shift it.
+  "outline-1.5 outline-solid outline-navy -outline-offset-1.5! " +
+  "disabled:opacity-50 disabled:cursor-not-allowed " +
+  // Dashed focus ring: 1px dashed rust border drawn on a ::before
+  // pseudo-element (CSS only allows one outline per element).
+  "focus-visible:before:content-[''] focus-visible:before:absolute " +
+  "focus-visible:before:inset-[-6px] focus-visible:before:border " +
+  "focus-visible:before:border-dashed focus-visible:before:border-rust " +
+  "focus-visible:before:pointer-events-none";
 
 const sizes: Record<Size, string> = {
   sm: "px-2 py-1 text-xs",

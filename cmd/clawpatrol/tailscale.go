@@ -1,22 +1,25 @@
-// Gateway control-plane listener. When the operator's HCL sets the
-// top-level `authkey = "..."` (or TS_AUTHKEY is in the env), the
-// gateway joins a tailnet via an embedded tsnet.Server and accepts
-// agent traffic on its tailnet IP — this is the meaningful Listener
-// for tsnet-mode deployments. The embedded tsnet.Server also acts as
-// a Tailscale exit node: RegisterFallbackTCPHandler intercepts all
-// TCP forwarded through the node so whole-machine clients get the
-// same MITM treatment as per-process clawpatrol-run clients. No
-// system tailscaled, iptables, or sudo required.
+// Gateway transport listeners.
 //
-// In WireGuard mode the listener is vestigial: agent TLS flows
-// through the WG netstack's promiscuous forwarder inside the tunnel
-// (main.go's tcpDispatch handles dst port 443), not through this
-// socket. We still open a loopback listener so g.handle is reachable
-// for in-process local debugging, but force the bind to 127.0.0.1
-// regardless of cfg.Listen — historically operators set this to
-// 0.0.0.0:8443, which combined with g.handle's "unknown SNI →
-// splice" fall-through turned the socket into an open TLS proxy
-// (security-review F-19).
+// `tailscale { }` block present: the gateway joins a tailnet via an
+// embedded tsnet.Server and accepts agent traffic on its tailnet IP.
+// The embedded tsnet.Server also acts as a Tailscale exit node:
+// RegisterFallbackTCPHandler intercepts all TCP forwarded through the
+// node so whole-machine clients get the same MITM treatment as
+// per-process clawpatrol-run clients. No system tailscaled, iptables,
+// or sudo required.
+//
+// `wireguard { }` block present: the gateway runs an embedded
+// userspace WireGuard server (see wireguard.go). Agent TLS flows
+// through the WG netstack's promiscuous forwarder; main.go's
+// tcpDispatch routes dst port 443 to g.handle. Alongside the
+// netstack we also open a loopback TCP listener on 127.0.0.1:8443
+// for host-local clients — single-host deployments (the gateway
+// running under one user account, clawpatrol-run invoked from
+// another on the same machine, loopback WG between them) are a
+// first-class pattern, not a debug mode.
+//
+// Both blocks present: the gateway runs both transports concurrently.
+// Peers from either transport land in the same g.handle path.
 //
 // tsnet's dep tree is unconditionally compiled in — the tunnel
 // package's tailscale plugin already pulls it, so there's no
@@ -34,9 +37,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
+	"tailscale.com/types/nettype"
+	"tailscale.com/wgengine/netstack"
 
 	"github.com/denoland/clawpatrol/internal/config"
 )
@@ -58,62 +64,79 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 	return dir, nil
 }
 
-// openListener returns the gateway's primary TCP listener.
+// openListener brings up the gateway's transport listeners. Either
+// or both of the returned values may be non-nil depending on which
+// transport blocks the operator declared:
 //
-// Tailscale control mode: always uses an embedded tsnet.Server.
-// Requires authkey in HCL or TS_AUTHKEY env (no system tailscaled
-// needed). Returns the *tsnet.Server so the caller can register a
-// fallback TCP handler for whole-machine exit-node traffic.
+//   - WireGuard enabled → returns a loopback TCP listener on
+//     127.0.0.1:8443. Host-local agents (e.g. clawpatrol-run from a
+//     different UID on the same box) connect directly. Off-host
+//     agents reach g.handle via the WG netstack's promiscuous
+//     forwarder; that path doesn't touch this socket.
+//   - Tailscale enabled → returns the *tsnet.Server. All MITM
+//     traffic from tsnet clients is intercepted via
+//     RegisterFallbackTCPHandler (set up by runGateway), so we
+//     don't open a tailnet :443 listener here.
 //
-// WireGuard mode: returns nil server and a loopback TCP listener.
+// Configs without either block fail validation at Load time, so this
+// function never returns (nil, nil, nil).
 func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.Listener, error) {
-	if !isTailscaleControlMode(cfg.Control) {
-		// WireGuard mode: bind loopback regardless of cfg.Listen's
-		// host portion. See the file-level comment.
-		host, port, err := net.SplitHostPort(cfg.Listen)
-		if err != nil || port == "" {
-			port = "8443"
+	var ln net.Listener
+	if cfg.IsWireGuardEnabled() {
+		var err error
+		ln, err = net.Listen("tcp", "127.0.0.1:8443")
+		if err != nil {
+			return nil, nil, err
 		}
-		if host != "" && host != "127.0.0.1" && host != "::1" {
-			log.Printf("WARNING: listen %q overridden to loopback in WireGuard mode; agent traffic flows through the WG tunnel, this socket is for local debugging only.", cfg.Listen)
-		}
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
-		return nil, ln, err
 	}
 
-	authKey := cfg.AuthKey
+	if !cfg.IsTailscaleEnabled() {
+		return nil, ln, nil
+	}
+
+	ts := cfg.Settings.Tailscale
+	authKey := ts.AuthKey
 	if authKey == "" {
 		authKey = os.Getenv("TS_AUTHKEY")
 	}
 	if authKey == "" {
-		return nil, nil, fmt.Errorf("tailscale mode requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
+		if ln != nil {
+			_ = ln.Close()
+		}
+		return nil, nil, fmt.Errorf("tailscale block requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
 	}
 
-	hn := cfg.Hostname
+	hn := ts.Hostname
 	if hn == "" {
 		hn = "clawpatrol-gateway"
 	}
 	dir, err := gatewayTsnetDir(stateDir)
 	if err != nil {
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return nil, nil, err
 	}
 	s := &tsnet.Server{
 		Hostname:   hn,
 		AuthKey:    authKey,
-		ControlURL: cfg.ControlURL,
+		ControlURL: ts.ControlURL,
 		Dir:        dir,
 	}
-	_, portStr, _ := net.SplitHostPort(cfg.Listen)
-	if portStr == "" {
-		portStr = "443"
-	}
-	ln, err := s.Listen("tcp", ":"+portStr)
+	// Bring tsnet up. We don't need a tailnet TCP listener — exit-node
+	// routing delivers client conns straight to RegisterFallbackTCPHandler.
+	// Listen on a throwaway port to drive s.Up() since tsnet has no other
+	// public bring-up API and never exposes this listener to callers.
+	bringUp, err := s.Listen("tcp", ":0")
 	if err != nil {
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return nil, nil, err
 	}
-	// Advertise exit routes so whole-machine clients can use this node
-	// as a Tailscale exit node. s.Up() completed inside s.Listen(), so
-	// LocalClient is available. Async to avoid blocking runGateway.
+	_ = bringUp.Close()
+	// Advertise exit routes so whole-machine and per-process tsnet
+	// clients can use this node as a Tailscale exit node.
 	go advertiseExitRoutes(s)
 	return s, ln, nil
 }
@@ -214,5 +237,88 @@ func advertiseExitRoutes(s *tsnet.Server) {
 		log.Printf("tsnet: advertise exit routes: %v", err)
 	} else {
 		log.Printf("tsnet: advertised exit routes (0.0.0.0/0, ::/0)")
+	}
+}
+
+// installTsnetUDPDNSCatchAll layers a catch-all UDP/53 interceptor
+// onto tsnet's internal netstack so DNS queries from exit-node
+// clients reach the gateway's dnsvip regardless of which resolver IP
+// the client points at (8.8.8.8, 1.1.1.1, the tailnet's MagicDNS,
+// anything). Without this, an exit-node client whose system resolver
+// targets 8.8.8.8 has its UDP/53 packets forwarded by tsnet's
+// netstack out to the real 8.8.8.8 — which can't resolve internal
+// hostnames (e.g. clickhouse-o11y, *.denosr-staging.internal) and
+// won't allocate the VIPs that endpoint dispatch relies on.
+//
+// tsnet exposes RegisterFallbackTCPHandler for catch-all TCP but
+// has no UDP equivalent (ListenPacket requires a concrete bind IP).
+// The hook we need is GetUDPHandlerForFlow on the underlying
+// *netstack.Impl, reachable via tsnet.Server.Sys().Netstack. The
+// Sys() doc warns "not a stable API" — pinned via go.mod; revisit if
+// the field disappears on a Tailscale upgrade.
+//
+// Must be called after the tsnet.Server has been started (Start()
+// triggered by an earlier Listen/ListenPacket); only then is the
+// netstack subsystem registered.
+func (g *Gateway) installTsnetUDPDNSCatchAll(s *tsnet.Server) {
+	if g.dnsvip == nil || s == nil {
+		return
+	}
+	sys := s.Sys()
+	if sys == nil {
+		log.Printf("tsnet: UDP/53 catch-all skipped — Sys() returned nil")
+		return
+	}
+	impl, ok := sys.Netstack.GetOK()
+	if !ok {
+		log.Printf("tsnet: UDP/53 catch-all skipped — netstack subsystem not registered yet")
+		return
+	}
+	ns, ok := impl.(*netstack.Impl)
+	if !ok {
+		log.Printf("tsnet: UDP/53 catch-all skipped — Sys().Netstack is %T not *netstack.Impl", impl)
+		return
+	}
+	orig := ns.GetUDPHandlerForFlow
+	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) {
+		if dst.Port() == 53 {
+			return g.serveTsnetUDPDNSFlow, true
+		}
+		if orig != nil {
+			return orig(src, dst)
+		}
+		return nil, false
+	}
+	log.Printf("tsnet: UDP/53 catch-all installed (any-dst → dnsvip)")
+}
+
+// serveTsnetUDPDNSFlow handles one UDP/53 flow from an exit-node
+// client. tsnet calls this per-flow with a connected packet conn
+// already bound to the (src, dst) tuple — Read/Write talk to the
+// single peer, no addr juggling required. dnsvip.HandlePacket
+// generates the response (VIP allocation for endpoint hostnames,
+// upstream lookup otherwise). The loop covers the few resolvers
+// that reuse the socket for follow-up queries; idle flows time
+// out and close so we don't leak goroutines.
+func (g *Gateway) serveTsnetUDPDNSFlow(c nettype.ConnPacketConn) {
+	defer func() { _ = c.Close() }()
+	if g.dnsvip == nil {
+		return
+	}
+	buf := make([]byte, 65535)
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, err := c.Read(buf)
+		if err != nil {
+			return
+		}
+		resp := g.dnsvip.HandlePacket(buf[:n], "")
+		if len(resp) == 0 {
+			continue
+		}
+		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if _, err := c.Write(resp); err != nil {
+			return
+		}
 	}
 }

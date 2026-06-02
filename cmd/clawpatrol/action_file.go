@@ -215,7 +215,7 @@ func hasBinaryControlBytes(b []byte) bool {
 func MatchFromCompiledRule(cr *config.CompiledRule, ep *config.CompiledEndpoint) Match {
 	m := Match{}
 	if ep != nil {
-		m.Endpoint = ep.Name
+		m.Endpoint = endpointRef(ep)
 	}
 	if cr == nil {
 		m.Verdict = "allow"
@@ -240,11 +240,31 @@ func MatchFromCompiledRule(cr *config.CompiledRule, ep *config.CompiledEndpoint)
 // match.endpoint wins when set; otherwise action.host is scanned
 // against policy.Endpoints for a unique match. Ambiguous hosts
 // error with the candidate list.
+//
+// match.endpoint uses the typed form `endpoint-type.endpoint-name`
+// (e.g. `https.github`) — the same addressing model HCL rules use.
+// Bare names are rejected so the reference is unambiguous across
+// endpoint types.
 func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.CompiledEndpoint, error) {
 	if f.Match.Endpoint != "" {
-		ep := policy.Endpoints[f.Match.Endpoint]
+		typ, name, ok := splitEndpointRef(f.Match.Endpoint)
+		if !ok {
+			return nil, fmt.Errorf(
+				"match.endpoint %q must use typed form `endpoint-type.endpoint-name` (e.g. `https.github`)",
+				f.Match.Endpoint)
+		}
+		ep := policy.Endpoints[name]
 		if ep == nil {
 			return nil, fmt.Errorf("endpoint %q not in compiled policy", f.Match.Endpoint)
+		}
+		if ep.Plugin == nil || ep.Plugin.Type != typ {
+			got := ""
+			if ep.Plugin != nil {
+				got = ep.Plugin.Type
+			}
+			return nil, fmt.Errorf(
+				"match.endpoint %q: endpoint %q is type %q, not %q",
+				f.Match.Endpoint, name, got, typ)
 		}
 		return ep, nil
 	}
@@ -266,9 +286,34 @@ func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.Compil
 	}
 	names := make([]string, 0, len(matches))
 	for _, ep := range matches {
-		names = append(names, ep.Name)
+		names = append(names, endpointRef(ep))
 	}
 	return nil, fmt.Errorf("host %q is claimed by multiple endpoints %v; set `match.endpoint` to disambiguate", host, names)
+}
+
+// endpointRef formats a CompiledEndpoint as `endpoint-type.endpoint-name`
+// — the typed reference form fixtures and the runner use to address
+// endpoints unambiguously across endpoint types.
+func endpointRef(ep *config.CompiledEndpoint) string {
+	if ep == nil {
+		return ""
+	}
+	typ := ""
+	if ep.Plugin != nil {
+		typ = ep.Plugin.Type
+	}
+	return typ + "." + ep.Name
+}
+
+// splitEndpointRef parses a typed reference `type.name` into its
+// components. Returns ok=false if either side is empty or the dot
+// is missing.
+func splitEndpointRef(ref string) (typ, name string, ok bool) {
+	i := strings.IndexByte(ref, '.')
+	if i <= 0 || i == len(ref)-1 {
+		return "", "", false
+	}
+	return ref[:i], ref[i+1:], true
 }
 
 // endpointClaimsHost matches `host` and `host:port` forms either
@@ -397,12 +442,12 @@ func sameStringSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	a_ := append([]string(nil), a...)
-	b_ := append([]string(nil), b...)
-	sort.Strings(a_)
-	sort.Strings(b_)
-	for i := range a_ {
-		if a_[i] != b_[i] {
+	aSorted := append([]string(nil), a...)
+	bSorted := append([]string(nil), b...)
+	sort.Strings(aSorted)
+	sort.Strings(bSorted)
+	for i := range aSorted {
+		if aSorted[i] != bSorted[i] {
 			return false
 		}
 	}

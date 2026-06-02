@@ -177,13 +177,9 @@ func (w *webMux) skipsDashboardPassword(path string) bool {
 	}
 }
 
-func isTailscaleControlMode(control string) bool {
-	return control == "" || strings.EqualFold(control, "tailscale")
-}
-
 func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
 	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
-		isTailscaleControlMode(w.g.cfg.Control)
+		w.g.cfg.IsTailscaleEnabled()
 }
 
 func (w *webMux) skipsTailnetGate(path string) bool {
@@ -267,8 +263,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
-		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
-		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
+		{Method: http.MethodPost, Path: "/api/peer/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiPeerTsnetRegister},
 		// /__login is the auth point itself — it MUST be reachable
 		// without a credential. The handler dispatches on r.Method
 		// (GET renders the form, POST validates + mints a session
@@ -328,7 +323,7 @@ const cpSessionCookieName = "cp_session"
 // the duplicate parse here is so a hot-reloaded config can change
 // the TTL without restarting.
 func (w *webMux) dashboardSessionTTL() time.Duration {
-	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL)
+	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL())
 	if err != nil {
 		// Validator at config load would have caught this; defensive
 		// fallback to the default keeps a hot-reload typo from
@@ -379,10 +374,11 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 		}
 
 		// Tailnet allowlist path: defer to tailnetGate so it can
-		// resolve the whois identity and compare against
-		// cfg.DashboardOperators. Only relevant in tailscale-control
-		// mode; in wireguard / proxy mode there is no whois.
-		if isTailscaleControlMode(w.g.cfg.Control) && len(w.g.cfg.DashboardOperators) > 0 {
+		// resolve the whois identity and compare against the
+		// configured operators allowlist. Only relevant when the
+		// `tailscale {}` block is enabled — without it there's no
+		// whois identity to resolve.
+		if w.g.cfg.IsTailscaleEnabled() && len(w.g.cfg.Operators()) > 0 {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -586,7 +582,7 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, sta
 // gate is skipped and dashboardAuthGate's password requirement is
 // the only auth.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	skipGate := !isTailscaleControlMode(w.g.cfg.Control)
+	skipGate := !w.g.cfg.IsTailscaleEnabled()
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if w.skipsTailnetGate(r.URL.Path) || skipGate {
@@ -627,20 +623,46 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
-		// authDashboard routes require an explicit allowlist match.
-		// Without this check, any whois-attributable tailnet peer
-		// (including a tagged agent that managed to acquire a user
-		// login somehow) would inherit operator powers — exactly
-		// the threat the password gate above is closing.
-		if w.authRequirementForPath(r.URL.Path) == authDashboard {
-			if !config.MatchDashboardOperator(login, w.g.cfg.DashboardOperators) {
-				http.Error(rw, "dashboard operator allowlist did not match — set the dashboard password or add this login to dashboard_operators", http.StatusForbidden)
+		// Operator-class routes — approving onboarding devices, looking
+		// up pending user_codes, reading the dashboard via tailnet
+		// identity — must require an explicit dashboard_operators
+		// allowlist match for the tailnet identity path. Previously
+		// authTailnetOperator and authDashboardOrTailnetOperator
+		// accepted any non-empty whois, which let tag:client peers
+		// (whois == "tagged-devices") call /api/onboard/approve and
+		// mint fresh auth keys bound to arbitrary profiles — see
+		// issue #509. MatchDashboardOperator only accepts "user@domain"
+		// or "*@domain" entries, so "tagged-devices" and "tagged-*"
+		// stubs fail closed by construction.
+		//
+		// The dashboard-password path is unaffected: requests carrying
+		// a valid cp_session cookie have their principal injected by
+		// dashboardAuthGate upstream and short-circuit this gate at
+		// the principalFromContext check above.
+		if needsOperatorGate(w.authRequirementForPath(r.URL.Path)) {
+			if !config.MatchDashboardOperator(login, w.g.cfg.Operators()) {
+				http.Error(rw, "operator routes require a dashboard password session or a tailnet login matching the operators allowlist", http.StatusForbidden)
 				return
 			}
 		}
 		principal := principal{Kind: principalTailnet, Owner: login, User: login, Device: device, Host: displayHost}
 		next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), principal)))
 	})
+}
+
+// needsOperatorGate reports whether req requires the caller to be an
+// operator — either a dashboard-password session or a tailnet login
+// matching dashboard_operators. Every non-public, non-self-auth
+// route is operator-class in the daemon-model gateway, because all
+// of them either expose internal state or accept profile-affecting
+// writes. The dashboard-password path is handled separately by
+// dashboardAuthGate; this only applies on the tailnet-identity path.
+func needsOperatorGate(req authRequirement) bool {
+	switch req {
+	case authDashboard, authTailnetOperator, authDashboardOrTailnetOperator:
+		return true
+	}
+	return false
 }
 
 // mountCredentialWebhooks walks every credential whose body
@@ -727,17 +749,17 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 	// Credentials are emitted first (so credential-shaped
 	// placeholders win on duplicate names), endpoints second.
 	for _, ep := range prof.Endpoints {
-		for _, cc := range ep.Credentials {
-			if cc == nil || cc.Credential == nil || credSeen[cc.Credential.Symbol.Name] {
+		for _, ent := range ep.Credentials {
+			if ent == nil || ent.Symbol == nil || credSeen[ent.Symbol.Name] {
 				continue
 			}
-			credSeen[cc.Credential.Symbol.Name] = true
-			provider, ok := cc.Credential.Body.(config.EnvPushdownProvider)
+			credSeen[ent.Symbol.Name] = true
+			provider, ok := ent.Body.(config.EnvPushdownProvider)
 			if !ok {
 				continue
 			}
 			for _, ev := range provider.EnvVars() {
-				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type)
+				add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
 			}
 		}
 	}
@@ -814,8 +836,8 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 func (w *webMux) hitlPublicURL() string {
 	// Prefer the live config — public_url may be auto-derived from the
 	// tsnet Funnel cert AFTER webMux is constructed.
-	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL != "" {
-		return w.g.cfg.PublicURL
+	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL() != "" {
+		return w.g.cfg.PublicURL()
 	}
 	return w.publicURL
 }
@@ -1053,9 +1075,6 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 	if def := defaultProfileName(w.g.cfg.Policy); def != "" {
 		return def, def
 	}
-	if w.g.cfg.AdminEmail != "" {
-		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
-	}
 	user, _, host := w.callerIdentity(r)
 	if user != "" {
 		return user, user
@@ -1075,7 +1094,7 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 // the context (e.g. on a route the gate let through without one,
 // which shouldn't happen for authDashboard but stays defensive).
 func (w *webMux) whoamiData(r *http.Request) map[string]string {
-	pu := w.g.cfg.PublicURL
+	pu := w.g.cfg.PublicURL()
 	if pu == "" {
 		pu = w.publicURL
 	}
@@ -1592,6 +1611,10 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 		http.Error(rw, fmt.Sprintf("event action %q is not exportable as a fixture", ev.Action), 400)
 		return
 	}
+	// Stamp the typed reference (endpoint-type.endpoint-name) so the
+	// runner can route the fixture without ambiguity. ev.Endpoint is
+	// the bare DB-recorded name; the policy supplies the type.
+	m.Endpoint = endpointRef(ep)
 
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
 	switch ep.Family {
@@ -2098,10 +2121,21 @@ type Sink struct {
 	recentNext int
 	recentLen  int
 	recentCap  int
+
+	// closed flips once Close has run. Emit checks it as the cheap
+	// pre-flight; the deferred recover handles the residual race where
+	// Close intervenes between the closed-load and the channel send.
+	closed    atomic.Bool
+	closeOnce sync.Once
+	// done closes when drain returns, signalling Close that every
+	// buffered event has been persisted to actions / fanned out to
+	// subscribers. Gateway shutdown waits on this before db.Close so
+	// in-flight events aren't dropped at WAL teardown.
+	done chan struct{}
 }
 
 func NewSink(db *sql.DB, buf int) (*Sink, error) {
-	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500}
+	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500, done: make(chan struct{})}
 	s.recent = make([]Event, s.recentCap)
 	if db != nil {
 		if seed, err := readTailEvents(db, s.recentCap); err == nil && len(seed) > 0 {
@@ -2204,12 +2238,22 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 }
 
 func (s *Sink) Emit(e Event) {
-	if s == nil {
+	if s == nil || s.closed.Load() {
 		return
 	}
 	if e.Ts.IsZero() {
 		e.Ts = time.Now().UTC()
 	}
+	defer func() {
+		// Tiny race: closed.Load returned false but Close raced past
+		// us before the select ran. Send-on-closed-channel panics —
+		// swallow and count it as a drop instead of crashing the
+		// goroutine that called Emit (e.g. a request handler) during
+		// shutdown.
+		if r := recover(); r != nil {
+			s.drops.Add(1)
+		}
+	}()
 	select {
 	case s.ch <- e:
 	default:
@@ -2219,7 +2263,34 @@ func (s *Sink) Emit(e Event) {
 
 func (s *Sink) Drops() uint64 { return s.drops.Load() }
 
+// Close stops the sink from accepting new events and waits for the
+// drain goroutine to persist anything already buffered, capped by
+// ctx so a wedged DB write cannot block gateway shutdown. Idempotent
+// — duplicate Close calls return the result of the first wait.
+//
+// Order matters at shutdown: call Close before db.Close so the
+// final actions rows land in WAL before the file descriptor goes
+// away. Without this step a SIGTERM in the middle of a busy batch
+// silently loses every event still sitting in s.ch (4096-deep by
+// default).
+func (s *Sink) Close(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		close(s.ch)
+	})
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Sink) drain() {
+	defer close(s.done)
 	for e := range s.ch {
 		// Persist only terminal events. start/frame are transient
 		// signals for live SSE — duplicating them in `actions` would
@@ -2531,20 +2602,24 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu                 sync.Mutex
-	pending            map[string]*pendingEntry
-	terminal           map[string]terminalHITLEntry
-	sink               *Sink // SSE fan-out for the dashboard
-	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	mu                    sync.Mutex
+	pending               map[string]*pendingEntry
+	terminal              map[string]terminalHITLEntry
+	sink                  *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver    func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult)
 }
 
 type pendingEntry struct {
-	p        runtime.HITLPending
-	decision chan runtime.HITLDecision
+	p           runtime.HITLPending
+	decision    chan runtime.HITLDecision
+	messageRefs []string
 }
 
 type terminalHITLEntry struct {
 	result    runtime.HITLResolveResult
+	pending   runtime.HITLPending
+	refs      []string
 	expiresAt time.Time
 }
 
@@ -2676,6 +2751,8 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 		r.mu.Unlock()
 		return result
 	}
+	refs := append([]string(nil), e.messageRefs...)
+	pend := e.p
 	e.decision <- d
 	delete(r.pending, id)
 	r.terminal[id] = terminalHITLEntry{
@@ -2683,7 +2760,9 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 		expiresAt: now.Add(hitlTerminalTTL),
 	}
 	r.mu.Unlock()
-	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+	result := runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+	r.updateRecordedMessageRefs(context.Background(), pend, refs, result)
+	return result
 }
 
 func staleHITLResolveResult(result runtime.HITLResolveResult) runtime.HITLResolveResult {
@@ -2701,7 +2780,10 @@ func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string)
 	if strings.TrimSpace(reason) == "" {
 		reason = string(state)
 	}
-	_, result := r.resolve(id, state, reason)
+	e, result := r.resolve(id, state, reason)
+	if e != nil && result.OK {
+		r.updateRecordedMessageRefs(context.Background(), e.p, e.messageRefs, result)
+	}
 	return result
 }
 
@@ -2719,8 +2801,54 @@ func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string
 	}
 	delete(r.pending, id)
 	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
-	r.terminal[id] = terminalHITLEntry{result: terminal, expiresAt: now.Add(hitlTerminalTTL)}
+	r.terminal[id] = terminalHITLEntry{result: terminal, pending: e.p, refs: append([]string(nil), e.messageRefs...), expiresAt: now.Add(hitlTerminalTTL)}
 	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+// RecordMessageRef records the channel-specific message id for a pending sync
+// HITL prompt so terminal states (timeout/client disconnect) can proactively
+// update the original Slack message. If the request already reached a terminal
+// state before the notifier returned, use a fresh context to update immediately:
+// the caller's request context is often canceled by then.
+func (r *HITLRegistry) RecordMessageRef(_ context.Context, pendingID, ref string) error {
+	if strings.TrimSpace(pendingID) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	var pending runtime.HITLPending
+	var result runtime.HITLResolveResult
+	var shouldUpdate bool
+	now := time.Now()
+	r.mu.Lock()
+	r.pruneTerminalLocked(now)
+	if e := r.pending[pendingID]; e != nil {
+		e.messageRefs = append(e.messageRefs, ref)
+		r.mu.Unlock()
+		return nil
+	}
+	if terminal, ok := r.terminal[pendingID]; ok {
+		terminal.refs = append(terminal.refs, ref)
+		r.terminal[pendingID] = terminal
+		pending = terminal.pending
+		result = terminal.result
+		shouldUpdate = true
+	}
+	r.mu.Unlock()
+	if shouldUpdate {
+		r.updateRecordedMessageRefs(context.Background(), pending, []string{ref}, result)
+	}
+	return nil
+}
+
+func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending runtime.HITLPending, refs []string, result runtime.HITLResolveResult) {
+	if r == nil || r.pendingMessageUpdater == nil {
+		return
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		r.pendingMessageUpdater(ctx, pending, ref, result)
+	}
 }
 
 func (r *HITLRegistry) pruneTerminalLocked(now time.Time) {

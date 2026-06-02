@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -55,6 +56,27 @@ type pushdownEnvVar struct {
 	PluginType  string
 }
 
+// envPushdownGatewayFetcher resolves the gateway's declared
+// push-down vars. Defaults to dialing /api/env-pushdown directly
+// (works on Linux per-process tsnet, where the parent CLI hosts
+// the tsnet.Server itself via gatewayDialOverride). Platform-
+// specific run modes that have no tailnet route from the parent
+// process — macOS NE most notably — override this with a fetcher
+// that asks the network extension to make the call instead.
+var envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
+
+// envPushdownDaemonFetcher is the Linux-only "ask the local
+// daemon for its cached env-pushdown JSON" path. Wired up from
+// run_linux.go's init() so this file can stay platform-agnostic.
+// Nil on platforms with no per-host daemon (macOS, the gateway
+// itself); runEnv then skips straight to the direct HTTP fetcher.
+//
+// Reason this exists: in tsnet-only deployments the CLI process
+// invoking `clawpatrol env` has no tailnet route to the gateway's
+// 100.x address — that route lives inside the daemon's tsnet.Server.
+// Without a daemon hop the direct fetch silently times out.
+var envPushdownDaemonFetcher func() ([]pushdownEnvVar, error)
+
 // envPushdownVars returns every var the operator's CLI environment
 // needs: CA-bundle vars (which point at a path on the *client's*
 // disk so the client owns them) plus the gateway's declared
@@ -68,8 +90,36 @@ type pushdownEnvVar struct {
 // callers surface the error so the operator knows their agents
 // won't get the placeholder tokens.
 func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
-	var out []pushdownEnvVar
-	for _, k := range []string{
+	out := caPathPushdownVars(caPath)
+	// Prefer the daemon-cached set when available — it's the only
+	// path that works in tsnet-only mode (the CLI process has no
+	// tailnet route of its own). Falls back to a direct fetch on any
+	// daemon error: daemon unreachable, hello mismatch, or an old
+	// daemon that doesn't understand the ENV command (replies EOF).
+	if envPushdownDaemonFetcher != nil {
+		if vars, err := envPushdownDaemonFetcher(); err == nil {
+			return append(out, vars...), nil
+		}
+	}
+	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
+	if err != nil {
+		return out, err
+	}
+	return append(out, vars...), nil
+}
+
+// caPathPushdownVars returns the CA-bundle env vars every wrapped
+// agent needs (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, etc.), each
+// pointing at caPath. These are client-side — the gateway doesn't
+// know the client's filesystem layout, so they are never returned
+// by /api/env-pushdown.
+//
+// Exposed within the package so the Linux daemon-routed path
+// (`clawpatrol run` → daemon control socket) can combine these
+// with the gateway-fetched vars the daemon ships back, instead
+// of re-implementing the list.
+func caPathPushdownVars(caPath string) []pushdownEnvVar {
+	keys := []string{
 		"SSL_CERT_FILE",
 		"NODE_EXTRA_CA_CERTS",
 		"REQUESTS_CA_BUNDLE",
@@ -77,14 +127,12 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 		"GIT_SSL_CAINFO",
 		"DENO_CERT",
 		"PIP_CERT",
-	} {
+	}
+	out := make([]pushdownEnvVar, 0, len(keys))
+	for _, k := range keys {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
-	vars, err := fetchEnvPushdownFromGateway(filepath.Dir(caPath))
-	if err != nil {
-		return out, err
-	}
-	return append(out, vars...), nil
+	return out
 }
 
 // gatewayDialOverride lets callers (e.g. clawpatrol run in tsnet mode)
@@ -152,6 +200,22 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", url, err)
+	}
+	vars, err := parseEnvPushdownJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", url, err)
+	}
+	return vars, nil
+}
+
+// parseEnvPushdownJSON decodes the wire format returned by
+// /api/env-pushdown into the CLI's internal pushdownEnvVar shape.
+// Shared between the direct HTTP fetcher and the macOS variant
+// that hops through the NE's session socket.
+func parseEnvPushdownJSON(raw []byte) ([]pushdownEnvVar, error) {
 	var body struct {
 		Vars []struct {
 			Name        string `json:"name"`
@@ -160,8 +224,8 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 			PluginType  string `json:"plugin_type"`
 		} `json:"vars"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", url, err)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
 	}
 	out := make([]pushdownEnvVar, 0, len(body.Vars))
 	for _, v := range body.Vars {
@@ -192,7 +256,7 @@ func readGatewayURL(caDir string) string {
 // readTailnetURL returns the tailnet-direct API URL persisted at join
 // time (http://<peer-ip>:8080). Prefer this over readGatewayURL for
 // peer API calls — the public join URL may be Funnel-proxied and not
-// expose endpoints like /api/peer/ephemeral/tsnet or /api/env-pushdown.
+// expose endpoints like /api/peer/tsnet/register or /api/env-pushdown.
 func readTailnetURL(caDir string) string {
 	b, err := os.ReadFile(filepath.Join(caDir, "tailnet-url"))
 	if err != nil {
@@ -224,7 +288,7 @@ func runEnv(args []string) {
 
 	caPath := filepath.Join(*caDir, "ca.crt")
 	if _, err := os.Stat(caPath); err != nil {
-		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
+		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol join <gateway-url>` first\n", caPath)
 		os.Exit(2)
 	}
 	vars, err := envPushdownVars(caPath)
@@ -246,34 +310,16 @@ func runEnv(args []string) {
 	}
 }
 
-// applyEnvPushdown sets every pushdown var on the current process
-// environment. Called by `clawpatrol run` before exec'ing the child
-// command, so the wrapped agent CLI inherits the placeholders + CA
-// paths without the operator having to source `clawpatrol env`
-// separately.
-//
-// Opt-out: setting CLAWPATROL_NO_ENV=1 disables the entire pushdown.
-// Use when an agent CLI is incompatible with one of the pushed vars
-// (e.g. an OPENAI_API_KEY placeholder that forces a CLI into API
-// mode when its native auth would have worked through the tunnel).
-func applyEnvPushdown(caDir string) {
+// applyEnvPushdownVars sets env vars from an already-fetched list,
+// honoring CLAWPATROL_NO_ENV and never clobbering values the operator
+// set deliberately. Used by `clawpatrol run` which now receives the
+// vars from the daemon over its control socket instead of dialing the
+// gateway directly.
+func applyEnvPushdownVars(vars []pushdownEnvVar) {
 	if os.Getenv("CLAWPATROL_NO_ENV") == "1" {
 		return
 	}
-	caPath := filepath.Join(caDir, "ca.crt")
-	if _, err := os.Stat(caPath); err != nil {
-		// CA not set up yet — `clawpatrol join` hasn't run. Don't
-		// silently skip; the agent CLI will fail TLS verification
-		// and the operator will be confused. Log and continue.
-		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)\n", caPath)
-		return
-	}
-	vars, err := envPushdownVars(caPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "clawpatrol: %v — agent will run without placeholder push-down\n", err)
-	}
 	for _, ev := range vars {
-		// Don't clobber values the operator already set deliberately.
 		if os.Getenv(ev.Name) != "" {
 			continue
 		}
@@ -344,16 +390,24 @@ func (m *modelDB) refreshLoop() {
 	}
 }
 
+// litellmModelsResponseLimit caps the litellm JSON fetch. The dataset
+// is ~1 MiB today; 8 MiB leaves headroom for growth without letting a
+// surprise content swap (or a hostile mirror) drain process memory.
+const litellmModelsResponseLimit = 8 << 20
+
 func (m *modelDB) fetch() error {
 	cli := &http.Client{Timeout: 10 * time.Second}
 	resp, err := cli.Get(litellmModelsURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("models: get %s: %w", litellmModelsURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("models: %s: status %d", litellmModelsURL, resp.StatusCode)
+	}
 	var raw map[string]modelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, litellmModelsResponseLimit)).Decode(&raw); err != nil {
+		return fmt.Errorf("models: decode %s: %w", litellmModelsURL, err)
 	}
 	out := map[string]int64{}
 	for k, v := range raw {

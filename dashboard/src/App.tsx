@@ -1,24 +1,29 @@
 import { useEffect, useState } from "react";
-import { AgentsTable } from "./components/AgentsTable";
+import { AccountPage } from "./components/AccountPage";
+import { AgentsTable, sortAgents } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
+import { DevicesPage } from "./components/DevicesPage";
 import { Header } from "./components/Header";
 import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
+import { PageTitle } from "./components/PageTitle";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
 type Route =
   | { name: "main" }
+  | { name: "devices" }
   | { name: "device"; ip: string }
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
   | { name: "request"; id: string }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "account" };
 
 function parseRoute(): Route {
   const raw = window.location.hash;
@@ -32,6 +37,8 @@ function parseRoute(): Route {
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   if (h === "#/settings") return { name: "settings" };
+  if (h === "#/devices") return { name: "devices" };
+  if (h === "#/account") return { name: "account" };
   if (h === "#/analytics") return { name: "analytics" };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
@@ -86,23 +93,27 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col min-h-screen bg-canvas">
       <UpdateNotice update={update} />
-      <Header whoami={whoami} />
+      <Header whoami={whoami} currentRoute={route.name} />
       {route.name === "main" ? (
         <Main>
-          <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
-            <div className="overflow-x-auto">
-              <AgentsTable
-                agents={agents}
-                integrations={integrations}
-                onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
-              />
-            </div>
-          </section>
+          <PageTitle trail={[{ label: "Live overview" }]} />
+          <HomeAgents
+            agents={agents}
+            integrations={integrations}
+            onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
+          />
           <HITLBar />
           <LiveRequests height="420px" />
         </Main>
+      ) : route.name === "devices" ? (
+        <DevicesPage
+          agents={agents}
+          integrations={integrations}
+          whoami={whoami}
+          onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
+        />
       ) : route.name === "analytics" ? (
         <AnalyticsPage ip={route.ip} agents={agents} />
       ) : route.name === "request" ? (
@@ -115,6 +126,8 @@ export default function App() {
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
         />
+      ) : route.name === "account" ? (
+        <AccountPage whoami={whoami} />
       ) : (
         <DevicePage
           ip={route.ip}
@@ -141,6 +154,49 @@ export default function App() {
   );
 }
 
+// HomeAgents shows the first N agents on the home page with a link
+// to the full devices list when there's more. Sorted by activity
+// (last_at, bucketed to the hour) so the most-recently-active devices
+// surface but the order doesn't churn on every ping.
+const HOME_AGENTS_LIMIT = 10;
+function HomeAgents({
+  agents,
+  integrations,
+  onSelect,
+}: {
+  agents: Agent[];
+  integrations: Integration[];
+  onSelect: (ip: string) => void;
+}) {
+  const sorted = sortAgents(agents, "activity");
+  const shown = sorted.slice(0, HOME_AGENTS_LIMIT);
+  const overflow = sorted.length - shown.length;
+  return (
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
+      <div className="overflow-x-auto">
+        <AgentsTable
+          agents={shown}
+          integrations={integrations}
+          onSelect={onSelect}
+          sortBy="activity"
+        />
+      </div>
+      {overflow > 0 && (
+        <a
+          href="#/devices"
+          className={
+            "block bg-canvas px-4 py-2.5 text-left underline text-xs " +
+            "font-mono uppercase tracking-wider text-navy font-bold " +
+            "hover:bg-canvas-muted transition-colors"
+          }
+        >
+          …and {overflow} more →
+        </a>
+      )}
+    </section>
+  );
+}
+
 function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   if (!update?.update_available) return null;
   const dismissKey = "clawpatrol:update-dismissed:" + update.latest;
@@ -149,9 +205,9 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   );
   if (dismissed) return null;
   return (
-    <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-6 py-2 text-xs text-butter-900 flex items-center justify-between gap-3">
+    <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-4 py-2 text-xs text-text flex items-center justify-between gap-3">
       <div className="flex-1">
-        <span className="font-semibold">clawpatrol {update.latest}</span>
+        <span className="font-semibold">Claw Patrol {update.latest}</span>
         {" available — "}
         <a
           href={update.url}
@@ -168,10 +224,11 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
           localStorage.setItem(dismissKey, "1");
           setDismissed(true);
         }}
-        className="text-butter-900 hover:text-text text-sm leading-none px-1"
+        className="text-butter-900 hover:text-text text-lg leading-none px-1 cursor-pointer hover:bg-butter-300 squircle-md p-1 pb-1.5 pt-0.5 aspect-square h-6 transition-colors"
         title="dismiss"
       >
-        &times;
+        <span aria-hidden="true">&times;</span>
+        <span className="sr-only">Dismiss</span>
       </button>
     </div>
   );

@@ -39,6 +39,17 @@ func TestGeneratedDocIsFresh(t *testing.T) {
 		len(wantLines), len(gotLines), firstDiff(wantLines, gotLines))
 }
 
+func TestGatewayPluginBlockIsOptional(t *testing.T) {
+	got, err := render.Generate()
+	if err != nil {
+		t.Fatalf("render.Generate: %v", err)
+	}
+	const row = "| `plugin` | `block` | no |"
+	if !strings.Contains(got, row) {
+		t.Fatalf("generated config reference should mark top-level plugin blocks optional; missing row prefix %q", row)
+	}
+}
+
 func firstDiff(a, b []string) string {
 	n := len(a)
 	if len(b) < n {

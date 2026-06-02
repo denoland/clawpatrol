@@ -40,18 +40,31 @@ func TestGatewayTsnetDir_EmptyStateDir(t *testing.T) {
 	}
 }
 
-// TestOpenListener_NoAuthKey covers the WireGuard-mode path: when
-// neither authkey nor TS_AUTHKEY is set, openListener binds loopback
-// regardless of cfg.Listen's host portion, and is unaffected by
-// HOME / XDG_CONFIG_HOME being unset (no tsnet path is reached).
-func TestOpenListener_NoAuthKey(t *testing.T) {
+// TestOpenListener_WireGuardOnlyBindsLoopback covers the WG-only path:
+// the loopback TCP listener at 127.0.0.1:8443 is for host-local
+// agents (single-host deployments where the gateway runs under one
+// UID and clawpatrol-run from another). No tsnet bring-up.
+func TestOpenListener_WireGuardOnlyBindsLoopback(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("TS_AUTHKEY", "")
-	cfg := &config.Gateway{Control: "wireguard", Listen: "127.0.0.1:0"}
-	_, ln, err := openListener(cfg, t.TempDir())
+	cfg := &config.Gateway{
+		Settings: &config.GatewaySettings{
+			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+		},
+	}
+	s, ln, err := openListener(cfg, t.TempDir())
 	if err != nil {
-		t.Fatalf("openListener: %v", err)
+		// Address-already-in-use is fine (another test in the package
+		// may hold :8443) — what we care about is that no tsnet path
+		// was taken.
+		if !strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("openListener: %v", err)
+		}
+		return
+	}
+	if s != nil {
+		t.Fatal("expected nil tsnet server in WG-only mode")
 	}
 	defer func() { _ = ln.Close() }()
 	host, _, err := net.SplitHostPort(ln.Addr().String())
@@ -63,49 +76,27 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 	}
 }
 
-// TestOpenListener_NoAuthKey_PublicListenIsOverridden verifies that
-// an operator-set "0.0.0.0:0" still results in a loopback bind in
-// WireGuard mode — the F-19 open-proxy fix. Tailscale system-mode
-// intentionally respects cfg.Listen as-is (the operator binds the
-// tailnet IP directly); this test is WG-specific.
-func TestOpenListener_NoAuthKey_PublicListenIsOverridden(t *testing.T) {
-	t.Setenv("TS_AUTHKEY", "")
-	cfg := &config.Gateway{Control: "wireguard", Listen: "0.0.0.0:0"}
-	_, ln, err := openListener(cfg, t.TempDir())
-	if err != nil {
-		t.Fatalf("openListener: %v", err)
-	}
-	defer func() { _ = ln.Close() }()
-	host, _, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("split addr: %v", err)
-	}
-	if host != "127.0.0.1" && host != "::1" {
-		t.Fatalf("expected loopback bind, got %s", host)
-	}
-}
-
-// TestOpenListener_EnvIndependent verifies that with an authkey set but
-// HOME and XDG_CONFIG_HOME unset, openListener does not fail with the
-// "neither $XDG_CONFIG_HOME nor $HOME are defined" error from tsnet's
-// default-dir resolver. The tsnet.Listen call itself may still error
-// (no real control plane in tests), but the failure must not be the
-// env-var fallback path.
+// TestOpenListener_EnvIndependent verifies that with the tailscale
+// block enabled (and an authkey set) but HOME and XDG_CONFIG_HOME
+// unset, openListener does not fail with the "neither $XDG_CONFIG_HOME
+// nor $HOME are defined" error from tsnet's default-dir resolver. The
+// tsnet.Listen call itself may still error (no real control plane in
+// tests), but the failure must not be the env-var fallback path.
 func TestOpenListener_EnvIndependent(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	cfg := &config.Gateway{
-		Listen:  "127.0.0.1:0",
-		AuthKey: "tskey-test-invalid",
+		Settings: &config.GatewaySettings{
+			Tailscale: &config.TailscaleBlock{
+				AuthKey:    "tskey-test-invalid",
+				ControlURL: "https://127.0.0.1:1",
+			},
+		},
 	}
-	// Direct tsnet.Listen against an unreachable control URL avoids the
-	// blocking join; we only care that Server construction picked up an
-	// explicit Dir rather than consulting env vars.
-	cfg.ControlURL = "https://127.0.0.1:1"
 	_, _, err := openListener(cfg, t.TempDir())
 	if err == nil {
 		// A test environment that happens to bring tsnet up against a
-		// reachable control plane is fine — just close and return.
+		// reachable control plane is fine — just return.
 		return
 	}
 	if strings.Contains(err.Error(), "$XDG_CONFIG_HOME") || strings.Contains(err.Error(), "$HOME") {

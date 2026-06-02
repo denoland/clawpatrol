@@ -16,7 +16,10 @@ import (
 
 // HeaderToken is part of the clawpatrol plugin API.
 type HeaderToken struct {
+	// Header is the HTTP header name to overwrite with the secret value.
 	Header string `hcl:"header"`
+	// Prefix is prepended to the secret before injection, for schemes
+	// such as "Bearer " or "Token ".
 	Prefix string `hcl:"prefix,optional"`
 }
 
@@ -37,11 +40,12 @@ func (*HeaderToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*HeaderToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "header_token",
-		New:     newer[HeaderToken](),
-		Runtime: (*HeaderToken)(nil),
-		Build:   passthrough,
+		Kind:           config.KindCredential,
+		Type:           "header_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[HeaderToken](),
+		Runtime:        (*HeaderToken)(nil),
+		Build:          passthrough,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*HeaderToken)
 			b.SetAttributeValue("header", cty.StringVal(v.Header))

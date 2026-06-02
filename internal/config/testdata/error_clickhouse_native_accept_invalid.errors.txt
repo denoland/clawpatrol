@@ -1,1 +1,1 @@
-error: error_clickhouse_native_accept_invalid.hcl:3:1: accept_invalid_certificate set without tls on clickhouse_native endpoint "bad-accept-invalid" — accept_invalid_certificate only affects the upstream TLS handshake; set `tls = true` to enable TLS, or remove accept_invalid_certificate.
+error: error_clickhouse_native_accept_invalid.hcl:10:1: accept_invalid_certificate set without tls on clickhouse_native endpoint "bad-accept-invalid" — accept_invalid_certificate only affects the upstream TLS handshake; set `tls = true` to enable TLS, or remove accept_invalid_certificate.

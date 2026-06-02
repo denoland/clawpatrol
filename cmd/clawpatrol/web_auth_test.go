@@ -42,9 +42,18 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 	t.Helper()
 	db := openOnboardAuthTestDB(t)
+	settings := &config.GatewaySettings{}
+	switch control {
+	case "tailscale", "":
+		settings.Tailscale = &config.TailscaleBlock{AuthKey: "tskey-test"}
+	case "wireguard":
+		settings.WireGuard = &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"}
+	default:
+		t.Fatalf("unknown control %q", control)
+	}
 	cfg := &config.Gateway{
-		Control: control,
-		Policy:  &config.Policy{},
+		Settings: settings,
+		Policy:   &config.Policy{},
 	}
 	g := &Gateway{
 		cfg:     cfg,
@@ -276,8 +285,19 @@ func TestOnboardApproveWithDashboardPasswordInTailscaleModeDoesNotRequireTailnet
 	}
 }
 
-func TestOnboardApproveWithTailnetPrincipalInTailscaleModeDoesNotRequireDashboardPassword(t *testing.T) {
+// A tailnet operator whose login matches dashboard_operators can
+// reach /api/onboard/approve without a dashboard password — that's
+// the entire point of the operator allowlist. Reaching the handler
+// shows up as a 404 because the code "NOPE" doesn't exist.
+//
+// Pre-#509 these tests didn't configure DashboardOperators at all
+// and still expected the request to pass; that loose behavior let
+// any tailnet member (including tag:client whois "tagged-devices")
+// approve onboards. The fix requires an explicit allowlist match
+// on operator-class routes; the test config now reflects that.
+func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -294,8 +314,9 @@ func TestOnboardApproveWithTailnetPrincipalInTailscaleModeDoesNotRequireDashboar
 	}
 }
 
-func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeDoesNotRequireDashboardPassword(t *testing.T) {
+func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "")
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -309,6 +330,33 @@ func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeDoesNotRequireD
 	}
 	if !strings.Contains(rr.Body.String(), "unknown or expired code") {
 		t.Fatalf("body = %q, want onboard handler error", rr.Body.String())
+	}
+}
+
+// Counterpart to the previous two tests: a tailnet identity that
+// *doesn't* match dashboard_operators must be rejected on
+// /api/onboard/approve even though Tailscale control mode is
+// active. This is the #509 case — without this check, tag:client
+// peers (whois resolves to "tagged-devices") could approve their
+// own onboards.
+func TestOnboardApproveRejectsTailnetPrincipalNotInOperators(t *testing.T) {
+	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
+	h := w.handler()
+	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	// "tagged-devices" is the tsnet whois reply for a tag:client
+	// peer with no human identity attached.
+	req.Header.Set("Tailscale-User-Login", "tagged-devices")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "operator routes require") {
+		t.Fatalf("body = %q, want operator-gate error", rr.Body.String())
 	}
 }
 
@@ -323,7 +371,12 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 		t.Fatalf("OpenDB: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	cfg := &config.Gateway{Control: "wireguard", Policy: &config.Policy{}}
+	cfg := &config.Gateway{
+		Settings: &config.GatewaySettings{
+			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+		},
+		Policy: &config.Policy{},
+	}
 	g := &Gateway{cfg: cfg, db: db, onboard: newOnboardRegistry()}
 	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	h := w.handler()
@@ -361,7 +414,7 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 // effect for the gate's purposes.
 func TestDashboardAuthGateAllowsTailnetOperatorWhenAllowlisted(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.DashboardOperators = []string{"alice@example.com", "*@example.org"}
+	w.g.cfg.Settings.Tailscale.Operators = []string{"alice@example.com", "*@example.org"}
 	h := w.handler()
 
 	cases := []struct {
@@ -387,13 +440,13 @@ func TestDashboardAuthGateAllowsTailnetOperatorWhenAllowlisted(t *testing.T) {
 	}
 }
 
-// TestDashboardAuthGateTailnetAllowlistIgnoredInWireGuardMode: in
-// non-tailscale control mode there is no whois, so a configured
-// dashboard_operators allowlist must NOT confer access. Password is
+// TestDashboardAuthGateTailnetIdentityIgnoredInWireGuardMode: when
+// only the `wireguard {}` block is enabled there is no tsnet whois
+// identity, so a Tailscale-User-Login header (even one that would
+// match an operator pattern) must NOT confer access. Password is
 // still required.
-func TestDashboardAuthGateTailnetAllowlistIgnoredInWireGuardMode(t *testing.T) {
+func TestDashboardAuthGateTailnetIdentityIgnoredInWireGuardMode(t *testing.T) {
 	w := newOnboardAuthTestWebMux(t)
-	w.g.cfg.DashboardOperators = []string{"*@example.com"}
 	h := w.handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)

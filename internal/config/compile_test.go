@@ -11,6 +11,17 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
+// testGatewayPrefix wraps inline test fixtures with a minimal valid
+// `gateway {}` block so loader-level operational validation passes;
+// these tests care only about the policy blocks they declare.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 // TestCompile loads testdata/feature_minimal.hcl, lowers it via
 // config.Compile, and exercises the resulting CompiledPolicy end-to-
 // end: priority sort, host indexing, credential resolution, and
@@ -49,8 +60,8 @@ func TestCompile(t *testing.T) {
 	if len(ep.Credentials) != 1 {
 		t.Fatalf("expected 1 credential, got %d", len(ep.Credentials))
 	}
-	if ep.Credentials[0].Credential == nil ||
-		ep.Credentials[0].Credential.Symbol.Name != "github-pat" {
+	if ep.Credentials[0] == nil ||
+		ep.Credentials[0].Symbol.Name != "github" {
 		t.Errorf("credential resolution wrong: %+v", ep.Credentials[0])
 	}
 
@@ -108,14 +119,15 @@ func TestCompile(t *testing.T) {
 // or within-endpoint duplicates are rejected at load time.
 func TestCompileWildcardHosts(t *testing.T) {
 	src := `
-credential "bearer_token" "tok" {}
 endpoint "https" "aws" {
-  hosts      = ["*.amazonaws.com", "*.us-east-1.amazonaws.com:443"]
-  credential = tok
+  hosts = ["*.amazonaws.com", "*.us-east-1.amazonaws.com:443"]
 }
-profile "p" { endpoints = [aws] }
+credential "bearer_token" "tok" {
+  endpoint = https.aws
+}
+profile "p" { credentials = [bearer_token.tok] }
 `
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -153,51 +165,55 @@ func TestCompileRejectsBadHosts(t *testing.T) {
 		{
 			name: "malformed wildcard - empty suffix",
 			src: `
-credential "bearer_token" "tok" {}
 endpoint "https" "bad" {
   hosts = ["*."]
-  credential = tok
 }
-profile "p" { endpoints = [bad] }
+credential "bearer_token" "tok" {
+  endpoint = https.bad
+}
+profile "p" { credentials = [bearer_token.tok] }
 `,
 		},
 		{
 			name: "wildcard with bare TLD",
 			src: `
-credential "bearer_token" "tok" {}
 endpoint "https" "bad" {
   hosts = ["*.com"]
-  credential = tok
 }
-profile "p" { endpoints = [bad] }
+credential "bearer_token" "tok" {
+  endpoint = https.bad
+}
+profile "p" { credentials = [bearer_token.tok] }
 `,
 		},
 		{
 			name: "wildcard not at leftmost label",
 			src: `
-credential "bearer_token" "tok" {}
 endpoint "https" "bad" {
   hosts = ["api.*.foo.com"]
-  credential = tok
 }
-profile "p" { endpoints = [bad] }
+credential "bearer_token" "tok" {
+  endpoint = https.bad
+}
+profile "p" { credentials = [bearer_token.tok] }
 `,
 		},
 		{
 			name: "duplicate hosts",
 			src: `
-credential "bearer_token" "tok" {}
 endpoint "https" "bad" {
   hosts = ["api.foo.com", "api.foo.com"]
-  credential = tok
 }
-profile "p" { endpoints = [bad] }
+credential "bearer_token" "tok" {
+  endpoint = https.bad
+}
+profile "p" { credentials = [bearer_token.tok] }
 `,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, diags := config.LoadBytes([]byte(c.src), "in.hcl")
+			_, diags := config.LoadBytes([]byte(testGatewayPrefix+c.src), "in.hcl")
 			if !diags.HasErrors() {
 				t.Fatalf("load accepted bad hosts; want diagnostic")
 			}
@@ -210,32 +226,33 @@ profile "p" { endpoints = [bad] }
 // wins evaluation. Tied priorities preserve declaration order.
 func TestCompilePrioritySort(t *testing.T) {
 	src := `
-credential "bearer_token" "pat" {}
 endpoint "https" "ep" {
-  hosts      = ["x.example.com"]
-  credential = pat
+  hosts = ["x.example.com"]
 }
-profile "p" { endpoints = [ep] }
+credential "bearer_token" "pat" {
+  endpoint = https.ep
+}
+profile "p" { credentials = [bearer_token.pat] }
 
 rule "fallback" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = -100
   condition = "http.method == 'POST'"
   verdict   = "deny"
 }
 rule "specific" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/refunds'"
   verdict   = "deny"
 }
 rule "general" {
-  endpoint  = ep
+  endpoint  = https.ep
   condition = "http.method == 'POST'"
   verdict   = "allow"
 }
 `
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -311,7 +328,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	same := `
@@ -320,7 +337,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	commandChanged := `
@@ -329,7 +346,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "new-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	credentialChanged := `
@@ -338,7 +355,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 
@@ -366,7 +383,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 	viaChanged := `
@@ -377,7 +394,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 
@@ -392,7 +409,7 @@ tunnel "local_command" "child" {
 
 func compileTunnelFingerprint(t *testing.T, src string, name string) string {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(src), "fingerprint.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "fingerprint.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -414,15 +431,15 @@ func TestCompileTunnelViaCycle(t *testing.T) {
 tunnel "local_command" "a" {
   command = ["true"]
   listen  = "127.0.0.1:1"
-  via     = b
+  via     = local_command.b
 }
 tunnel "local_command" "b" {
   command = ["true"]
   listen  = "127.0.0.1:2"
-  via     = a
+  via     = local_command.a
 }
 `)
-	gw, diags := config.LoadBytes(src, "cycle.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+string(src)), "cycle.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -445,10 +462,10 @@ tunnel "local_command" "t" {
 }
 endpoint "postgres" "ipliteral" {
   host   = "10.0.0.5:5432"
-  tunnel = t
+  tunnel = local_command.t
 }
 `)
-	gw, diags := config.LoadBytes(src, "ipliteral.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+string(src)), "ipliteral.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}

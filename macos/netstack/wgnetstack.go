@@ -42,6 +42,7 @@ import (
 	"time"
 	"unsafe"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -784,30 +785,30 @@ func raiseFDLimit() {
 //
 // Flow:
 //   Provider.swift (tsnet mode)
-//     bridgeTCP flow → ts_netstack_tcp_connect(ip, port)
-//       → tsServer.Dial(gwAddr)
-//       → write HAProxy PROXY v1 header with original dstIP:dstPort
-//       → gateway dispatches to target
+//     ts_netstack_init joins the tailnet and sets ExitNodeIP=<gateway>.
+//     bridgeTCP flow → ts_netstack_tcp_connect(dstIP, dstPort)
+//       → tsServer.Dial("dstIP:dstPort")
+//       → tsnet exit-node-routes the dial through the gateway, which
+//         picks it up in RegisterFallbackTCPHandler with the original
+//         dst intact.
 //
-// The PROXY header carries (tsNodeIP, dstIP, 0, dstPort); srcPort is
-// 0 because the NE intercept layer doesn't expose the original local
-// port. Gateway routing uses dstIP:dstPort only.
+// No PROXY-v1 framing: the gateway sees original dst directly via
+// tsnet's exit-node machinery.
 
 var (
 	tsServer  *tsnet.Server
-	tsGwAddr  string
 	tsNodeIP  string
 	tsMu      sync.Mutex
 	tsStarted bool
 )
 
 // ts_netstack_init joins the tailnet with the given ephemeral auth key
-// and records the gateway address for ts_netstack_tcp_connect. Blocks
-// until the tsnet node has a 100.x.x.x address (≤90s). Returns 0 on
-// success, -1 on failure.
+// and configures the gateway as the tsnet exit node so subsequent dials
+// route through it. Blocks until the tsnet node has a 100.x.x.x address
+// (≤90s). Returns 0 on success, -1 on failure.
 //
 //export ts_netstack_init
-func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostnameC, errBuf *C.char, errLen C.int) C.int {
+func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC, stateDirC, errBuf *C.char, errLen C.int) C.int {
 	tsMu.Lock()
 	defer tsMu.Unlock()
 	if tsStarted {
@@ -817,22 +818,46 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostname
 	authKey := C.GoString(authKeyC)
 	controlURL := C.GoString(controlURLС)
 	gwHost := C.GoString(gwHostC)
-	gwPort := C.GoString(gwPortC)
+	gwIPStr := C.GoString(gwIPC)
 	token := C.GoString(tokenC)
 	hostname := C.GoString(hostnameC)
+	stateDir := C.GoString(stateDirC)
 
-	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-ne-*")
-	if err != nil {
-		setErr(errBuf, errLen, "mktemp: "+err.Error())
+	gwIP, err := netip.ParseAddr(gwIPStr)
+	if err != nil || !gwIP.IsValid() {
+		setErr(errBuf, errLen, "invalid gateway IP: "+gwIPStr)
 		return -1
 	}
 
+	// Persistent state dir from Swift's per-extension Application
+	// Support container. Stable across NE restarts so tsnet reuses
+	// the saved machine + node keys instead of re-registering. With
+	// Ephemeral: false + a stable Hostname, the single-use auth key
+	// is consumed exactly once on first init — subsequent restarts
+	// don't need it. Mirrors the Linux daemon's
+	// $XDG_STATE_HOME/clawpatrol/tsnet layout.
+	if stateDir == "" {
+		setErr(errBuf, errLen, "empty state dir")
+		return -1
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		setErr(errBuf, errLen, "mkdir state dir: "+err.Error())
+		return -1
+	}
+
+	// Hostname falls back to a per-PID name only when the operator
+	// didn't supply one at join — needed so tsnet doesn't pick a
+	// random hostname per init and orphan nodes on the tailnet.
+	tsHostname := hostname
+	if tsHostname == "" {
+		tsHostname = fmt.Sprintf("clawpatrol-ne-%d", os.Getpid())
+	}
+
 	s := &tsnet.Server{
-		Hostname:   fmt.Sprintf("clawpatrol-ne-%d", os.Getpid()),
+		Hostname:   tsHostname,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        stateDir,
-		Ephemeral:  true,
 		Logf:       func(string, ...any) {},
 	}
 
@@ -841,8 +866,25 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostname
 	upSt, err := s.Up(ctx)
 	if err != nil {
 		_ = s.Close()
-		_ = os.RemoveAll(stateDir)
 		setErr(errBuf, errLen, "tsnet up: "+err.Error())
+		return -1
+	}
+
+	// Configure gateway as exit node. Every outbound dial from this
+	// tsnet node — TCP and UDP — will be routed through the gateway,
+	// where the original dst lands in RegisterFallbackTCPHandler.
+	lc, err := s.LocalClient()
+	if err != nil {
+		_ = s.Close()
+		setErr(errBuf, errLen, "local client: "+err.Error())
+		return -1
+	}
+	if _, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		ExitNodeIPSet: true,
+		Prefs:         ipn.Prefs{ExitNodeIP: gwIP},
+	}); err != nil {
+		_ = s.Close()
+		setErr(errBuf, errLen, "set exit-node: "+err.Error())
 		return -1
 	}
 
@@ -858,7 +900,6 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostname
 	}
 
 	tsServer = s
-	tsGwAddr = net.JoinHostPort(gwHost, gwPort)
 	tsNodeIP = ip4
 	tsStarted = true
 
@@ -868,22 +909,22 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostname
 	// network and can't dial gateway tailnet IPs directly; tsnet
 	// (running here) IS on the tailnet.
 	if token != "" && ip4 != "" {
-		go registerEphemeralOverTsnet(s, gwHost, token, ip4, hostname)
+		go registerTsnetPeerFromNE(s, gwHost, token, ip4, hostname)
 	}
 	return 0
 }
 
-// registerEphemeralOverTsnet POSTs to the gateway's tailnet-only
-// /api/peer/ephemeral/tsnet/register endpoint using tsnet.Server.Dial
-// so the call reaches a 100.x tailnet IP that the parent process
-// (host network) cannot. Best-effort: on failure the run still works
-// but lands in the gateway's default profile.
-func registerEphemeralOverTsnet(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
+// registerTsnetPeerFromNE POSTs to the gateway's /api/peer/tsnet/register
+// endpoint using tsnet.Server.Dial so the call reaches a 100.x tailnet IP
+// that the parent process (host network) cannot. First call after
+// approval promotes the synthetic placeholder; subsequent calls (NE
+// reboots, gateway restarts) are server-side no-ops. Best-effort.
+func registerTsnetPeerFromNE(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
 	client := &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: &http.Transport{DialContext: s.Dial},
 	}
-	u := "http://" + gwHost + ":8080/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	u := "http://" + gwHost + ":8080/api/peer/tsnet/register?ip=" + tsIP
 	if hostname != "" {
 		u += "&hostname=" + url.QueryEscape(hostname)
 	}
@@ -915,16 +956,16 @@ func ts_netstack_get_ip(outBuf *C.char, outLen C.int) C.int {
 	return 0
 }
 
-// ts_netstack_tcp_connect dials dstHost:dstPort via the gateway over
-// tsnet (PROXY v1 header carries the original destination). Returns a
-// positive connection ID for use with wg_netstack_send/recv/close_conn.
+// ts_netstack_tcp_connect dials dstHost:dstPort via tsnet. The tsnet
+// node has the gateway set as its exit node (see ts_netstack_init), so
+// this dial transparently routes through the gateway, which sees the
+// original dst via RegisterFallbackTCPHandler. Returns a positive
+// connection ID for use with wg_netstack_send/recv/close_conn.
 //
 //export ts_netstack_tcp_connect
 func ts_netstack_tcp_connect(hostC *C.char, port C.int, timeoutMs C.int, errBuf *C.char, errLen C.int) C.int64_t {
 	tsMu.Lock()
 	s := tsServer
-	gwAddr := tsGwAddr
-	srcIP := tsNodeIP
 	tsMu.Unlock()
 	if s == nil {
 		setErr(errBuf, errLen, "ts_netstack not initialized")
@@ -937,15 +978,10 @@ func ts_netstack_tcp_connect(hostC *C.char, port C.int, timeoutMs C.int, errBuf 
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 		defer cancel()
 	}
-	conn, err := s.Dial(ctx, "tcp", gwAddr)
+	dstAddr := net.JoinHostPort(host, fmt.Sprintf("%d", int(port)))
+	conn, err := s.Dial(ctx, "tcp", dstAddr)
 	if err != nil {
 		setErr(errBuf, errLen, "tsnet dial: "+err.Error())
-		return -1
-	}
-	proxyHdr := fmt.Sprintf("PROXY TCP4 %s %s 0 %d\r\n", srcIP, host, int(port))
-	if _, err := io.WriteString(conn, proxyHdr); err != nil {
-		_ = conn.Close()
-		setErr(errBuf, errLen, "proxy hdr: "+err.Error())
 		return -1
 	}
 	id := nextConnID.Add(1)
@@ -1006,6 +1042,56 @@ func ts_netstack_udp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C
 	return C.int64_t(id)
 }
 
+// ts_netstack_fetch_env_pushdown GETs the gateway's tailnet-only
+// /api/env-pushdown endpoint via tsnet so the parent CLI (which is on
+// the host network and has no tailnet route) can reach 100.x through
+// the extension. The raw JSON body is copied into outBuf NUL-terminated;
+// returns the body length, or -1 on any error.
+//
+//export ts_netstack_fetch_env_pushdown
+func ts_netstack_fetch_env_pushdown(gwHostC, tokenC, outBuf *C.char, outBufCap C.int) C.int {
+	tsMu.Lock()
+	s := tsServer
+	tsMu.Unlock()
+	if s == nil {
+		return -1
+	}
+	gwHost := C.GoString(gwHostC)
+	token := C.GoString(tokenC)
+	if gwHost == "" || token == "" {
+		return -1
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: s.Dial},
+	}
+	u := "http://" + gwHost + ":8080/api/env-pushdown"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return -1
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return -1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		return -1
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return -1
+	}
+	if outBufCap <= 0 || len(body) >= int(outBufCap) {
+		return -1
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(outBuf)), int(outBufCap))
+	copy(dst, body)
+	dst[len(body)] = 0
+	return C.int(len(body))
+}
+
 // ts_netstack_close shuts down the tsnet server.
 //
 //export ts_netstack_close
@@ -1017,7 +1103,6 @@ func ts_netstack_close() {
 		tsServer = nil
 	}
 	tsStarted = false
-	tsGwAddr = ""
 	tsNodeIP = ""
 }
 

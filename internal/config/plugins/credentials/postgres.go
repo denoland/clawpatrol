@@ -14,8 +14,40 @@ import (
 )
 
 // PostgresCredential is part of the clawpatrol plugin API.
+//
+// Database, when set, is the discriminator the dispatcher uses to
+// pick this credential when several postgres_credential blocks bind
+// the same endpoint(s). At request time the gateway reads the
+// agent-declared database off the StartupMessage and picks the
+// credential whose `database` matches; an unset `database` field is
+// the catchall (one allowed per (profile, endpoint)).
 type PostgresCredential struct {
+	// User is the upstream Postgres role the gateway authenticates as.
 	User string `hcl:"user,optional"`
+	// Database limits this credential to sessions whose StartupMessage
+	// declares the same database. Empty acts as the catchall.
+	Database string `hcl:"database,optional"`
+}
+
+// CredentialDatabase reports the operator-declared database
+// discriminator for this credential. Retained for HCL emit / dump
+// consumers; dispatch reads it through CredentialDisambiguators.
+func (p *PostgresCredential) CredentialDatabase() string { return p.Database }
+
+// CredentialDisambiguators implements
+// config.CredentialDisambiguatorBody. `user` is the primary
+// discriminator (postgres routes via StartupMessage.user);
+// `database` is also supported when multiple credentials bind one
+// endpoint with different default databases.
+func (p *PostgresCredential) CredentialDisambiguators() map[string]string {
+	out := map[string]string{}
+	if p.User != "" {
+		out["user"] = p.User
+	}
+	if p.Database != "" {
+		out["database"] = p.Database
+	}
+	return out
 }
 
 // PostgresAuth implements runtime.PostgresAuthCredential — the
@@ -33,15 +65,19 @@ func (*PostgresCredential) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.PostgresAuthCredential = (*PostgresCredential)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "postgres_credential",
-		New:     newer[PostgresCredential](),
-		Runtime: (*PostgresCredential)(nil),
-		Build:   passthrough,
+		Kind:           config.KindCredential,
+		Type:           "postgres_credential",
+		New:            newer[PostgresCredential](),
+		Runtime:        (*PostgresCredential)(nil),
+		Build:          passthrough,
+		Disambiguators: []string{"user", "database"},
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*PostgresCredential)
 			if v.User != "" {
 				b.SetAttributeValue("user", cty.StringVal(v.User))
+			}
+			if v.Database != "" {
+				b.SetAttributeValue("database", cty.StringVal(v.Database))
 			}
 		},
 	})

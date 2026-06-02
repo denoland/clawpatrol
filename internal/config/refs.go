@@ -2,24 +2,9 @@ package config
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 )
-
-// article picks "a" or "an" for noun, falling back to "a" for short
-// noise. Diagnostics read better with proper agreement
-// ("Expected an endpoint" vs. "Expected a endpoint").
-func article(noun string) string {
-	if noun == "" {
-		return "a"
-	}
-	switch strings.ToLower(noun)[0] {
-	case 'a', 'e', 'i', 'o', 'u':
-		return "an " + noun
-	}
-	return "a " + noun
-}
 
 // Refs is the result of resolving one block's RefSpec entries. Each
 // entry is keyed by the plugin's RefSpec.Path and points back to the
@@ -92,23 +77,12 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 			}
 			sym := table.Get(spec.Kind, v.value)
 			if sym == nil {
-				if alt := table.GetAny(v.value); alt != nil {
-					altRange := alt.Range()
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Wrong reference kind for %q", v.value),
-						Detail:   fmt.Sprintf("Expected %s but %q is declared as %s at %s. Either reference a different name or redeclare the entity as %s.", article(string(spec.Kind)), v.value, article(string(alt.Kind)), alt.Range(), article(string(spec.Kind))),
-						Subject:  v.rangePtr,
-						Context:  &altRange,
-					})
-				} else {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Unknown %s %q", spec.Kind, v.value),
-						Detail:   fmt.Sprintf("No %s named %q is declared in this file.", spec.Kind, v.value),
-						Subject:  v.rangePtr,
-					})
-				}
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Unknown %s %q", spec.Kind, v.value),
+					Detail:   fmt.Sprintf("No %s named %q is declared in this file.", spec.Kind, v.value),
+					Subject:  v.rangePtr,
+				})
 				continue
 			}
 			if len(spec.FamilyConstraint) > 0 {

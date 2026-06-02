@@ -5,7 +5,30 @@ package main
 // `clawpatrol run -- <cmd> [args...]` — route a single process tree's
 // traffic through the gateway, leave the rest of the machine alone.
 //
-// Mirrors ../unclaw/native/napi/src/client_linux/netns.rs capability model:
+// The parent process is a thin client to the per-host `clawpatrol
+// daemon` (see daemon_linux.go), which owns one shared network
+// identity for the host (tsnet peer or WireGuard peer, depending on
+// `clawpatrol join` mode). Every concurrent run multiplexes through
+// the daemon — no per-process WG keys, no per-process tsnet nodes.
+//
+// Flow:
+//  1. Connect to (or spawn) the daemon via its Unix control socket.
+//  2. Ask it to START a session — the daemon replies with its
+//     underlay address (ADDR frame) and the env-pushdown JSON. Both
+//     are applied locally before the child execs.
+//  3. Child in a new user+net+mnt ns creates the TUN, sends fd via
+//     SCM_RIGHTS to the parent.
+//  4. Parent forwards that TUN fd to the daemon (again via SCM_RIGHTS)
+//     on the same control conn.
+//  5. Daemon attaches the TUN to a per-session gVisor stack and TCP
+//     forwarder; replies ATTACHED.
+//  6. Parent signals the child; child brings up its tun + execs the
+//     agent. The agent's outbound traffic flows TUN → daemon's
+//     gVisor → daemon's transport (tsnet exit-node or wg netstack).
+//  7. On child exit the parent closes the control conn; the daemon
+//     tears down the session.
+//
+// Capability model — mirrors ../unclaw/native/napi/src/client_linux/netns.rs:
 //   - child holds CAP_NET_ADMIN when calling TUNSETIFF (via ambient, survives exec)
 //   - ip subprocesses inherit CAP_NET_ADMIN (ambient propagates through exec chain)
 //   - user's final command does NOT hold CAP_NET_ADMIN (ambient cleared before exec)
@@ -14,109 +37,107 @@ package main
 // AmbientCaps=[CAP_NET_ADMIN]. Go's forkAndExecInChild raises ambient before
 // the exec, so the re-exec'd child has CAP_NET_ADMIN in effective from the
 // start — no exec has cleared it yet when TUNSETIFF runs.
-//
-// unclaw uses fork()+unshare() (never re-execs before TUNSETIFF). The effect
-// on capabilities is identical: TUNSETIFF sees effective CAP_NET_ADMIN,
-// ip subprocesses inherit it, the user's cmd gets nothing.
 
 import (
 	"bufio"
-	"context"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/conn"
-	"golang.zx2c4.com/wireguard/device"
-	wgtun "golang.zx2c4.com/wireguard/tun"
 )
 
 const (
 	runChildEnv        = "CLAWPATROL_RUN_CHILD"
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
-	runTsnetChildEnv   = "CLAWPATROL_RUN_TSNET_CHILD"
-	tunIfName          = "wg0"
-	tunMTU             = 1420
+	// runTunAddrEnv is the CIDR-less IP the child binds to its TUN
+	// inside the netns. Set by the parent from the daemon's ADDR
+	// reply; emitted into the child's environment so the child
+	// netns can configure `ip addr add` without round-tripping
+	// the value through the SCM_RIGHTS conn.
+	runTunAddrEnv = "CLAWPATROL_TUN_ADDR"
+	tunIfName     = "wg0"
+	// runTunMTU is the TUN MTU inside the child's netns. Set to the
+	// max IPv4 packet size — the daemon's transport handles real
+	// path-MTU + fragmentation behind us.
+	runTunMTU = 65535
 )
 
-// runRun is `clawpatrol run`. Re-execs self in new user+net+mnt namespaces
-// with CAP_NET_ADMIN in the ambient set, drives WireGuard in this process,
-// and execs the user's cmd inside the child.
+// runRun is `clawpatrol run`. Re-execs self in new user+net+mnt
+// namespaces with CAP_NET_ADMIN in the ambient set, hands the TUN fd
+// to the per-host daemon, and execs the user's cmd inside the child.
 func runRun(args []string) {
 	if os.Getenv(runChildEnv) == "1" {
 		runRunChild()
 		return
 	}
-	if os.Getenv(runTsnetChildEnv) == "1" {
-		runRunTsnetChild()
-		return
-	}
 
 	warnIfOnGatewayHost()
-
-	// Check for Tailscale mode — uses ephemeral tsnet instead of WireGuard.
-	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
-		runRunTsnet(args)
-		return
-	}
-
-	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
-	// below collapse to `0 → 0`, and most distros refuse to put pid 0
-	// into a new user namespace at all (apparmor restrict-unpriv-userns
-	// on Ubuntu 24.04, kernel.unprivileged_userns_clone=0 elsewhere).
-	// The fallout used to surface as a misleading sysctl hint after
-	// child.Start() failed — catch it here with a clear message instead.
 	if os.Geteuid() == 0 {
 		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
 	}
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	confPath := fs.String("conf", defaultRunConf(), "path to wg conf written by `clawpatrol join`")
-	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay that mirrors TCP listeners inside the netns back to the host")
+	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay (mirrors TCP listeners inside the netns back to the host AND forwards wrapped-cmd connections to 127.0.0.1 out to host loopback services)")
 	_ = fs.Parse(args)
 	cmd := fs.Args()
 	if len(cmd) == 0 {
-		fail("usage: clawpatrol run [--conf <path>] [--no-auto-expose] -- <cmd> [args...]")
+		fail("usage: clawpatrol run [--no-auto-expose] -- <cmd> [args...]")
 	}
-	// Honour both the flag and the env var so children re-execed by this
-	// process see the same setting without round-tripping the flag.
 	if *noAutoExpose {
 		_ = os.Setenv(runNoAutoExposeEnv, "1")
 	}
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
 
-	cfg, err := parseRunConf(*confPath)
-	if err != nil {
-		fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first", *confPath, err)
-	}
-
 	checkUserNS()
 
-	// Stamp CA + per-credential env vars; child and user's cmd inherit them.
-	applyEnvPushdown(defaultClawpatrolDir())
+	// 1. Open a control conn to the per-host daemon, spawning one if
+	// none is alive. Hello handshake happens inside daemonConnect.
+	ctrl, err := daemonConnect()
+	if err != nil {
+		fail("daemon connect: %v", err)
+	}
+	defer func() { _ = ctrl.Close() }()
 
-	// Allocate a per-run ephemeral WireGuard identity so concurrent
-	// `clawpatrol run` invocations on the same machine don't share a
-	// keypair and fight over the gateway's WG session.
-	cleanupEphemeral, _ := ephemeralPeer(cfg)
-	defer cleanupEphemeral()
+	// 2. Ask for a session. Daemon replies with its underlay IP, the
+	// cached env-pushdown JSON, and (when applicable) a one-line
+	// boot warning — surface that on stderr so operators see the
+	// message without tailing the daemon log.
+	br, tunAddr, envVars, daemonWarn, err := daemonClientStartSession(ctrl)
+	if err != nil {
+		fail("daemon START: %v", err)
+	}
+	if daemonWarn != "" {
+		fmt.Fprintf(os.Stderr, "clawpatrol: daemon: %s\n", daemonWarn)
+	}
+	_ = os.Setenv(runTunAddrEnv, tunAddr.String())
 
-	// socketpair: TUN fd handoff (child→parent) via SCM_RIGHTS.
-	// pipe: parent signals child "WG is up, finish setup".
+	// envVars from the daemon are only the gateway-fetched push-down
+	// vars — the daemon doesn't know the client's filesystem layout,
+	// so the CA-bundle vars (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS,
+	// REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO, DENO_CERT,
+	// PIP_CERT) have to be added here. Without these, the wrapped
+	// agent's HTTPS client (python requests, node fetch, etc.) skips
+	// our MITM CA, sees the gateway's mint as untrusted, and either
+	// fails the handshake or falls back to its own bundle (which
+	// doesn't have our CA).
+	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
+	allVars := append(caPathPushdownVars(caPath), envVars...)
+	applyEnvPushdownVars(allVars)
+
+	// 3. IPC channels for the child: TUN fd handoff + tun-up pipe.
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		fail("socketpair: %v", err)
@@ -124,11 +145,12 @@ func runRun(args []string) {
 	pSock := os.NewFile(uintptr(sp[0]), "parent-sock")
 	cSock := os.NewFile(uintptr(sp[1]), "child-sock")
 	defer func() { _ = pSock.Close() }()
-	wgUpR, wgUpW, err := os.Pipe()
+	tunUpR, tunUpW, err := os.Pipe()
 	if err != nil {
 		fail("pipe: %v", err)
 	}
 
+	// 4. Spawn child in new user+net+mnt namespace.
 	self, err := os.Executable()
 	if err != nil {
 		fail("self path: %v", err)
@@ -136,7 +158,7 @@ func runRun(args []string) {
 	child := exec.Command(self, append([]string{"run"}, cmd...)...)
 	child.Env = append(os.Environ(), runChildEnv+"=1")
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
-	child.ExtraFiles = []*os.File{cSock, wgUpR}
+	child.ExtraFiles = []*os.File{cSock, tunUpR}
 	child.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
 		// Map uid→uid (not 0→uid). Inside uid == host uid == non-zero, so
@@ -156,71 +178,79 @@ func runRun(args []string) {
 		AmbientCaps: []uintptr{capNetAdmin, capSysAdmin},
 	}
 	if err := child.Start(); err != nil {
-		// The EUID==0 short-circuit at the top of runRun should make this
-		// branch unreachable for root, but keep the check here in case
-		// future changes invert the order — the kernel-sysctl hint is
-		// misleading when the real cause is "user ran us under sudo".
 		if os.Geteuid() == 0 {
-			fail("clone: %v\n  hint: run as your normal user — clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro", err)
+			fail("clone: %v\n  hint: run as your normal user", err)
 		}
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
+	// Now that the child has been cloned (which AppArmor's
+	// restrict-unprivileged-userns hook would deny if the parent were
+	// already non-dumpable), lock the parent down. Closes the
+	// /proc/<parent_pid>/{root,mem} bypass on ptrace_scope=0 systems.
+	// The child hasn't exec'd the agent yet — it's blocked on tunUpR
+	// waiting for our signal — so there's no window for the agent to
+	// read parent state before this prctl lands.
+	if err := hideParentFromAgent(); err != nil {
+		_ = child.Process.Kill()
+		fail("PR_SET_DUMPABLE: %v", err)
+	}
 	_ = cSock.Close()
-	_ = wgUpR.Close()
+	_ = tunUpR.Close()
 
+	// 5. Receive TUN fd from child.
 	tunFd, err := recvFD(pSock)
 	if err != nil {
 		_ = child.Process.Kill()
 		fail("recv tun fd: %v", err)
 	}
 
-	tunDev := newRawFDTun(tunFd)
-	baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
-	// Wrap the wireguard-go logger so the keypair-derivation failure
-	// short-circuits the watchdog poll loop — see denoland/orchid#45.
-	forceReset := make(chan struct{}, 1)
-	logger := wrapWGLogger(baseLogger, forceReset)
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
-	if err := dev.IpcSet(buildWGIpc(cfg)); err != nil {
+	// 6. Hand the TUN fd off to the daemon over the control conn via
+	// WriteMsgUnix. Going through .File() + unix.Sendmsg would dup
+	// the fd, and on Linux that clears O_NONBLOCK on the underlying
+	// file description (shared across dups) — leaving the conn in
+	// blocking mode and stranding the runtime poller on the next
+	// read. WriteMsgUnix handles SCM_RIGHTS natively, no dup.
+	uc, ok := ctrl.(*net.UnixConn)
+	if !ok {
 		_ = child.Process.Kill()
-		fail("wg ipc: %v", err)
+		fail("control conn: unexpected type %T", ctrl)
 	}
-	if err := dev.Up(); err != nil {
+	if err := sendFDUnixConn(uc, tunFd); err != nil {
 		_ = child.Process.Kill()
-		fail("wg up: %v", err)
+		fail("send tun fd to daemon: %v", err)
 	}
-	defer dev.Close()
+	_ = unix.Close(tunFd)
 
-	// Watchdog reruns the original IpcSet on a stuck handshake; that
-	// wipes the wireguard-go peer trie and triggers a fresh initiation.
-	wdCtx, wdCancel := context.WithCancel(context.Background())
-	defer wdCancel()
-	go runWGWatchdog(wdCtx, dev, baseLogger, forceReset, func() error {
-		return dev.IpcSet(buildWGIpc(cfg))
-	})
+	// 7. Wait for ATTACHED.
+	if err := daemonClientWaitAttached(ctrl, br); err != nil {
+		_ = child.Process.Kill()
+		fail("daemon ATTACHED: %v", err)
+	}
 
-	_, _ = wgUpW.Write([]byte{1})
-	_ = wgUpW.Close()
+	// 8. Signal child: bridge is up.
+	_, _ = tunUpW.Write([]byte{1})
+	_ = tunUpW.Close()
 
-	// Second SCM_RIGHTS message from the child: [notify_fd, sup_sock] for
-	// the auto-expose relay. The child sends it once seccomp + socketpair
-	// are wired (see runRunChild). Absence (e.g., --no-auto-expose, or
-	// unsupported arch in the child) is non-fatal — webhooks just won't
-	// auto-expose. Track the supervisor cmd so we can wait on it on exit.
+	// 9. Auto-expose relay: pick up the second SCM_RIGHTS message
+	// from the child (seccomp notify fd + supervisor sock fd + loopback
+	// sup sock fd), fork the supervisor in the host netns. Absence
+	// (--no-auto-expose, unsupported arch) is non-fatal.
 	var relaySup *exec.Cmd
 	if autoExpose {
-		if relayFDs, err := recvFDs(pSock, 2); err == nil {
+		if relayFDs, err := recvFDs(pSock, 3); err == nil {
 			notifyFile := os.NewFile(uintptr(relayFDs[0]), "seccomp-notify")
 			supSock := os.NewFile(uintptr(relayFDs[1]), "relay-sup-sock")
-			if c, serr := spawnRelaySupervisor(notifyFile, supSock); serr != nil {
-				fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: %v (webhooks won't be reachable from host)\n", serr)
+			lbSock := os.NewFile(uintptr(relayFDs[2]), "relay-lb-sock")
+			if c, serr := spawnRelaySupervisor(notifyFile, supSock, lbSock); serr != nil {
+				fmt.Fprintf(os.Stderr, "warning: auto-expose relay: %v (webhooks won't be reachable from host, host loopback unreachable from wrapped cmd)\n", serr)
 			} else {
 				relaySup = c
 			}
 			_ = notifyFile.Close()
 			_ = supSock.Close()
+			_ = lbSock.Close()
 		} else {
-			fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: no fds from child: %v (webhooks won't be reachable from host)\n", err)
+			fmt.Fprintf(os.Stderr, "warning: auto-expose relay: no fds from child: %v\n", err)
 		}
 	}
 
@@ -234,16 +264,13 @@ func runRun(args []string) {
 
 	waitErr := child.Wait()
 
-	// Tear down the relay supervisor explicitly. The happy path is that
-	// every task attached to its seccomp filter has already exited (so
-	// notif_recv returned ENOENT and the supervisor exited on its own);
-	// SIGTERM covers the unhappy case where the supervisor is mid-accept
-	// or otherwise blocked. Wait reaps the process so we don't leave a
-	// zombie when systemd/init isn't acting as our subreaper.
 	if relaySup != nil && relaySup.Process != nil {
 		_ = relaySup.Process.Signal(syscall.SIGTERM)
 		_, _ = relaySup.Process.Wait()
 	}
+
+	// Closing ctrl (via the deferred Close) tears the session down on
+	// the daemon side.
 
 	if waitErr != nil {
 		var ee *exec.ExitError
@@ -255,11 +282,12 @@ func runRun(args []string) {
 }
 
 // runRunChild executes inside the unshared user+net+mnt namespaces.
-// Receives its socket on fd 3 and the wg-up pipe on fd 4.
-// Has CAP_NET_ADMIN in effective (via ambient set from parent's AmbientCaps).
+// Receives its socket on fd 3 and the tun-up pipe on fd 4. Has
+// CAP_NET_ADMIN in effective (via ambient set from parent's
+// AmbientCaps).
 func runRunChild() {
 	cSock := os.NewFile(3, "parent-sock")
-	wgUpR := os.NewFile(4, "wg-up")
+	tunUpR := os.NewFile(4, "tun-up")
 
 	argv := os.Args[2:]
 	if len(argv) == 0 {
@@ -270,39 +298,28 @@ func runRunChild() {
 	if err != nil {
 		fail("open tun: %v", err)
 	}
-
 	if err := sendFD(cSock, tunFd); err != nil {
 		fail("send tun fd: %v", err)
 	}
-	// Keep cSock open: we'll send a second SCM_RIGHTS message with the
-	// auto-expose relay fds once the netns is fully plumbed.
 	_ = unix.Close(tunFd)
 
 	one := make([]byte, 1)
-	if _, err := io.ReadFull(wgUpR, one); err != nil {
-		fail("wait wg-up: %v", err)
+	if _, err := io.ReadFull(tunUpR, one); err != nil {
+		fail("wait tun-up: %v", err)
 	}
-	_ = wgUpR.Close()
+	_ = tunUpR.Close()
 
-	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
-	// CLAWPATROL_EPHEMERAL_ADDR overrides cfg.Address when the parent
-	// successfully registered an ephemeral WG identity for this run.
-	addrSource := cfg.Address
-	if ea := os.Getenv("CLAWPATROL_EPHEMERAL_ADDR"); ea != "" {
-		addrSource = ea
+	tunAddr := os.Getenv(runTunAddrEnv)
+	if tunAddr == "" {
+		fail("%s not set", runTunAddrEnv)
 	}
-	addrs := splitWGAddresses(addrSource)
-	if len(addrs) == 0 {
-		fail("wg conf: empty Address")
-	}
+
 	steps := [][]string{
 		{"ip", "link", "set", "lo", "up"},
-		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", tunMTU), "up"},
+		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", runTunMTU), "up"},
+		{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName},
+		{"ip", "route", "add", "default", "dev", tunIfName},
 	}
-	for _, a := range addrs {
-		steps = append(steps, []string{"ip", "addr", "add", a, "dev", tunIfName})
-	}
-	steps = append(steps, []string{"ip", "route", "add", "default", "dev", tunIfName})
 	for _, a := range steps {
 		c := exec.Command(a[0], a[1:]...)
 		c.Stderr = os.Stderr
@@ -312,36 +329,27 @@ func runRunChild() {
 	}
 
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
-		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+		_ = bindResolv(childResolvConf())
 	}
 
-	// Auto-expose relay: install seccomp filter trapping listen(2), open
-	// the socketpair the supervisor and worker share, ship the supervisor
-	// end up to the top parent via SCM_RIGHTS, fork the worker as a child
-	// in this same userns+netns. Best-effort: on failure we close cSock
-	// without sending the second message and continue without auto-expose.
+	// The agent runs as the same uid as the parent and can therefore
+	// read anything the parent can; the daemon owns the underlay key
+	// material (tsnet auth key under $XDG_STATE_HOME/clawpatrol/, or
+	// the wg.conf at ~/.config/clawpatrol/) and never hands it back.
+	// PR_SET_DUMPABLE in the parent still closes the ptrace_scope=0
+	// /proc memory bypass.
+
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
 	if autoExpose {
 		setupRelayInChild(cSock)
 	}
 	_ = cSock.Close()
 
-	// Allow same-uid sibling processes (the relay supervisor in the host
-	// netns) to pidfd_getfd this process's listen sockets under yama
-	// ptrace_scope=1. PR_SET_PTRACER survives execve but resets across
-	// fork(), so this only covers the agent's own listen() calls and
-	// any execve'd successor of this pid — fork descendants would lose
-	// it. The supervisor's peekAgentListener falls back to /proc-based
-	// inspection (same-uid, no ptrace) for that case, so this prctl is
-	// just a fast-path: when it works, we get the race-free pidfd path;
-	// when it doesn't, /proc still resolves the bound port.
 	if autoExpose {
 		_, _, _ = unix.RawSyscall6(unix.SYS_PRCTL,
 			unix.PR_SET_PTRACER, ptraceAny, 0, 0, 0, 0)
 	}
 
-	// Clear ambient caps before exec so the user's command does not inherit
-	// CAP_NET_ADMIN. Mirrors clear_ambient_caps() in unclaw netns.rs.
 	if err := clearAmbientCaps(); err != nil {
 		fail("clear ambient caps: %v", err)
 	}
@@ -353,6 +361,140 @@ func runRunChild() {
 	if err := syscall.Exec(bin, argv, os.Environ()); err != nil {
 		fail("exec %s: %v", bin, err)
 	}
+}
+
+// --- daemon client protocol ------------------------------------------
+
+// daemonClientFetchEnv sends "ENV\n" on ctrl and parses the daemon's
+// single "ENV <n>\n<n bytes>" reply. Used by `clawpatrol env` so the
+// env subcommand can fetch the gateway-declared push-down vars even
+// in tsnet-only deployments, where the env process has no host-side
+// tailnet route and the in-process gatewayDialOverride is unset
+// (that's set by the daemon's own tsnet boot, not by the CLI's).
+func daemonClientFetchEnv(ctrl net.Conn) ([]pushdownEnvVar, error) {
+	if _, err := io.WriteString(ctrl, "ENV\n"); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(ctrl)
+	envLen, err := readLenPrefixed(br, "ENV", 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	if envLen == 0 {
+		return nil, nil
+	}
+	body := make([]byte, envLen)
+	if _, err := io.ReadFull(br, body); err != nil {
+		return nil, fmt.Errorf("read ENV body: %w", err)
+	}
+	var vars []pushdownEnvVar
+	if err := json.Unmarshal(body, &vars); err != nil {
+		return nil, fmt.Errorf("decode ENV body: %w", err)
+	}
+	return vars, nil
+}
+
+// envPushdownDaemonFetcher hooks runEnv (in integrations.go) into the
+// Linux-only daemon path. It dials the per-host daemon, asks for the
+// cached env-pushdown JSON via the lightweight ENV command, and
+// returns it. nil on platforms with no daemon; runEnv then falls back
+// to the direct HTTP fetch.
+func init() {
+	envPushdownDaemonFetcher = func() ([]pushdownEnvVar, error) {
+		ctrl, err := daemonConnect()
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = ctrl.Close() }()
+		return daemonClientFetchEnv(ctrl)
+	}
+}
+
+// daemonClientStartSession sends "START\n" on ctrl and parses the
+// daemon's reply: ADDR line, ENV length + JSON body, WARN length +
+// optional text. The single bufio.Reader is returned to the caller
+// so subsequent reads (e.g. ATTACHED) share the same buffer — using
+// a fresh bufio.Reader for later reads would lose any bytes that
+// got pulled into this one's buffer during the WARN read.
+func daemonClientStartSession(ctrl net.Conn) (*bufio.Reader, netip.Addr, []pushdownEnvVar, string, error) {
+	if _, err := io.WriteString(ctrl, "START\n"); err != nil {
+		return nil, netip.Addr{}, nil, "", err
+	}
+	br := bufio.NewReader(ctrl)
+	addrLine, err := br.ReadString('\n')
+	if err != nil {
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("read ADDR: %w", err)
+	}
+	addrLine = strings.TrimRight(addrLine, "\r\n")
+	if !strings.HasPrefix(addrLine, "ADDR ") {
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("expected ADDR, got %q", addrLine)
+	}
+	tunAddr, err := netip.ParseAddr(strings.TrimSpace(addrLine[len("ADDR "):]))
+	if err != nil {
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("parse ADDR: %w", err)
+	}
+	envLen, err := readLenPrefixed(br, "ENV", 1<<20)
+	if err != nil {
+		return nil, netip.Addr{}, nil, "", err
+	}
+	envBody := make([]byte, envLen)
+	if _, err := io.ReadFull(br, envBody); err != nil {
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("read ENV body: %w", err)
+	}
+	var vars []pushdownEnvVar
+	if envLen > 0 {
+		if err := json.Unmarshal(envBody, &vars); err != nil {
+			return nil, netip.Addr{}, nil, "", fmt.Errorf("decode ENV body: %w", err)
+		}
+	}
+	warnLen, err := readLenPrefixed(br, "WARN", 4096)
+	if err != nil {
+		return nil, netip.Addr{}, nil, "", err
+	}
+	var warning string
+	if warnLen > 0 {
+		buf := make([]byte, warnLen)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return nil, netip.Addr{}, nil, "", fmt.Errorf("read WARN body: %w", err)
+		}
+		warning = string(buf)
+	}
+	return br, tunAddr, vars, warning, nil
+}
+
+// readLenPrefixed reads a "<tag> <n>\n" line and returns n. Errors
+// when the tag doesn't match or n is outside [0, maxLen].
+func readLenPrefixed(br *bufio.Reader, tag string, maxLen int) (int, error) {
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", tag, err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+	prefix := tag + " "
+	if !strings.HasPrefix(line, prefix) {
+		return 0, fmt.Errorf("expected %s, got %q", tag, line)
+	}
+	var n int
+	if _, err := fmt.Sscanf(line[len(prefix):], "%d", &n); err != nil {
+		return 0, fmt.Errorf("parse %s length: %w", tag, err)
+	}
+	if n < 0 || n > maxLen {
+		return 0, fmt.Errorf("%s length %d out of range", tag, n)
+	}
+	return n, nil
+}
+
+func daemonClientWaitAttached(ctrl net.Conn, br *bufio.Reader) error {
+	_ = ctrl.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = ctrl.SetReadDeadline(time.Time{}) }()
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if strings.TrimRight(line, "\r\n") != "ATTACHED" {
+		return fmt.Errorf("expected ATTACHED, got %q", line)
+	}
+	return nil
 }
 
 // --- capability manipulation -------------------------------------------------
@@ -383,14 +525,27 @@ func clearAmbientCaps() error {
 	return nil
 }
 
+// hideParentFromAgent marks the parent process non-dumpable. Effect:
+// /proc/<parent_pid>/{mem,root,fd,maps,environ} flip to root:root
+// ownership, so a same-uid agent (forked under us) is denied ptrace
+// attach and cannot dereference /proc/<parent_pid>/root to reach the
+// host mnt namespace's view of ~/.clawpatrol/. Closes the
+// kernel.yama.ptrace_scope=0 bypass.
+func hideParentFromAgent() error {
+	_, _, errno := unix.RawSyscall6(unix.SYS_PRCTL,
+		unix.PR_SET_DUMPABLE, 0, 0, 0, 0, 0)
+	if errno != 0 {
+		return fmt.Errorf("prctl PR_SET_DUMPABLE 0: %w", errno)
+	}
+	return nil
+}
+
+// --- WG-conf parsing (daemon reads it; client never opens it) ---------
+
 // splitWGAddresses parses a wg-quick `Address =` value into one CIDR per
 // element. Dual-stack peers receive a comma-joined string like
 // `10.55.0.5/32, fd77::5/128`; `ip addr add` rejects that whole string as
 // a single prefix, so we split + emit one `ip addr add` per element.
-//
-// Whitespace around elements is trimmed and empty elements are dropped.
-// Elements without an explicit `/prefix` get a host route (`/32` for v4,
-// `/128` for v6).
 func splitWGAddresses(addrSource string) []string {
 	var addrs []string
 	for _, part := range strings.Split(addrSource, ",") {
@@ -409,8 +564,6 @@ func splitWGAddresses(addrSource string) []string {
 	}
 	return addrs
 }
-
-// --- WG conf parsing -------------------------------------------------
 
 type runConf struct {
 	PrivateKey string
@@ -467,29 +620,7 @@ func parseRunConf(path string) (*runConf, error) {
 	if c.PrivateKey == "" || c.Address == "" || c.PeerPubKey == "" || c.Endpoint == "" {
 		return nil, fmt.Errorf("missing PrivateKey/Address/PublicKey/Endpoint")
 	}
-	_ = os.Setenv("CLAWPATROL_RUN_CONF", path)
 	return c, nil
-}
-
-func mustParseRunConf(path string) *runConf {
-	c, err := parseRunConf(path)
-	if err != nil {
-		fail("conf %s: %v", path, err)
-	}
-	return c
-}
-
-func buildWGIpc(c *runConf) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "private_key=%s\n", b64ToHex(c.PrivateKey))
-	fmt.Fprintf(&b, "replace_peers=true\n")
-	fmt.Fprintf(&b, "public_key=%s\n", b64ToHex(c.PeerPubKey))
-	if ep, err := resolveEndpoint(c.Endpoint); err == nil {
-		fmt.Fprintf(&b, "endpoint=%s\n", ep)
-	}
-	fmt.Fprintf(&b, "persistent_keepalive_interval=25\n")
-	fmt.Fprintf(&b, "allowed_ip=0.0.0.0/0\n")
-	return b.String()
 }
 
 func resolveEndpoint(hp string) (string, error) {
@@ -556,6 +687,49 @@ func sendFD(s *os.File, fd int) error {
 	return unix.Sendmsg(int(s.Fd()), []byte{0}, rights, nil, 0)
 }
 
+// sendFDUnixConn ships one fd via SCM_RIGHTS over a *net.UnixConn,
+// using the WriteMsgUnix path instead of .File() + Sendmsg. The
+// dup-based path silently switches the underlying file description
+// to blocking mode (Linux shares O_NONBLOCK across dups), which
+// strands the runtime poller on subsequent reads of the same conn.
+// Use this when the SCM_RIGHTS exchange happens on a long-lived
+// control conn that the caller keeps reading from afterwards.
+func sendFDUnixConn(c *net.UnixConn, fd int) error {
+	rights := unix.UnixRights(fd)
+	_, _, err := c.WriteMsgUnix([]byte{0}, rights, nil)
+	return err
+}
+
+// recvFDUnixConn is the counterpart to sendFDUnixConn — reads one fd
+// out of one SCM_RIGHTS message off c. Same rationale: avoids the
+// .File() dup and keeps the conn usable for follow-up reads.
+func recvFDUnixConn(c *net.UnixConn) (int, error) {
+	buf := make([]byte, 1)
+	oob := make([]byte, unix.CmsgSpace(4))
+	n, oobn, flags, _, err := c.ReadMsgUnix(buf, oob)
+	if err != nil {
+		return -1, err
+	}
+	if flags&unix.MSG_CTRUNC != 0 {
+		return -1, fmt.Errorf("recvFDUnixConn: ancillary truncated (oobn=%d, n=%d)", oobn, n)
+	}
+	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
+	if err != nil {
+		return -1, err
+	}
+	for _, cmsg := range cmsgs {
+		fds, err := unix.ParseUnixRights(&cmsg)
+		if err != nil || len(fds) == 0 {
+			continue
+		}
+		for _, x := range fds[1:] {
+			_ = unix.Close(x)
+		}
+		return fds[0], nil
+	}
+	return -1, fmt.Errorf("no SCM_RIGHTS fd (oobn=%d, n=%d, flags=%#x)", oobn, n, flags)
+}
+
 func recvFD(s *os.File) (int, error) {
 	fds, err := recvFDs(s, 1)
 	if err != nil {
@@ -605,142 +779,55 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 	return nil, fmt.Errorf("no SCM_RIGHTS fd")
 }
 
+// childResolvConf builds the body of /etc/resolv.conf the child sees
+// inside its mnt namespace.
+//
+// In tsnet mode we point at the gateway's tailnet IP: the gateway
+// runs serveTsnetDNSUDP on <tailnet-gateway-ip>:53, which both
+// allocates VIPs for intercepted hostnames AND relays anything else
+// upstream. Public resolvers don't work because the gateway has no
+// UDP fallback handler for exit-routed traffic — DNS packets aimed
+// at 1.1.1.1 / 8.8.8.8 get dropped at the gateway, so every name
+// lookup inside `clawpatrol run` would time out.
+//
+// In WG mode the gateway's WG netstack intercepts DNS in-flight, so
+// any public-looking nameserver works; fall back to 1.1.1.1 / 8.8.8.8
+// for that and for joins old enough that they predate the gateway-IP
+// file.
+func childResolvConf() string {
+	caDir := defaultClawpatrolDir()
+	if gwIP := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip"))); gwIP != "" {
+		return "nameserver " + gwIP + "\n"
+	}
+	return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+}
+
+// bindResolv writes body to a temp file and bind-mounts it over
+// /etc/resolv.conf in the calling mount namespace. The temp file is
+// unlinked on every error path so a child whose CreateTemp succeeded
+// but WriteString / Mount failed doesn't strand a file in /tmp.
+//
+// On the success path the file stays on disk because the bind mount
+// holds a reference to its inode — unlinking before the namespace
+// tears down would replace /etc/resolv.conf with an empty path.
+// Kernel reclaims it when the mount goes away (mount namespace exit).
 func bindResolv(body string) error {
 	tmp, err := os.CreateTemp("", "clawpatrol-resolv-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create resolv temp file: %w", err)
 	}
 	if _, err := tmp.WriteString(body); err != nil {
 		_ = tmp.Close()
-		return err
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write resolv temp file: %w", err)
 	}
-	_ = tmp.Close()
-	return unix.Mount(tmp.Name(), "/etc/resolv.conf", "", unix.MS_BIND, "")
-}
-
-// --- raw-fd tun adapter ---------------------------------------------
-
-type rawFDTun struct {
-	f      *os.File
-	events chan wgtun.Event
-}
-
-func newRawFDTun(fd int) *rawFDTun {
-	t := &rawFDTun{
-		f:      os.NewFile(uintptr(fd), tunIfName),
-		events: make(chan wgtun.Event, 1),
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("close resolv temp file: %w", err)
 	}
-	t.events <- wgtun.EventUp
-	return t
-}
-
-func (t *rawFDTun) File() *os.File             { return t.f }
-func (t *rawFDTun) Name() (string, error)      { return tunIfName, nil }
-func (t *rawFDTun) MTU() (int, error)          { return tunMTU, nil }
-func (t *rawFDTun) Events() <-chan wgtun.Event { return t.events }
-func (t *rawFDTun) BatchSize() int             { return 1 }
-func (t *rawFDTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	n, err := t.f.Read(bufs[0][offset:])
-	if n > 0 {
-		sizes[0] = n
+	if err := unix.Mount(tmp.Name(), "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("bind-mount resolv: %w", err)
 	}
-	return 1, err
-}
-func (t *rawFDTun) Write(bufs [][]byte, offset int) (int, error) {
-	for _, b := range bufs {
-		if _, err := t.f.Write(b[offset:]); err != nil {
-			return 0, err
-		}
-	}
-	return len(bufs), nil
-}
-func (t *rawFDTun) Close() error {
-	close(t.events)
-	return t.f.Close()
-}
-
-// --- ephemeral peer --------------------------------------------------
-
-// ephemeralPeer registers a fresh per-run WireGuard keypair with the
-// gateway, mutates cfg to use the ephemeral private key and address,
-// and sets CLAWPATROL_EPHEMERAL_ADDR so the re-exec'd child uses the
-// ephemeral IP for `ip addr add`. Returns a cleanup func that removes
-// the ephemeral peer from the gateway on exit.
-//
-// Best-effort: any failure logs a warning and returns a no-op cleanup
-// so the caller falls back to the shared permanent identity.
-func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
-	noop := func() {}
-	dir := defaultClawpatrolDir()
-
-	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
-	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
-	if gwURL == "" || token == "" {
-		return noop, fmt.Errorf("ephemeral peer: no gateway url or api-token")
-	}
-
-	client, err := gatewayHTTPClient(filepath.Join(dir, "ca.crt"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build http client: %v (using shared identity)\n", err)
-		return noop, err
-	}
-
-	privB64, pubHex, _, err := wgGenKeypair()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: keygen: %v (using shared identity)\n", err)
-		return noop, err
-	}
-
-	req, err := http.NewRequest(http.MethodPost,
-		gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build request: %v (using shared identity)\n", err)
-		return noop, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: register: %v (using shared identity)\n", err)
-		return noop, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: gateway returned %d (using shared identity)\n", resp.StatusCode)
-		return noop, fmt.Errorf("gateway %d", resp.StatusCode)
-	}
-
-	var result struct {
-		IP  string `json:"ip"`
-		IP6 string `json:"ip6"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: decode response: %v (using shared identity)\n", err)
-		return noop, err
-	}
-
-	cfg.PrivateKey = privB64
-	cfg.Address = result.IP + "/32, " + result.IP6 + "/128"
-	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
-
-	return func() {
-		dreq, err := http.NewRequest(http.MethodDelete,
-			gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
-		if err != nil {
-			return
-		}
-		dreq.Header.Set("Authorization", "Bearer "+token)
-		if dr, derr := client.Do(dreq); derr == nil {
-			_ = dr.Body.Close()
-		}
-	}, nil
-}
-
-// --- helpers ---------------------------------------------------------
-
-func b64ToHex(s string) string {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
+	return nil
 }

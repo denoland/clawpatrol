@@ -4,8 +4,8 @@ The security firewall for agents.
 
 Claw Patrol sits between your agents and prod, parses their traffic
 at the wire, and gates each action against rules you write in HCL.
-For example, you can block destructive SQL, or have a human approve `kubectl
-delete pod` calls an agent makes.
+For example, you can block destructive SQL, or pause `kubectl delete pod`
+until a human approves it before the request reaches Kubernetes.
 
 For the full overview see [clawpatrol.dev](https://clawpatrol.dev).
 
@@ -59,7 +59,7 @@ clients tunneling in via WireGuard or Tailscale.
 walks through a first config end-to-end.
 [clawpatrol.dev/docs/config-reference](https://clawpatrol.dev/docs/config-reference)
 is the auto-generated field reference. See
-[`gateway.example.hcl`](cmd/clawpatrol/gateway.example.hcl) for an
+[`gateway.example.hcl`](examples/gateway.example.hcl) for an
 annotated starting template.
 
 ## License

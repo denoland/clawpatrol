@@ -6,7 +6,7 @@ import type { ComponentChildren } from "preact";
 export function FlowDiagram() {
   return (
     <div
-      class="flex flex-col items-stretch w-full max-w-[380px] select-none"
+      class="flex flex-col items-stretch w-full md:max-w-[24rem] select-none"
       role="img"
       aria-label="Many agents on the bottom send requests through Claw Patrol to many destinations on top"
     >
@@ -14,10 +14,7 @@ export function FlowDiagram() {
 
       <Riser />
 
-      <CenterNode
-        label="Claw Patrol"
-        sub="rules + approvals + credentials + analytics"
-      />
+      <CenterNode label="Claw Patrol" sub="" />
 
       <Risers count={4} />
 
@@ -91,10 +88,10 @@ function Card({ name, icon }: { name: string; icon?: string }) {
   // Inline style — Tailwind’s arbitrary shadow syntax doesn’t compose
   // four space-separated shadows reliably.
   const stack =
-    "4px 4px 0 0 var(--color-canvas)," +
-    "4px 4px 0 1px var(--color-navy-200)," +
-    "8px 8px 0 0 var(--color-canvas)," +
-    "8px 8px 0 1px var(--color-navy-200)";
+    "2px 2px 0 0 var(--color-canvas)," +
+    "2px 2px 0 1px var(--color-navy-200)," +
+    "5px 5px 0 0 var(--color-canvas)," +
+    "5px 5px 0 1px var(--color-navy-200)";
   return (
     <div
       class=" flex flex-col items-center justify-center gap-2
@@ -128,7 +125,7 @@ function Risers({ count }: { count: number }) {
       viewBox={`0 0 ${w} ${h}`}
       width="100%"
       height={h}
-      class="text-navy-300 my-2"
+      class="text-navy-300 my-4"
       aria-hidden="true"
       preserveAspectRatio="none"
     >
@@ -153,26 +150,35 @@ function Risers({ count }: { count: number }) {
   );
 }
 
-function CenterNode({ label, sub }: { label: string; sub: string }) {
+function SwitchTag({ label }: { label: string }) {
+  return (
+    <div className="bg-navy text-xs font-mono uppercase text-canvas w-max max-w-full mx-auto py-0.5 px-2">
+      {label}
+    </div>
+  );
+}
+
+function CenterNode({ label }: { label: string }) {
   // Light surface keyed to the header’s bg-navy-100 so the proxy node
   // reads as the same brand surface; full Claw Patrol logo (icon +
   // wordmark) is the same public asset the header uses.
   return (
     <div
-      class=" w-full bg-navy-50 text-text border border-navy
-        px-5 py-5 text-center"
+      class=" w-full border border-navy text-text
+      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas to-navy-50 "
     >
       <img
         src="/claw-patrol-logo.svg"
         alt={label}
-        class="h-8 sm:h-10 w-auto mx-auto"
+        class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas"
       />
-      <div
-        class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-text-muted"
-      >
-        {sub}
-      </div>
+      <SwitchTag label="Inject credentials" />
+      <Riser />
+      <SwitchTag label="Approvers - action requires approval?" />
+      <Riser />
+      <SwitchTag label="Rules - action allowed?" />
+      <Riser />
+      <SwitchTag label="Log every action" />
     </div>
   );
 }

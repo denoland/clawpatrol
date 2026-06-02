@@ -7,28 +7,43 @@ package main
 // Uses the same NETransparentProxy system extension as WireGuard mode, but
 // with a tsnet.Server as the transport instead of WireGuard + gVisor.
 // The extension intercepts all TCP/UDP flows from the child process tree
-// via PPID-walk, and routes them through the gateway over the tailnet using
-// ts_netstack_tcp_connect (tsnet.Dial + HAProxy PROXY v1 header).
+// via PPID-walk, and routes them through the gateway over the tailnet by
+// setting the gateway as the tsnet exit node (ts_netstack_init configures
+// ExitNodeIP); ts_netstack_tcp_connect then dials the original dst, which
+// tsnet routes via the gateway, where it lands in RegisterFallbackTCPHandler.
 //
 // Flow:
 //  1. Mint ephemeral tsnet auth key from gateway.
 //  2. `Clawpatrol install` — ensure NE system extension is loaded.
-//  3. `Clawpatrol start-tsnet <authKey> <controlURL> <gwHost> <gwPort>`
-//     — NE calls ts_netstack_init: joins tailnet, blocks until Running.
+//  3. `Clawpatrol start-tsnet <authKey> <controlURL> <gwHost> <gwIP>`
+//     — NE calls ts_netstack_init: joins tailnet + sets ExitNodeIP=gwIP.
 //  4. Poll session socket for `gettsip` → receive 100.x.x.x of NE node.
 //  5. Register that IP with gateway (profile dispatch mapping).
 //  6. Register session PID via session IPC, then `Clawpatrol run -- <cmd>`.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
+
+func init() {
+	// macOS has no tailnet route from the parent CLI — only the NE
+	// does. Route every gateway-tailnet HTTP call (env-pushdown, the
+	// one such call from the parent) through the NE for both
+	// `clawpatrol run` and the `clawpatrol env` shell-rc shim that
+	// fires on every new terminal. Silent skip when the NE isn't
+	// running keeps shell startup quiet between joins / after reboot.
+	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
+}
 
 func runRunTsnet(args []string) {
 	warnIfOnGatewayHost()
@@ -43,23 +58,24 @@ func runRunTsnet(args []string) {
 
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
 	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
+	gwIP := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway-ip")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
-	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
+	// tsnet auth key is intentionally NOT read from disk. On macOS the
+	// NE extension persists it inside NETransparentProxyManager's
+	// providerConfiguration (system VPN preferences). We pass an empty
+	// authKey to `start-tsnet` — the container app reuses the stored
+	// value, so the user-side CLI never holds the bearer in memory or
+	// on disk. An agent inside `clawpatrol run` therefore cannot
+	// exfiltrate it.
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
 	}
-	if authKey == "" {
-		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
-	}
-	// Gateway agent port persisted at join (Tailscale Funnel owns :443,
-	// so this is typically :8443).
-	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
-	if gwPort == "" {
-		gwPort = "443"
+	if gwIP == "" {
+		fail("tsnet run: missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", dir)
 	}
 
 	// Ensure system extension is loaded.
@@ -73,11 +89,13 @@ func runRunTsnet(args []string) {
 	// blocks until the tsnet node joins the tailnet (≤90s). Pass
 	// token + hostname so the NE itself can POST to the gateway's
 	// tailnet-only register endpoint (parent process is on the host
-	// network and can't dial a 100.x address from here).
+	// network and can't dial a 100.x address from here). Empty
+	// authKey arg → container app reuses the value stored in NE
+	// preferences at join time.
 	hn, _ := os.Hostname()
 	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
 	{
-		c := exec.Command(macHelperPath, "start-tsnet", authKey, controlURL, gwHost, gwPort, token, hn)
+		c := exec.Command(macHelperPath, "start-tsnet", "", controlURL, gwHost, gwIP, token, hn)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
 			var ee *exec.ExitError
@@ -96,6 +114,10 @@ func runRunTsnet(args []string) {
 	if tsIP == "" {
 		fmt.Fprintln(os.Stderr, "warning: NE never reported tsnet IP — run will land in the default profile")
 	}
+	// env-pushdown is on a tailnet-only endpoint that the parent CLI
+	// (host network) can't reach. The init() above already pointed
+	// envPushdownGatewayFetcher at the NE session-socket fetcher;
+	// applyEnvPushdown will use it.
 	applyEnvPushdown(dir)
 
 	cleanup := registerSession()
@@ -155,4 +177,52 @@ func queryTsnetIP() string {
 		return strings.TrimSpace(after)
 	}
 	return ""
+}
+
+// fetchEnvPushdownViaNESessionSock asks the NE to fetch the
+// gateway's /api/env-pushdown over tsnet on the parent's behalf
+// and ships the raw JSON back over the session socket. Wire
+// format: client sends "getenv\n"; ext replies "env <len>\n"
+// followed by <len> raw JSON bytes (or "err\n" on failure).
+// The length-prefix is binary-safe so the JSON body is delivered
+// verbatim regardless of its content.
+//
+// caDir is unused — the auth token and gateway hostname live in
+// the extension's providerConfiguration, which the CLI cannot
+// (and should not) read on macOS. The signature matches
+// envPushdownGatewayFetcher so it slots into envPushdownVars.
+func fetchEnvPushdownViaNESessionSock(caDir string) ([]pushdownEnvVar, error) {
+	_ = caDir
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.Dial("unix", sessionSockPath)
+	if err != nil {
+		return nil, fmt.Errorf("dial NE session socket %s: %w", sessionSockPath, err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+	if _, err := c.Write([]byte("getenv\n")); err != nil {
+		return nil, fmt.Errorf("write getenv: %w", err)
+	}
+	rd := bufio.NewReader(c)
+	header, err := rd.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read env header: %w", err)
+	}
+	header = strings.TrimRight(header, "\n")
+	if header == "err" {
+		return nil, fmt.Errorf("NE refused getenv (no tsnet config or HTTP fetch failed)")
+	}
+	rest, ok := strings.CutPrefix(header, "env ")
+	if !ok {
+		return nil, fmt.Errorf("unexpected getenv reply: %q", header)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil || n < 0 || n > 1<<20 {
+		return nil, fmt.Errorf("invalid env length: %q", rest)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(rd, body); err != nil {
+		return nil, fmt.Errorf("read env body (%d bytes): %w", n, err)
+	}
+	return parseEnvPushdownJSON(body)
 }

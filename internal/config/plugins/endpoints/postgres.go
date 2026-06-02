@@ -68,21 +68,15 @@ import (
 // fine for self-hosted pg on a private network where WG already
 // encrypts the path.
 type PostgresEndpoint struct {
-	Host           string    `hcl:"host"`
-	SSLMode        string    `hcl:"sslmode,optional"`
-	Credential     string    `hcl:"credential,optional"`
-	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
-
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	// Host is the upstream Postgres host:port pair.
+	Host string `hcl:"host"`
+	// SSLMode controls upstream TLS negotiation. Valid values mirror
+	// libpq: "disable", "prefer", "require", and "verify-full".
+	SSLMode string `hcl:"sslmode,optional"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
 
 // ConnRouteHosts implements runtime.ConnRouter — postgres traffic
 // arrives at the WG forwarder as raw conns (no SNI), so the gateway
@@ -99,11 +93,6 @@ func (e *PostgresEndpoint) ConnRouteHosts() []string { return []string{e.Host} }
 // guarantees a routable address (IPv6 fd78::N) regardless of the real
 // upstream IP family or prefix.
 func (e *PostgresEndpoint) RequiresVIP() bool { return true }
-
-func (e *PostgresEndpoint) credentialAndRaw() (string, cty.Value) {
-	return e.Credential, e.CredentialsRaw
-}
-func (e *PostgresEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
 
 // PostgresEndpointRuntime detects placeholders in a postgres
 // StartupMessage. The wire-protocol front-end populates Request with
@@ -155,14 +144,15 @@ func init() {
 		Type:     "postgres",
 		Family:   "sql",
 		New:      func() any { return &PostgresEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
 		Runtime:  PostgresEndpointRuntime{},
+		Validate: hostsValidate,
 		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+			if e.SSLMode != "" {
+				b.SetAttributeValue("sslmode", cty.StringVal(e.SSLMode))
+			}
 		},
 	})
 }
@@ -235,18 +225,24 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	agentUser := pgStartupParam(startupBody, "user")
 	// Build a partial match.Request for credential dispatch. The
 	// PostgresEndpointRuntime's PlaceholderDetector scans
-	// Meta.Statement for a placeholder substring; Database is the
-	// agent-declared target so any `database`/`databases` constraint
-	// on a credential entry can filter against it.
+	// Meta.Statement for a placeholder substring (legacy HTTP-style
+	// dispatch); Database + User are the agent-declared knobs so
+	// any `database` / `user` discriminator on a credential body
+	// (or in the profile's inline entry) can filter against them.
 	credReq := &match.Request{
 		Family:   "sql",
 		Database: database,
+		User:     agentUser,
 		Meta:     &sqlfacet.Meta{Statement: agentUser},
 	}
-	cc := runtime.ResolveCredential(ch.Endpoint, credReq)
+	cc := runtime.ResolveCredential(ch.Policy, ch.Profile, ch.Endpoint, credReq)
 	if cc == nil {
-		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
-		return fmt.Errorf("no credential")
+		msg := "no credential bound to postgres endpoint"
+		if hint := runtime.CredentialMismatchReason(ch.Policy, ch.Profile, ch.Endpoint, credReq); hint != "" {
+			msg = "no matching credential: " + hint
+		}
+		pgWriteError(ch.Conn, msg)
+		return fmt.Errorf("%s", msg)
 	}
 	// Plugin.Runtime is a typed-nil sentinel used for interface
 	// dispatch checks; the actual decoded HCL value is on Body.

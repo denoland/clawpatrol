@@ -385,9 +385,20 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 // InspectsTruncatableFacet() answers are what drive the fail-close
 // path). Plain literal CompiledEndpoints with nil matchers can't
 // exercise that surface.
+// testGatewayPrefix is the minimal valid `gateway {}` block needed
+// to satisfy loader-level operational validation; these runtime
+// tests care only about the policy blocks they declare.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -414,15 +425,16 @@ func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *tes
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
 
 rule "verb-allow" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'select'"
   verdict   = "allow"
 }
 rule "default-deny" {
-  endpoint = db
+  endpoint = postgres.db
   priority = -100
   verdict  = "deny"
 }
@@ -474,16 +486,15 @@ rule "default-deny" {
 // silently drop traffic the policy didn't ask it to drop.
 func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
-credential "bearer_token" "cred" {}
 endpoint "postgres" "db" {
-  host       = "db.example.com:5432"
-  credential = cred
+  host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+credential "bearer_token" "cred" { endpoint = postgres.db }
+profile "default" { credentials = [bearer_token.cred] }
 
 rule "by-credential" {
-  endpoint   = db
-  credential = cred
+  endpoint   = postgres.db
+  credential = bearer_token.cred
   verdict    = "allow"
 }
 `)
@@ -715,10 +726,11 @@ func TestPgEvaluateUnparseableSynthDeny(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
 
 rule "ban-drops" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'drop'"
   verdict   = "deny"
   reason    = "no drops"
@@ -753,16 +765,17 @@ func TestPgEvaluateUnparseableLetsStatementOnlyRuleRun(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
 
 rule "allow-known-shell" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.statement.contains('DROP')"
   priority  = 100
   verdict   = "allow"
 }
 rule "ban-drops" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'drop'"
   priority  = 50
   verdict   = "deny"

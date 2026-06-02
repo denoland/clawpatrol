@@ -21,14 +21,14 @@ export function SettingsPage({
 }) {
   return (
     <Main>
-      <PageTitle trail={[{ label: "clawpatrol", href: "#/" }, { label: "settings" }]} />
+      <PageTitle trail={[{ label: "Settings" }]} />
 
       <section className="space-y-3">
         <h2 className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
           Credentials
         </h2>
         {integrations.length === 0 ? (
-          <div className="bg-canvas-light border-1.5 border-navy px-4 py-6 text-xs text-text-subtle">
+          <div className="bg-canvas border-1.5 border-navy px-4 py-6 text-xs text-text-subtle">
             No credentials declared in gateway.hcl yet. Add a credential block to connect Anthropic
             / GitHub / Notion / Postgres / etc. here.
           </div>
@@ -54,7 +54,7 @@ function ConfigSection() {
 
   return (
     <section className="space-y-3">
-      <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+      <div className="bg-canvas border-1.5 border-navy overflow-hidden">
         <div className="flex items-center px-4 py-3 bg-navy-100 border-b border-navy">
           <h2 className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
             Configuration · gateway.hcl

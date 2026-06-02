@@ -50,5 +50,4 @@ on the dashboard's request detail page, drop the file into
 changes, regenerate.
 
 Scope: keep it minimal and synthetic — public hostnames, no real
-IPs, no production credentials. Real-world breadth lives in the
-`deno.clawpatrol.dev` repo, not here.
+IPs, no production credentials.

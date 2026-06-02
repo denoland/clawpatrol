@@ -20,8 +20,10 @@ func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 	t.Helper()
 	cc, certPEM := inMemoryCertCache(t)
 	cfg := &config.Gateway{
-		Control: "wireguard",
-		Policy:  &config.Policy{},
+		Settings: &config.GatewaySettings{
+			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+		},
+		Policy: &config.Policy{},
 	}
 	g := &Gateway{
 		cfg:     cfg,

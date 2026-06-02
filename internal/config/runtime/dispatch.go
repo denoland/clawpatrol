@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
@@ -154,62 +156,83 @@ func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
 	return &synth
 }
 
-// ResolveCredential picks the credential entry that applies to req.
+// ResolveCredential picks the credential entry that applies to req
+// for the given profile and endpoint.
 //
-// Multi-credential endpoints (`credentials = [...]`) carry up to
-// two dispatch constraints per entry: a placeholder string (matched
-// against whatever the endpoint plugin's PlaceholderDetector pulled
-// off the request) and a database list (matched against
-// req.Database). An entry matches iff every constraint it declares
-// is satisfied. Among matching entries the most-specific (highest
-// number of declared constraints) wins; compile-time validation
-// guarantees uniqueness of constraint signatures so equal-specificity
+// The profile's per-endpoint credential list (CompiledProfile.
+// EndpointCredentials) carries the dispatch entries — each pairs a
+// credential with a merged disambiguator map (block-side body fields
+// + framework-peeled `placeholder`, overlaid with the profile's
+// inline `{ credential = X, <field> = "..." }` entries). Field
+// names are conventionally:
+//
+//   - "placeholder" — the dispatcher asks the endpoint plugin's
+//     PlaceholderDetector to extract the agent-sent placeholder
+//     string from the request body / headers.
+//   - "user"        — matched against req.User (postgres /
+//     clickhouse_native populate this from the wire-protocol
+//     StartupMessage / Hello).
+//   - "database"    — matched against req.Database.
+//
+// An entry matches iff every constraint it declares is satisfied.
+// Among matching entries the most-specific (highest number of
+// declared constraints) wins; compile-time validation guarantees
+// signature uniqueness per (profile, endpoint) so equal-specificity
 // ties are impossible at runtime — but if one ever shows up we
 // return nil rather than silently mis-routing.
 //
-// Single-binding endpoints (`credential = X`) short-circuit: the
-// only entry has no constraints and matches anything.
+// Single-entry bindings short-circuit unconditionally: with only one
+// credential on a (profile, endpoint), there's nothing to
+// disambiguate. The credential's body fields (postgres_credential's
+// `user`, clickhouse's `database`, etc.) still drive upstream auth,
+// but the agent doesn't need to mirror those values in its
+// StartupMessage / Hello to make the dispatch pick the credential.
+// Multi-entry endpoints still go through the disambiguator filter
+// below so placeholder-driven `pg_ro` / `pg_rw` patterns keep
+// working.
 //
-// Returns nil when no entry matches, or when the endpoint declares
-// no credentials at all. The endpoint plugin then decides what to
-// do (default-deny vs forward-unauthenticated).
-func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
+// Returns nil when the profile is unknown OR the profile binds no
+// credential to ep — the caller (endpoint plugin) decides whether to
+// default-deny vs. forward-unauthenticated.
+func ResolveCredential(policy *config.CompiledPolicy, profile string, ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
+	if ep == nil {
 		return nil
 	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" && len(ep.Credentials[0].Databases) == 0 {
-		return ep.Credentials[0]
+	entries := profileCredentialsAt(policy, profile, ep.Name)
+	if len(entries) == 0 {
+		return nil
 	}
-	candidates := make([]string, 0, len(ep.Credentials))
-	for _, c := range ep.Credentials {
-		if c.Placeholder != "" {
-			candidates = append(candidates, c.Placeholder)
+	if len(entries) == 1 {
+		return entries[0]
+	}
+	// Placeholder detection: if any entry constrains "placeholder",
+	// ask the endpoint plugin's detector once for the value the
+	// agent embedded in this request. Cheaper than re-detecting per
+	// entry; consistent across same-placeholder candidates that
+	// differ on other fields.
+	var sentPlaceholder string
+	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil {
+		candidates := make([]string, 0, len(entries))
+		seen := map[string]bool{}
+		for _, c := range entries {
+			ph := c.Disambiguators["placeholder"]
+			if ph != "" && !seen[ph] {
+				candidates = append(candidates, ph)
+				seen[ph] = true
+			}
 		}
-	}
-	var sent string
-	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil && len(candidates) > 0 {
-		sent = det.DetectPlaceholder(req, candidates)
-	}
-	var database string
-	if req != nil {
-		database = req.Database
+		if len(candidates) > 0 {
+			sentPlaceholder = det.DetectPlaceholder(req, candidates)
+		}
 	}
 	var best *config.CompiledCredential
 	bestSpecificity := -1
 	tiedAtBest := false
-	for _, c := range ep.Credentials {
-		phMatch := c.Placeholder == "" || c.Placeholder == sent
-		dbMatch := len(c.Databases) == 0 || containsString(c.Databases, database)
-		if !phMatch || !dbMatch {
+	for _, c := range entries {
+		if !disambiguatorMatches(c.Disambiguators, req, sentPlaceholder) {
 			continue
 		}
-		spec := 0
-		if c.Placeholder != "" {
-			spec++
-		}
-		if len(c.Databases) > 0 {
-			spec++
-		}
+		spec := len(c.Disambiguators)
 		switch {
 		case spec > bestSpecificity:
 			best = c
@@ -227,11 +250,119 @@ func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.
 	return best
 }
 
-func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
+// CredentialMismatchReason builds a one-line explanation of why
+// ResolveCredential just returned nil for (profile, ep, req) despite
+// the binding existing in policy. Useful for surfacing actionable
+// connection errors to agents (e.g. postgres' SCRAM error path) so
+// the operator sees "user 'none' doesn't match" instead of a flat
+// "no credential bound". Returns "" when the profile-endpoint pair
+// has no bound credentials at all — the caller falls back to its
+// generic "no credential" message in that case.
+func CredentialMismatchReason(policy *config.CompiledPolicy, profile string, ep *config.CompiledEndpoint, req *match.Request) string {
+	if ep == nil {
+		return ""
+	}
+	entries := profileCredentialsAt(policy, profile, ep.Name)
+	if len(entries) == 0 {
+		return ""
+	}
+	// Collect the distinct disambiguator values declared per field
+	// across all entries — that's the set of values the agent could
+	// have sent to make any one entry match.
+	expected := map[string]map[string]struct{}{}
+	for _, c := range entries {
+		for field, want := range c.Disambiguators {
+			if want == "" {
+				continue
+			}
+			set, ok := expected[field]
+			if !ok {
+				set = map[string]struct{}{}
+				expected[field] = set
+			}
+			set[want] = struct{}{}
 		}
 	}
-	return false
+	if len(expected) == 0 {
+		return ""
+	}
+	fields := make([]string, 0, len(expected))
+	for f := range expected {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	var parts []string
+	for _, field := range fields {
+		got := ""
+		if req != nil {
+			switch field {
+			case "user":
+				got = req.User
+			case "database":
+				got = req.Database
+			}
+		}
+		values := make([]string, 0, len(expected[field]))
+		for v := range expected[field] {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		valueList := strings.Join(values, ", ")
+		if got == "" {
+			parts = append(parts, fmt.Sprintf("%s missing (valid: %s)", field, valueList))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s=%q not in [%s]", field, got, valueList))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// disambiguatorMatches reports whether every constraint in the
+// entry's disambiguator map is satisfied by the request. Unknown
+// field names always fail-closed — the dispatcher won't guess at
+// future fields it doesn't know how to read off req.
+func disambiguatorMatches(d map[string]string, req *match.Request, sentPlaceholder string) bool {
+	for field, want := range d {
+		var got string
+		switch field {
+		case "placeholder":
+			got = sentPlaceholder
+		case "user":
+			if req != nil {
+				got = req.User
+			}
+		case "database":
+			if req != nil {
+				got = req.Database
+			}
+		default:
+			return false
+		}
+		if want != got {
+			return false
+		}
+	}
+	return true
+}
+
+// profileCredentialsAt returns the per-endpoint dispatch entries for
+// the named profile. When the profile is unknown but the endpoint has
+// a single globally-bound credential, the singleton entry is
+// synthesized so a fallback HostEndpoint match still injects auth —
+// matches the pre-v15 "missing profile but only one credential" path.
+func profileCredentialsAt(policy *config.CompiledPolicy, profile, epName string) []*config.CompiledCredential {
+	if policy == nil {
+		return nil
+	}
+	if prof, ok := policy.Profiles[profile]; ok {
+		return prof.EndpointCredentials[epName]
+	}
+	ep, ok := policy.Endpoints[epName]
+	if !ok {
+		return nil
+	}
+	if len(ep.Credentials) == 1 {
+		return []*config.CompiledCredential{{Credential: ep.Credentials[0]}}
+	}
+	return nil
 }

@@ -316,6 +316,11 @@ type HITLNotifier interface {
 // Implementations must not store tokens or other secrets in ref.
 type HITLMessageUpdateSink func(ctx context.Context, operationID, ref string) error
 
+// HITLPendingMessageUpdateSink records a channel-specific message reference
+// against a live synchronous pending HITL request. Implementations must not
+// store tokens or other secrets in ref.
+type HITLPendingMessageUpdateSink func(ctx context.Context, pendingID, ref string) error
+
 // HITLMessageUpdater is optionally implemented by notifier credentials that
 // can update an already-posted HITL prompt as the durable operation moves
 // through async states.
@@ -329,6 +334,9 @@ type HITLHumanCredentialer interface {
 	HumanApproverCredential() string
 }
 
+// HITLMessageUpdate is the payload an approver receives when a HITL
+// decision lands. Credential plugins (e.g. Slack) use it to edit the
+// originating interactive message with the final state.
 type HITLMessageUpdate struct {
 	MessageRef     string
 	OperationID    string
@@ -369,6 +377,9 @@ type HITLTarget struct {
 	// MessageUpdateSink records a notifier-specific, non-secret message ref
 	// for async HITL operation status updates.
 	MessageUpdateSink HITLMessageUpdateSink
+	// PendingMessageUpdateSink records a notifier-specific, non-secret
+	// message ref for synchronous pending HITL terminal updates.
+	PendingMessageUpdateSink HITLPendingMessageUpdateSink
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -399,7 +410,7 @@ type ApproveRequest struct {
 	// Used as the HITLPending.AgentIP key and as a log identifier.
 	AgentIP string
 	// Profile is the tenant profile the originating peer is bound to
-	// (e.g. "avocet2"). Informational — approvers use it as a
+	// (e.g. "dev2"). Informational — approvers use it as a
 	// human-readable label in slack cards / log lines / message
 	// templates; it carries no credential-lookup meaning.
 	Profile string
@@ -416,6 +427,10 @@ type ApproveRequest struct {
 	// prompt as a reply in this Slack thread rather than top-level.
 	// Populated from the X-HITL-Thread-TS request header.
 	ThreadTS string
+	// NotifyChannel, when set, overrides the static channel declared in
+	// the human_approver HCL block. Populated from X-HITL-Channel header.
+	// Lets agents route approvals into their own Slack session thread.
+	NotifyChannel string
 	// AsyncOperationID binds the prompt to a durable async operation.
 	// If AsyncPendingOnSyncTimeout is true and ctx hits DeadlineExceeded,
 	// human_approver leaves the prompt pending and returns async_pending.
@@ -441,7 +456,16 @@ type ApproveRequest struct {
 	// MessageUpdateSink records channel message references for async HITL
 	// operation updates after notifiers successfully post prompts.
 	MessageUpdateSink HITLMessageUpdateSink
+	// PendingMessageUpdateSink records channel message references for live
+	// synchronous HITL prompts so terminal timeout/disconnect states can be
+	// reflected back to the original operator-facing message.
+	PendingMessageUpdateSink HITLPendingMessageUpdateSink
 }
+
+// ApproveDecisionAsyncPending is the ApproveVerdict.Decision value an
+// approver returns when no synchronous verdict was reached and the
+// operation is being recorded for async resolution.
+const ApproveDecisionAsyncPending = "async_pending"
 
 // ApproveVerdict is what an approver returns. "" Decision means the
 // approver couldn't decide (timeout / error) — the caller falls back
@@ -452,8 +476,6 @@ type ApproveRequest struct {
 // dashboard event with the deciding approver's kind (human / llm /
 // dashboard) and id (the HCL block name) — operators looking at a
 // `denied` row see *why* without having to drill into the rule.
-const ApproveDecisionAsyncPending = "async_pending"
-
 type ApproveVerdict struct {
 	Decision     string // "allow" | "deny" | "async_pending" | ""
 	Reason       string
@@ -536,6 +558,8 @@ const (
 // wire labels without importing the gateway package.
 type HITLOperationState string
 
+// HITLOperationState values: durable lifecycle states for async-HITL
+// operations.
 const (
 	HITLOperationStateSyncWaiting             HITLOperationState = "sync_waiting"
 	HITLOperationStatePendingApproval         HITLOperationState = "pending_approval"
@@ -553,6 +577,8 @@ const (
 // render a stable affordance even while async operation wiring evolves.
 type HITLApprovalEffect string
 
+// HITLApprovalEffect values: what clicking approve will do given the
+// current HITLOperationState.
 const (
 	HITLApprovalEffectExecuteUpstream  HITLApprovalEffect = "execute_upstream"
 	HITLApprovalEffectCreateRetryGrant HITLApprovalEffect = "create_retry_grant"
@@ -624,6 +650,8 @@ func NormalizeHITLPendingApproval(p *HITLPending) {
 	}
 }
 
+// HITLApprovalEffectForOperationState returns the effect that clicking
+// approve will have given the supplied operation state.
 func HITLApprovalEffectForOperationState(state HITLOperationState) HITLApprovalEffect {
 	switch state {
 	case HITLOperationStatePendingApproval:
@@ -633,6 +661,10 @@ func HITLApprovalEffectForOperationState(state HITLOperationState) HITLApprovalE
 	}
 }
 
+// HITLApprovalMessage returns the operator-facing description of what
+// approving the pending request will do, given the operation's current
+// state, the precomputed approval effect, and whether the upstream
+// call already started.
 func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, upstreamCalled bool) string {
 	if upstreamCalled {
 		switch state {
@@ -654,7 +686,7 @@ func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, up
 	case HITLOperationStateExpired:
 		return "Approval expired.\nUpstream was not called."
 	case HITLOperationStateClientDisconnected:
-		return "The original client connection closed before Claw Patrol could return an async polling handle.\nUpstream was not called.\nThis prompt is stale."
+		return "The original client disconnected before approval completed.\nUpstream was not called.\nThis prompt is stale."
 	}
 	if effect == HITLApprovalEffectCreateRetryGrant {
 		return "Upstream has not been called.\nApprove will not send the request upstream now.\nApprove will allow the client to retry the same request once."

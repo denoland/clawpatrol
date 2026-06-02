@@ -1,0 +1,82 @@
+name: Deploy demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/deploy-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: demo-gh-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARGET_REPO: denoland/clawpatrol-demo
+      CNAME_HOST: demo.clawpatrol.dev
+    steps:
+      - name: Checkout clawpatrol@main
+        uses: actions/checkout@v4
+        with:
+          path: clawpatrol
+
+      - name: Checkout demo fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          path: clawpatrol-demo
+          token: ${{ secrets.DEMO_DEPLOY_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dashboard deps
+        working-directory: clawpatrol/dashboard
+        run: npm install --no-audit --no-fund
+
+      - name: Build demo
+        working-directory: clawpatrol-demo
+        env:
+          SRC: ../clawpatrol
+          DASH_PREFIX: ""
+        run: make build
+
+      - name: Publish to gh-pages root
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd clawpatrol-demo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+
+          # Wipe everything at root except .git and pr-preview/ (preserves
+          # active per-PR preview deployments).
+          find /tmp/gh-pages -mindepth 1 -maxdepth 1 \
+            ! -name '.git' ! -name 'pr-preview' -exec rm -rf {} +
+
+          # Copy fresh build + restore CNAME + .nojekyll markers.
+          cp -R dist/. /tmp/gh-pages/
+          touch /tmp/gh-pages/.nojekyll
+          echo "$CNAME_HOST" > /tmp/gh-pages/CNAME
+
+          cd /tmp/gh-pages
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes to publish"
+            exit 0
+          fi
+          git commit -m "deploy: ${GITHUB_SHA::7}"
+          # Rebase in case a concurrent PR preview pushed in the meantime.
+          git pull --rebase origin gh-pages
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" gh-pages

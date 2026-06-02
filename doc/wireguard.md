@@ -23,7 +23,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
    reaches `EnablePromiscuousForwarder`'s callback.
 4. Callback dispatches by port:
    - `:443` → `g.handle` (SNI peek → MITM or splice)
-   - `:<info_listen>` → dashboard mux
+   - `:<gateway.dashboard_listen port>` → dashboard mux
    - else → `wgRelay` / `relayUDP` to real upstream
 5. Clients route `0.0.0.0/0` through the tunnel. Agents resolve real
    hostnames via public DNS (UDP/53 forwarded by the gateway), open
@@ -58,8 +58,11 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 
 ## vs Tailscale mode
 
-- Dashboard auth in WG mode falls back to `admin_email` for every
-  approval. Multi-user setups need an auth proxy
+- WG-only mode has no tsnet whois, so the dashboard's tailnet-login
+  allowlist (`tailscale { operators = ... }`) doesn't apply. Auth
+  is the bcrypt-hashed root password. Multi-user setups either
+  enable a `tailscale {}` block alongside `wireguard {}` (both
+  transports coexist), or front the dashboard with an auth proxy
   (Cloudflare Access, basic auth, etc.) that fills
   `X-Forwarded-User` / `X-Forwarded-Email` (~10 LoC to teach
   profile resolution to read those).
@@ -67,23 +70,45 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
   WG handshake (UDP hairpin drop). Same constraint as plain unclaw
   remote mode. Use a real public-IP VPS for the gateway.
 
+## Single-host (loopback) deployments
+
+Running the gateway and `clawpatrol run` on the same machine — for
+example, the gateway under one user account and agents launched
+from another — is a first-class deployment, not a debug-only setup.
+The minimum config is:
+
+```hcl
+gateway {
+  state_dir = "/opt/clawpatrol"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "127.0.0.1:51820"  # advertise loopback to clients
+  }
+}
+```
+
+Set `wireguard.endpoint` to a loopback address so onboarded clients
+get `Endpoint = 127.0.0.1:51820` in their `wg.conf` and dial back
+through loopback. No `public_url`, no public UDP port, no DNS — the
+two sides talk over the loopback interface.
+
 ## Operator setup
 
 ```bash
 # on the gateway VM (real public IP needed)
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
-info_listen  = "127.0.0.1:8080"
-public_url   = "http://your-gw.example.com:8080"
-admin_email  = "you@example.com"
-log_path     = "/opt/clawpatrol/gateway.log"
-state_dir    = "/opt/clawpatrol"
-integrations = ["claude", "codex", "github"]
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  public_url       = "http://your-gw.example.com:8080"
+  log_path         = "/opt/clawpatrol/gateway.log"
+  state_dir        = "/opt/clawpatrol"
 
-tailscale {
-  control        = "wireguard"
-  wg_subnet_cidr = "10.55.0.0/24"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
 }
 EOF
 
@@ -102,7 +127,7 @@ in `/opt/clawpatrol/oauth/`.
 ## Client setup
 
 ```bash
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 clawpatrol join http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
 ```

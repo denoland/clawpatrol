@@ -7,6 +7,9 @@
 		"binding": "ASSETS",
 		"run_worker_first": true
 	},
+	"triggers": {
+		"crons": ["5 0 * * *"]
+	},
 	"d1_databases": [
 		{
 			"binding": "TELEMETRY_DB",

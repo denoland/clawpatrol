@@ -39,12 +39,13 @@ func TestCredentialsInProfileWalksTransitivelyViaTunnelChain(t *testing.T) {
 	ep := &config.CompiledEndpoint{
 		Name:        "grafana",
 		Tunnel:      outerTun,
-		Credentials: []*config.CompiledCredential{{Credential: endpointCred}},
+		Credentials: []*config.Entity{endpointCred},
 	}
 	policy := &config.CompiledPolicy{
 		Profiles: map[string]*config.CompiledProfile{
 			"default": {
-				Endpoints: map[string]*config.CompiledEndpoint{"grafana": ep},
+				Credentials: []*config.Entity{endpointCred},
+				Endpoints:   map[string]*config.CompiledEndpoint{"grafana": ep},
 			},
 		},
 	}
@@ -54,6 +55,47 @@ func TestCredentialsInProfileWalksTransitivelyViaTunnelChain(t *testing.T) {
 	}
 	if !got["grafana-bearer"] {
 		t.Errorf("expected endpoint credential in %v", got)
+	}
+}
+
+// Profiles that share an endpoint must NOT see each other's credentials.
+// Regression for cl-lgwg: the dashboard previously walked ep.Credentials
+// (the global endpoint→credentials list) and leaked credentials from
+// sibling profiles. The postgres "pg" endpoint binds both pg-readonly
+// and pg-writer; profile "data" declares only pg-readonly and must
+// see exactly that, not the writer credential bound to "platform".
+func TestCredentialsInProfileDoesNotLeakSiblingProfileCredentials(t *testing.T) {
+	readonly := &config.Entity{Symbol: &config.Symbol{Name: "pg-readonly"}}
+	writer := &config.Entity{Symbol: &config.Symbol{Name: "pg-writer"}}
+	ep := &config.CompiledEndpoint{
+		Name:        "pg",
+		Credentials: []*config.Entity{readonly, writer},
+	}
+	policy := &config.CompiledPolicy{
+		Profiles: map[string]*config.CompiledProfile{
+			"data": {
+				Credentials: []*config.Entity{readonly},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+			"platform": {
+				Credentials: []*config.Entity{writer},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+		},
+	}
+	data := credentialsInProfile(policy, "data")
+	if !data["pg-readonly"] {
+		t.Errorf("profile data: missing own credential pg-readonly in %v", data)
+	}
+	if data["pg-writer"] {
+		t.Errorf("profile data: leaked sibling credential pg-writer in %v", data)
+	}
+	platform := credentialsInProfile(policy, "platform")
+	if !platform["pg-writer"] {
+		t.Errorf("profile platform: missing own credential pg-writer in %v", platform)
+	}
+	if platform["pg-readonly"] {
+		t.Errorf("profile platform: leaked sibling credential pg-readonly in %v", platform)
 	}
 }
 
@@ -168,12 +210,31 @@ func TestDashboardTailscaleStateRespectsLive(t *testing.T) {
 		want      tailscaleproto.NodeStateLabel
 		connected bool
 	}{
+		// Live Running: always connected. State label is the live one.
 		{"running with slots", tailscaleproto.NodeStateRunning, true, tailscaleproto.NodeStateRunning, true},
 		{"running no slots", tailscaleproto.NodeStateRunning, false, tailscaleproto.NodeStateRunning, true},
-		{"starting overrides slots", tailscaleproto.NodeStateStarting, true, tailscaleproto.NodeStateStarting, false},
+
+		// Starting with persisted identity: not yet joined, but auth is
+		// good (cached). Credential reads as connected; state surfaces
+		// the live "starting" so the tunnel signal is still visible.
+		{"starting with slots", tailscaleproto.NodeStateStarting, true, tailscaleproto.NodeStateStarting, true},
+		{"starting no slots", tailscaleproto.NodeStateStarting, false, tailscaleproto.NodeStateStarting, false},
+
+		// NeedsLogin is the tailnet actively rejecting the persisted
+		// identity — cached slots are stale, credential is not valid.
 		{"needs login with slots", tailscaleproto.NodeStateNeedsLogin, true, tailscaleproto.NodeStateNeedsLogin, false},
-		{"unknown with slots maps to stopped", tailscaleproto.NodeStateUnknown, true, tailscaleproto.NodeStateStopped, false},
+		{"needs login no slots", tailscaleproto.NodeStateNeedsLogin, false, tailscaleproto.NodeStateNeedsLogin, false},
+		{"needs machine auth with slots", tailscaleproto.NodeStateNeedsMachAuth, true, tailscaleproto.NodeStateNeedsMachAuth, false},
+		{"in use other user with slots", tailscaleproto.NodeStateInUseOtherUser, true, tailscaleproto.NodeStateInUseOtherUser, false},
+
+		// Idle / torn-down tunnel: tsnet was Close()'d so DefaultStates
+		// is cleared (Unknown). Auth is still valid via persisted slots
+		// — this is the bug-fix case (cl-eh83). State label flips to
+		// "stopped" to keep the tunnel signal honest.
+		{"unknown with slots → connected (idle tunnel)", tailscaleproto.NodeStateUnknown, true, tailscaleproto.NodeStateStopped, true},
 		{"unknown no slots stays unknown", tailscaleproto.NodeStateUnknown, false, tailscaleproto.NodeStateUnknown, false},
+		{"stopped with slots → connected", tailscaleproto.NodeStateStopped, true, tailscaleproto.NodeStateStopped, true},
+		{"stopped no slots → not connected", tailscaleproto.NodeStateStopped, false, tailscaleproto.NodeStateStopped, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,8 +242,8 @@ func TestDashboardTailscaleStateRespectsLive(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("dashboardTailscaleState(%q, slots=%v) = %q, want %q", tc.label, tc.slots, got, tc.want)
 			}
-			if connected := tc.label == tailscaleproto.NodeStateRunning; connected != tc.connected {
-				t.Fatalf("connected = %v, want %v", connected, tc.connected)
+			if connected := tailscaleCredentialAuthValid(tc.label, tc.slots); connected != tc.connected {
+				t.Fatalf("tailscaleCredentialAuthValid(%q, slots=%v) = %v, want %v", tc.label, tc.slots, connected, tc.connected)
 			}
 		})
 	}
@@ -258,6 +319,58 @@ func TestApiTailscaleConnectRunningStateMarksConnected(t *testing.T) {
 	}
 	if resp.State != tailscaleproto.NodeStateRunning {
 		t.Fatalf("response.State = %q, want running", resp.State)
+	}
+}
+
+// Regression for cl-eh83: when a tailscale tunnel closes due to
+// inactivity it calls DefaultStates.Set(name, NodeStateUnknown) — the
+// pre-fix /api/tailscale/connect handler keyed strictly off the live
+// BackendState and reported the credential as not-connected (status
+// "awaiting_url" or attempting to force-acquire a tunnel just to mint
+// a URL). The OAuth grant and persisted node identity are still
+// valid; the tunnel cycling is a separate concern. The handler must
+// fall through to the persisted-slots signal and report "connected".
+func TestApiTailscaleConnectIdleTunnelWithPersistedAuthReadsConnected(t *testing.T) {
+	const credName = "idle-cred"
+	defer tailscaleproto.DefaultStates.Set(credName, tailscaleproto.NodeStateUnknown)
+	// Simulate the tunnel having been Close()'d on idle: DefaultStates
+	// has the entry cleared, no parked URL.
+	tailscaleproto.DefaultStates.Set(credName, tailscaleproto.NodeStateUnknown)
+	tailscaleproto.Default.Set(credName, "")
+
+	db := newSessionTestDB(t)
+	// Persisted node identity from a prior successful auth. The exact
+	// slot name doesn't matter for credentialSlotPresence — any row is
+	// the "auth succeeded at some point" signal.
+	if err := setCredentialSlot(db, credName, "_machinekey", "stub-machine-key-bytes"); err != nil {
+		t.Fatalf("setCredentialSlot: %v", err)
+	}
+
+	g := &Gateway{db: db}
+	credEnt := &config.Entity{
+		Plugin: &config.Plugin{Type: "tailscale_credential"},
+		Body:   stubTailscaleCred{},
+	}
+	g.policy.Store(&config.CompiledPolicy{
+		Credentials: map[string]*config.Entity{credName: credEnt},
+	})
+	w := &webMux{g: g}
+
+	r := httptest.NewRequest(http.MethodPost, "/api/tailscale/connect?id="+credName, nil)
+	rw := httptest.NewRecorder()
+	w.apiTailscaleConnect(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q, want 200", rw.Code, rw.Body.String())
+	}
+	var resp tailscaleAuthResponse
+	if err := json.NewDecoder(rw.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Connected || resp.Status != "connected" {
+		t.Fatalf("response = %+v, want Connected=true Status=connected (idle tunnel must not flip credential to disconnected)", resp)
+	}
+	if resp.AuthURL != "" || resp.PendingURL != "" {
+		t.Fatalf("response.AuthURL/PendingURL = %q/%q, want empty (no operator action required)", resp.AuthURL, resp.PendingURL)
 	}
 }
 

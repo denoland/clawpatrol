@@ -16,8 +16,8 @@ export function AddDeviceModal({
   return (
     <Modal title="Add device" onClose={onClose}>
       <div className="p-4 space-y-6">
-        <h3 className="text-lg leading-none tracking-tight text-text font-sans">
-          Run the following on the new machine:
+        <h3 className="text-sm leading-none tracking-tight text-text font-mono">
+          Run the following on the new device:
         </h3>
         <Step n={1} label="Install" cmd={installCmd} />
         <Step n={2} label="Join" cmd={joinCmd} />
@@ -56,7 +56,7 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
-        <span className="w-[16px] h-[16px] rounded-full bg-navy text-canvas text-2xs font-semibold flex items-center justify-center shrink-0">
+        <span className="w-6 h-6 squircle-md bg-navy-100 text-xs font-semibold font-mono flex items-center justify-center shrink-0">
           {n}
         </span>
         <span className="text-sm text-text-muted font-sans">{label}</span>

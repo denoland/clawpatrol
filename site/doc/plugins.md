@@ -1,4 +1,4 @@
-# External plugins
+# Plugins
 
 Most of the protocols Claw Patrol gates — HTTPS, Postgres, ClickHouse,
 SSH, Kubernetes — ship as **built-in** plugins compiled into the
@@ -38,7 +38,7 @@ credential "example_magic_token" "demo_token" {}
 
 endpoint "example_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
-  credential = demo_token
+  credential = example_magic_token.demo_token
 }
 ```
 
@@ -131,7 +131,9 @@ The gateway:
    action map bound to the named facet (so a rule like
    `example_smtp.verb == "MAIL"` evaluates).
 2. Runs any approve chain (LLM judge, human approver) for rules
-   whose outcome is `approve = […]`.
+   whose outcome is `approve = […]`. Protocol plugins must translate
+   denies and timeouts into native failure responses without calling
+   upstream.
 3. Logs the action onto the dashboard event stream with the
    action map as the facet payload.
 4. Returns `verdict.Action` ("allow" / "deny" / "hitl_allow" /
@@ -255,7 +257,7 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
   — the author SDK package.
 - [`config/extplugin/proto/plugin.proto`](https://github.com/denoland/clawpatrol/tree/main/config/extplugin/proto)
   — gRPC service definitions if you want to bypass the SDK.
-- [Approval rules](approval-rules) — how rule conditions and
+- [Rules](rules) — how rule conditions and
   approve chains are evaluated against a request.
 - [Config reference](config-reference) — the `plugin` block and
   every other top-level setting.

@@ -1,0 +1,117 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR: ${{ github.event.number }}
+      TARGET_REPO: denoland/clawpatrol-demo
+      PUBLIC_URL: https://demo.clawpatrol.dev
+    steps:
+      - name: Checkout PR (clawpatrol)
+        uses: actions/checkout@v4
+        with:
+          path: clawpatrol
+
+      - name: Checkout demo fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          path: clawpatrol-demo
+          token: ${{ secrets.DEMO_DEPLOY_TOKEN }}
+
+      - name: Setup Node
+        if: github.event.action != 'closed'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dashboard deps
+        if: github.event.action != 'closed'
+        working-directory: clawpatrol/dashboard
+        run: npm install --no-audit --no-fund
+
+      - name: Build preview
+        if: github.event.action != 'closed'
+        working-directory: clawpatrol-demo
+        env:
+          SRC: ../clawpatrol
+          DASH_PREFIX: /pr-preview/pr-${{ github.event.number }}
+        run: make build
+
+      - name: Publish preview to gh-pages
+        if: github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd clawpatrol-demo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          rm -rf /tmp/gh-pages/pr-preview/pr-$PR
+          mkdir -p /tmp/gh-pages/pr-preview/pr-$PR
+          cp -R dist/. /tmp/gh-pages/pr-preview/pr-$PR/
+          cd /tmp/gh-pages
+          git add pr-preview/pr-$PR
+          if git diff --cached --quiet; then
+            echo "no changes to publish"
+            exit 0
+          fi
+          git commit -m "preview: pr-$PR @ ${GITHUB_SHA::7}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" gh-pages
+
+      - name: Remove preview on close
+        if: github.event.action == 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd clawpatrol-demo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          if [ ! -d /tmp/gh-pages/pr-preview/pr-$PR ]; then
+            echo "nothing to remove"
+            exit 0
+          fi
+          rm -rf /tmp/gh-pages/pr-preview/pr-$PR
+          cd /tmp/gh-pages
+          git add -A pr-preview/
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "preview: remove pr-$PR"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" gh-pages
+
+      - name: Comment preview link
+        if: github.event.action != 'closed'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            :rocket: Preview deployed: ${{ env.PUBLIC_URL }}/pr-preview/pr-${{ github.event.number }}/
+
+            Built from `${{ github.event.pull_request.head.sha }}` at ${{ github.event.pull_request.updated_at }}.
+
+      - name: Comment removed on close
+        if: github.event.action == 'closed'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            Preview removed (PR closed).

@@ -37,7 +37,11 @@ func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table 
 		})
 	}
 	content, remain, diags := body.PartialContent(schema)
-	fw := FrameworkAttrs{Refs: map[string]string{}}
+	fw := FrameworkAttrs{
+		Refs:     map[string]string{},
+		RefLists: map[string][]string{},
+		Strings:  map[string]string{},
+	}
 	for _, s := range specs {
 		attr, ok := content.Attributes[s.Name]
 		if !ok {
@@ -51,45 +55,93 @@ func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table 
 		if v.IsNull() {
 			continue
 		}
-		if v.Type() != cty.String {
-			rng := attr.Expr.Range()
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Invalid %s attribute", s.Name),
-				Detail:   fmt.Sprintf("Expected a bare-name reference; got %s.", v.Type().FriendlyName()),
-				Subject:  &rng,
-			})
-			continue
-		}
-		name := v.AsString()
-		if name == "" {
-			continue
-		}
-		if s.Kind != "" {
-			sym := table.Get(s.Kind, name)
-			if sym == nil {
-				rng := attr.Expr.Range()
-				if alt := table.GetAny(name); alt != nil {
-					altRange := alt.Range()
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Wrong reference kind for %q", name),
-						Detail:   fmt.Sprintf("Framework attribute %q expects %s but %q is %s at %s.", s.Name, article(string(s.Kind)), name, article(string(alt.Kind)), alt.Range()),
-						Subject:  &rng,
-						Context:  &altRange,
-					})
-				} else {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Unknown %s %q", s.Kind, name),
-						Detail:   fmt.Sprintf("Framework attribute %q references undeclared %s %q.", s.Name, s.Kind, name),
-						Subject:  &rng,
-					})
-				}
+		rng := attr.Expr.Range()
+		switch {
+		case s.Kind == "":
+			if v.Type() != cty.String {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Invalid %s attribute", s.Name),
+					Detail:   fmt.Sprintf("Expected a string; got %s.", v.Type().FriendlyName()),
+					Subject:  &rng,
+				})
 				continue
 			}
+			fw.Strings[s.Name] = v.AsString()
+		case s.List:
+			t := v.Type()
+			if !t.IsTupleType() && !t.IsListType() {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Invalid %s attribute", s.Name),
+					Detail:   fmt.Sprintf("Expected a list of bare-name references; got %s.", t.FriendlyName()),
+					Subject:  &rng,
+				})
+				continue
+			}
+			var names []string
+			it := v.ElementIterator()
+			for it.Next() {
+				_, el := it.Element()
+				if el.Type() != cty.String {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  fmt.Sprintf("Invalid %s element", s.Name),
+						Detail:   fmt.Sprintf("Each entry must be a bare-name reference; got %s.", el.Type().FriendlyName()),
+						Subject:  &rng,
+					})
+					continue
+				}
+				name := el.AsString()
+				if name == "" {
+					continue
+				}
+				if d := resolveRefName(s.Kind, name, s.Name, table, rng); d != nil {
+					diags = append(diags, d)
+					continue
+				}
+				names = append(names, name)
+			}
+			if len(names) > 0 {
+				fw.RefLists[s.Name] = names
+			}
+		default:
+			if v.Type() != cty.String {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Invalid %s attribute", s.Name),
+					Detail:   fmt.Sprintf("Expected a bare-name reference; got %s.", v.Type().FriendlyName()),
+					Subject:  &rng,
+				})
+				continue
+			}
+			name := v.AsString()
+			if name == "" {
+				continue
+			}
+			if d := resolveRefName(s.Kind, name, s.Name, table, rng); d != nil {
+				diags = append(diags, d)
+				continue
+			}
+			fw.Refs[s.Name] = name
 		}
-		fw.Refs[s.Name] = name
 	}
 	return fw, remain, diags
+}
+
+// resolveRefName looks up name in the symbol table under the given
+// kind and returns a diagnostic if it doesn't resolve. Returns nil
+// on success. With typed traversals, the eval step has already
+// constrained which kind the name came from, so a missing entry
+// here is an undeclared-name error rather than a wrong-kind one.
+func resolveRefName(kind Kind, name, attrName string, table *SymbolTable, rng hcl.Range) *hcl.Diagnostic {
+	if table.Get(kind, name) != nil {
+		return nil
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Unknown %s %q", kind, name),
+		Detail:   fmt.Sprintf("Framework attribute %q references undeclared %s %q.", attrName, kind, name),
+		Subject:  &rng,
+	}
 }

@@ -292,12 +292,10 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	}
 	if who.Node != nil {
 		// Onboard-supplied hostname (via /api/onboard/claim or
-		// /api/peer/ephemeral/tsnet/register) takes priority. The whois
-		// response reflects whatever the tsnet node registered with
-		// (e.g. "clawpatrol-run-<pid>" for per-process ephemeral runs
-		// or the *first* run's node for a promoted parent IP) — letting
-		// it overwrite would clobber the real machine name with the
-		// transient one.
+		// /api/peer/tsnet/register) takes priority. The whois response
+		// reflects whatever the tsnet node registered with (the daemon's
+		// configured hostname) — letting it overwrite would clobber the
+		// operator-chosen name with whatever Hostinfo.Hostname() returns.
 		if a.Hostname == "" {
 			a.Hostname = who.Node.Hostinfo.Hostname()
 		}
@@ -469,10 +467,11 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 			ti, to, cu, cm, reqs, fa, la int64
 		)
 		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la); err != nil {
+			log.Printf("sessions: scan row: %v", err)
 			continue
 		}
 		if r.onboard != nil && !r.onboard.HasDevice(ip) {
-			continue // ephemeral peer purged on startup — skip orphaned sessions
+			continue // device row gone (e.g. reaped at startup) — skip orphaned sessions
 		}
 		a := r.agents[ip]
 		if a == nil {
@@ -527,7 +526,15 @@ func (r *AgentRegistry) startSessionSweeper(keep time.Duration) {
 func (r *AgentRegistry) sweepSessions(keep time.Duration) {
 	cutoffT := time.Now().Add(-keep)
 	cutoff := cutoffT.UnixNano()
-	_, _ = r.db.Exec(`DELETE FROM sessions WHERE last_at < ?`, cutoff)
+	// Surface the delete error so a silently-failing sweep (e.g. WAL
+	// checkpoint contention dragging on past busy_timeout, or a
+	// schema-incompatible row blocking the index walk) doesn't accrete
+	// unbounded session history without anyone noticing. The in-memory
+	// trim below still runs on error so the dashboard's view at least
+	// rolls forward — the next tick will retry the delete.
+	if _, err := r.db.Exec(`DELETE FROM sessions WHERE last_at < ?`, cutoff); err != nil {
+		log.Printf("sessions: sweep delete: %v", err)
+	}
 	// Trim in-memory slices too. Without this the dashboard keeps
 	// showing rows the DB no longer has — apiAgents reads from
 	// snapshot(), not from the DB. Single pass under the registry
@@ -578,9 +585,10 @@ type IntegrationRow struct {
 	// endpoint or tunnel binding this credential. Empty when the
 	// credential is declared but no profile references it.
 	Profiles []string `json:"profiles,omitempty"`
-	// Endpoints is the sorted list of endpoint names whose `credential`
-	// / `credentials` binding (directly or transitively via the
-	// endpoint's tunnel) resolves to this credential.
+	// Endpoints is the sorted list of endpoint names this credential
+	// binds — directly via its `endpoint` / `endpoints` field, or
+	// transitively via the credential attached to an endpoint's
+	// `tunnel = ...`.
 	Endpoints []string `json:"endpoints,omitempty"`
 	// Config exposes the operator-set HCL block attributes for the
 	// credential (e.g. `user = "postgres"`) keyed by attribute name.
@@ -600,15 +608,18 @@ type IntegrationRow struct {
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
 // tailscale-node-auth credential's live state. Connected reflects
-// whether tsnet's BackendState is Running — not merely whether
-// identity bytes have been persisted, which can happen mid-auth
-// before the tailnet join completes. State carries the underlying
-// label so the card can distinguish "awaiting authentication" from
-// "starting" from "stopped". PendingURL is the live Tailscale login
-// URL emitted by tsnet during NeedsLogin — the dashboard's "Connect"
-// button redirects to it. Endpoint paths are surfaced so the
-// dashboard renders the connect flow without hard-coding the route
-// layout.
+// tailnet-auth validity, not tunnel liveness: a credential whose
+// OAuth-issued node identity is persisted and has not been observed
+// to fail (NeedsLogin / NeedsMachAuth / InUseOtherUser) reads as
+// connected even when the tunnel is idle and tsnet is torn down.
+// State carries the underlying live BackendState label (or a
+// hasPersistedSlots-aware fallback) so the card can distinguish
+// "awaiting authentication" from "starting" from "stopped" from
+// "running" — that's the tunnel signal, separate from the credential
+// signal. PendingURL is the live Tailscale login URL emitted by
+// tsnet during NeedsLogin — the dashboard's "Connect" button
+// redirects to it. Endpoint paths are surfaced so the dashboard
+// renders the connect flow without hard-coding the route layout.
 type TailscaleAuthStatusUI struct {
 	Connected bool                          `json:"connected"`
 	State     tailscaleproto.NodeStateLabel `json:"state"`
@@ -687,16 +698,11 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 			row.HasTailscaleAuth = true
 			present, _ := credentialSlotPresence(w.g.db, name)
 			label := tailscaleproto.DefaultStates.Get(name)
-			// Connected reads strictly from the live BackendState:
-			// persisted slots prove auth completed *at some point*, not
-			// that the node is currently joined. A gateway restart sees
-			// slots but Starting/NeedsLogin until tsnet finishes its
-			// boot — surfacing "connected" in that window misled the
-			// operator into thinking traffic could flow.
+			hasSlots := len(present) > 0
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
-				Connected:     label == tailscaleproto.NodeStateRunning,
-				State:         dashboardTailscaleState(label, len(present) > 0),
-				HasState:      len(present) > 0,
+				Connected:     tailscaleCredentialAuthValid(label, hasSlots),
+				State:         dashboardTailscaleState(label, hasSlots),
+				HasState:      hasSlots,
 				PendingURL:    tailscaleproto.Default.Get(name),
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,
@@ -712,18 +718,40 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 }
 
 // credentialBindings reports every profile + endpoint that references
-// the named credential, walking endpoint.Credentials AND the chain of
-// tunnels the endpoint dials through. The dashboard's details table
-// renders one column for profiles and one for endpoints so an
-// operator can see at a glance where a credential is in play.
+// the named credential. The dashboard's details table renders one
+// column for profiles and one for endpoints so an operator can see
+// at a glance where a credential is in play.
+//
+// Both columns read in the canonical "credentials bind endpoints"
+// direction:
+//
+//   - Endpoints: the credential's own `endpoint` / `endpoints`
+//     framework attr (via config.CredentialEndpointTargets), plus any
+//     endpoint whose tunnel chain attaches this credential.
+//   - Profiles: each CompiledProfile's own HCL-declared `credentials`
+//     list, plus the tunnel chain on the profile's endpoints for
+//     tunnel-attached auth.
+//
+// Walking the inverted CompiledEndpoint.Credentials list would leak
+// sibling profiles onto the Profiles column whenever two profiles
+// share an endpoint — e.g. the postgres `pg` endpoint carries both
+// `pg-readonly` and `pg-writer`, and profile "data" (declares only
+// `pg-readonly`) must not appear in `pg-writer`'s Profiles cell.
+// Mirror of the device-page fix in cl-lgwg / commit b0a3813.
 func credentialBindings(policy *config.CompiledPolicy, credName string) (profiles, endpoints []string) {
 	if policy == nil {
 		return nil, nil
 	}
 	epSet := map[string]bool{}
+	for _, n := range config.CredentialEndpointTargets(policy.Credentials[credName]) {
+		epSet[n] = true
+	}
 	for epName, ep := range policy.Endpoints {
-		if endpointBindsCredential(ep, credName) {
-			epSet[epName] = true
+		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+			if tun.Credential != nil && tun.Credential.Symbol != nil && tun.Credential.Symbol.Name == credName {
+				epSet[epName] = true
+				break
+			}
 		}
 	}
 	if len(epSet) > 0 {
@@ -735,11 +763,8 @@ func credentialBindings(policy *config.CompiledPolicy, credName string) (profile
 	}
 	profSet := map[string]bool{}
 	for pname, prof := range policy.Profiles {
-		for epName, ep := range prof.Endpoints {
-			if epSet[epName] || endpointBindsCredential(ep, credName) {
-				profSet[pname] = true
-				break
-			}
+		if profileBindsCredential(prof, credName) {
+			profSet[pname] = true
 		}
 	}
 	if len(profSet) > 0 {
@@ -752,18 +777,24 @@ func credentialBindings(policy *config.CompiledPolicy, credName string) (profile
 	return profiles, endpoints
 }
 
-func endpointBindsCredential(ep *config.CompiledEndpoint, credName string) bool {
-	if ep == nil {
+// profileBindsCredential reports whether the profile's own HCL list
+// declares the credential, or reaches it via a tunnel attached to one
+// of its endpoints. Mirrors credentialsInProfile's data sources so
+// the inverse rendering stays consistent with the per-device view.
+func profileBindsCredential(prof *config.CompiledProfile, credName string) bool {
+	if prof == nil {
 		return false
 	}
-	for _, cb := range ep.Credentials {
-		if cb.Credential != nil && cb.Credential.Symbol.Name == credName {
+	for _, ent := range prof.Credentials {
+		if ent != nil && ent.Symbol != nil && ent.Symbol.Name == credName {
 			return true
 		}
 	}
-	for tun := ep.Tunnel; tun != nil; tun = tun.Via {
-		if tun.Credential != nil && tun.Credential.Symbol.Name == credName {
-			return true
+	for _, ep := range prof.Endpoints {
+		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+			if tun.Credential != nil && tun.Credential.Symbol != nil && tun.Credential.Symbol.Name == credName {
+				return true
+			}
 		}
 	}
 	return false
@@ -793,6 +824,42 @@ func credentialConfig(ent *config.Entity, name string) map[string]string {
 	return out
 }
 
+// tailscaleCredentialAuthValid reports whether a tailscale-node-auth
+// credential should be rendered as "connected" in the dashboard. It
+// is a function of credential auth state alone, not tunnel liveness:
+// tunnels open lazily and close on idle, and the credential's OAuth
+// grant remains valid across those cycles. A fresh auth attempt
+// against the tailnet only fails if the operator (or a tailnet admin)
+// has revoked the grant or invalidated the node — which surfaces as
+// tsnet entering NeedsLogin / NeedsMachineAuth / InUseOtherUser. As
+// long as the watcher hasn't observed one of those auth-trouble
+// states, persisted credential_secrets stand as proof that the OAuth
+// flow succeeded and the node identity is accepted.
+//
+// Two paths read as connected:
+//   - tsnet is currently Running for this credential (live join, the
+//     strongest possible signal);
+//   - persisted node-identity slots exist and the live state is not
+//     one of the explicit auth-trouble labels (cached last-known-good,
+//     the spec for an idle tunnel).
+//
+// Everything else reads as not-connected, including no-persisted-
+// slots-and-not-Running (operator has never completed the auth) and
+// any of the auth-trouble labels (the tailnet itself reported the
+// credential is no longer good, so cached slots are stale).
+func tailscaleCredentialAuthValid(label tailscaleproto.NodeStateLabel, hasPersistedSlots bool) bool {
+	if label == tailscaleproto.NodeStateRunning {
+		return true
+	}
+	switch label {
+	case tailscaleproto.NodeStateNeedsLogin,
+		tailscaleproto.NodeStateNeedsMachAuth,
+		tailscaleproto.NodeStateInUseOtherUser:
+		return false
+	}
+	return hasPersistedSlots
+}
+
 // dashboardTailscaleState narrows the live BackendState for the
 // card's display. When the watcher has never observed a transition
 // (the tunnel may still be lazy and tsnet hasn't been brought up
@@ -810,20 +877,26 @@ func dashboardTailscaleState(label tailscaleproto.NodeStateLabel, hasPersistedSl
 	return tailscaleproto.NodeStateUnknown
 }
 
-// credentialsInProfile returns the set of credential bare names that
-// any endpoint in the given profile references — directly via the
-// endpoint's `credential = ...` / `credentials = [...]` bindings, or
-// transitively via the credential attached to the endpoint's
+// credentialsInProfile returns the set of credential bare names the
+// given profile uses — directly via its `credentials = [...]` list,
+// and transitively via the credential attached to an endpoint's
 // `tunnel = ...`. nil means "no filter — return everything." Used by
 // apiStatus and the device-page card render so per-device views only
 // show credentials the device's profile actually uses.
 //
-// Walking tunnel-attached credentials in addition to endpoint-attached
-// ones lets the dashboard surface tunnel-bound auth (e.g. the tailscale
-// node-auth credential) on profiles whose endpoints reach upstream
-// through that tunnel — the operator clicks Connect on the same
-// integration card whether the credential is wired to the endpoint or
-// to the tunnel underneath it.
+// Reads strictly from CompiledProfile.Credentials (the profile's own
+// HCL-declared list). Walking ep.Credentials would leak credentials
+// from *other* profiles that share the same endpoint — e.g. the
+// postgres `pg` endpoint carries both `pg-readonly` and `pg-writer`,
+// but profile "data" declares only `pg-readonly` and must not see
+// `pg-writer` on its card.
+//
+// Walking tunnel-attached credentials in addition to the profile's
+// own list lets the dashboard surface tunnel-bound auth (e.g. the
+// tailscale node-auth credential) on profiles whose endpoints reach
+// upstream through that tunnel — the operator clicks Connect on the
+// same integration card whether the credential is bound directly to
+// the profile or to the tunnel underneath one of its endpoints.
 func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
 	if profile == "" || policy == nil {
 		return nil
@@ -833,14 +906,14 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 		return map[string]bool{} // unknown profile → empty set, not nil
 	}
 	out := map[string]bool{}
-	for _, ep := range prof.Endpoints {
-		for _, cb := range ep.Credentials {
-			if cb.Credential != nil {
-				out[cb.Credential.Symbol.Name] = true
-			}
+	for _, ent := range prof.Credentials {
+		if ent != nil && ent.Symbol != nil {
+			out[ent.Symbol.Name] = true
 		}
+	}
+	for _, ep := range prof.Endpoints {
 		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
-			if tun.Credential != nil {
+			if tun.Credential != nil && tun.Credential.Symbol != nil {
 				out[tun.Credential.Symbol.Name] = true
 			}
 		}

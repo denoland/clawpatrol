@@ -47,11 +47,12 @@ func (*AnthropicManualKey) EnvVars() []config.EnvVar {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*AnthropicManualKey)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "anthropic_manual_key",
-		New:     newer[AnthropicManualKey](),
-		Runtime: (*AnthropicManualKey)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "anthropic_manual_key",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[AnthropicManualKey](),
+		Runtime:        (*AnthropicManualKey)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

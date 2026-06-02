@@ -152,11 +152,15 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     return { n: totalCount, avg, p99, errPct, devices };
   })();
 
-  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  const trail: Crumb[] = [];
   if (deviceName) {
-    trail.push({ label: deviceName, href: `#/device/${encodeURIComponent(ip!)}` });
+    trail.push({ label: "Devices", href: "#/devices" });
+    trail.push({
+      label: deviceName,
+      href: `#/device/${encodeURIComponent(ip!)}`,
+    });
   }
-  trail.push({ label: "analytics" });
+  trail.push({ label: "Analytics" });
 
   return (
     <Main>
@@ -184,7 +188,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
       <div
         className={
-          "bg-canvas-light border-1.5 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
+          "bg-canvas border-1.5 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
           (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
         }
       >
@@ -492,7 +496,7 @@ function LatencyChart({
   }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2.5 bg-navy-100 border-b border-navy">
         <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           Latency
@@ -502,7 +506,7 @@ function LatencyChart({
           <Toggle options={["log", "linear"] as Scale[]} value={scale} onChange={setScale} />
         </div>
       </header>
-      <div ref={ref} className="p-4 min-h-[320px]" />
+      <div ref={ref} className="p-4 min-h-80" />
     </section>
   );
 }
@@ -579,7 +583,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   const hdr = (label: string, field: "count" | "p99Ms") => (
     <th
-      className="px-3 sm:px-[14px] py-[9px] text-right text-xs font-mono font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
+      className="px-3 sm:px-3.5 py-2.5 text-right text-xs font-mono font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
       onClick={() => setSortBy(field)}
     >
       {label}
@@ -588,16 +592,16 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   );
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <table className="w-full text-xs">
         <colgroup>
           <col />
-          <col className="w-[120px]" />
-          <col className="w-[80px]" />
+          <col className="w-30" />
+          <col className="w-20" />
         </colgroup>
         <thead className="bg-navy-100 border-b border-navy">
           <tr>
-            <th className="px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold">
+            <th className="px-3 sm:px-3.5 py-2.5 text-left text-xs font-mono uppercase tracking-wider text-navy font-bold">
               Top routes
             </th>
             {hdr("Reqs", "count")}
@@ -610,16 +614,16 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
             return (
               <tr
                 key={d.key}
-                className="border-b border-canvas-muted hover:bg-navy-50 transition-colors"
+                className="border-b border-canvas-muted hover:bg-canvas-muted transition-colors"
               >
                 <td
-                  className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all"
+                  className="px-3 sm:px-3.5 py-2.5 font-mono align-middle break-all"
                   title={`${d.method} ${d.host}${d.path}`}
                 >
                   <span className="text-text-subtle">{d.method}</span> {d.host}
                   <span className="text-text-muted">{d.path}</span>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
+                <td className="px-3 sm:px-3.5 py-2.5 text-right whitespace-nowrap align-middle">
                   <div className="flex items-center justify-end gap-1.5">
                     <div className="w-12 h-1.5 bg-canvas-muted rounded-full">
                       <div
@@ -630,7 +634,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                     <span className="w-8 text-right tabular-nums">{d.count}</span>
                   </div>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right text-text-muted tabular-nums align-middle">
+                <td className="px-3 sm:px-3.5 py-2.5 text-right text-text-muted tabular-nums align-middle">
                   {fmtMs(d.p99Ms)}
                 </td>
               </tr>
@@ -674,7 +678,7 @@ function BarList({
   const max = items.length ? items[0].value : 0;
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <header className="px-4 py-2.5 bg-navy-100 border-b border-navy">
         <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           {title}
@@ -696,7 +700,7 @@ function BarList({
               key={item.key}
               className={
                 "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer " +
-                (isActive ? "bg-navy-50" : "hover:bg-navy-50")
+                (isActive ? "bg-navy-50" : "hover:bg-canvas-muted")
               }
               onClick={onClickFn ? () => onClickFn(item.key) : undefined}
             >
@@ -709,9 +713,9 @@ function BarList({
               >
                 {item.label}
               </span>
-              <div className="flex-1 h-2 bg-canvas-muted rounded-full">
+              <div className="flex-1 h-2 bg-canvas-muted">
                 <div
-                  className="h-full rounded-full"
+                  className="h-full"
                   style={{
                     width: `${pct}%`,
                     backgroundColor: barColor,

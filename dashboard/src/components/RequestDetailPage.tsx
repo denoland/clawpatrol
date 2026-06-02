@@ -1,14 +1,17 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
-  getAction,
   downloadActionFixture,
+  getAction,
   type Agent,
   type EventRecord,
   type FacetSchema,
 } from "../lib/api";
+import { headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
+import { CopyButton } from "./CopyButton";
+import { ApprovalStatusIcon, LockGlyph } from "./LiveRequests";
 import { Main } from "./Main";
 import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
@@ -84,7 +87,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   // full breakdown lives in SQLDetail below.
   const isSQL = ev.family === "sql" || ev.mode === "pg" || ev.mode === "clickhouse_native";
   const header = isSQL
-    ? { verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(), body: "" }
+    ? {
+        verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(),
+        body: "",
+      }
     : headerFromFacets(ev, schema);
   const { verb, body } = header;
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
@@ -103,13 +109,17 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       requestId={ev.id}
     >
       {/* header */}
-      <div className="bg-canvas-light border-1.5 border-navy p-5 space-y-3">
+      <div className="bg-canvas border-1.5 border-navy p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <ModeIcon mode={ev.mode} />
-          {verb && (
-            <span className="font-mono text-xs uppercase font-semibold text-text-muted">
-              {verb}
-            </span>
+          <ApprovalStatusIcon ev={ev} inFlight={ev.phase === "start"} />
+          {ev.mode === "splice" || ev.mode === "relay" ? (
+            <LockGlyph />
+          ) : (
+            verb && (
+              <span className="font-mono text-xs uppercase font-semibold text-text-muted">
+                {verb}
+              </span>
+            )
           )}
           {!isSQL && (
             <span className={"text-sm tabular-nums font-semibold " + statusColor}>
@@ -151,35 +161,51 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {isSQL ? (
         <SQLDetail ev={ev} />
       ) : hasSections ? (
-        <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
+        <div className="bg-canvas border-1.5 border-navy divide-y divide-canvas-dark">
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
             </Section>
           )}
           {hasReqH && (
-            <Section title="Request headers">
+            <Section
+              title="Request headers"
+              action={
+                <CopyButton label="request headers" text={() => headersToJSON(ev.req_headers!)} />
+              }
+            >
               <Headers obj={ev.req_headers!} />
             </Section>
           )}
           {hasReq && (
-            <Section title="Request body">
+            <Section
+              title="Request body"
+              action={<CopyButton label="request body" text={() => ev.req_body!} />}
+            >
               <HttpBody text={ev.req_body!} />
             </Section>
           )}
           {hasRespH && (
-            <Section title="Response headers">
+            <Section
+              title="Response headers"
+              action={
+                <CopyButton label="response headers" text={() => headersToJSON(ev.resp_headers!)} />
+              }
+            >
               <Headers obj={ev.resp_headers!} />
             </Section>
           )}
           {hasResp && (
-            <Section title={`Response body${status ? ` (${status})` : ""}`}>
+            <Section
+              title={`Response body${status ? ` (${status})` : ""}`}
+              action={<CopyButton label="response body" text={() => ev.resp_body!} />}
+            >
               <HttpBody text={ev.resp_body!} />
             </Section>
           )}
         </div>
       ) : (
-        <div className="bg-canvas-light border-1.5 border-navy px-5 py-4 text-xs text-text-subtle">
+        <div className="bg-canvas border-1.5 border-navy px-5 py-4 text-xs text-text-subtle">
           No request/response body captured
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
@@ -222,7 +248,7 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
           setBusy(false);
         }
       }}
-      title={err ?? "Download as a clawpatrol test fixture"}
+      title={err ?? "Download as a Claw Patrol test fixture"}
     >
       {busy ? "Downloading…" : "Download action"}
     </Button>
@@ -247,10 +273,13 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
   if (verb) facets.push({ label: "Verb", value: verb });
   if (tables.length > 0) facets.push({ label: "Tables", value: tables.join(", ") });
   if (functions.length > 0) {
-    facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
+    facets.push({
+      label: "Functions",
+      value: functions.map((s) => s.toUpperCase()).join(", "),
+    });
   }
   return (
-    <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
+    <div className="bg-canvas border-1.5 border-navy divide-y divide-canvas-dark">
       {facets.length > 0 && (
         <Section title="Details">
           <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-xs">
@@ -291,9 +320,13 @@ function Shell({
   agentName?: string;
   requestId?: string;
 }) {
-  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  const trail: Crumb[] = [];
   if (agentIP) {
-    trail.push({ label: agentName || agentIP, href: `#/device/${encodeURIComponent(agentIP)}` });
+    trail.push({ label: "Devices", href: "#/devices" });
+    trail.push({
+      label: agentName || agentIP,
+      href: `#/device/${encodeURIComponent(agentIP)}`,
+    });
   }
   if (requestId) {
     trail.push({
@@ -385,11 +418,20 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
-        {title}
+      <summary className="cursor-pointer flex items-center gap-2 px-4 py-1.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
+        <span>{title}</span>
+        {action && <span className="ml-auto">{action}</span>}
       </summary>
       <div>{children}</div>
     </details>
@@ -691,7 +733,7 @@ function Collapsible({
   }
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="text-text-subtle hover:text-text-muted">
+      <button onClick={() => setOpen(true)} className="text-text cursor-pointer">
         {bracket[0]} <span className="text-navy-500">{count} items</span> {bracket[1]}
       </button>
     );
@@ -713,33 +755,4 @@ function fmtBytes(n: number): string {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
   return (n / 1024 / 1024).toFixed(1) + " MB";
-}
-
-function ModeIcon({ mode }: { mode: string }) {
-  if (mode === "mitm") {
-    return (
-      <span title="MITM" className="shrink-0 text-rust-400">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
-        </svg>
-      </span>
-    );
-  }
-  return (
-    <span title="Splice" className="shrink-0 text-text-subtle">
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
-      </svg>
-    </span>
-  );
 }

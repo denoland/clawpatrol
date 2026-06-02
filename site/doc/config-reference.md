@@ -1,8 +1,8 @@
-# HCL config reference
+# Config Reference
 
-A clawpatrol gateway config mixes **operational** fields (top-level
-plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+A clawpatrol gateway config mixes **operational** settings in the
+required top-level `gateway { ... }` block with **policy** blocks.
+Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -11,82 +11,39 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. `string`, `bool`, `int` are scalar
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
-  bare-name reference to another block of that kind (e.g.
-  `credential = github-pat`); `[]ref(<kind>)` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (`<type>.<name>` for
+  two-label kinds like `credential = bearer_token.github`,
+  `<kind>.<name>` for one-label kinds like `rule = rule.no-pii`);
+  `[]ref(<kind>)` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
 Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 list one subsection per registered type.
 
-## Top-level fields
+## Top-level blocks
 
-Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `listen` | `string` | no |  |
-| `info_listen` | `string` | no |  |
-| `public_url` | `string` | no | The canonical externally reachable gateway URL used for generated control-plane links such as WireGuard join targets and async HITL status URLs. Runtime code normalizes away trailing slashes. |
-| `admin_email` | `string` | no |  |
-| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
-| `resolver` | `string` | no |  |
-| `log_path` | `string` | no |  |
-| `dashboard_operators` | `[]string` | no | Allowlists tailnet logins permitted to use the dashboard / management API in tailscale-control mode. Each entry is either an exact login ("alice@example.com") or a domain wildcard ("*@example.com"). Tagged devices (whose whois login is the tag name, not a user email) never match a wildcard entry — agents on the tailnet can never bypass the gate through this path. Empty / unset → tailnet-allowlist auth is disabled and the stored root password is the only way in. In WireGuard / proxy control mode this field is logged once as a no-op and ignored. |
-| `dashboard_session_ttl` | `string` | no | Is how long a dashboard login session stays valid after the operator types the password. Format accepts time.ParseDuration strings ("24h", "30m", "168h"). Empty / unset → defaults to 24h. Bumping this trades log-in frequency against blast radius if a session cookie leaks. Rotating the root password (`--set-dashboard-password` or the web form) revokes every existing session immediately regardless of TTL. |
-| `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
-| `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
-| `authkey` | `string` | no |  |
-| `control_url` | `string` | no |  |
-| `hostname` | `string` | no |  |
-| `control` | `string` | no |  |
-| `funnel` | `bool` | no | Enables Tailscale Funnel on the embedded tsnet node so that join, webhook, and CA endpoints are reachable from the internet via the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443). Only meaningful in tsnet control mode (authkey set). Tailscale's HTTPS must be enabled for the tailnet; if public_url is unset the gateway will derive it from the tsnet cert domain at startup. |
-| `oauth_client_id` | `string` | no |  |
-| `oauth_client_secret` | `string` | no |  |
-| `tailscale_tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). Tailscale-only — ignored in WireGuard mode. |
-| `wg_interface` | `string` | no |  |
-| `wg_endpoint` | `string` | no |  |
-| `wg_server_pub` | `string` | no |  |
-| `wg_subnet_cidr` | `string` | no |  |
-| `unknown_host` | `string` | no |  |
-| `llm_fail_mode` | `string` | no |  |
-| `llm_cache_ttl` | `int` | no |  |
-| `human_timeout` | `int` | no |  |
-| `human_on_timeout` | `string` | no |  |
-| `plugin` | `block` | yes | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
-
-## `policy "<name>" { ... }`
-
-Defines a named, reusable chunk of policy prose that
-`llm_approver` blocks reference by name. The single `text` attribute
-is typically a heredoc.
+Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `text` | `string` | yes |  |
-
-```hcl
-policy "example" {
-  text = <<-EOT
-    Example policy text.
-  EOT
-}
-```
+| `schema_version` | `int` | no | The config grammar this file targets. The gateway accepts a range of versions and rejects anything newer than it understands with an upgrade error. Omitting it loads as legacy grammar (version 0) with a deprecation warning. |
+| `gateway` | `block` | yes | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
+| `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
+| `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
 ## `profile "<name>" { ... }`
 
-Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
+Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |
-| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |
+| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |
 
 ```hcl
 profile "default" {
-  endpoints          = [github, postgres-prod]
-  hitl_async_grants = true
+  credentials = [bearer_token.github, postgres_credential.postgres-prod]
 }
 ```
 
@@ -108,29 +65,13 @@ operator clicks approve/deny on the dashboard).
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `channel` | `string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `timeout` | `int` | no |  |
-| `require_approvers` | `int` | no |  |
-| `sync_wait_timeout` | `string` | no | The HTTP hold budget before an async-capable HITL request returns 202 and moves to polling/retry-grant mode. |
-| `async_grant` | `block` | no | Configures v1 HITL async retry grants for this approver. The nested block must set enabled = true, and the active profile must also set hitl_async_grants = true, before async behavior is effective. |
+| `channel` | `string` | yes | The destination channel, chat id, or equivalent notifier-specific target. |
+| `credential` | `ref(credential)` | no | References the notifier credential used to post approval requests. Leave empty for dashboard-only approval. |
+| `timeout` | `int` | no | Overrides the gateway's human_timeout for this approver, in seconds. |
+| `require_approvers` | `int` | no | The number of separate human approvals required before the request is allowed. |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
 | `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
 | `message` | `string` | no | An optional Go-template-style string with {{var}} placeholders. When set, the expanded text replaces the default section body in the Slack (or other notifier) card. Supported vars mirror the CEL facet namespace: {{http.method}}, {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}}, {{profile}}, {{endpoint}}, {{reason}}, etc. Classifier (if also set) still runs; Message takes display precedence. |
-
-**Nested block `async_grant {}`:**
-
-The optional nested `async_grant { ... }`
-block shared by async-capable HITL approvers. It is schema-only here;
-runtime execution lives in the gateway and endpoint layers.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `enabled` | `bool` | no | Explicitly opts this approver into async retry-grant mode. The active profile must also set hitl_async_grants = true. |
-| `approval_ttl` | `string` | no | Human approval lifetime after the original sync wait falls back to a 202 response. |
-| `approved_retry_ttl` | `string` | no | Post-approval retry grant lifetime for the client to retry. |
-| `fingerprint_body` | `string` | no | Request-body fingerprinting mode. V1 supports only "raw". |
-| `max_body_bytes` | `int` | no | Maximum request body size eligible for async raw-body fingerprinting. |
 
 ```hcl
 approver "human_approver" "example" {
@@ -141,21 +82,20 @@ approver "human_approver" "example" {
 ### `approver "llm_approver" "<name>"`
 
 Carries the model + the credential used to authenticate
-the call to the model API + the policy text the model judges
-against. Inline `policy` is a bare-name reference to a `policy
-"<name>" { text = ... }` block — operator declares the prompt once
-and reuses across multiple judges.
+the call to the model API + the inline policy text the model judges
+against. `policy` is a heredoc-friendly string attribute on the
+approver block itself — no separate `policy "<name>" {}` block.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model` | `string` | yes |  |
-| `credential` | `ref(credential)` | yes |  |
-| `policy` | `ref(policy)` | no |  |
+| `model` | `string` | yes | The model id used for policy judgment, such as a claude-*, gpt-*, or o*-prefixed model. |
+| `credential` | `ref(credential)` | yes | References the HTTP credential used to authenticate the model API call. |
+| `policy` | `string` | no | The prose the model judges requests against. Typically a heredoc on the approver block. |
 
 ```hcl
 approver "llm_approver" "example" {
   model = "claude-haiku-4-5-20251001"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 
@@ -163,7 +103,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -183,8 +123,6 @@ credential "anthropic_oauth_subscription" "example" {}
 
 ### `credential "aws_credential" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 Schema is intentionally empty: access key id and secret access key
 (and optional session token) live in the secret store as named
 slots, filled via the dashboard or CLAWPATROL_SECRET_<NAME>_<SLOT>
@@ -201,7 +139,7 @@ credential "aws_credential" "example" {}
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `idempotency_key` | `bool` | no |  |
+| `idempotency_key` | `bool` | no | Stamps a deterministic Idempotency-Key header on non-GET/HEAD HTTP requests when the agent did not provide one. |
 
 ```hcl
 credential "bearer_token" "example" {}
@@ -209,9 +147,17 @@ credential "bearer_token" "example" {}
 
 ### `credential "clickhouse_credential" "<name>"`
 
+Database, when set, is the discriminator the dispatcher uses to
+pick this credential when several clickhouse_credential blocks
+bind the same endpoint(s). At request time the gateway reads the
+agent-declared database off the wire and picks the credential
+whose `database` matches; an unset `database` field is the
+catchall (one allowed per (profile, endpoint)).
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `user` | `string` | no |  |
+| `user` | `string` | no | The upstream ClickHouse user the gateway injects. |
+| `database` | `string` | no | Limits this credential to ClickHouse requests for that database. Empty acts as the catchall. |
 
 ```hcl
 credential "clickhouse_credential" "example" {}
@@ -221,7 +167,7 @@ credential "clickhouse_credential" "example" {}
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `cookie_name` | `string` | no |  |
+| `cookie_name` | `string` | no | The HTTP cookie name that receives the secret value. |
 
 ```hcl
 credential "cookie_token" "example" {}
@@ -265,8 +211,8 @@ credential "google_gke_credential" "example" {}
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `header` | `string` | yes |  |
-| `prefix` | `string` | no |  |
+| `header` | `string` | yes | The HTTP header name to overwrite with the secret value. |
+| `prefix` | `string` | no | Prepended to the secret before injection, for schemes such as "Bearer " or "Token ". |
 
 ```hcl
 credential "header_token" "example" {
@@ -308,9 +254,17 @@ credential "openai_codex_oauth" "example" {}
 
 ### `credential "postgres_credential" "<name>"`
 
+Database, when set, is the discriminator the dispatcher uses to
+pick this credential when several postgres_credential blocks bind
+the same endpoint(s). At request time the gateway reads the
+agent-declared database off the StartupMessage and picks the
+credential whose `database` matches; an unset `database` field is
+the catchall (one allowed per (profile, endpoint)).
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `user` | `string` | no |  |
+| `user` | `string` | no | The upstream Postgres role the gateway authenticates as. |
+| `database` | `string` | no | Limits this credential to sessions whose StartupMessage declares the same database. Empty acts as the catchall. |
 
 ```hcl
 credential "postgres_credential" "example" {}
@@ -324,15 +278,15 @@ _No configurable attributes._
 credential "slack_tokens" "example" {}
 ```
 
-### `credential "ssh" "<name>"`
+### `credential "ssh_key" "<name>"`
 
 _No configurable attributes._
 
 ```hcl
-credential "ssh" "example" {}
+credential "ssh_key" "example" {}
 ```
 
-### `credential "tailscale" "<name>"`
+### `credential "tailscale_auth" "<name>"`
 
 Has no operator-facing fields — there is
 nothing to paste. Per-tailnet selection (control_url, tags) lives
@@ -341,7 +295,7 @@ on the tunnel block instead.
 _No configurable attributes._
 
 ```hcl
-credential "tailscale" "example" {}
+credential "tailscale_auth" "example" {}
 ```
 
 ### `credential "telegram_bot_token" "<name>"`
@@ -364,9 +318,7 @@ Family: `sql`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `hosts` | `[]string` | yes | The set of ClickHouse HTTPS hostnames or host:port pairs this endpoint intercepts. |
 
 ```hcl
 endpoint "clickhouse_https" "example" {
@@ -400,12 +352,10 @@ Family: `sql`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `port` | `int` | no |  |
-| `tls` | `bool` | no |  |
-| `accept_invalid_certificate` | `bool` | no |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `hosts` | `[]string` | yes | The set of ClickHouse native-protocol hostnames or host:port pairs this endpoint intercepts. |
+| `port` | `int` | no | The default upstream port for hosts that omit one. Defaults to 9000 without TLS and 9440 with TLS. |
+| `tls` | `bool` | no | Enables ClickHouse native-over-TLS on the upstream hop. |
+| `accept_invalid_certificate` | `bool` | no | Skips upstream certificate validation when TLS is enabled. |
 
 ```hcl
 endpoint "clickhouse_native" "example" {
@@ -419,9 +369,7 @@ Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `hosts` | `[]string` | yes | The set of HTTPS hostnames or host:port pairs this endpoint intercepts. |
 
 ```hcl
 endpoint "https" "example" {
@@ -430,8 +378,6 @@ endpoint "https" "example" {
 ```
 
 ### `endpoint "kubernetes" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 ClusterName + Region are EKS auth parameters: when the bound
 credential is `aws_credential`, the gateway presigns an STS
@@ -444,13 +390,12 @@ Family: `k8s`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | no |  |
-| `server` | `string` | no |  |
-| `ca_cert` | `string` | no |  |
-| `description` | `string` | no |  |
-| `cluster_name` | `string` | no |  |
-| `region` | `string` | no |  |
-| `credential` | `ref(credential)` | no |  |
+| `hosts` | `[]string` | no | An optional list of Kubernetes API hostnames or host:port pairs to intercept. |
+| `server` | `string` | no | The Kubernetes API server URL or host:port used when hosts is not set. |
+| `ca_cert` | `string` | no | The PEM-encoded cluster CA, often loaded with `<<file:cluster-ca.pem>>`. |
+| `description` | `string` | no | Operator-facing text for dashboard display. |
+| `cluster_name` | `string` | no | The EKS cluster name used by aws_credential. |
+| `region` | `string` | no | The AWS region used by aws_credential for EKS auth. |
 
 ```hcl
 endpoint "kubernetes" "example" {}
@@ -462,9 +407,7 @@ Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `hosts` | `[]string` | yes | The chatgpt.com host list intercepted for Codex subscription-auth traffic. |
 
 ```hcl
 endpoint "openai_codex_https" "example" {
@@ -491,10 +434,8 @@ Family: `sql`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `host` | `string` | yes |  |
-| `sslmode` | `string` | no |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `host` | `string` | yes | The upstream Postgres host:port pair. |
+| `sslmode` | `string` | no | Controls upstream TLS negotiation. Valid values mirror libpq: "disable", "prefer", "require", and "verify-full". |
 
 ```hcl
 endpoint "postgres" "example" {
@@ -504,27 +445,23 @@ endpoint "postgres" "example" {
 
 ### `endpoint "ssh" "<name>"`
 
-Binds one or more host:port tuples to one or more SSH
-credentials. The agent's username is the discriminator for
-per-username dispatch (mirrors postgres' placeholder-based dispatch,
-just spelled `user` because that's what SSH calls it):
-
-	credential = X                                  // any user → X
-	credentials = [{ user = "root",   credential = X },
-	               { user = "deploy", credential = Y },
-	               { credential = Z }]              // fallback
-
-The agent's username is also passed through verbatim as the upstream
-SSH user — credentials carry only auth material (key / password /
-host_pubkey), never a username override.
+Binds one or more host:port tuples. The credentials
+that authenticate against it live on credential blocks via the
+framework-level `endpoint = X` / `endpoints = [...]` binding. When
+a profile wields more than one SSH credential at the endpoint,
+each ambiguous credential carries a `user = "..."` disambiguator —
+either on its profile-inline entry (`{ credential = X, user = "..." }`)
+or on the credential block itself — and the agent's wire-protocol
+username picks the matching entry. The agent's username is also
+passed through verbatim as the upstream SSH user; credentials
+carry only auth material (key / password / host_pubkey), never a
+username override.
 
 Family: `ssh`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
+| `hosts` | `[]string` | yes | The set of SSH host:port pairs this endpoint intercepts. |
 
 ```hcl
 endpoint "ssh" "example" {
@@ -545,14 +482,14 @@ been inferred from the endpoint refs.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `endpoint` | `ref(endpoint)` | no |  |
-| `endpoints` | `[]ref(endpoint)` | no |  |
-| `priority` | `int` | no |  |
-| `disabled` | `bool` | no |  |
+| `endpoint` | `ref(endpoint)` | no | The single endpoint this rule attaches to. Use endpoint or endpoints, not both. |
+| `endpoints` | `[]ref(endpoint)` | no | The list of endpoints this rule attaches to. All referenced endpoints must share one protocol family. |
+| `priority` | `int` | no | Orders matching rules. Higher values run first; equal priorities preserve declaration order. |
+| `disabled` | `bool` | no | Keeps the rule in config while excluding it from runtime evaluation. |
 | `condition` | `string` | no | A CEL expression evaluated against the family-specific variable set. An absent / empty condition matches everything — the catch-all pattern (`rule "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
 | `credential` | `ref(credential)` | no | Credential, if set, is a bare-name reference to a credential block. The runtime treats it as an extra match predicate (request must have been dispatched against this credential) evaluated before the CEL expression. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
-| `reason` | `string` | no |  |
+| `reason` | `string` | no | The operator-facing explanation recorded when the rule matches. |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
 
 ```hcl
@@ -634,7 +571,7 @@ Configures the tunnel runtime.
 tunnel "ssh_port_forward" "example" {
   bastion = "bastion.example:22"
   user = "example"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 

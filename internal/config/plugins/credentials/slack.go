@@ -155,7 +155,7 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	if bs := strings.TrimSpace(req.BodySample); bs != "" {
 		blocks = append(blocks, map[string]any{
 			"type": "section",
-			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + slackTrunc(bs, 1000) + "```"},
+			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + slackTrunc(bs, slackSectionTextMax) + "```"},
 		})
 	}
 	if guidance := slackHITLApprovalGuidance(target); guidance != "" {
@@ -211,10 +211,17 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	if err != nil {
 		return err
 	}
-	if target.MessageUpdateSink != nil && req.AsyncOperationID != "" && posted.Channel != "" && posted.TS != "" {
+	if posted.Channel != "" && posted.TS != "" {
 		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary})
-		if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
-			log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
+		if target.MessageUpdateSink != nil && req.AsyncOperationID != "" {
+			if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
+				log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
+			}
+		}
+		if target.PendingMessageUpdateSink != nil && target.PendingID != "" {
+			if err := target.PendingMessageUpdateSink(ctx, target.PendingID, ref); err != nil {
+				log.Printf("slack notify: record pending HITL message ref for %s: %v", target.PendingID, err)
+			}
 		}
 	}
 	return nil
@@ -267,7 +274,7 @@ func slackHITLContentBlocks(title, queryLabel, path, message string, summary *ru
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
 			{"type": "section", "text": map[string]any{
 				"type": "mrkdwn",
-				"text": "*" + queryLabel + "*\n```" + slackTrunc(path, 800) + "```",
+				"text": "*" + queryLabel + "*\n```" + slackTrunc(path, slackSectionTextMax) + "```",
 			}},
 		}
 	}
@@ -394,6 +401,11 @@ func decodeSlackMessageRef(raw string) (slackMessageRef, bool) {
 	return ref, true
 }
 
+// UpdateHITLMessage edits the originating Slack interactive message
+// after a HITL decision lands. update.MessageRef is the JSON-encoded
+// slackMessageRef the credential plugin emitted when posting; this
+// call resolves the credential, then issues chat.update with the
+// rendered decision text.
 func (s *SlackTokens) UpdateHITLMessage(ctx context.Context, secrets runtime.SecretStore, update runtime.HITLMessageUpdate) error {
 	ref, ok := decodeSlackMessageRef(update.MessageRef)
 	if !ok {
@@ -469,7 +481,7 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 	case runtime.HITLOperationStateExpired:
 		return ":alarm_clock: HITL approval expired"
 	case runtime.HITLOperationStateClientDisconnected:
-		return ":warning: Original client disconnected before async polling handle was returned"
+		return ":warning: Original client disconnected before approval. The upstream request was not sent."
 	default:
 		return "HITL state: `" + string(update.State) + "`"
 	}
@@ -557,6 +569,14 @@ func hitlClassificationEmoji(c string) string {
 		return ":question:"
 	}
 }
+
+// slackSectionTextMax bounds the SQL query / request body shown inside
+// a Slack "section" mrkdwn block. Slack hard-caps section text at 3000
+// chars; staying a little under leaves room for the surrounding label
+// and code-fence wrapping. The old 800/1000 limits cut most real SQL
+// statements off mid-query, so approvers couldn't see what they were
+// approving.
+const slackSectionTextMax = 2800
 
 func slackTrunc(s string, n int) string {
 	s = strings.TrimSpace(s)
@@ -906,11 +926,12 @@ func init() {
 		_ runtime.WebhookProvider       = (*SlackTokens)(nil)
 	)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "slack_tokens",
-		New:     newer[SlackTokens](),
-		Runtime: (*SlackTokens)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "slack_tokens",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[SlackTokens](),
+		Runtime:        (*SlackTokens)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

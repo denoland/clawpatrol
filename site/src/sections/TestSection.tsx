@@ -17,21 +17,39 @@ function TestOutput() {
     </>
   );
   return (
-    <TerminalFrame class="block min-w-0 p-6 sm:p-8 lg:p-10">
-      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto">
+    <TerminalFrame class="block min-w-0 p-6 sm:p-8 lg:p-10 squircle-xl bg-[repeating-linear-gradient(to_bottom,var(--color-navy),var(--color-navy)_1px,var(--color-navy-700)_1px,var(--color-navy-700)_2px)]">
+      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto text-shadow-navy-100/15 text-shadow-lg">
         <code>
           <span class="text-canvas/40">$ </span>
           clawpatrol test deno.hcl tests/
           {"\n"}
-          {ok("tests/anthropic-implicit-allow.json")}
-          {ok("tests/clickhouse-default-deny.json")}
-          {ok("tests/clickhouse-read.json")}
-          {ok("tests/deno-com-require-approval.json")}
-          {ok("tests/deno-deploy-read.json")}
-          {ok("tests/github-api-implicit-allow.json")}
-          {ok("tests/k8s-allow-meta.json")}
-          {ok("tests/k8s-debug-pods.json")}
-          {ok("tests/k8s-default-deny.json")}
+          <span class="text-text-subtle">
+            {ok("tests/anthropic-implicit-allow.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/clickhouse-default-deny.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/clickhouse-read.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/deno-com-require-approval.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/deno-deploy-read.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/github-api-implicit-allow.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/k8s-allow-meta.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/k8s-debug-pods.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/k8s-default-deny.json")}
+          </span>
           <span class="text-rust-300 font-bold">FAIL</span>
           {" tests/k8s-no-secrets.json\n"}
           {"  "}
@@ -47,11 +65,19 @@ function TestOutput() {
           {"      rule="}
           <span class="text-butter-300">"k8s-no-secrets"</span>
           {"\n"}
-          {ok("tests/k8s-reads.json")}
-          {ok("tests/orb-avocet2-immutable-operations-allow.json")}
-          {ok("tests/pg-staging-banned-functions.json")}
-          {ok("tests/pg-staging-default-deny.json")}
-          {ok("tests/pg-staging-reads.json")}
+          <span class="text-text-subtle">{ok("tests/k8s-reads.json")}</span>
+          <span class="text-text-subtle">
+            {ok("tests/orb-dev2-immutable-operations-allow.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/pg-staging-banned-functions.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/pg-staging-default-deny.json")}
+          </span>
+          <span class="text-text-subtle">
+            {ok("tests/pg-staging-reads.json")}
+          </span>
           36 action(s) checked,{" "}
           <span class="text-rust-300">1 mismatch(es)</span>
         </code>
@@ -64,10 +90,9 @@ export function TestSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Regression tests</SectionLabel>
-
         <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start">
           <div class="min-w-0">
+            <SectionLabel class="ml-0 mb-4!">Regression tests</SectionLabel>
             <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display text-balance mb-6 text-text">
               Test your rules{" "}
               <span class="text-rust">before you ship them.</span>

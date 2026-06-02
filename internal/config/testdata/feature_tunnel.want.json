@@ -1,11 +1,21 @@
 {
-  "listen": "0.0.0.0:8443",
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "credentials": {
-      "github-pat": {
+      "github": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoints": [
+          "github",
+          "deploy-classic"
+        ],
         "type": "bearer_token"
       }
     },
@@ -13,8 +23,7 @@
       "deploy-classic": {
         "body": {
           "Host": "main-pg14.classic.example:5432",
-          "SSLMode": "",
-          "Credential": "github-pat"
+          "SSLMode": ""
         },
         "family": "sql",
         "tunnel": "csql-prod",
@@ -25,8 +34,7 @@
           "Hosts": [
             "api.github.com",
             "github.com"
-          ],
-          "Credential": "github-pat"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -34,9 +42,8 @@
     },
     "profiles": {
       "default": {
-        "endpoints": [
-          "github",
-          "deploy-classic"
+        "credentials": [
+          "github"
         ]
       }
     },

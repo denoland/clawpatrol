@@ -1,10 +1,10 @@
 # clawpatrol — Tailscale mode
 
 Tailscale as the primary control plane. The gateway joins your existing
-tailnet as an exit-node via an embedded **tsnet.Server**; devices already
-on the tailnet run `clawpatrol login` to pin it as their exit-node. No
-public UDP port, no WireGuard keypair management, no subnet allocation
-— Tailscale's control plane handles all of that.
+tailnet as an exit-node via an embedded **tsnet.Server**; devices onboard
+through the same `clawpatrol join <gateway-url>` device-flow that
+WireGuard mode uses. No public UDP port, no WireGuard keypair management,
+no subnet allocation — Tailscale's control plane handles all of that.
 
 ## How it works
 
@@ -13,14 +13,18 @@ public UDP port, no WireGuard keypair management, no subnet allocation
    `authkey` field or `$TS_AUTHKEY`. It joins the tailnet under the configured hostname
    (default: `clawpatrol-gateway`) and binds the MITM + dashboard on
    the resulting tailnet IP.
-2. When a device runs `clawpatrol login`, the dashboard mints a
-   single-use Tailscale auth key by exchanging OAuth client credentials
-   for a short-lived bearer token and calling the Tailscale key API
-   (`reusable: false`, `preauthorized: true`, 10-minute TTL).
-3. `clawpatrol login` calls `tailscale up --authkey=<key>` (installs
-   Tailscale if missing), installs a fwmark policy-route to keep SSH
-   alive, fetches the gateway CA, sets `--exit-node=clawpatrol-gateway`,
-   and writes the CA bundle to the system trust store.
+2. When a device runs `clawpatrol join <gateway-url>`, the dashboard
+   mints a single-use Tailscale auth key by exchanging OAuth client
+   credentials for a short-lived bearer token and calling the
+   Tailscale key API (`reusable: false`, `preauthorized: true`,
+   10-minute TTL) and ships it back over the device-flow poll.
+3. The per-process tsnet daemon picks up that auth key on first
+   `clawpatrol run` and joins the tailnet under the operator-chosen
+   hostname. With `--whole-machine` (Linux), the join flow also runs
+   `tailscale up --authkey=<key>`, installs a fwmark policy-route to
+   keep SSH alive, and sets `--exit-node=clawpatrol-gateway` on the
+   system tailscaled. The CA is fetched over the tailnet and
+   installed into the system trust store.
 4. All outbound traffic now exits through the gateway. The gateway
    intercepts at L4 — TCP/443 → SNI peek → MITM or splice, everything
    else forwarded via `wgRelay` / `relayUDP`. Tailscale handles NAT
@@ -33,8 +37,10 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 
 - `clawpatrol gateway gateway.hcl` boots the tsnet node, no public
   ports needed — only outbound HTTPS to the Tailscale control plane.
-- `clawpatrol login` is one command on the device: join tailnet +
-  install CA + set exit-node. Subsequent re-runs are idempotent.
+- `clawpatrol join <gateway-url>` is one command on the device:
+  device-flow approval against the dashboard, then install CA +
+  (with `--whole-machine`) set the gateway as exit-node. Subsequent
+  re-runs are idempotent.
 - Agents (`claude`, `gh`, `codex`) run unmodified. `eval "$(clawpatrol
   env)"` exports placeholder tokens + CA bundle. HTTPS to
   `api.anthropic.com` routes through the exit-node, gateway intercepts,
@@ -55,31 +61,57 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 | **NAT hairpin** | Works (DERP relay) | Fails if both peers behind same NAT |
 | **Device identity** | User + hostname + OS via whois | Hostname only (set at join) |
 | **Auth key source** | OAuth client_credentials → Tailscale API | Self-generated keypair |
-| **Device IP** | Assigned by Tailscale control plane | Allocated from `wg_subnet_cidr` |
-| **Dashboard auth** | Tailscale user identity (no proxy needed) | Falls back to `admin_email`; needs auth proxy for multi-user |
-| **Client command** | `clawpatrol login` | `clawpatrol join <gw-url>` |
+| **Device IP** | Assigned by Tailscale control plane | Allocated from `wireguard.subnet_cidr` |
+| **Dashboard auth** | Bcrypt root password + optional `tailscale.operators` allowlist | Bcrypt root password (no whois identity to allowlist against; combine with a `tailscale {}` block for that) |
+| **Client command** | `clawpatrol join <gw-url>` | `clawpatrol join <gw-url>` |
 | **State** | `state_dir` — tsnet machine key + ipn state in sqlite | `state_dir` — WG server key, peer map, sessions in sqlite |
+
+## Required tailnet ACL
+
+Client traffic flows through the gateway by treating it as the
+client's tsnet **exit node**. The client side sets
+`ExitNodeIP=<gateway>` automatically; for that to actually route,
+the tailnet ACL must **auto-approve the gateway as an exit node
+for the client tag**. Without it, the pref is accepted locally
+but every outbound dial silently times out.
+
+Add to your tailnet ACL JSON:
+
+```jsonc
+{
+  "autoApprovers": {
+    "exitNode": ["tag:client"]    // must match tailscale.tags below
+  },
+  "tagOwners": {
+    "tag:client": ["autogroup:admin"]
+  }
+}
+```
+
+The gateway already advertises `0.0.0.0/0` + `::/0` via
+`advertiseExitRoutes`, so no operator action is needed in the
+Tailscale admin console — the ACL above is the whole prereq.
 
 ## Operator setup
 
 ```bash
 # gateway VM — no public IP required, just outbound HTTPS
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
-listen       = "0.0.0.0:8443"
-info_listen  = "127.0.0.1:8080"
-public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
-admin_email  = "you@example.com"
-state_dir    = "/opt/clawpatrol"
-integrations = ["claude", "codex", "github"]
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  public_url       = "http://clawpatrol-gateway" # tailnet hostname suffices
+  state_dir        = "/opt/clawpatrol/ts-state"
 
-control             = "tailscale"
-oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-tailscale_tags      = ["tag:client"]       # applied to minted device keys
-hostname            = "clawpatrol-gateway" # gateway's name on the tailnet
-state_dir           = "/opt/clawpatrol/ts-state"
+  tailscale {
+    authkey             = "{{secret:TS_AUTHKEY}}"  # gateway-node auth key
+    hostname            = "clawpatrol-gateway"     # gateway's name on the tailnet
+    tags                = ["tag:client"]           # applied to minted client keys
+    oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+    oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+  }
+}
 EOF
 
 mkdir -p /opt/clawpatrol
@@ -103,25 +135,17 @@ device on the tailnet once the gateway is up.
 
 ## Client setup
 
-Device must be on the tailnet first:
-
 ```bash
-# Install Tailscale (if not already): https://tailscale.com/download
-# Then:
-tailscale up   # join tailnet with your normal Tailscale credentials
-
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
-clawpatrol login           # finds clawpatrol-gateway on the tailnet
-                            # approve at the dashboard URL it prints
-# done — claude/gh/codex just work
+curl -fsSL https://clawpatrol.dev/install.sh | sh
+clawpatrol join <gateway-url>   # prints a user_code; approve on the
+                                # dashboard from any trusted device
+# done — clawpatrol run claude (or gh/codex) just works
 ```
 
-Options:
-
-```
---name string       exit-node hostname to find on the tailnet (default: clawpatrol-gateway)
---no-exit-node      skip setting exit-node (use if you only want the CA)
-```
+The gateway mints a single-use Tailscale auth key as part of the
+approval; the local tsnet daemon joins the tailnet on first
+`clawpatrol run`. Add `--whole-machine` to additionally install
+system Tailscale and pin the gateway as the host-wide exit-node.
 
 ## Tunnel plugin — reach internal tailnet services
 
@@ -138,17 +162,17 @@ in SQLite (`credential_secrets`) and reused on every subsequent
 restart:
 
 ```hcl
-credential "tailscale" "corp-tailnet" {}
+credential "tailscale_auth" "corp-tailnet" {}
 
 tunnel "tailscale" "corp" {
-  credential = corp-tailnet
+  credential = tailscale_auth.corp-tailnet
   hostname   = "clawpatrol-tunnel-corp"
   tags       = ["tag:client"]
 }
 
 endpoint "https" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
-  tunnel = corp
+  tunnel = tailscale.corp
 }
 ```
 
@@ -205,7 +229,7 @@ tunnel "tailscale" "corp" {
 
 endpoint "https" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
-  tunnel = corp
+  tunnel = tailscale.corp
 }
 ```
 
