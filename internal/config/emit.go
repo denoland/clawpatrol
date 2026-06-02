@@ -200,13 +200,13 @@ func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
 	}
 	setStr("session_keep", s.SessionKeep)
 
-	if s.BodyCaps != nil {
-		bc := gw.AppendNewBlock("body_caps", nil).Body()
-		if s.BodyCaps.RulesEngine != "" {
-			bc.SetAttributeValue("rules_engine", cty.StringVal(s.BodyCaps.RulesEngine))
+	if s.BodyLimits != nil {
+		bl := gw.AppendNewBlock("body_limits", nil).Body()
+		if s.BodyLimits.Buffer != "" {
+			bl.SetAttributeValue("buffer", cty.StringVal(s.BodyLimits.Buffer))
 		}
-		if s.BodyCaps.ActionsTable != "" {
-			bc.SetAttributeValue("actions_table", cty.StringVal(s.BodyCaps.ActionsTable))
+		if s.BodyLimits.Storage != "" {
+			bl.SetAttributeValue("storage", cty.StringVal(s.BodyLimits.Storage))
 		}
 	}
 

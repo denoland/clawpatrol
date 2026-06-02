@@ -50,16 +50,16 @@ func dumpSettings(s *GatewaySettings) map[string]any {
 		out["telemetry"] = *s.Telemetry
 	}
 	setStr("session_keep", s.SessionKeep)
-	if s.BodyCaps != nil {
-		bc := map[string]any{}
-		if s.BodyCaps.RulesEngine != "" {
-			bc["rules_engine"] = s.BodyCaps.RulesEngine
+	if s.BodyLimits != nil {
+		bl := map[string]any{}
+		if s.BodyLimits.Buffer != "" {
+			bl["buffer"] = s.BodyLimits.Buffer
 		}
-		if s.BodyCaps.ActionsTable != "" {
-			bc["actions_table"] = s.BodyCaps.ActionsTable
+		if s.BodyLimits.Storage != "" {
+			bl["storage"] = s.BodyLimits.Storage
 		}
-		if len(bc) > 0 {
-			out["body_caps"] = bc
+		if len(bl) > 0 {
+			out["body_limits"] = bl
 		}
 	}
 	if s.WireGuard != nil {

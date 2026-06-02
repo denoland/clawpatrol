@@ -1948,9 +1948,9 @@ func (w *countWriter) Write(p []byte) (int, error) {
 }
 
 // maxHTTPMatchBody is the default rules-engine body cap. The live cap
-// comes from gateway.body_caps.rules_engine (config.RulesEngineBodyCap);
-// this constant remains the fallback and matches that field's default.
-const maxHTTPMatchBody = int(config.DefaultRulesEngineBodyCap)
+// comes from gateway.body_limits.buffer (config.BufferBodyLimit); this
+// constant remains the fallback and matches that field's default.
+const maxHTTPMatchBody = int(config.DefaultBufferBodyLimit)
 
 func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
 	b, _ := bufferHTTPBodyForMatchTruncated(req, capBytes)
@@ -2059,7 +2059,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		var truncated bool
 		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
-			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req, g.cfg.RulesEngineBodyCap())
+			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req, g.cfg.BufferBodyLimit())
 		}
 
 		mreq := &match.Request{
@@ -2432,7 +2432,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" {
-			trackedReqBody = bufferHTTPBodyForMatch(req, g.cfg.RulesEngineBodyCap())
+			trackedReqBody = bufferHTTPBodyForMatch(req, g.cfg.BufferBodyLimit())
 		}
 		// Pre-create session from the request body so streaming SSE
 		// responses (codex /backend-api/codex/responses, anthropic
@@ -2447,7 +2447,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
 			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
 		}
-		reqS := newSampler(g.cfg.ActionsTableBodyCap())
+		reqS := newSampler(g.cfg.StorageBodyLimit())
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
@@ -2486,7 +2486,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
 		}
-		respS := newSampler(g.cfg.ActionsTableBodyCap())
+		respS := newSampler(g.cfg.StorageBodyLimit())
 		resp.Body = wrapBodySampler(resp.Body, respS)
 		// Close-delimited responses (no Content-Length, no Transfer-
 		// Encoding) come from h2 upstreams that we forced to http/1.1
