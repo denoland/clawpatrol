@@ -997,10 +997,10 @@ func withStdinPreview(base, stdin string) string {
 	if stdin == "" {
 		return base
 	}
-	const max = 200
+	const maxPreview = 200
 	preview := stdin
-	if len(preview) > max {
-		preview = preview[:max] + "…"
+	if len(preview) > maxPreview {
+		preview = preview[:maxPreview] + "…"
 	}
 	preview = strings.ReplaceAll(preview, "\n", "⏎")
 	return fmt.Sprintf("%s | stdin: %s", base, preview)
