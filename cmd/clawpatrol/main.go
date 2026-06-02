@@ -2725,6 +2725,10 @@ func main() {
 		runEnv(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "apply":
+		runApply(os.Args[2:])
+	case "config":
+		runConfig(os.Args[2:])
 	case "test":
 		runTest(os.Args[2:])
 	case "uninstall":
@@ -2816,6 +2820,8 @@ usage:
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
   clawpatrol validate <config.hcl>       parse + compile a config and exit
+  clawpatrol apply [-y] <config.hcl>     validate, diff vs last applied, record + activate
+  clawpatrol config history <config.hcl> list recorded config versions
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version | -v | --version    print version and exit
 
@@ -2903,6 +2909,7 @@ func runGateway(args []string) {
 	setDB(db)
 	applyDashboardPasswordFlags(db, *setDashboardPassword, *resetDashboardPassword)
 	logDashboardAuthState(db, cfg)
+	recordBootConfigVersion(db, cfgPath, cfg.SchemaVersion)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
 	certs, err := loadOrMintCA(db)
