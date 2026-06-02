@@ -1,0 +1,14 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "shell",
+      "stdin": "#!/bin/sh\nmake build && make test\n",
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "allow",
+    "endpoint": "ssh.build-host"
+  }
+}

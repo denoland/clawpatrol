@@ -76,6 +76,7 @@ var families = map[string][]string{
 	"http": {"http"},
 	"sql":  {"sql"},
 	"k8s":  {"http", "k8s"},
+	"ssh":  {"ssh"},
 }
 
 // Facets returns the facets family composes onto an action, in

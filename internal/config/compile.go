@@ -111,6 +111,16 @@ type CompiledEndpoint struct {
 	Credentials []*Entity       // credentials globally bound to this endpoint
 	Rules       []*CompiledRule // sorted by priority desc
 
+	// InspectsTruncatable is true when any rule on this endpoint reads a
+	// facet whose bytes a wire frontend buffers under a cap (for ssh:
+	// ssh.stdin; the http/sql bodies are buffered by their own frontends
+	// on a coarser heuristic). The ssh runtime reads it to keep the
+	// channel splice byte-for-byte unchanged when no rule needs stdin —
+	// inspection is opt-in per endpoint, not paid by every connection.
+	// Computed once at compile time from the per-matcher
+	// InspectsTruncatableFacet() bool.
+	InspectsTruncatable bool
+
 	// Tunnel is the resolved tunnel this endpoint dials through, or
 	// nil for endpoints reached over the gateway's plain dialer.
 	// Populated from the endpoint plugin's optional EndpointTunnel()
@@ -322,10 +332,19 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	// Sort each endpoint's rules by priority descending. Ties keep
 	// declaration order (stable sort) so the source-order intent
 	// expressed in the HCL is preserved within a priority bucket.
+	// While here, cache whether any rule reads a truncatable facet so
+	// the wire frontend can decide once-per-connection whether to
+	// inspect capped bytes (ssh stdin) at all.
 	for _, ce := range cp.Endpoints {
 		sort.SliceStable(ce.Rules, func(i, j int) bool {
 			return ce.Rules[i].Priority > ce.Rules[j].Priority
 		})
+		for _, r := range ce.Rules {
+			if !r.Disabled && r.Matcher != nil && r.Matcher.InspectsTruncatableFacet() {
+				ce.InspectsTruncatable = true
+				break
+			}
+		}
 	}
 
 	// Build per-profile views. A profile names credentials; endpoint

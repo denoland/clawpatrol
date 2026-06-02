@@ -190,6 +190,11 @@ func fixtureFamily(f *Fixture, ep *config.CompiledEndpoint) (string, error) {
 			return "", fmt.Errorf("endpoint %q is family %q but fixture has sql block", ep.Name, ep.Family)
 		}
 		return "sql", nil
+	case f.Action.SSH != nil:
+		if ep.Family != "ssh" {
+			return "", fmt.Errorf("endpoint %q is family %q but fixture has ssh block", ep.Name, ep.Family)
+		}
+		return "ssh", nil
 	}
 	return "", fmt.Errorf("fixture has no family block")
 }

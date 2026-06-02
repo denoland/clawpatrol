@@ -6,8 +6,18 @@ package endpoints
 // trust boundary) and an SSH client toward the upstream, replaying
 // the credential's user/key/password to authenticate. Channels and
 // global requests are spliced both directions, so interactive
-// sessions, exec, port forwarding, and SFTP all "just work" without
-// per-channel logic.
+// sessions, exec, port forwarding, and SFTP all "just work".
+//
+// ssh-family rules gate the channel envelope: each agent action
+// (pty-req / exec / shell / subsystem channel-request, direct-tcpip
+// open) is run through runtime.MatchRequest against the ssh facet
+// (config/plugins/facets/ssh) before it is forwarded upstream, and a
+// deny refuses that channel without dropping the rest of the SSH
+// connection. The facet sees the action verb / command / subsystem /
+// forward target — not the bytes inside an open channel. Denying
+// `ssh.verb == 'pty'` is how an operator blocks interactive terminal
+// sessions: the pty-req is refused and the session channel torn down
+// before any shell/exec runs.
 //
 // Endpoint shape:
 //
@@ -49,6 +59,9 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/config/match"
+	sshfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 	"github.com/denoland/clawpatrol/internal/config/plugins/sshproto"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
@@ -232,6 +245,15 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 		Summary: fmt.Sprintf("%s@%s", agentUser, upstreamAddr),
 	})
 
+	// gate evaluates one ssh-family rule decision per channel action
+	// (exec / shell / subsystem / direct-tcpip), emitting the verdict
+	// event and reporting whether the action must be refused. It
+	// mirrors the postgres per-statement path: build a match.Request,
+	// run MatchRequest, honor an approve chain through ch.Approve, and
+	// default-deny an approve-gated action when HITL isn't wired.
+	gate := rt.makeGate(ch, emit, agentUser, cc.Credential.Symbol.Name)
+	agentHooks := sshHooks{emit: emit, gate: gate}
+
 	// Step 6: bidirectional pump. Two waitgroups — `dispatch` covers
 	// the four conn-level demuxers (channel + global-request feeds);
 	// `chans` covers each individual proxyChannel goroutine spawned
@@ -242,14 +264,16 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// final bytes when the upstream half tears down (visible as ~10%
 	// blank-output flake when running tests in tight succession).
 	//
-	// Only the agent→upstream channel pump gets the emit hook: we
-	// want to log user intent (exec / shell / subsystem / direct-tcpip
-	// target) and upstream replies (exit-status), not the rare
-	// upstream-originated X11 / forwarded-tcpip openings.
+	// Only the agent→upstream channel pump gets the hooks: we gate
+	// and log user intent (exec / shell / subsystem / direct-tcpip
+	// target) and log upstream replies (exit-status), but never gate
+	// the rare upstream-originated X11 / forwarded-tcpip openings (a
+	// zero sshHooks leaves them spliced verbatim).
 	var dispatch, chans sync.WaitGroup
 	dispatch.Add(4)
-	go func() { defer dispatch.Done(); pumpChannels(clientConn, srvChans, &chans, emit) }()
-	go func() { defer dispatch.Done(); pumpChannels(srvConn, clientChans, &chans, nil) }()
+	inspectStdin := ch.Endpoint.InspectsTruncatable
+	go func() { defer dispatch.Done(); pumpChannels(clientConn, srvChans, &chans, agentHooks, inspectStdin) }()
+	go func() { defer dispatch.Done(); pumpChannels(srvConn, clientChans, &chans, sshHooks{}, false) }()
 	go func() { defer dispatch.Done(); pumpGlobalReqs(clientConn, srvReqs) }()
 	go func() { defer dispatch.Done(); pumpGlobalReqs(srvConn, clientReqs) }()
 
@@ -394,20 +418,45 @@ func warnHostKeyOnce(endpointName string) {
 
 // ── Channel + request pumps ───────────────────────────────────────────
 
+// sshHooks bundles the per-action logging + gating callbacks the
+// agent→upstream pump carries. The upstream→agent pump passes a zero
+// sshHooks: those channels (X11 / forwarded-tcpip) are spliced
+// verbatim, neither gated nor logged.
+//
+// gate evaluates an ssh-family rule decision against the action's
+// derived Meta and returns (deny, reason); it emits the verdict event
+// itself, so a gated action is never double-logged through emit. emit
+// remains for the pure-logging path (upstream exit-status).
+type sshHooks struct {
+	emit func(runtime.ConnEvent)
+	gate func(*sshfacet.Meta) (bool, string)
+}
+
 // pumpChannels accepts incoming channel-open requests from one side
 // and opens the same type on the other. Each successful pair runs
 // proxyChannel (tracked via wg so HandleConn can drain in-flight
 // channels before closing the SSH conns).
 //
-// emit is non-nil only for the agent→upstream direction; pumpChannels
-// uses it to log direct-tcpip targets at channel-open time and passes
-// it to proxyChannel for per-channel request logging (exec / shell /
-// subsystem / exit-status).
-func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGroup, emit func(runtime.ConnEvent)) {
+// When hooks.gate is set (agent→upstream direction) a direct-tcpip
+// open is gated at channel-open time — the only point its forward
+// target is known, since it carries no follow-up channel-request —
+// and a denied forward is rejected before the upstream channel is
+// opened. Session opens carry no gateable metadata themselves; their
+// intent rides on the following exec / shell / subsystem request,
+// gated inside proxyChannel.
+//
+// inspectStdin routes `session` channels to proxySessionStdinGated when
+// the endpoint has a rule reading ssh.stdin; every other channel (and
+// every connection on an endpoint with no stdin rule) uses the
+// unchanged proxyChannel splice.
+func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGroup, hooks sshHooks, inspectStdin bool) {
 	for newCh := range source {
-		if emit != nil {
-			if ev, ok := classifyChannelOpen(newCh); ok {
-				emit(ev)
+		if hooks.gate != nil {
+			if m, ok := metaForChannelOpen(newCh); ok {
+				if deny, reason := hooks.gate(m); deny {
+					_ = newCh.Reject(ssh.Prohibited, reason)
+					continue
+				}
 			}
 		}
 		targetCh, targetReqs, err := target.OpenChannel(newCh.ChannelType(), newCh.ExtraData())
@@ -425,96 +474,103 @@ func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGr
 			_ = targetCh.Close()
 			continue
 		}
+		proxy := proxyChannel
+		if inspectStdin && hooks.gate != nil && newCh.ChannelType() == "session" {
+			proxy = proxySessionStdinGated
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			proxyChannel(sourceCh, sourceReqs, targetCh, targetReqs, emit)
+			proxy(sourceCh, sourceReqs, targetCh, targetReqs, hooks)
 		}()
 	}
 }
 
-// proxyChannel splices two ssh.Channels in both directions
-// (stdout/stdin AND stderr) plus their per-channel request streams.
-//
-// Each "direction" is the pair (data pump, request forwarder) that
-// reads from one side and writes to the other. A direction is
-// COMPLETE when its source has been fully drained — both the channel
-// data buffer (read until EOF) AND the request stream (read until
-// closed, which happens only after channel-close, which the peer
-// sends AFTER any final exit-status / signal). So when a direction
-// completes, we know every byte and every request has been forwarded.
-//
-// Whichever direction completes first triggers a Close on the OTHER
-// side's channel: that unsticks the slower direction's data pump,
-// which would otherwise block forever on a peer that left its stdin
-// open (notably the OpenSSH client during `ssh host cmd`). Closing
-// only the OTHER side keeps the now-finished direction's bytes
-// intact — closing too eagerly would cut off in-flight reads on the
-// fast side and lose the last few bytes of output (~10% flake rate
-// in `ssh host echo X` stress tests).
-func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request, emit func(runtime.ConnEvent)) {
-	// pumpDir copies both stdout and stderr from src to dst, then
-	// emits channel-eof. Combining the two before CloseWrite is
-	// required: stderr is just extended-data on the same channel,
-	// and SSH treats any extended-data after channel-eof as a
-	// protocol violation. Without this, OpenSSH disconnects with
-	// "Received extended_data after EOF on channel 0" the moment
-	// the remote process exits with anything on stderr.
-	pumpDir := func(dst, src ssh.Channel, done chan<- struct{}) {
-		defer close(done)
-		var inner sync.WaitGroup
-		inner.Add(2)
-		go func() { defer inner.Done(); _, _ = io.Copy(dst, src) }()
-		go func() { defer inner.Done(); _, _ = io.Copy(dst.Stderr(), src.Stderr()) }()
-		inner.Wait()
-		_ = dst.CloseWrite()
+// pumpDir copies both stdout and stderr from src to dst, then
+// CloseWrites dst. Combining the two before CloseWrite is required:
+// stderr is just extended-data on the same channel, and SSH treats any
+// extended-data after channel-eof as a protocol violation. Without
+// this, OpenSSH disconnects with "Received extended_data after EOF on
+// channel 0" the moment the remote process exits with anything on
+// stderr.
+func pumpDir(dst, src ssh.Channel, done chan<- struct{}) {
+	defer close(done)
+	var inner sync.WaitGroup
+	inner.Add(2)
+	go func() { defer inner.Done(); _, _ = io.Copy(dst, src) }()
+	go func() { defer inner.Done(); _, _ = io.Copy(dst.Stderr(), src.Stderr()) }()
+	inner.Wait()
+	_ = dst.CloseWrite()
+}
+
+// forwardChannelReq relays one channel request to target and answers
+// the agent's want-reply with the upstream result.
+func forwardChannelReq(target ssh.Channel, r *ssh.Request) {
+	ok, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
+	if err != nil {
+		ok = false
 	}
-	forwardReqs := func(target ssh.Channel, source <-chan *ssh.Request, classify func(*ssh.Request) (runtime.ConnEvent, bool), done chan<- struct{}) {
-		defer close(done)
-		for r := range source {
-			if classify != nil {
-				if ev, ok := classify(r); ok {
-					emit(ev)
-				}
-			}
-			ok, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
-			if err != nil {
-				ok = false
-			}
-			if r.WantReply {
-				_ = r.Reply(ok, nil)
+	if r.WantReply {
+		_ = r.Reply(ok, nil)
+	}
+}
+
+// forwardUpstreamReqs carries upstream→agent channel requests; the only
+// one surfaced is exit-status — pure logging, never gated.
+func forwardUpstreamReqs(peer ssh.Channel, source <-chan *ssh.Request, emit func(runtime.ConnEvent), done chan<- struct{}) {
+	defer close(done)
+	for r := range source {
+		if emit != nil {
+			if ev, ok := classifyUpstreamChannelReq(r); ok {
+				emit(ev)
 			}
 		}
+		forwardChannelReq(peer, r)
 	}
+}
 
-	// aReqs flow agent→upstream (exec / shell / subsystem); bReqs flow
-	// upstream→agent (exit-status / signal). Only classify when this
-	// proxyChannel was spawned by the agent-direction pump (emit set).
-	var classifyAgent, classifyUpstream func(*ssh.Request) (runtime.ConnEvent, bool)
-	if emit != nil {
-		classifyAgent = classifyAgentChannelReq
-		classifyUpstream = classifyUpstreamChannelReq
+// forwardAgentReqs carries agent→upstream channel requests (pty / exec
+// / shell / subsystem). When hooks.gate denies one it replies failure
+// to the agent and closes BOTH halves to end the session: the request
+// is never forwarded upstream, and since a bare session channel is
+// inert until an exec/shell/subsystem request arrives, nothing runs on
+// the upstream side. The gate emits the deny event itself. This is the
+// envelope-only path; ssh.stdin pre-gating lives in
+// proxySessionStdinGated.
+func forwardAgentReqs(self, peer ssh.Channel, source <-chan *ssh.Request, hooks sshHooks, done chan<- struct{}) {
+	defer close(done)
+	for r := range source {
+		if hooks.gate != nil {
+			if m, ok := metaForChannelReq(r); ok {
+				// reason already surfaced via the gate's emitted
+				// deny event; the agent just sees request failure.
+				if deny, _ := hooks.gate(m); deny {
+					if r.WantReply {
+						_ = r.Reply(false, nil)
+					}
+					_ = self.Close()
+					_ = peer.Close()
+					return
+				}
+			}
+		}
+		forwardChannelReq(peer, r)
 	}
+}
 
-	pumpA := make(chan struct{}) // upstream→agent data finished
-	pumpB := make(chan struct{}) // agent→upstream data finished
-	reqA := make(chan struct{})  // upstream→agent reqs finished
-	reqB := make(chan struct{})  // agent→upstream reqs finished
-	go pumpDir(a, b, pumpA)
-	go pumpDir(b, a, pumpB)
-	go forwardReqs(a, bReqs, classifyUpstream, reqA)
-	go forwardReqs(b, aReqs, classifyAgent, reqB)
-
-	// fromUpstream / fromAgent fire when a full direction
-	// (data + reqs) has drained — at that point its source channel
-	// is fully closed and every byte/request has been forwarded.
-	fromUpstream := make(chan struct{})
-	fromAgent := make(chan struct{})
-	go func() { <-pumpA; <-reqA; close(fromUpstream) }()
-	go func() { <-pumpB; <-reqB; close(fromAgent) }()
-
-	// Whichever direction finishes first closes the OPPOSITE side to
-	// unstick its blocked pump. Then wait for the other direction.
+// waitGracefulClose implements the splice's close invariant. A
+// "direction" is COMPLETE when its source has fully drained — both the
+// data buffer (read until EOF) AND the request stream (closed only
+// after channel-close, which the peer sends AFTER any final
+// exit-status / signal). Whichever direction completes first triggers a
+// Close on the OTHER side's channel, unsticking the slower direction's
+// pump (which would otherwise block forever on a peer that left its
+// stdin open — notably the OpenSSH client during `ssh host cmd`).
+// Closing only the OTHER side keeps the finished direction's bytes
+// intact — closing too eagerly cuts off in-flight reads on the fast
+// side and loses the last bytes of output (~10% blank-output flake in
+// `ssh host echo X` stress tests).
+func waitGracefulClose(a, b ssh.Channel, fromUpstream, fromAgent <-chan struct{}) {
 	select {
 	case <-fromUpstream:
 		_ = a.Close()
@@ -523,6 +579,252 @@ func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs
 	}
 	<-fromUpstream
 	<-fromAgent
+}
+
+// proxyChannel splices two ssh.Channels in both directions
+// (stdout/stdin AND stderr) plus their per-channel request streams.
+// a = agent side, b = upstream side.
+func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request, hooks sshHooks) {
+	pumpA := make(chan struct{}) // upstream→agent data finished
+	pumpB := make(chan struct{}) // agent→upstream data finished
+	reqA := make(chan struct{})  // upstream→agent reqs finished
+	reqB := make(chan struct{})  // agent→upstream reqs finished
+	go pumpDir(a, b, pumpA)
+	go pumpDir(b, a, pumpB)
+	go forwardUpstreamReqs(a, bReqs, hooks.emit, reqA)
+	go forwardAgentReqs(a, b, aReqs, hooks, reqB)
+
+	fromUpstream := make(chan struct{})
+	fromAgent := make(chan struct{})
+	go func() { <-pumpA; <-reqA; close(fromUpstream) }()
+	go func() { <-pumpB; <-reqB; close(fromAgent) }()
+	waitGracefulClose(a, b, fromUpstream, fromAgent)
+}
+
+// ── ssh.stdin pre-gating ──────────────────────────────────────────────
+
+// stdin inspection bounds. The endpoint buffers a no-pty session's
+// client→server stdin up to stdinMatchCap, withholding it from upstream
+// until a rule verdict, so a denied script never runs. Buffering stops
+// at the first of: agent EOF (the bounded `ssh host < file` case), the
+// cap (truncated → the dispatcher fail-closes any rule reading
+// ssh.stdin), or stdinIdle with no new bytes (so typed/streamed stdin
+// doesn't hang — its prefix is judged, the rest streams on unjudged).
+const (
+	stdinMatchCap = 1 << 20 // mirror cmd/clawpatrol maxHTTPMatchBody
+	stdinIdle     = 250 * time.Millisecond
+)
+
+// proxySessionStdinGated is the splice variant for a `session` channel
+// on an endpoint whose rules read ssh.stdin (CompiledEndpoint.
+// InspectsTruncatable). It starts the upstream→agent direction
+// immediately (so a process prompt reaches the user) but holds the
+// agent→upstream direction: when the deciding shell/exec request
+// arrives with no preceding pty-req, it buffers stdin, runs ONE
+// combined gate (envelope + ssh.stdin), and only then forwards the
+// shell/exec + stdin (allow) or kills the channel (deny). A pty-req or
+// subsystem bails to the envelope-only forwardAgentReqs path
+// (interactive / binary framing isn't stdin-judged).
+func proxySessionStdinGated(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request, hooks sshHooks) {
+	pumpA := make(chan struct{})
+	reqA := make(chan struct{})
+	go pumpDir(a, b, pumpA)
+	go forwardUpstreamReqs(a, bReqs, hooks.emit, reqA)
+
+	fromUpstream := make(chan struct{})
+	go func() { <-pumpA; <-reqA; close(fromUpstream) }()
+
+	fromAgent := make(chan struct{})
+	go func() {
+		defer close(fromAgent)
+		gateAgentStdin(a, aReqs, b, hooks)
+	}()
+
+	waitGracefulClose(a, b, fromUpstream, fromAgent)
+}
+
+// gateAgentStdin drives the agent→upstream direction for a stdin-gated
+// session: forwards non-action requests, bails to the envelope path on
+// pty/subsystem, and runs the buffered stdin pre-gate on shell/exec.
+func gateAgentStdin(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, hooks sshHooks) {
+	for r := range aReqs {
+		m, ok := metaForChannelReq(r)
+		if !ok {
+			forwardChannelReq(b, r) // env / window-change / signal …
+			continue
+		}
+		switch m.Verb {
+		case sshfacet.VerbExec, sshfacet.VerbShell:
+			if !gateStdin(a, b, r, m, hooks) {
+				_ = a.Close()
+				_ = b.Close()
+				return
+			}
+			// Allowed and stdin fully streamed (CloseWrite done). A
+			// session carries only one shell/exec, so trailing requests
+			// (eow / signal / …) need no gate — just relay them.
+			for rr := range aReqs {
+				forwardChannelReq(b, rr)
+			}
+			return
+		default: // pty-req or subsystem: not stdin-gateable
+			if deny, _ := hooks.gate(m); deny {
+				if r.WantReply {
+					_ = r.Reply(false, nil)
+				}
+				_ = a.Close()
+				_ = b.Close()
+				return
+			}
+			forwardChannelReq(b, r)
+			// Hand the rest of the agent→upstream direction to the
+			// envelope-only path (still gates a following shell/exec).
+			dataDone := make(chan struct{})
+			reqDone := make(chan struct{})
+			go pumpDir(b, a, dataDone)
+			go forwardAgentReqs(a, b, aReqs, hooks, reqDone)
+			<-dataDone
+			<-reqDone
+			return
+		}
+	}
+}
+
+// gateStdin buffers the agent's stdin for one shell/exec action, runs
+// the combined envelope+stdin gate, and on allow forwards the held
+// request to upstream then streams stdin (CloseWrite at EOF); on deny
+// it never forwards the request, so nothing runs upstream. The agent's
+// request is acked optimistically up front (so clients that block on
+// the reply still send stdin); the gate is on the UPSTREAM forward, not
+// the ack. Returns whether the action was allowed. The upstream forward
+// is byte-exact: the cap only bounds the matcher's view (prefix), never
+// what reaches upstream.
+func gateStdin(a, b ssh.Channel, r *ssh.Request, m *sshfacet.Meta, hooks sshHooks) (allowed bool) {
+	type chunk struct {
+		b   []byte
+		err error
+	}
+	chunks := make(chan chunk, 1)
+	go func() {
+		defer close(chunks)
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := a.Read(buf)
+			if n > 0 {
+				c := make([]byte, n)
+				copy(c, buf[:n])
+				chunks <- chunk{b: c}
+			}
+			if err != nil {
+				chunks <- chunk{err: err}
+				return
+			}
+		}
+	}()
+	drain := func() {
+		go func() {
+			for range chunks { //nolint:revive
+			}
+		}()
+	}
+
+	// Ack the agent's shell/exec immediately so a client that waits for
+	// the reply before sending stdin (x/crypto/ssh's Session, among
+	// others) proceeds to send it. We still withhold the UPSTREAM
+	// forward until the verdict, so a denied command never runs — the
+	// ack is cosmetic, nothing executes upstream until we forward.
+	if r.WantReply {
+		_ = r.Reply(true, nil)
+	}
+
+	var prefix, overflow []byte
+	truncated, eof := false, false
+	idle := time.NewTimer(stdinIdle)
+	defer idle.Stop()
+buffering:
+	for {
+		select {
+		case c, open := <-chunks:
+			if !open {
+				eof = true
+				break buffering
+			}
+			if len(c.b) > 0 {
+				room := stdinMatchCap - len(prefix)
+				if len(c.b) >= room {
+					prefix = append(prefix, c.b[:room]...)
+					overflow = c.b[room:]
+					truncated = true
+					break buffering
+				}
+				prefix = append(prefix, c.b...)
+				if !idle.Stop() {
+					select {
+					case <-idle.C:
+					default:
+					}
+				}
+				idle.Reset(stdinIdle)
+			}
+			if c.err != nil {
+				eof = errors.Is(c.err, io.EOF)
+				break buffering
+			}
+		case <-idle.C:
+			break buffering
+		}
+	}
+
+	m.Stdin = string(prefix)
+	m.Truncated = truncated
+	if deny, reason := hooks.gate(m); deny {
+		// Already acked above; surface the reason on the agent's stderr
+		// before the caller tears the channel down.
+		if reason != "" {
+			_, _ = a.Stderr().Write([]byte("clawpatrol: " + reason + "\n"))
+		}
+		drain() // let the reader finish once the caller closes a
+		return false
+	}
+
+	// Allow: forward the withheld shell/exec upstream (the agent was
+	// already acked, so don't relay a second reply), then stream stdin.
+	if _, err := b.SendRequest(r.Type, false, r.Payload); err != nil {
+		drain()
+		return true
+	}
+	writeErr := false
+	if len(prefix) > 0 {
+		_, err := b.Write(prefix)
+		writeErr = err != nil
+	}
+	if !writeErr && eof {
+		_ = b.CloseWrite()
+		drain()
+		return true
+	}
+	if !writeErr && len(overflow) > 0 {
+		_, err := b.Write(overflow)
+		writeErr = err != nil
+	}
+	if !writeErr {
+		for c := range chunks {
+			if len(c.b) > 0 {
+				if _, err := b.Write(c.b); err != nil {
+					writeErr = true
+					break
+				}
+			}
+			if c.err != nil {
+				break
+			}
+		}
+	}
+	_ = b.CloseWrite()
+	if writeErr {
+		drain()
+	}
+	return true
 }
 
 func pumpGlobalReqs(target ssh.Conn, source <-chan *ssh.Request) {
@@ -566,11 +868,12 @@ func isProxyDroppedGlobalReq(name string) bool {
 	return false
 }
 
-// ── Per-channel request / channel-open classification (logging) ──────
+// ── Per-channel rule evaluation + classification ─────────────────────
 
-// SSH wire payload shapes we decode for logging only — never modify.
-// Field names match the RFC declaration order so ssh.Unmarshal walks
-// them correctly (it ignores struct tags and reads in order).
+// SSH wire payload shapes we decode to derive an action's rule facets
+// (and to log it) — never modify. Field names match the RFC
+// declaration order so ssh.Unmarshal walks them correctly (it ignores
+// struct tags and reads in order).
 type (
 	// RFC4254 §6.5.
 	execPayload struct{ Command string }
@@ -587,50 +890,175 @@ type (
 	}
 )
 
-// classifyChannelOpen turns an agent-originated channel-open into a
-// log event. Only `direct-tcpip` (port forwarding) carries a target
-// we can usefully surface; `session` opens are noise (the interesting
-// per-session intent rides on the following exec / shell / subsystem
-// channel-request, classified separately).
-func classifyChannelOpen(newCh ssh.NewChannel) (runtime.ConnEvent, bool) {
+// makeGate builds the per-action rule evaluator HandleConn hands to
+// the agent→upstream pump. Each call evaluates one ssh-family
+// match.Request and returns (deny, reason); it emits the verdict
+// event (allow / deny / approved / denied) so callers only act on the
+// boolean. Mirrors the postgres per-statement decision path
+// (endpoints/postgres.go): MatchRequest, then an approve chain via
+// ch.Approve with a default-deny when HITL isn't configured.
+func (rt *SSHEndpointRuntime) makeGate(ch *runtime.ConnHandle, emit func(runtime.ConnEvent), agentUser, credName string) func(*sshfacet.Meta) (bool, string) {
+	return func(m *sshfacet.Meta) (bool, string) {
+		if m.User == "" {
+			m.User = agentUser
+		}
+		req := &match.Request{
+			Family:     "ssh",
+			PeerIP:     ch.PeerIP,
+			Credential: credName,
+			User:       agentUser,
+			Meta:       m,
+			// Truncated is only ever set on the stdin pre-gate path,
+			// when buffered stdin overflowed the cap; the dispatcher
+			// then fail-closes any rule reading ssh.stdin. Every other
+			// caller leaves it false, so the fast path is unchanged.
+			Truncated: m.Truncated,
+		}
+		var facets map[string]any
+		if f := facet.Lookup("ssh"); f != nil {
+			facets = f.Report(req)
+		}
+		summary := sshSummary(m)
+
+		cr := runtime.MatchRequest(ch.Endpoint, req)
+		if cr == nil {
+			emit(runtime.ConnEvent{Action: "allow", Verb: m.Verb, Summary: summary, Facets: facets})
+			return false, ""
+		}
+		rule := cr.Name
+
+		if len(cr.Outcome.Approve) > 0 {
+			if ch.Approve == nil {
+				emit(runtime.ConnEvent{
+					Action: "deny", Reason: "HITL not configured",
+					Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
+				})
+				return true, "approval required but HITL is not configured"
+			}
+			v := ch.Approve(runtime.ApproveCallRequest{
+				Stages: cr.Outcome.Approve, Verb: m.Verb, Summary: summary, Rule: cr,
+			})
+			if v.Decision != "allow" {
+				reason := v.Reason
+				if reason == "" {
+					reason = "denied by approver"
+				}
+				emit(runtime.ConnEvent{
+					Action: "denied", Reason: reason,
+					Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
+					Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
+				})
+				return true, reason
+			}
+			emit(runtime.ConnEvent{
+				Action: "approved", Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
+			})
+			return false, ""
+		}
+
+		if cr.Outcome.Verdict == "deny" {
+			reason := cr.Outcome.Reason
+			if reason == "" {
+				reason = "denied by policy"
+			}
+			emit(runtime.ConnEvent{
+				Action: "deny", Reason: reason,
+				Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
+			})
+			return true, reason
+		}
+		emit(runtime.ConnEvent{Action: "allow", Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule})
+		return false, ""
+	}
+}
+
+// sshSummary is the human one-liner the dashboard / event log / HITL
+// card shows for an action, keyed off its verb. For shell/exec it
+// appends a short stdin preview when stdin was buffered, so an operator
+// (or LLM judge) seeing the prompt knows what the session piped in.
+func sshSummary(m *sshfacet.Meta) string {
+	switch m.Verb {
+	case sshfacet.VerbPTY:
+		return "request pty (terminal)"
+	case sshfacet.VerbExec:
+		return withStdinPreview(m.Command, m.Stdin)
+	case sshfacet.VerbShell:
+		return withStdinPreview("login shell", m.Stdin)
+	case sshfacet.VerbSubsystem:
+		return m.Subsystem
+	case sshfacet.VerbForward:
+		return fmt.Sprintf("→ %s:%d", m.ForwardHost, m.ForwardPort)
+	}
+	return ""
+}
+
+func withStdinPreview(base, stdin string) string {
+	if stdin == "" {
+		return base
+	}
+	const max = 200
+	preview := stdin
+	if len(preview) > max {
+		preview = preview[:max] + "…"
+	}
+	preview = strings.ReplaceAll(preview, "\n", "⏎")
+	return fmt.Sprintf("%s | stdin: %s", base, preview)
+}
+
+// metaForChannelOpen derives the rule facets for an agent-originated
+// channel-open. Only `direct-tcpip` (port forwarding) carries a
+// gateable target in its ExtraData; `session` opens are inert until
+// their following exec / shell / subsystem request (handled by
+// metaForChannelReq), so they produce no action here.
+func metaForChannelOpen(newCh ssh.NewChannel) (*sshfacet.Meta, bool) {
 	if newCh.ChannelType() != "direct-tcpip" {
-		return runtime.ConnEvent{}, false
+		return nil, false
 	}
 	var d directTCPIPPayload
 	if err := ssh.Unmarshal(newCh.ExtraData(), &d); err != nil {
-		return runtime.ConnEvent{}, false
+		return nil, false
 	}
-	return runtime.ConnEvent{
-		Action:  "allow",
-		Verb:    "forward",
-		Summary: fmt.Sprintf("→ %s:%d", d.DestHost, d.DestPort),
+	return &sshfacet.Meta{
+		Verb:        sshfacet.VerbForward,
+		ForwardHost: d.DestHost,
+		ForwardPort: d.DestPort,
 	}, true
 }
 
-// classifyAgentChannelReq turns an agent→upstream channel request
-// into a log event. exec carries the full argv as a single string;
-// subsystem carries the subsystem name (e.g. "sftp"); shell carries
-// no payload (interactive session start). Other request types
-// (pty-req, env, window-change, signal, eow@openssh.com, ...) are
-// session-keepalive noise — drop them silently.
-func classifyAgentChannelReq(r *ssh.Request) (runtime.ConnEvent, bool) {
+// metaForChannelReq derives the rule facets for an agent→upstream
+// channel request. pty-req asks for a pseudo-terminal (the wire signal
+// for an interactive session — it precedes the shell/exec on the same
+// channel); exec carries the full argv as a single string; subsystem
+// carries the subsystem name (e.g. "sftp"); shell starts the default
+// login shell and carries no payload. Other request types (env,
+// window-change, signal, eow@openssh.com, ...) are session-keepalive
+// noise — they produce no action and splice through ungated.
+//
+// Gating pty-req (rather than only shell) is what makes "block
+// interactive" robust: denying it tears the session channel down
+// before any shell OR exec'd program gets a terminal, so neither
+// `ssh host` nor `ssh -t host bash` can open an interactive prompt.
+func metaForChannelReq(r *ssh.Request) (*sshfacet.Meta, bool) {
 	switch r.Type {
+	case "pty-req":
+		return &sshfacet.Meta{Verb: sshfacet.VerbPTY}, true
 	case "exec":
 		var p execPayload
 		if err := ssh.Unmarshal(r.Payload, &p); err != nil {
-			return runtime.ConnEvent{}, false
+			return nil, false
 		}
-		return runtime.ConnEvent{Action: "allow", Verb: "exec", Summary: p.Command}, true
+		return &sshfacet.Meta{Verb: sshfacet.VerbExec, Command: p.Command}, true
 	case "shell":
-		return runtime.ConnEvent{Action: "allow", Verb: "shell", Summary: "interactive shell"}, true
+		return &sshfacet.Meta{Verb: sshfacet.VerbShell}, true
 	case "subsystem":
 		var p subsystemPayload
 		if err := ssh.Unmarshal(r.Payload, &p); err != nil {
-			return runtime.ConnEvent{}, false
+			return nil, false
 		}
-		return runtime.ConnEvent{Action: "allow", Verb: "subsystem", Summary: p.Name}, true
+		return &sshfacet.Meta{Verb: sshfacet.VerbSubsystem, Subsystem: p.Name}, true
 	}
-	return runtime.ConnEvent{}, false
+	return nil, false
 }
 
 // classifyUpstreamChannelReq turns an upstream→agent channel request

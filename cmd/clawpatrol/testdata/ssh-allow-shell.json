@@ -1,0 +1,13 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "shell",
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "allow",
+    "endpoint": "ssh.build-host"
+  }
+}

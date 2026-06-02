@@ -1,0 +1,15 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "pty",
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "ssh-no-interactive",
+    "endpoint": "ssh.build-host",
+    "reason":   "interactive terminals are not permitted; run a command instead"
+  }
+}

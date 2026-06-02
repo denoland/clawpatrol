@@ -38,4 +38,60 @@ rule "github-writes" {
   reason    = "writes go through PR review"
 }
 
-profile "default" { credentials = [bearer_token.github] }
+endpoint "ssh" "build-host" {
+  hosts = ["build.example.com:2222"]
+}
+
+credential "ssh_key" "build-host-key" {
+  endpoint = ssh.build-host
+}
+
+// Block interactive terminal sessions while allowing commands — the
+// headline ssh use case. The robust signal is the pty (terminal)
+// request, not the `shell` verb: denying pty refuses both `ssh host`
+// and `ssh -t host bash` before any shell/exec runs, whereas a
+// `shell`-only rule is bypassed by `ssh host bash` (an exec'd shell).
+rule "ssh-no-interactive" {
+  endpoint  = ssh.build-host
+  condition = "ssh.verb == 'pty'"
+  verdict   = "deny"
+  reason    = "interactive terminals are not permitted; run a command instead"
+}
+
+rule "ssh-no-sftp" {
+  endpoint  = ssh.build-host
+  condition = "ssh.verb == 'subsystem' && ssh.subsystem == 'sftp'"
+  verdict   = "deny"
+  reason    = "file transfer is not permitted on the build host"
+}
+
+rule "ssh-no-db-forward" {
+  endpoint  = ssh.build-host
+  condition = "ssh.verb == 'forward' && ssh.forward_port == 5432"
+  verdict   = "deny"
+  reason    = "no direct database tunnels"
+}
+
+// Inspect the stdin a session pipes in (`ssh host < script`). This
+// flips the endpoint onto the stdin pre-gate: the script is buffered
+// and judged before the remote shell reads it, so a denied script
+// never runs. Only the bounded (non-interactive) case is judged.
+rule "ssh-no-destructive-stdin" {
+  endpoint  = ssh.build-host
+  condition = "ssh.stdin.contains('rm -rf /')"
+  verdict   = "deny"
+  reason    = "destructive command in piped script"
+}
+
+// Catch-all for commands not otherwise denied. Lower priority so the
+// deny rules above win when they match.
+rule "ssh-exec-allowed" {
+  endpoint  = ssh.build-host
+  priority  = -10
+  condition = "ssh.verb == 'exec'"
+  verdict   = "allow"
+}
+
+profile "default" {
+  credentials = [bearer_token.github, ssh_key.build-host-key]
+}
