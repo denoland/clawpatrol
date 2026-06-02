@@ -568,8 +568,16 @@ func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil
 // block-side values; on conflict, profile-inline wins (the operator's
 // most-specific declaration).
 type Profile struct {
-	Name            string                       `json:"name"`
-	Credentials     []string                     `json:"credentials"`
+	Name        string   `json:"name"`
+	Credentials []string `json:"credentials"`
+	// Endpoints are endpoints the profile claims directly, by name,
+	// independent of any credential binding. Used for credential-less
+	// endpoints (public APIs, mTLS / network-position auth, open
+	// internal tools) so the profile's rules still apply to requests
+	// routed to them. Endpoints reached transitively via a credential
+	// need not be listed here; the two sets are merged (deduplicated)
+	// at compile time.
+	Endpoints       []string                     `json:"endpoints,omitempty"`
 	Disambiguators  map[string]map[string]string `json:"disambiguators,omitempty"`
 	HITLAsyncGrants bool                         `json:"hitl_async_grants,omitempty"`
 }
@@ -1107,6 +1115,19 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				Subject:  &sym.Block.DefRange,
 			})
 		}
+		// Cross-check: each directly-declared endpoint name resolves to
+		// a declared endpoint.
+		for _, e := range pr.Endpoints {
+			if table.Get(KindEndpoint, e) != nil {
+				continue
+			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Unknown endpoint %q", e),
+				Detail:   fmt.Sprintf("Profile %q references endpoint %q which is not declared.", sym.Name, e),
+				Subject:  &sym.Block.DefRange,
+			})
+		}
 		p.Profiles[sym.Name] = pr
 		p.Order = append(p.Order, sym.Name)
 	}
@@ -1502,6 +1523,7 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 	schema := &hcl.BodySchema{
 		Attributes: []hcl.AttributeSchema{
 			{Name: "credentials", Required: true},
+			{Name: "endpoints"},
 			{Name: "hitl_async_grants"},
 		},
 	}
@@ -1512,6 +1534,11 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		if !hd.HasErrors() && hv.Type() == cty.Bool {
 			pr.HITLAsyncGrants = hv.True()
 		}
+	}
+	if epAttr, ok := content.Attributes["endpoints"]; ok {
+		eps, epDiags := decodeProfileEndpoints(sym.Name, epAttr, evalCtx)
+		diags = append(diags, epDiags...)
+		pr.Endpoints = eps
 	}
 	attr, ok := content.Attributes["credentials"]
 	if !ok {
@@ -1564,6 +1591,48 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		}
 	}
 	return pr, diags
+}
+
+// decodeProfileEndpoints decodes a profile's `endpoints` attribute — a
+// list of bare endpoint-name references (`[endpoint.foo, endpoint.bar]`)
+// resolved through the eval context to their string names. Unlike the
+// credentials list, no object-literal/disambiguator form is allowed:
+// a directly-declared endpoint carries no credential dispatch, so there
+// is nothing to disambiguate. Each entry must be a string; anything
+// else is reported. Cross-checking that the names resolve to declared
+// endpoints happens in decodePolicyBlocks against the symbol table.
+func decodeProfileEndpoints(profile string, attr *hcl.Attribute, evalCtx *hcl.EvalContext) ([]string, hcl.Diagnostics) {
+	val, diags := attr.Expr.Value(evalCtx)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	t := val.Type()
+	rng := attr.Expr.Range()
+	if !t.IsTupleType() && !t.IsListType() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q endpoints", profile),
+			Detail:   fmt.Sprintf("Expected a list; got %s.", t.FriendlyName()),
+			Subject:  &rng,
+		})
+		return nil, diags
+	}
+	var out []string
+	it := val.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		if el.Type() != cty.String {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q endpoints entry", profile),
+				Detail:   fmt.Sprintf("Each entry must be a bare endpoint reference (e.g. `endpoint.name`); got %s.", el.Type().FriendlyName()),
+				Subject:  &rng,
+			})
+			continue
+		}
+		out = append(out, el.AsString())
+	}
+	return out, diags
 }
 
 // profileCredEntry is the result of decoding one object-literal entry

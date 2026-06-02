@@ -37,13 +37,22 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 
 Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
 
+A profile may also claim endpoints **directly** via the `endpoints` list, independent of any credential. Use this for credential-less endpoints — public APIs the gateway proxies, upstreams authenticated by mTLS / network position / the tunnel itself, or open internal tools. The profile's rules apply to requests routed to a directly-declared endpoint exactly as they do for credential-bound ones; no credential is injected. An endpoint reached both ways (named here *and* via a listed credential) is claimed once — the two sets are merged.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |
+| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). May be empty (`[]`) for a profile that only claims endpoints directly. |
+| `endpoints` | `[]endpoint` | no | Bare-name endpoint references the profile claims directly, with no credential injected. Rules attached to these endpoints still evaluate. |
 
 ```hcl
 profile "default" {
   credentials = [bearer_token.github, postgres_credential.postgres-prod]
+}
+
+# Credential-less: rules apply, nothing is injected.
+profile "public" {
+  credentials = []
+  endpoints   = [endpoint.public_status, endpoint.internal_metrics]
 }
 ```
 

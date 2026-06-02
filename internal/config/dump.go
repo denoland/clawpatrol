@@ -201,6 +201,9 @@ func dumpProfiles(m map[string]*Profile) map[string]any {
 	out := map[string]any{}
 	for name, p := range m {
 		row := map[string]any{"credentials": p.Credentials}
+		if len(p.Endpoints) > 0 {
+			row["endpoints"] = p.Endpoints
+		}
 		if len(p.Disambiguators) > 0 {
 			row["disambiguators"] = p.Disambiguators
 		}

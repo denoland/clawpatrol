@@ -187,3 +187,53 @@ func sliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// TestRuleSummariesSurfaceDirectEndpoints verifies the dashboard rules
+// listing surfaces rules on a directly-declared, credential-less
+// endpoint under the claiming profile — and does NOT leak them onto a
+// sibling profile that never claims the endpoint. This is the
+// API-layer view of the cl-2d49 direct-endpoint feature: the device
+// page's RulesPanel filters this list by profile.
+func TestRuleSummariesSurfaceDirectEndpoints(t *testing.T) {
+	src := `
+endpoint "https" "public" {
+  hosts = ["status.example.com"]
+}
+
+rule "public-reads" {
+  endpoint  = https.public
+  condition = "http.method == 'GET'"
+  verdict   = "allow"
+}
+
+profile "data" {
+  credentials = []
+  endpoints   = [https.public]
+}
+profile "other" {
+  credentials = []
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "direct-rules-test.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// "data" claims the endpoint directly → its rule shows up.
+	dataRules := collectRuleSummaries(policy, "data")
+	if len(dataRules) != 1 {
+		t.Fatalf("data profile: got %d rule summaries, want 1: %+v", len(dataRules), dataRules)
+	}
+	if r := dataRules[0]; r.Name != "public-reads" || r.Endpoint != "public" || r.Profile != "data" {
+		t.Errorf("data rule summary = %+v, want public-reads/public/data", r)
+	}
+
+	// "other" never claims it → no leak.
+	if otherRules := collectRuleSummaries(policy, "other"); len(otherRules) != 0 {
+		t.Errorf("other profile leaked direct-endpoint rules: %+v", otherRules)
+	}
+}

@@ -354,30 +354,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				if !ok {
 					continue
 				}
-				profile.Endpoints[epName] = ce
-				// DNS hostnames are case-insensitive; index lowercase
-				// so a SNI-peek lookup (TLS clients usually lowercase
-				// SNI on the wire) matches a config-declared host
-				// regardless of its casing.
-				for _, h := range ce.Hosts {
-					host, _, hpErr := hostmatch.SplitHostPort(h)
-					if hpErr != nil || host == "" {
-						continue
-					}
-					if hostmatch.IsWildcardHost(host) {
-						// Wildcard patterns route on the SNI/authority
-						// host alone (no port), so collapse port-qualified
-						// `*.foo.com:443` and bare `*.foo.com` to a single
-						// pattern keyed on the host portion. Duplicates
-						// from listing both forms are removed below.
-						profile.HostPatterns = append(profile.HostPatterns, HostPattern{
-							Pattern:  strings.ToLower(host),
-							Endpoint: ce,
-						})
-						continue
-					}
-					profile.HostIndex[strings.ToLower(h)] = ce
-				}
+				profile.claimEndpoint(ce)
 				profile.EndpointCredentials[epName] = append(
 					profile.EndpointCredentials[epName],
 					&CompiledCredential{
@@ -386,6 +363,20 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 					},
 				)
 			}
+		}
+		// Directly-declared endpoints: the profile claims these by name
+		// without a credential binding, so its rules apply to requests
+		// routed there even though nothing is injected (public APIs,
+		// mTLS / network-position auth, open internal tools). Claiming is
+		// idempotent — an endpoint reached both via a credential above
+		// and listed here is a no-op the second time, and carries no
+		// EndpointCredentials entry from this loop.
+		for _, epName := range pr.Endpoints {
+			ce, ok := cp.Endpoints[epName]
+			if !ok {
+				continue
+			}
+			profile.claimEndpoint(ce)
 		}
 		// Add default-port TLS aliases only after every exact host is
 		// indexed. That lets an explicit bare host beat any alias, while
@@ -411,6 +402,42 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 
 	return cp, nil
+}
+
+// claimEndpoint registers ce under the profile: adds it to the
+// endpoint set and indexes its hosts for SNI/authority lookup (exact
+// hosts → HostIndex, wildcard `*.suffix` declarations → HostPatterns).
+// DNS hostnames are case-insensitive, so keys are lowercased to match
+// the lowercase SNI/authority values the dispatcher looks up.
+//
+// Idempotent: re-claiming an endpoint the profile already holds (an
+// endpoint reached both transitively via a credential and declared
+// directly) re-assigns the same map entries and re-appends the same
+// wildcard patterns, which dedupePatterns collapses. Credential
+// dispatch entries are NOT touched here — the caller appends to
+// EndpointCredentials only for credential-backed claims, so a
+// directly-declared endpoint stays credential-less.
+func (cp *CompiledProfile) claimEndpoint(ce *CompiledEndpoint) {
+	cp.Endpoints[ce.Name] = ce
+	for _, h := range ce.Hosts {
+		host, _, hpErr := hostmatch.SplitHostPort(h)
+		if hpErr != nil || host == "" {
+			continue
+		}
+		if hostmatch.IsWildcardHost(host) {
+			// Wildcard patterns route on the SNI/authority host alone
+			// (no port), so collapse port-qualified `*.foo.com:443` and
+			// bare `*.foo.com` to a single pattern keyed on the host
+			// portion. Duplicates from listing both forms (or from a
+			// dual credential+direct claim) are removed by dedupePatterns.
+			cp.HostPatterns = append(cp.HostPatterns, HostPattern{
+				Pattern:  strings.ToLower(host),
+				Endpoint: ce,
+			})
+			continue
+		}
+		cp.HostIndex[strings.ToLower(h)] = ce
+	}
 }
 
 // CredentialEndpointTargets returns the endpoint names a credential

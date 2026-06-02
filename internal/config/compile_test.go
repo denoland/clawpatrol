@@ -505,3 +505,162 @@ func TestCompileFullSpec(t *testing.T) {
 		t.Errorf("expected ~50+ rule attachments, got %d", totalRules)
 	}
 }
+
+// TestCompileDirectEndpoints covers a profile that claims an endpoint
+// directly via the `endpoints` list, with no credential binding. The
+// endpoint must land in the profile's endpoint set and host index, its
+// rules must be attached, and it must carry NO credential dispatch
+// entry (nothing to inject).
+func TestCompileDirectEndpoints(t *testing.T) {
+	src := `
+endpoint "https" "public" {
+  hosts = ["status.example.com", "*.metrics.example.com"]
+}
+
+rule "public-reads" {
+  endpoint  = https.public
+  condition = "http.method in ['GET', 'HEAD']"
+  verdict   = "allow"
+}
+rule "public-default" {
+  endpoint = https.public
+  priority = -100
+  verdict  = "deny"
+  reason   = "no policy matched"
+}
+
+profile "data" {
+  credentials = []
+  endpoints   = [https.public]
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["data"]
+	if prof == nil {
+		t.Fatalf("missing profile data")
+	}
+	ep := prof.Endpoints["public"]
+	if ep == nil {
+		t.Fatalf("directly-declared endpoint not claimed by profile")
+	}
+	// Profile claims no credential, so its credential list is empty and
+	// the endpoint carries no profile-scoped dispatch entry.
+	if len(prof.Credentials) != 0 {
+		t.Errorf("expected 0 profile credentials, got %d", len(prof.Credentials))
+	}
+	if got := prof.EndpointCredentials["public"]; len(got) != 0 {
+		t.Errorf("directly-declared endpoint must have no EndpointCredentials, got %+v", got)
+	}
+	if len(ep.Credentials) != 0 {
+		t.Errorf("expected 0 globally-bound credentials, got %d", len(ep.Credentials))
+	}
+	// Exact host indexed, wildcard in HostPatterns.
+	if prof.HostIndex["status.example.com"] != ep {
+		t.Errorf("HostIndex[status.example.com] missing or wrong")
+	}
+	if len(prof.HostPatterns) != 1 || prof.HostPatterns[0].Pattern != "*.metrics.example.com" {
+		t.Errorf("HostPatterns=%+v, want one *.metrics.example.com", prof.HostPatterns)
+	}
+	// Rules attached to the endpoint are reachable through the profile.
+	if len(ep.Rules) != 2 {
+		t.Fatalf("expected 2 rules on directly-declared endpoint, got %d", len(ep.Rules))
+	}
+}
+
+// TestCompileDirectEndpointDedup verifies that an endpoint reached both
+// transitively (via a credential) AND declared directly collapses to a
+// single endpoint entry, a single host-pattern entry, and keeps its
+// credential dispatch entry intact (the direct claim doesn't erase it).
+func TestCompileDirectEndpointDedup(t *testing.T) {
+	src := `
+endpoint "https" "api" {
+  hosts = ["api.example.com", "*.api.example.com"]
+}
+credential "bearer_token" "tok" {
+  endpoint = https.api
+}
+profile "p" {
+  credentials = [bearer_token.tok]
+  endpoints   = [https.api]
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["p"]
+	if len(prof.Endpoints) != 1 {
+		t.Errorf("expected 1 endpoint after dedup, got %d", len(prof.Endpoints))
+	}
+	if got := len(prof.HostPatterns); got != 1 {
+		t.Errorf("HostPatterns count = %d, want 1 (dedup); entries: %+v", got, prof.HostPatterns)
+	}
+	// Credential binding survives the direct claim.
+	if got := prof.EndpointCredentials["api"]; len(got) != 1 {
+		t.Errorf("expected credential dispatch entry preserved, got %+v", got)
+	}
+}
+
+// TestCompileDirectEndpointIsolation guards against the sibling-leak
+// failure mode (cf. cl-lgwg): a directly-declared endpoint in profile A
+// must not appear under profile B.
+func TestCompileDirectEndpointIsolation(t *testing.T) {
+	src := `
+endpoint "https" "shared" {
+  hosts = ["shared.example.com"]
+}
+profile "a" {
+  credentials = []
+  endpoints   = [https.shared]
+}
+profile "b" {
+  credentials = []
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.Profiles["a"].Endpoints["shared"] == nil {
+		t.Errorf("profile a should claim shared endpoint")
+	}
+	if cp.Profiles["b"].Endpoints["shared"] != nil {
+		t.Errorf("profile b leaked sibling's directly-declared endpoint")
+	}
+	if cp.Profiles["b"].HostIndex["shared.example.com"] != nil {
+		t.Errorf("profile b host index leaked sibling's endpoint")
+	}
+}
+
+// TestCompileRejectsUnknownDirectEndpoint verifies the load-time cross
+// check: a profile referencing an undeclared endpoint is a diagnostic.
+func TestCompileRejectsUnknownDirectEndpoint(t *testing.T) {
+	src := `
+endpoint "https" "real" {
+  hosts = ["real.example.com"]
+}
+profile "p" {
+  credentials = []
+  endpoints   = [https.real, endpoint.ghost]
+}
+`
+	_, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if !diags.HasErrors() {
+		t.Fatalf("load accepted unknown endpoint reference; want diagnostic")
+	}
+}

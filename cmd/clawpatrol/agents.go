@@ -1102,7 +1102,15 @@ func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 // Sort: by profile, then endpoint, then descending priority (so the
 // dashboard mirrors first-match-wins order within each endpoint).
 func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
-	policy := w.g.Policy()
+	return collectRuleSummaries(w.g.Policy(), profileFilter)
+}
+
+// collectRuleSummaries is the policy-only core of the dashboard rules
+// listing, split out so it's testable without a live gateway. It walks
+// each profile's claimed endpoints — both credential-bound and
+// directly-declared — so rules on credential-less endpoints surface
+// under the claiming profile (and only that profile).
+func collectRuleSummaries(policy *config.CompiledPolicy, profileFilter string) []RuleSummary {
 	if policy == nil {
 		return []RuleSummary{}
 	}

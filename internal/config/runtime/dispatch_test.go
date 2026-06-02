@@ -1254,3 +1254,60 @@ func containsCI(haystack, needle string) bool {
 	}
 	return false
 }
+
+// TestDirectEndpointRulesFireWithoutCredential exercises the
+// credential-less runtime path: a profile declares an endpoint directly
+// (no credential bound), and a request routed there must (a) resolve to
+// the endpoint via the profile's host index, (b) fire the profile's
+// rules, and (c) resolve no credential without error.
+func TestDirectEndpointRulesFireWithoutCredential(t *testing.T) {
+	src := `
+endpoint "https" "public" {
+  hosts = ["status.example.com"]
+}
+
+rule "public-reads" {
+  endpoint  = https.public
+  condition = "http.method in ['GET', 'HEAD']"
+  verdict   = "allow"
+}
+rule "public-writes" {
+  endpoint  = https.public
+  condition = "http.method in ['POST', 'PUT', 'DELETE']"
+  verdict   = "deny"
+  reason    = "read-only public endpoint"
+}
+
+profile "data" {
+  credentials = []
+  endpoints   = [https.public]
+}
+`
+	cp := compileFixture(t, src)
+
+	// Routing: the directly-declared endpoint is reachable via the
+	// profile's host index.
+	ep := runtime.HostEndpoint(cp, "data", "status.example.com")
+	if ep == nil || ep.Name != "public" {
+		t.Fatalf("HostEndpoint(data, status.example.com) = %+v, want public", ep)
+	}
+
+	// Rules fire even though no credential is bound.
+	getReq := &match.Request{Family: "http", Method: "GET"}
+	postReq := &match.Request{Family: "http", Method: "POST"}
+	if cr := runtime.MatchRequest(ep, getReq); cr == nil || cr.Outcome.Verdict != "allow" {
+		t.Errorf("GET → %+v, want allow rule public-reads", cr)
+	}
+	if cr := runtime.MatchRequest(ep, postReq); cr == nil || cr.Outcome.Verdict != "deny" {
+		t.Errorf("POST → %+v, want deny rule public-writes", cr)
+	}
+
+	// No credential resolves, and the dispatcher must not raise a
+	// missing-credential diagnostic for a directly-declared endpoint.
+	if cc := runtime.ResolveCredential(cp, "data", ep, getReq); cc != nil {
+		t.Errorf("ResolveCredential for credential-less endpoint = %+v, want nil", cc)
+	}
+	if reason := runtime.CredentialMismatchReason(cp, "data", ep, getReq); reason != "" {
+		t.Errorf("CredentialMismatchReason for credential-less endpoint = %q, want empty", reason)
+	}
+}

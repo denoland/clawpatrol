@@ -386,6 +386,13 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 		if len(pr.Credentials) > 0 {
 			setProfileCredentials(b, pr.Credentials, pr.Disambiguators)
 		}
+		if len(pr.Endpoints) > 0 {
+			// Directly-declared, credential-less endpoint claims. Emitted
+			// as `endpoints = [endpoint.foo, ...]` so HCL → load → emit
+			// round-trips the profile's full endpoint set.
+			ri := EmitRefIndex()
+			SetIdentList(b, "endpoints", ri.Refs(KindEndpoint, pr.Endpoints))
+		}
 		if pr.HITLAsyncGrants {
 			b.SetAttributeValue("hitl_async_grants", cty.True)
 		}

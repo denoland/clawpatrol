@@ -1,0 +1,89 @@
+{
+  "defaults": {
+    "llm_fail_mode": "closed",
+    "unknown_host": "passthrough"
+  },
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
+  "policy": {
+    "credentials": {
+      "github": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "github",
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "internal_metrics": {
+        "body": {
+          "Hosts": [
+            "metrics.internal"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "public_status": {
+        "body": {
+          "Hosts": [
+            "status.example.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "data": {
+        "credentials": [
+          "github"
+        ],
+        "endpoints": [
+          "public_status",
+          "internal_metrics"
+        ]
+      }
+    },
+    "rules": {
+      "metrics-default-deny": {
+        "body": {
+          "name": "metrics-default-deny",
+          "family": "http",
+          "endpoints": [
+            "internal_metrics"
+          ],
+          "priority": -100,
+          "verdict": "deny",
+          "reason": "metrics endpoint is read-path only"
+        }
+      },
+      "status-reads": {
+        "body": {
+          "name": "status-reads",
+          "family": "http",
+          "endpoints": [
+            "public_status"
+          ],
+          "condition": "http.method in ['GET', 'HEAD']",
+          "verdict": "allow"
+        }
+      }
+    }
+  }
+}
