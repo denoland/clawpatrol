@@ -250,10 +250,11 @@ directly.
 
 For SSH, `verb` is required (`pty` / `exec` / `shell` / `subsystem` / `forward`);
 set whichever field that verb populates — `command` for `exec`, `subsystem` for
-`subsystem`, `forward_host` + `forward_port` for `forward`. `pty` and `shell`
-carry no extra field. The facet gates the channel envelope only — see
-[rules.md](rules.md), ssh family scope, for what that does and doesn't cover
-(notably: deny `pty`, not `shell`, to block interactive sessions).
+`subsystem`, `forward_host` + `forward_port` for `forward`, and `stdin` for a
+`shell`/`exec` whose session piped a script in (`ssh host < script`). `pty`
+carries no extra field. See [rules.md](rules.md), ssh family scope, for what the
+facet does and doesn't cover (notably: deny `pty`, not `shell`, to block
+interactive sessions; `ssh.stdin` pre-gates a piped script before it runs).
 
 ### Shared hosts: pinning the endpoint
 
@@ -318,7 +319,7 @@ replay.
 | `http` | `method`, `path`, `query`, `headers`, `body`, `body_b64`                                              |
 | `k8s`  | `verb`, `resource`, `namespace`, `name`, `params`                                                     |
 | `sql`  | `statement` (required); `verb`, `tables`, `functions` (optional, derived from `statement` if omitted) |
-| `ssh`  | `verb` (required); `command`, `subsystem`, `forward_host`, `forward_port`, `user`                     |
+| `ssh`  | `verb` (required); `command`, `subsystem`, `forward_host`, `forward_port`, `user`, `stdin`             |
 
 Every field is optional except SQL’s `statement` and SSH’s `verb`. Missing fields default to zero
 values — rules that match on them just return false. Fixtures that include the

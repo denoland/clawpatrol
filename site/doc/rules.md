@@ -178,17 +178,19 @@ rule "ssh-no-interactive" {
 | `ssh.forward_host` | `string` | direct-tcpip destination host for a `forward` action; `""` otherwise |
 | `ssh.forward_port` | `int` | direct-tcpip destination port for a `forward` action; `0` otherwise |
 | `ssh.user` | `string` | Upstream SSH username the agent connected as |
+| `ssh.stdin` | `string` | Buffered client→server stdin of a `shell`/`exec` session (the body of `ssh host < script`); `""` for non-session actions and interactive sessions. See "Inspecting session stdin" below. |
 
 ```hcl
 condition = "ssh.verb == 'pty'"                                    # block interactive terminals
 condition = "ssh.verb == 'subsystem' && ssh.subsystem == 'sftp'"   # block SFTP
 condition = "ssh.verb == 'forward' && ssh.forward_port == 5432"    # block forwarding to Postgres
 condition = "ssh.verb == 'exec' && ssh.command.startsWith('rsync ')" # gate an exec by command
+condition = "ssh.stdin.contains('rm -rf /')"                       # gate a piped script's body
 ```
 
 `ssh.verb` is lower-cased at rule-load time (so `ssh.verb == 'Pty'`
-still matches). `ssh.command`, `ssh.subsystem`, and `ssh.forward_host`
-are matched **as sent** (case-sensitive).
+still matches). `ssh.command`, `ssh.subsystem`, `ssh.forward_host`, and
+`ssh.stdin` are matched **as sent** (case-sensitive).
 
 **Blocking interactive sessions.** Deny `ssh.verb == 'pty'`, not
 `ssh.verb == 'shell'`. The `shell` verb is only the *default login
@@ -202,13 +204,34 @@ like `ssh host bash` *without* `-t` reads stdin as a dumb shell and
 isn't a pty — gate that with an `ssh.command` rule or an exec
 allowlist if your threat model needs it.)
 
-**Scope — the facet gates the channel envelope, not channel
-contents.** A rule sees *what kind* of action and *which* command /
-subsystem / forward target, but not the bytes that flow once a
-channel is open. Note also that `ssh.command` is the literal command
-the agent's client sends, so command-string rules are best-effort
-(the agent chooses the invocation — full paths, wrappers) — useful for
-audit and coarse policy, not a hard boundary.
+**Inspecting session stdin.** `ssh.stdin` exposes the bytes a session
+pipes to a remote shell — the body of `ssh build-host < deploy.sh` or
+`ssh build-host 'bash -s' < script`. A rule reading it (a CEL match
+like `ssh.stdin.contains(...)`, or an `approve = [<judge>]` chain that
+hands the script to an LLM) **pre-gates**: the gateway buffers the
+stdin and withholds it from the upstream shell until the verdict, so a
+denied script never executes — the remote `read()` blocks until allow.
+Key properties:
+
+- **Opt-in / zero-cost otherwise.** stdin is buffered only on endpoints
+  that have at least one `ssh.stdin` rule; every other SSH connection
+  keeps the untouched, byte-for-byte splice.
+- **Bounded only.** Only the batch case is judged — a redirected file
+  that reaches EOF, or the prefix a stream sends before a brief idle
+  window. Interactive terminals (`pty`) are never stdin-buffered (block
+  those with `ssh.verb == 'pty'`); a streamed stdin past the inspection
+  cap is forwarded unjudged and **fail-closes** any `ssh.stdin` rule.
+- **Pre-gate, not envelope only.** Command rules still apply on this
+  path — a denied `ssh.command` never reaches upstream either.
+
+**Scope — beyond `ssh.stdin`, the facet gates the channel envelope,
+not arbitrary channel contents.** A rule sees *what kind* of action and
+*which* command / subsystem / forward target / piped stdin, but not the
+interactive byte stream of an open terminal. Note also that
+`ssh.command` is the literal command the agent's client sends, so
+command-string rules are best-effort (the agent chooses the invocation
+— full paths, wrappers) — useful for audit and coarse policy, not a
+hard boundary.
 
 
 ## How to create a rule

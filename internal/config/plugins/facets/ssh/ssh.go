@@ -1,9 +1,9 @@
 // Package ssh is the SSH protocol-family facet. It owns the SSH CEL
 // environment (verb / command / subsystem / forward_host /
-// forward_port / user, exposed as fields on the `ssh` variable), the
-// matcher that walks a per-channel SSH action, the Meta type the ssh
-// endpoint runtime populates on match.Request.Meta, and the
-// per-family report fields the dashboard shows for an SSH action.
+// forward_port / user / stdin, exposed as fields on the `ssh`
+// variable), the matcher that walks a per-channel SSH action, the Meta
+// type the ssh endpoint runtime populates on match.Request.Meta, and
+// the per-family report fields the dashboard shows for an SSH action.
 //
 // Unlike https, an SSH connection has no single "request" — the agent
 // opens channels and issues channel-requests (pty-req / exec / shell /
@@ -13,11 +13,14 @@
 // channel-open ExtraData and channel-request payloads), so
 // PrepareRequest is a no-op.
 //
-// Scope: the facet gates the channel *envelope* — the action verb
-// (pty / exec / shell / subsystem / forward), the exec command string,
-// the subsystem name, the forward target. It does NOT inspect the
-// bytes flowing inside a channel once it is open. Two consequences
-// worth stating plainly:
+// Scope: the facet primarily gates the channel *envelope* — the action
+// verb (pty / exec / shell / subsystem / forward), the exec command
+// string, the subsystem name, the forward target. `ssh.stdin`
+// additionally exposes the client→server bytes of a shell/exec session
+// (e.g. a piped `ssh host < script.sh`), which the endpoint buffers and
+// pre-gates — but ONLY when a rule reads it, and only for a bounded,
+// non-interactive session (see the endpoint runtime). Three
+// consequences worth stating plainly:
 //
 //   - `ssh.command` is the literal command line the agent's client
 //     sent. Matching on it is best-effort: the agent picks the string
@@ -30,6 +33,11 @@
 //     the pty allocation request: deny `ssh.verb == 'pty'` to refuse
 //     any session that asks for a terminal — the endpoint tears the
 //     channel down at the pty-req, before shell/exec runs.
+//   - `ssh.stdin` is the bounded, pre-EOF stdin prefix (capped). It is
+//     populated for the batch case (`ssh host < file`, which EOFs);
+//     unbounded/typed stdin past the cap or after a short idle window is
+//     forwarded unjudged, and an overflow fail-closes any rule reading
+//     it.
 package ssh
 
 import (
@@ -45,8 +53,8 @@ import (
 
 // Fields is the CEL-facing view of an SSH action. Exposed as the
 // `ssh` variable in rule conditions (`ssh.verb`, `ssh.command`,
-// `ssh.subsystem`, `ssh.forward_host`, `ssh.forward_port`,
-// `ssh.user`). Only the field relevant to the action's verb is
+// `ssh.subsystem`, `ssh.forward_host`, `ssh.forward_port`, `ssh.user`,
+// `ssh.stdin`). Only the field relevant to the action's verb is
 // populated; the rest are zero (`""` / `0`), so a condition reading
 // `ssh.command` on a `shell` action sees an empty string rather than
 // failing to evaluate.
@@ -57,6 +65,7 @@ type Fields struct {
 	ForwardHost string `cel:"forward_host"` // direct-tcpip destination host
 	ForwardPort int    `cel:"forward_port"` // direct-tcpip destination port
 	User        string `cel:"user"`         // upstream SSH username
+	Stdin       string `cel:"stdin"`        // buffered client→server stdin (shell/exec)
 }
 
 // Verb constants name the per-channel actions the ssh facet gates.
@@ -81,6 +90,13 @@ type Meta struct {
 	ForwardHost string // direct-tcpip dest host; "" for non-forward verbs
 	ForwardPort uint32 // direct-tcpip dest port; 0 for non-forward verbs
 	User        string // upstream username
+	// Stdin is the buffered client→server stdin for a shell/exec action,
+	// populated only when the endpoint has a rule reading ssh.stdin (the
+	// runtime keeps the splice untouched otherwise). Truncated is set
+	// when the stdin exceeded the inspection cap; the dispatcher then
+	// fail-closes any rule reading ssh.stdin.
+	Stdin     string
+	Truncated bool
 }
 
 // Facet is the SSH facet Runtime. Singleton.
@@ -116,6 +132,7 @@ func (Facet) ReportFields() []facet.ReportFieldSpec {
 		{Name: "forward_host", Kind: facet.ReportString, Label: "Forward host"},
 		{Name: "forward_port", Kind: facet.ReportInt, Label: "Forward port"},
 		{Name: "user", Kind: facet.ReportString, Label: "User"},
+		{Name: "stdin", Kind: facet.ReportString, Label: "Stdin"},
 	}
 }
 
@@ -138,6 +155,7 @@ func (Facet) Report(req *match.Request) map[string]any {
 		"forward_host": m.ForwardHost,
 		"forward_port": int(m.ForwardPort),
 		"user":         userOf(req, m),
+		"stdin":        m.Stdin,
 	}
 }
 
@@ -163,14 +181,19 @@ func init() {
 //
 // lowercasedPaths: ssh.verb's activation value is lowercased so a
 // rule written as `ssh.verb == "Shell"` still matches. command,
-// subsystem, and forward_host are intentionally case-sensitive —
-// program names and hostnames are matched as sent.
+// subsystem, forward_host, and stdin are intentionally case-sensitive —
+// program names, hostnames, and payload bytes are matched as sent.
 //
-// truncatablePaths / unparseablePaths: empty. Every ssh field comes
-// from a small, fully-read channel envelope (the channel-open
-// ExtraData or the channel-request payload), never from a capped
-// inspection buffer or a fallible parser, so no field can be a ghost
-// value that needs a fail-closed deny.
+// truncatablePaths: ssh.stdin. Stdin is the one field drawn from a
+// streamed, capped inspection buffer (the endpoint buffers a session's
+// client→server bytes up to a cap before forwarding); when it overflows
+// the endpoint sets req.Truncated and the dispatcher fail-closes any
+// rule reading ssh.stdin. Declaring it here is also what makes
+// matcher.InspectsTruncatableFacet() report true for stdin rules, which
+// the endpoint reads (via CompiledEndpoint.InspectsTruncatable) to keep
+// the splice untouched when no rule needs stdin. The remaining ssh
+// fields come from small, fully-read channel envelopes and are never
+// truncated. No unparseablePaths: ssh has no fallible parser.
 func (Facet) CELContrib() facet.CELContrib {
 	return facet.CELContrib{
 		EnvOptions: []cel.EnvOption{
@@ -180,8 +203,9 @@ func (Facet) CELContrib() facet.CELContrib {
 			),
 			cel.Variable("ssh", cel.ObjectType("ssh.Fields")),
 		},
-		AddActivation:   addActivation,
-		LowercasedPaths: []string{"ssh.verb"},
+		AddActivation:    addActivation,
+		LowercasedPaths:  []string{"ssh.verb"},
+		TruncatablePaths: []string{"ssh.stdin"},
 	}
 }
 
@@ -209,6 +233,7 @@ func addActivation(req *match.Request, act map[string]any) bool {
 		ForwardHost: meta.ForwardHost,
 		ForwardPort: int(meta.ForwardPort),
 		User:        userOf(req, meta),
+		Stdin:       meta.Stdin,
 	}
 	return true
 }

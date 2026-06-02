@@ -70,6 +70,17 @@ rule "ssh-no-db-forward" {
   reason    = "no direct database tunnels"
 }
 
+// Inspect the stdin a session pipes in (`ssh host < script`). This
+// flips the endpoint onto the stdin pre-gate: the script is buffered
+// and judged before the remote shell reads it, so a denied script
+// never runs. Only the bounded (non-interactive) case is judged.
+rule "ssh-no-destructive-stdin" {
+  endpoint  = ssh.build-host
+  condition = "ssh.stdin.contains('rm -rf /')"
+  verdict   = "deny"
+  reason    = "destructive command in piped script"
+}
+
 // Catch-all for commands not otherwise denied. Lower priority so the
 // deny rules above win when they match.
 rule "ssh-exec-allowed" {

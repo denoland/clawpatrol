@@ -105,6 +105,10 @@ type SSHAction struct {
 	ForwardHost string `json:"forward_host,omitempty"`
 	ForwardPort int    `json:"forward_port,omitempty"`
 	User        string `json:"user,omitempty"`
+	// Stdin is the buffered client→server stdin of a shell/exec session
+	// (the body `ssh host < script` carries). Present only when the
+	// recorded action ran through the stdin pre-gate.
+	Stdin string `json:"stdin,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -410,6 +414,7 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) (any, bool
 			ForwardHost: a.SSH.ForwardHost,
 			ForwardPort: uint32(a.SSH.ForwardPort),
 			User:        a.SSH.User,
+			Stdin:       a.SSH.Stdin,
 		}
 	case a.SQL != nil:
 		stmt := a.SQL.Statement

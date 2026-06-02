@@ -510,6 +510,33 @@ func TestExporterSSHForwardPortFromFloat(t *testing.T) {
 	}
 }
 
+// The ssh exporter round-trips the buffered stdin facet so a downloaded
+// `ssh host < script` action replays against an ssh.stdin rule.
+func TestExporterSSHStdin(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, sshExportHCL)}
+	ev := &Event{
+		ID: "evt-ssh-stdin", Mode: "ssh", Family: "ssh",
+		Host: "10.0.0.9", Action: "deny", Endpoint: "build-host",
+		Rule: "ssh-no-destructive-stdin",
+		Facets: map[string]any{
+			"verb": "shell", "user": "ubuntu",
+			"stdin": "#!/bin/sh\nrm -rf / --no-preserve-root\n",
+		},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.SSH == nil || !strings.Contains(f.Action.SSH.Stdin, "rm -rf /") {
+		t.Errorf("ssh=%+v missing stdin", f.Action.SSH)
+	}
+}
+
 // A non-gateable log line (session connect / exit-status carry no
 // verb facet) can't become a fixture; the exporter must 400.
 func TestExporterSSHRejectsNonGateable(t *testing.T) {

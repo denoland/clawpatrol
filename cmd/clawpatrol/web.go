@@ -1742,6 +1742,9 @@ func exportSSH(ev *Event) *SSHAction {
 	if v, ok := ev.Facets["user"].(string); ok {
 		a.User = v
 	}
+	if v, ok := ev.Facets["stdin"].(string); ok {
+		a.Stdin = v
+	}
 	return a
 }
 

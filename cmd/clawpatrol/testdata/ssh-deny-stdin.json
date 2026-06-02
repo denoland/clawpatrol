@@ -1,0 +1,16 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "shell",
+      "stdin": "#!/bin/sh\nrm -rf / --no-preserve-root\n",
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "ssh-no-destructive-stdin",
+    "endpoint": "ssh.build-host",
+    "reason":   "destructive command in piped script"
+  }
+}

@@ -168,3 +168,38 @@ func TestSSHEmptyConditionMatchesEverything(t *testing.T) {
 		t.Errorf("expected empty condition to match everything")
 	}
 }
+
+// TestSSHStdinMatch covers matching the buffered session stdin — the
+// pre-gated body of `ssh host < script`.
+func TestSSHStdinMatch(t *testing.T) {
+	m := mustMatcher(t, "ssh.stdin.contains('rm -rf /')")
+	bad := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
+		Verb: sshfacet.VerbShell, Stdin: "#!/bin/sh\nrm -rf / --no-preserve-root\n",
+	}}
+	ok := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
+		Verb: sshfacet.VerbShell, Stdin: "#!/bin/sh\necho hello\n",
+	}}
+	if !m.Match(bad) {
+		t.Errorf("expected a destructive script to match ssh.stdin.contains(...)")
+	}
+	if m.Match(ok) {
+		t.Errorf("expected a benign script to NOT match")
+	}
+}
+
+// TestSSHStdinIsTruncatable pins the wiring that makes lazy buffering
+// work: a rule reading ssh.stdin reports InspectsTruncatableFacet()
+// (so CompiledEndpoint.InspectsTruncatable flips and the dispatcher
+// fail-closes on overflow), while a rule that doesn't read stdin does
+// not — keeping the splice on the zero-overhead fast path.
+func TestSSHStdinIsTruncatable(t *testing.T) {
+	if !mustMatcher(t, "ssh.stdin.contains('x')").InspectsTruncatableFacet() {
+		t.Error("ssh.stdin rule should report InspectsTruncatableFacet() == true")
+	}
+	if mustMatcher(t, "ssh.verb == 'exec' && ssh.command == 'x'").InspectsTruncatableFacet() {
+		t.Error("a non-stdin rule should report InspectsTruncatableFacet() == false")
+	}
+	if mustMatcher(t, "").InspectsTruncatableFacet() {
+		t.Error("the catch-all matcher should report InspectsTruncatableFacet() == false")
+	}
+}
