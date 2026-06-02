@@ -62,7 +62,7 @@ func listConfigVersions(db *sql.DB, limit int) ([]configVersion, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []configVersion
 	for rows.Next() {
 		var v configVersion

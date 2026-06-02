@@ -129,15 +129,15 @@ func computePlan(db *sql.DB, gw *config.Gateway, raw []byte) (configPlan, error)
 	return p, nil
 }
 
-func (p configPlan) print(w bufWriter, cp *config.CompiledPolicy) {
-	fmt.Fprintf(w, "revision: %s  (%d endpoints, %d profiles)\n", shortRev(p.desiredRev), len(cp.Endpoints), len(cp.Profiles))
+func (p configPlan) print(cp *config.CompiledPolicy) {
+	fmt.Printf("revision: %s  (%d endpoints, %d profiles)\n", shortRev(p.desiredRev), len(cp.Endpoints), len(cp.Profiles))
 	if p.hasDeployed {
-		fmt.Fprintf(w, "deployed: %s  (serial %d)\n\n", shortRev(p.deployedRev), p.deployedSerial)
+		fmt.Printf("deployed: %s  (serial %d)\n\n", shortRev(p.deployedRev), p.deployedSerial)
 	} else {
-		fmt.Fprintln(w, "deployed: (none — backend is empty, this seeds serial 1)")
-		fmt.Fprintln(w)
+		fmt.Println("deployed: (none — backend is empty, this seeds serial 1)")
+		fmt.Println()
 	}
-	p.diff.render(w)
+	p.diff.render()
 }
 
 // savedPlanVersion is the on-disk format version of a saved plan.
@@ -197,14 +197,14 @@ func runPlan(args []string) {
 		fmt.Fprintf(os.Stderr, "plan: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p, err := computePlan(db, gw, raw)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "plan: %v\n", err)
 		os.Exit(1)
 	}
-	p.print(os.Stdout, cp)
+	p.print(cp)
 	if p.noChanges() {
 		fmt.Println("\nNo changes. Deployed config is up to date.")
 	}
@@ -257,7 +257,7 @@ func runApply(args []string) {
 	// planned against; a raw .hcl is planned fresh.
 	var (
 		raw            []byte
-		expectSerial   int64 = *expect
+		expectSerial   = *expect
 		fromSavedPlan  bool
 		savedSchemaVer int
 	)
@@ -289,7 +289,7 @@ func runApply(args []string) {
 		fmt.Fprintf(os.Stderr, "apply: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	who := lockHolder()
 	locked, cur, err := acquireConfigLock(db, who, "apply "+path)
@@ -308,7 +308,7 @@ func runApply(args []string) {
 	// os.Exit here would skip the defer and leak the lock, wedging the
 	// next apply until the staleness steal kicks in.
 	err = func() error {
-		defer releaseConfigLock(db, who)
+		defer func() { _ = releaseConfigLock(db, who) }()
 
 		deployedSerial, err := currentSerial(db)
 		if err != nil {
@@ -334,7 +334,7 @@ func runApply(args []string) {
 			return err
 		}
 		fmt.Printf("config: %s\n", path)
-		p.print(os.Stdout, cp)
+		p.print(cp)
 		if fromSavedPlan {
 			fmt.Println("\n(applying saved plan)")
 		}
@@ -383,20 +383,20 @@ func (d digestDiff) empty() bool {
 	return len(d.added) == 0 && len(d.removed) == 0 && len(d.changed) == 0
 }
 
-func (d digestDiff) render(w bufWriter) {
+func (d digestDiff) render() {
 	if d.empty() {
-		fmt.Fprintln(w, "no semantic changes")
+		fmt.Println("no semantic changes")
 		return
 	}
-	fmt.Fprintf(w, "changes: +%d  -%d  ~%d\n", len(d.added), len(d.removed), len(d.changed))
+	fmt.Printf("changes: +%d  -%d  ~%d\n", len(d.added), len(d.removed), len(d.changed))
 	for _, k := range d.added {
-		fmt.Fprintf(w, "  + %s\n", k)
+		fmt.Printf("  + %s\n", k)
 	}
 	for _, k := range d.removed {
-		fmt.Fprintf(w, "  - %s\n", k)
+		fmt.Printf("  - %s\n", k)
 	}
 	for _, k := range d.changed {
-		fmt.Fprintf(w, "  ~ %s\n", k)
+		fmt.Printf("  ~ %s\n", k)
 	}
 }
 
@@ -466,7 +466,7 @@ func runConfigHistory(args []string) {
 		fmt.Fprintf(os.Stderr, "config history: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	versions, err := listConfigVersions(db, *limit)
 	if err != nil {
@@ -505,7 +505,7 @@ func runConfigUnlock(args []string) {
 		fmt.Fprintf(os.Stderr, "config unlock: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	cur, held, _ := readConfigLock(db)
 	released, err := forceUnlockConfigLock(db)
@@ -521,10 +521,6 @@ func runConfigUnlock(args []string) {
 }
 
 // --- helpers -------------------------------------------------------
-
-// bufWriter is the minimal io.Writer surface render/print need; aliased
-// so signatures read clearly and tests can pass a *strings.Builder.
-type bufWriter = interface{ Write([]byte) (int, error) }
 
 func shortRev(rev string) string {
 	if len(rev) > 12 {
