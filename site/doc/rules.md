@@ -216,11 +216,15 @@ Key properties:
 - **Opt-in / zero-cost otherwise.** stdin is buffered only on endpoints
   that have at least one `ssh.stdin` rule; every other SSH connection
   keeps the untouched, byte-for-byte splice.
-- **Bounded only.** Only the batch case is judged — a redirected file
-  that reaches EOF, or the prefix a stream sends before a brief idle
-  window. Interactive terminals (`pty`) are never stdin-buffered (block
-  those with `ssh.verb == 'pty'`); a streamed stdin past the inspection
-  cap is forwarded unjudged and **fail-closes** any `ssh.stdin` rule.
+- **Bounded only, fail-closed.** Only the batch case is judged — a
+  redirected file (`ssh host < script`) that reaches EOF. Interactive
+  terminals (`pty`) are never stdin-buffered (block those with
+  `ssh.verb == 'pty'`). A stream the gateway can't bound — stdin past
+  the inspection cap, or a pause mid-stream with bytes already buffered
+  — is reported truncated and **fail-closes** any `ssh.stdin` rule
+  (deny), so a slow writer can't hide a payload after the inspection
+  window. A command with no stdin at all evaluates against empty stdin
+  and runs normally.
 - **Pre-gate, not envelope only.** Command rules still apply on this
   path — a denied `ssh.command` never reaches upstream either.
 

@@ -26,10 +26,11 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/match"
+	sshfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 	cruntime "github.com/denoland/clawpatrol/internal/config/runtime"
 
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/credentials"
-	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/rules"
 )
 
@@ -385,6 +386,36 @@ func TestE2EStdinDenyNeverRuns(t *testing.T) {
 	}
 	if !ev.hasAction("deny") {
 		t.Errorf("expected a deny event; got %+v", ev.all())
+	}
+}
+
+// TestE2EStdinTruncatedFailClose pins the security-critical overflow
+// branch: when stdin exceeds the inspection cap (or pauses mid-stream,
+// both surfaced as req.Truncated), the matcher can't see the dropped
+// bytes, so the dispatcher must fail CLOSED — deny any ssh.stdin rule
+// even though the buffered prefix is benign. Driven at the dispatch
+// layer so it doesn't depend on piping a >1 MiB payload.
+func TestE2EStdinTruncatedFailClose(t *testing.T) {
+	policy := compileE2EPolicy(t, blockSecretHCL)
+	ep := policy.Endpoints["build-host"]
+	req := &match.Request{
+		Family: "ssh",
+		Meta: &sshfacet.Meta{
+			Verb:      sshfacet.VerbShell,
+			Stdin:     "echo benign prefix only",
+			Truncated: true,
+		},
+		Truncated: true,
+	}
+	cr := cruntime.MatchRequest(ep, req)
+	if cr == nil || cr.Outcome.Verdict != "deny" {
+		t.Fatalf("truncated stdin must fail closed (deny); got %+v", cr)
+	}
+	// Sanity: the same prefix WITHOUT truncation is allowed (no SECRET).
+	req.Truncated = false
+	req.Meta.(*sshfacet.Meta).Truncated = false
+	if cr := cruntime.MatchRequest(ep, req); cr != nil && cr.Outcome.Verdict == "deny" {
+		t.Fatalf("untruncated benign stdin should not be denied; got %+v", cr)
 	}
 }
 

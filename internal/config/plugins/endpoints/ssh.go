@@ -661,11 +661,10 @@ func gateAgentStdin(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, hoo
 				return
 			}
 			// Allowed and stdin fully streamed (CloseWrite done). A
-			// session carries only one shell/exec, so trailing requests
-			// (eow / signal / …) need no gate — just relay them.
-			for rr := range aReqs {
-				forwardChannelReq(b, rr)
-			}
+			// session should carry only one shell/exec, but never relay
+			// a second gateable action ungated — hand trailing requests
+			// to the envelope path, which re-gates each one.
+			forwardAgentReqs(a, b, aReqs, hooks, make(chan struct{}))
 			return
 		default: // pty-req or subsystem: not stdin-gateable
 			if deny, _ := hooks.gate(m); deny {
@@ -751,7 +750,11 @@ buffering:
 			}
 			if len(c.b) > 0 {
 				room := stdinMatchCap - len(prefix)
-				if len(c.b) >= room {
+				// Strictly-greater: a chunk that exactly fills the cap
+				// leaves nothing over, so it is NOT truncation — keep
+				// buffering and let the next read (more bytes vs EOF)
+				// decide. Only genuine overflow sets truncated.
+				if len(c.b) > room {
 					prefix = append(prefix, c.b[:room]...)
 					overflow = c.b[room:]
 					truncated = true
@@ -771,6 +774,16 @@ buffering:
 				break buffering
 			}
 		case <-idle.C:
+			// The agent paused mid-stream. With no EOF we can't bound
+			// the body, so a partial-but-non-empty prefix fails CLOSED:
+			// mark it truncated so any ssh.stdin rule denies rather than
+			// judging an incomplete script (a slow writer could otherwise
+			// hide the payload after the idle window). An empty prefix is
+			// a no-stdin command (`ssh host cmd` with an idle tty) — leave
+			// it untruncated so it evaluates against empty stdin and runs.
+			if len(prefix) > 0 {
+				truncated = true
+			}
 			break buffering
 		}
 	}
@@ -789,9 +802,12 @@ buffering:
 
 	// Allow: forward the withheld shell/exec upstream (the agent was
 	// already acked, so don't relay a second reply), then stream stdin.
+	// If the upstream forward fails the channel is broken — return false
+	// so the caller tears both halves down instead of relaying trailing
+	// requests to a dead upstream and leaving the agent hung.
 	if _, err := b.SendRequest(r.Type, false, r.Payload); err != nil {
 		drain()
-		return true
+		return false
 	}
 	writeErr := false
 	if len(prefix) > 0 {
