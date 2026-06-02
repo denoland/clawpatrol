@@ -156,10 +156,12 @@ func (r *renderer) writeOperational() {
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
 	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
+	r.out.WriteString("A profile may also claim endpoints **directly** via the `endpoints` list, independent of any credential. Use this for credential-less endpoints — public APIs the gateway proxies, upstreams authenticated by mTLS / network position / the tunnel itself, or open internal tools. The profile's rules apply to requests routed to a directly-declared endpoint exactly as they do for credential-bound ones; no credential is injected. An endpoint reached both ways (named here *and* via a listed credential) is claimed once — the two sets are merged.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n}\n```\n\n")
+	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). May be empty (`[]`) for a profile that only claims endpoints directly. |\n")
+	r.out.WriteString("| `endpoints` | `[]endpoint` | no | Bare-name endpoint references the profile claims directly, with no credential injected. Rules attached to these endpoints still evaluate. |\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n}\n\n# Credential-less: rules apply, nothing is injected.\nprofile \"public\" {\n  credentials = []\n  endpoints   = [endpoint.public_status, endpoint.internal_metrics]\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────
