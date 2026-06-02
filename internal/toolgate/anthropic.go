@@ -2,10 +2,11 @@ package toolgate
 
 // Anthropic /v1/messages response gating. Parses tool_use blocks out
 // of the response body, applies the rule set, and rewrites the
-// response shape according to the verdict — either synthesising a
-// matching tool_result for deny / approve-skipped paths, or swapping
-// the tool_use for a polling-tool tool_use the agent will execute
-// against clawpatrol's own /api/approval/poll endpoint.
+// response shape according to the verdict — forwarding allow untouched,
+// replacing deny with a refusal text block, and for HITL parking the
+// call and running a gateway-initiated follow-up LLM call so the model
+// picks a polling tool from the agent's own advertised tools (see
+// followup.go).
 //
 // Only non-streaming JSON responses are handled here; the streaming
 // SSE variant lives in anthropic_sse.go (GateAnthropicSSE), which
@@ -17,16 +18,11 @@ package toolgate
 // tool_use it can't evaluate is blocked, never forwarded raw.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
-
-// PollingToolName is the tool clawpatrol injects into the rewritten
-// response so the agent will call back on the approval endpoint. The
-// draft picks the long-poll variant unconditionally — see
-// doc/tool-call-gating.md for why and the v2 plan to introspect the
-// agent's available tools instead.
-const PollingToolName = "clawpatrol_poll"
 
 // anthropicBlock is the discriminated-union over response content
 // blocks. Only `type` is parsed eagerly; the rest is held verbatim
@@ -66,7 +62,15 @@ type GateOutcome struct {
 // (possibly rewritten) body. Errors short-circuit to "no rewrite" —
 // the gateway forwards the original response and logs the parse error;
 // failing closed on a bad body would deny legitimate non-tool turns.
-func GateAnthropicResponse(rules RuleSet, store *Store, body []byte) (GateOutcome, error) {
+//
+// When a tool_use matches a HITL rule the call is parked and a
+// gateway-initiated follow-up LLM call (via fc) rebuilds the turn so the
+// model picks a polling tool from the agent's own tools — see
+// followup.go. The follow-up response is forwarded to the agent. If the
+// follow-up is unavailable (nil fc/caller, missing request body) or
+// fails, the HITL path degrades to a coherent "approval pending" text
+// block rather than leaking the original tool call.
+func GateAnthropicResponse(ctx context.Context, rules RuleSet, store *Store, body []byte, fc *FollowupConfig) (GateOutcome, error) {
 	if len(body) == 0 {
 		return GateOutcome{Body: body}, nil
 	}
@@ -141,20 +145,17 @@ func GateAnthropicResponse(rules RuleSet, store *Store, body []byte) (GateOutcom
 			outcome.Notes = append(outcome.Notes,
 				fmt.Sprintf("hitl tool_use name=%q rule=%q token=%s",
 					hdr.Name, rule.Name, pc.Token))
-			// Replace with a polling tool_use the agent will execute.
-			// The polling tool's input carries the opaque token plus
-			// a hint about the original tool so debug tools (and the
-			// model's own context) can describe what's pending.
-			pollInput := map[string]any{
-				"token":            pc.Token,
-				"original_tool":    hdr.Name,
-				"original_tool_id": hdr.ID,
-			}
+			// Drop the parked tool_use. The agent must never see it — the
+			// model picks a polling tool via the gateway-initiated
+			// follow-up below. Emit a "pending approval" text block as the
+			// fallback the agent sees if the follow-up is unavailable or
+			// fails; on follow-up success the whole body is replaced.
 			newBlocks = append(newBlocks, mustJSON(map[string]any{
-				"type":  "tool_use",
-				"id":    "toolu_poll_" + pc.Token[:16],
-				"name":  PollingToolName,
-				"input": pollInput,
+				"type": "text",
+				"text": fmt.Sprintf(
+					"Tool call %s requires human approval (clawpatrol). It is parked "+
+						"and pending (token %s); it cannot run until approved.",
+					hdr.Name, pc.Token),
 			}))
 		}
 	}
@@ -163,16 +164,41 @@ func GateAnthropicResponse(rules RuleSet, store *Store, body []byte) (GateOutcom
 		return GateOutcome{Body: body, ToolUsesSeen: outcome.ToolUsesSeen}, nil
 	}
 
+	// HITL: run the gateway-initiated follow-up so the model chooses a
+	// polling tool from the agent's own tools. On success, forward that
+	// response verbatim — it is a real Anthropic turn naming a tool the
+	// agent actually has. On failure, fall through to the pending-approval
+	// text-block rewrite assembled above (the original tool call is
+	// already removed, so nothing leaks).
+	if len(outcome.Parked) > 0 {
+		if fr, err := runFollowup(ctx, fc, body, outcome.Parked); err == nil {
+			name, _, _, isTool := firstAgentBlock(fr)
+			if isTool {
+				outcome.Notes = append(outcome.Notes,
+					fmt.Sprintf("hitl follow-up chose tool=%q", name))
+			} else {
+				outcome.Notes = append(outcome.Notes, "hitl follow-up returned no tool_use")
+			}
+			outcome.Body = fr
+			outcome.Rewrote = true
+			return outcome, nil
+		} else if !errors.Is(err, errNoFollowupCaller) {
+			outcome.Notes = append(outcome.Notes, "hitl follow-up failed: "+err.Error())
+		}
+	}
+
 	newContent, err := json.Marshal(newBlocks)
 	if err != nil {
 		return GateOutcome{Body: body}, fmt.Errorf("anthropic content marshal: %w", err)
 	}
 	raw["content"] = newContent
-	// stop_reason: if we replaced the only tool_use with a text block
-	// (deny), upstream's "tool_use" stop_reason no longer matches the
-	// content shape. Set "end_turn" so the agent finishes the turn
-	// cleanly. For HITL we keep "tool_use" — there IS still a tool_use
-	// in the content, just a different one.
+	// stop_reason: this fall-through path only runs for deny (and the
+	// HITL fallback when the follow-up was unavailable/failed); both
+	// replace tool_use blocks with text. If no tool_use survives,
+	// upstream's "tool_use" stop_reason no longer matches the content
+	// shape — set "end_turn" so the agent finishes the turn cleanly.
+	// (The HITL follow-up success path returns earlier with the model's
+	// own response, whose stop_reason is already correct.)
 	if _, present := raw["stop_reason"]; present {
 		hasToolUse := false
 		for _, b := range newBlocks {

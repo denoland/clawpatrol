@@ -1,13 +1,12 @@
 package toolgate
 
 // HTTP endpoints clawpatrol exposes for the agent-side polling half
-// of the HITL multi-turn dance. Three shapes are required by spec
-// (long-poll, SSE, WebSocket); the LLM picks one based on the agent's
-// available transport. In this draft the gateway always emits a
-// polling tool_use that targets the long-poll endpoint (see
-// anthropic.go's PollingToolName); the SSE + WS handlers are wired
-// but currently degrade to long-poll semantics so a curious agent
-// gets the same verdict shape regardless of which it picked.
+// of the HITL multi-turn dance. Three shapes are wired (long-poll, SSE,
+// WebSocket). The gateway-initiated follow-up (followup.go) instructs
+// the model to long-poll `POST /api/approval/poll` using whichever of
+// the agent's own tools can make an HTTP request; the SSE + WS handlers
+// are wired but degrade to long-poll semantics so a curious agent gets
+// the same verdict shape regardless of which it picked.
 
 import (
 	"context"

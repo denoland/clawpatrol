@@ -2,6 +2,7 @@ package toolgate
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -114,7 +115,7 @@ func TestSSE_AllowReplaysVerbatim(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	if err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out); err != nil {
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil); err != nil {
 		t.Fatalf("GateAnthropicSSE: %v", err)
 	}
 	if out.Rewrote {
@@ -138,7 +139,7 @@ func TestSSE_DenyRewrites(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	if err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out); err != nil {
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil); err != nil {
 		t.Fatalf("GateAnthropicSSE: %v", err)
 	}
 	if !out.Rewrote {
@@ -171,17 +172,31 @@ func TestSSE_DenyRewrites(t *testing.T) {
 	}
 }
 
-// TestSSE_HITLParksAndEmitsPoll: a hitl tool_use parks a call and emits
-// a clawpatrol_poll tool_use carrying the token; stop_reason stays
-// tool_use (the poll IS a tool_use).
-func TestSSE_HITLParksAndEmitsPoll(t *testing.T) {
+// TestSSE_HITLParksAndEmitsModelChoice: a hitl tool_use parks a call,
+// runs the gateway-initiated follow-up, and emits the model-chosen
+// polling tool (a real agent tool) at the held block's index;
+// stop_reason stays tool_use (the chosen tool IS a tool_use).
+func TestSSE_HITLParksAndEmitsModelChoice(t *testing.T) {
 	rules := RuleSet{{Name: "approve-bash", ToolName: "bash", Verdict: VerdictHITL, Reason: "operator approval"}}
 	store := NewStore()
 	in := sseStreamToolUse("bash", `{"command":`, `"ls -la"}`)
 
+	fc := &FollowupConfig{
+		ReqBody: []byte(fixtureAnthropicRequest),
+		Caller: func(_ context.Context, _ []byte) ([]byte, error) {
+			return []byte(`{
+              "type": "message", "role": "assistant", "stop_reason": "tool_use",
+              "content": [
+                {"type": "tool_use", "id": "toolu_followup", "name": "http_request",
+                 "input": {"url": "https://clawpatrol.test/api/approval/poll", "method": "POST"}}
+              ]
+            }`), nil
+		},
+	}
+
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	if err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out); err != nil {
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, fc); err != nil {
 		t.Fatalf("GateAnthropicSSE: %v", err)
 	}
 	if len(out.Parked) != 1 {
@@ -199,15 +214,43 @@ func TestSSE_HITLParksAndEmitsPoll(t *testing.T) {
 	if tu == nil {
 		t.Fatalf("hitl path emitted no tool_use")
 	}
-	if tu["name"] != PollingToolName {
-		t.Errorf("emitted tool name = %v, want %s", tu["name"], PollingToolName)
+	if tu["name"] != "http_request" {
+		t.Errorf("emitted tool name = %v, want http_request (the model's choice)", tu["name"])
+	}
+	// The raw bash tool_use must NOT leak into the stream.
+	if strings.Contains(dst.String(), `"name":"bash"`) {
+		t.Errorf("fail-closed violated: raw bash tool_use leaked into stream")
 	}
 	if sr := stopReason(evs); sr != "tool_use" {
-		t.Errorf("stop_reason = %q, want tool_use (poll is still a tool_use)", sr)
+		t.Errorf("stop_reason = %q, want tool_use (chosen tool is still a tool_use)", sr)
 	}
-	// The poll token must ride in the input_json_delta partial_json.
-	if !strings.Contains(dst.String(), pc.Token) {
-		t.Errorf("poll token missing from emitted stream")
+}
+
+// TestSSE_HITLFollowupUnavailable: with no follow-up caller wired, the
+// hitl path must still drop the raw tool_use and emit a coherent
+// "pending approval" text block (fail closed), flipping stop_reason.
+func TestSSE_HITLFollowupUnavailable(t *testing.T) {
+	rules := RuleSet{{Name: "approve-bash", ToolName: "bash", Verdict: VerdictHITL, Reason: "operator approval"}}
+	store := NewStore()
+	in := sseStreamToolUse("bash", `{"command":`, `"ls -la"}`)
+
+	var dst bytes.Buffer
+	out := &SSEOutcome{}
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil); err != nil {
+		t.Fatalf("GateAnthropicSSE: %v", err)
+	}
+	if len(out.Parked) != 1 {
+		t.Fatalf("parked %d calls, want 1", len(out.Parked))
+	}
+	evs := parseSSE(t, dst.String())
+	if tu := findToolUse(evs); tu != nil {
+		t.Errorf("fail-closed violated: tool_use emitted without a follow-up: %v", tu)
+	}
+	if !strings.Contains(dst.String(), "requires human approval") {
+		t.Errorf("expected pending-approval text block; stream:\n%s", dst.String())
+	}
+	if sr := stopReason(evs); sr != "end_turn" {
+		t.Errorf("stop_reason = %q, want end_turn (no tool_use survived)", sr)
 	}
 }
 
@@ -229,7 +272,7 @@ func TestSSE_FailClosedOnMalformedDelta(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	if err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out); err != nil {
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil); err != nil {
 		t.Fatalf("GateAnthropicSSE: %v", err)
 	}
 	evs := parseSSE(t, dst.String())
@@ -265,7 +308,7 @@ func TestSSE_FailClosedOnBadBlockStart(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out)
+	err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil)
 	if err == nil {
 		t.Fatalf("expected an error terminating the stream, got nil")
 	}
@@ -289,7 +332,7 @@ func TestSSE_TruncatedMidToolUse(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out)
+	err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil)
 	if err == nil {
 		t.Fatalf("expected truncation error, got nil")
 	}
@@ -320,7 +363,7 @@ func TestSSE_MixedKeepsStopReason(t *testing.T) {
 
 	var dst bytes.Buffer
 	out := &SSEOutcome{}
-	if err := GateAnthropicSSE(rules, store, strings.NewReader(in), &dst, out); err != nil {
+	if err := GateAnthropicSSE(context.Background(), rules, store, strings.NewReader(in), &dst, out, nil); err != nil {
 		t.Fatalf("GateAnthropicSSE: %v", err)
 	}
 	if out.ToolUsesSeen != 2 {

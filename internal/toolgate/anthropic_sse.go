@@ -27,8 +27,11 @@ package toolgate
 //
 //   - allow / unmatched: replay the held frames verbatim.
 //   - deny: drop the tool_use; emit a text block carrying the reason.
-//   - hitl: drop the tool_use; park the call and emit a clawpatrol_poll
-//     tool_use frame sequence the agent will execute.
+//   - hitl: drop the tool_use; park the call, run a gateway-initiated
+//     follow-up LLM call (followup.go) so the model picks a polling tool
+//     from the agent's own tools, and emit that choice at the block's
+//     index. The follow-up's failure mode is a refusal text block — the
+//     held tool call is dropped either way, so nothing leaks.
 //
 // stop_reason is rewritten "tool_use" → "end_turn" in the trailing
 // message_delta iff every tool_use in the turn was denied/blocked (no
@@ -47,6 +50,7 @@ package toolgate
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,7 +83,7 @@ type SSEOutcome struct {
 // content_block_start, a protocol violation, a truncated tool_use, or
 // a write/read failure); callers should propagate it so the client
 // connection breaks rather than receive an ungated tail.
-func GateAnthropicSSE(rules RuleSet, store *Store, src io.Reader, dst io.Writer, out *SSEOutcome) error {
+func GateAnthropicSSE(ctx context.Context, rules RuleSet, store *Store, src io.Reader, dst io.Writer, out *SSEOutcome, fc *FollowupConfig) error {
 	if out == nil {
 		out = &SSEOutcome{}
 	}
@@ -182,10 +186,26 @@ func GateAnthropicSSE(rules RuleSet, store *Store, src io.Reader, dst io.Writer,
 			out.Notes = append(out.Notes,
 				fmt.Sprintf("hitl tool_use name=%q rule=%q token=%s",
 					held.name, rule.Name, pc.Token))
-			// A clawpatrol_poll tool_use IS still a tool_use in the output,
-			// so stop_reason stays "tool_use".
-			emittedToolUse = true
-			return emitPollBlock(dst, held.index, pc)
+			// Gateway-initiated follow-up: the model picks a polling tool
+			// from the agent's own tools; emit its choice at this block's
+			// index. The SSE path doesn't buffer the whole upstream turn,
+			// so the follow-up rebuilds from a minimal assistant placeholder
+			// (the agent still received the streamed text blocks directly).
+			// On any failure, emit a refusal text block — the held tool call
+			// was dropped, so nothing leaks (fail closed). A surviving
+			// tool_use (the model's choice) keeps stop_reason "tool_use".
+			fr, ferr := runFollowup(ctx, fc, []byte(`{"content":[]}`), []*PendingCall{pc})
+			if ferr != nil {
+				out.Notes = append(out.Notes, "hitl follow-up unavailable: "+ferr.Error())
+				return emitDenyTextBlock(dst, held.index, fmt.Sprintf(
+					"Tool call %s requires human approval (clawpatrol). It is parked and "+
+						"pending (token %s); it cannot run until approved.", held.name, pc.Token))
+			}
+			emittedTool, emitErr := emitFollowupBlock(dst, held.index, fr)
+			if emittedTool {
+				emittedToolUse = true
+			}
+			return emitErr
 		}
 		return nil
 	}
@@ -433,42 +453,50 @@ func emitDenyTextBlock(dst io.Writer, index int, text string) error {
 	})
 }
 
-// emitPollBlock writes a complete clawpatrol_poll tool_use block (start
-// → input_json_delta → stop) at the given index, carrying the opaque
-// token plus the original tool's identity. Shape matches the non-
-// streaming path's polling tool_use.
-func emitPollBlock(dst io.Writer, index int, pc *PendingCall) error {
+// emitFollowupBlock renders the gateway-initiated follow-up response as a
+// single content block at the given index, so it slots into the agent's
+// stream where the held HITL tool_use was. It emits the model's chosen
+// tool_use (start → input_json_delta → stop) when the follow-up produced
+// one — the expected outcome, a polling tool the agent actually has — and
+// returns emittedToolUse=true so the caller keeps stop_reason "tool_use".
+// If the follow-up returned only text (or nothing), it emits that as a
+// text block and returns false.
+func emitFollowupBlock(dst io.Writer, index int, followupBody []byte) (emittedToolUse bool, err error) {
+	name, id, payload, isToolUse := firstAgentBlock(followupBody)
+	if !isToolUse {
+		text := payload
+		if text == "" {
+			text = "A tool call requires human approval (clawpatrol) and is pending; " +
+				"it cannot run until approved."
+		}
+		return false, emitDenyTextBlock(dst, index, text)
+	}
 	if err := writeSSEMap(dst, "content_block_start", map[string]any{
 		"type":  "content_block_start",
 		"index": index,
 		"content_block": map[string]any{
 			"type":  "tool_use",
-			"id":    "toolu_poll_" + pc.Token[:16],
-			"name":  PollingToolName,
+			"id":    id,
+			"name":  name,
 			"input": map[string]any{},
 		},
 	}); err != nil {
-		return err
-	}
-	pollInput, err := json.Marshal(map[string]any{
-		"token":            pc.Token,
-		"original_tool":    pc.ToolName,
-		"original_tool_id": pc.ToolUseID,
-	})
-	if err != nil {
-		return fmt.Errorf("toolgate sse: poll input marshal: %w", err)
+		return false, err
 	}
 	if err := writeSSEMap(dst, "content_block_delta", map[string]any{
 		"type":  "content_block_delta",
 		"index": index,
-		"delta": map[string]any{"type": "input_json_delta", "partial_json": string(pollInput)},
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": payload},
 	}); err != nil {
-		return err
+		return false, err
 	}
-	return writeSSEMap(dst, "content_block_stop", map[string]any{
+	if err := writeSSEMap(dst, "content_block_stop", map[string]any{
 		"type":  "content_block_stop",
 		"index": index,
-	})
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // writeSSEMap marshals v to JSON and writes it as a single SSE event.

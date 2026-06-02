@@ -32,7 +32,9 @@ The implementation (`anthropic_sse.go`) uses **per-block buffering**:
   - **deny** — held frames dropped; a synthesised `text` block carries
     the reason at the same content index.
   - **hitl** — held frames dropped; the call is parked and a
-    `clawpatrol_poll` `tool_use` block is synthesised at the same index.
+    gateway-initiated follow-up LLM call picks a polling tool from the
+    agent's own tools; that choice is emitted at the same index (see
+    "Gateway-initiated polling-tool choice" below).
 - `stop_reason` in the trailing `message_delta` is rewritten
   `tool_use` → `end_turn` iff no `tool_use` survives (every one was
   denied/blocked), matching the JSON path.
@@ -55,31 +57,59 @@ the agent. A held `tool_use` is emitted only after a clean *allow*.
   turn cleanly. (The alternative — synthesising a `tool_result` the
   model reads on its next turn — is deferred to v2; see "deny shape"
   below.)
-- **hitl** — the `tool_use` is swapped for a polling `tool_use` that
-  the agent executes against clawpatrol's own approval endpoint. A
-  pending entry, keyed by an opaque token, is parked in the in-process
-  `Store`. Once an operator decides in the dashboard, the long-poll
-  wakes and returns the verdict to the agent.
+- **hitl** — the `tool_use` is parked (keyed by an opaque token in the
+  in-process `Store`), and the gateway runs a follow-up LLM call so the
+  model picks a polling tool from the agent's *own* advertised tools.
+  That choice is forwarded to the agent, which executes it to poll
+  clawpatrol's approval endpoint. Once an operator decides in the
+  dashboard, the long-poll wakes and returns the verdict to the agent.
+  See the next section.
 
-## Why long-poll only
+## Gateway-initiated polling-tool choice
 
-`PollingToolName` (`anthropic.go`) is injected unconditionally as a
-long-poll HTTP tool (`clawpatrol_poll` → `POST /api/approval/poll`).
+The polling tool the agent calls **must be a tool the agent already
+has** — its dispatcher is built from the tools *it* registered, so a
+tool clawpatrol invents (the earlier draft's `clawpatrol_poll`) has no
+handler and can never execute. Injecting the tool *definition* into the
+request's `tools[]` wouldn't help either: dispatch is agent-local.
 
-The spec calls for clawpatrol to pick the polling shape (long-poll,
-SSE, or WebSocket) from the tools the agent actually advertises. The
-draft does not, for two reasons:
+So the gateway lets the model choose, acting as one iteration of the
+agent loop (`internal/toolgate/followup.go`):
 
-1. **Universality.** HTTP long-poll works for every agent that can
-   call a tool at all. SSE and WS need transport support the agent may
-   not have, and the gateway would have to introspect the original
-   request's `tools[]` to know. That introspection is the v2 plan.
-2. **No gateway-initiated LLM call.** The spec's richer design has
-   clawpatrol make its own upstream LLM call to let the model choose
-   the polling shape. That needs credential injection into a
-   gateway-initiated request (re-fetching the secret out of the
-   per-credential plugin), which is non-trivial. Long-poll-only
-   removes the need entirely.
+1. Take the upstream assistant response and **remove the parked
+   `tool_use`** from it (keeping any text rationale).
+2. **Fabricate a user message** instructing the model to poll
+   clawpatrol's approval endpoint (`POST <base>/api/approval/poll`,
+   body `{"token": …}`), choosing the right tool from its own `tools[]`.
+3. Make clawpatrol's **own upstream `/v1/messages` call** — reusing the
+   agent's credentials and tool set (`stream: false`).
+4. **Forward the follow-up response** to the agent. It names a tool the
+   agent actually has, so the agent executes it and polls.
+
+The package stays transport-agnostic: an `LLMCaller` callback (supplied
+by `cmd/clawpatrol`) hides the MITM transport + credential machinery, so
+the dance is unit-testable with a fake caller. The follow-up reuses the
+already-credential-injected request (Anthropic uses header injection,
+not body signing, so swapping the body is safe) and never re-enters the
+MITM handler, so it is not itself re-gated.
+
+**Fallback.** If the follow-up is unavailable (no caller wired, or the
+original request body was too large to buffer for a faithful rebuild) or
+the follow-up call fails, the HITL path degrades to a coherent "approval
+pending" text block. The parked tool call is dropped either way, so the
+raw call never reaches the agent.
+
+**Configuration.** `CLAWPATROL_TOOLGATE_APPROVAL_URL` sets the base URL
+the polling instruction targets (`<base>/api/approval/poll`); it must
+point at clawpatrol's agent-reachable address. Unset uses a placeholder
+default that will not connect.
+
+**Known limitations (draft).** N=1 tool_use per turn is the supported
+shape: when a turn mixes a HITL `tool_use` with allow/deny siblings, the
+follow-up replaces the whole assistant turn and the siblings are not
+independently forwarded. Each HITL block in a multi-tool stream triggers
+its own follow-up call. The follow-up's chosen tool is not itself
+re-gated.
 
 The SSE (`GET /api/approval/sse`) and WS (`GET /api/approval/ws`)
 endpoints are wired but degrade: SSE emits a single pending-then-
@@ -108,8 +138,8 @@ cl-1yh's `llm_rule` plugin once that lands on `main`.
 
 ## v2 follow-ups
 
-- Introspect the request's `tools[]` to pick SSE/WS when the agent
-  supports them, instead of long-poll unconditionally.
+- Independent handling of allow/deny siblings in a HITL turn (N>1).
+- Re-gate (or explicitly trust) the follow-up's chosen polling tool.
 - Synth-`tool_result` deny path for round-trip preservation.
 - Per-provider parsers (OpenAI/Codex/OpenRouter).
 - Wire `toolgate.Rule` to cl-1yh's `llm_rule` HCL plugin.

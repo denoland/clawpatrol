@@ -20,6 +20,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,15 @@ import (
 
 	"github.com/denoland/clawpatrol/internal/toolgate"
 )
+
+// maxToolgateReqBody caps how much of the agent's original /v1/messages
+// request the gateway buffers to rebuild the conversation for a
+// gateway-initiated HITL follow-up (and how much follow-up response it
+// reads back). Larger than the 1MB match cap (maxHTTPMatchBody) because
+// the full message history must be valid JSON to re-serialise; 8MB
+// mirrors the response-body cap. A request larger than this disables the
+// follow-up for that turn — the HITL path then degrades to a text block.
+const maxToolgateReqBody = 8 << 20
 
 // loadToolgateRulesFromEnv pulls a JSON-encoded rule list out of
 // CLAWPATROL_TOOLGATE_RULES, an opt-in knob for prototyping the
@@ -100,7 +110,7 @@ func loadToolgateRulesFromEnv() toolgate.RuleSet {
 // means the caller should keep the original resp. Errors are logged
 // and swallowed (fail-open) so a gating bug never bricks the agent;
 // the matched-deny path remains intact via the rule set's deny verdict.
-func (g *Gateway) gateAnthropicResponse(resp *http.Response, ev *Event) (*http.Response, bool) {
+func (g *Gateway) gateAnthropicResponse(ctx context.Context, resp *http.Response, ev *Event, fc *toolgate.FollowupConfig) (*http.Response, bool) {
 	if resp == nil || resp.Body == nil {
 		return resp, false
 	}
@@ -132,7 +142,7 @@ func (g *Gateway) gateAnthropicResponse(resp *http.Response, ev *Event) (*http.R
 		}
 	}
 
-	outcome, err := toolgate.GateAnthropicResponse(g.toolgateRules, g.toolgate, decoded)
+	outcome, err := toolgate.GateAnthropicResponse(ctx, g.toolgateRules, g.toolgate, decoded, fc)
 	if err != nil {
 		log.Printf("toolgate evaluate: %v", err)
 		// Put the original body back so the caller's resp.Write
@@ -178,7 +188,7 @@ func (g *Gateway) gateAnthropicResponse(resp *http.Response, ev *Event) (*http.R
 // response rather than leaking the raw tool call. This is the explicit
 // contract for the streaming path (the JSON path above still fails open
 // on parse errors — see GateAnthropicResponse).
-func (g *Gateway) gateAnthropicSSEStream(resp *http.Response) *toolgate.SSEOutcome {
+func (g *Gateway) gateAnthropicSSEStream(ctx context.Context, resp *http.Response, fc *toolgate.FollowupConfig) *toolgate.SSEOutcome {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
@@ -207,7 +217,7 @@ func (g *Gateway) gateAnthropicSSEStream(resp *http.Response) *toolgate.SSEOutco
 	out := &toolgate.SSEOutcome{}
 	pr, pw := io.Pipe()
 	go func() {
-		err := toolgate.GateAnthropicSSE(g.toolgateRules, g.toolgate, rdr, pw, out)
+		err := toolgate.GateAnthropicSSE(ctx, g.toolgateRules, g.toolgate, rdr, pw, out, fc)
 		_ = src.Close()
 		if err != nil {
 			log.Printf("toolgate sse: %v", err)
@@ -227,4 +237,93 @@ func (g *Gateway) gateAnthropicSSEStream(resp *http.Response) *toolgate.SSEOutco
 		resp.TransferEncoding = []string{"chunked"}
 	}
 	return out
+}
+
+// loadToolgateApprovalURL reads the base URL the agent's polling tool
+// should target, from CLAWPATROL_TOOLGATE_APPROVAL_URL. The follow-up
+// model is told to POST to <base>/api/approval/poll. Empty falls back to
+// toolgate.DefaultApprovalBaseURL — a placeholder that must be overridden
+// for the polling call to actually connect to clawpatrol from the agent's
+// network.
+func loadToolgateApprovalURL() string {
+	return strings.TrimRight(os.Getenv("CLAWPATROL_TOOLGATE_APPROVAL_URL"), "/")
+}
+
+// newToolgateFollowup builds the per-request FollowupConfig for the
+// gateway-initiated HITL "LLM picks the polling tool" dance. reqBody is
+// the agent's full original /v1/messages body (nil when it couldn't be
+// buffered — the follow-up then no-ops and HITL degrades to a text
+// block). The caller reuses req's already-injected credentials and the
+// same upstream transport to round-trip clawpatrol's own LLM call.
+func (g *Gateway) newToolgateFollowup(req *http.Request, transport *http.Transport, profile string, reqBody []byte) *toolgate.FollowupConfig {
+	return &toolgate.FollowupConfig{
+		ReqBody:     reqBody,
+		ApprovalURL: g.toolgateApprovalURL,
+		Caller:      g.newToolgateLLMCaller(req, transport, profile),
+	}
+}
+
+// newToolgateLLMCaller returns a toolgate.LLMCaller bound to this
+// request's credential-injected template and the upstream transport. The
+// follow-up clones req (which already carries the injected Anthropic auth
+// header — header injection, not body signing, so swapping the body is
+// safe), replaces the body with the rebuilt conversation, forces a
+// non-streaming JSON response, and round-trips it upstream. The follow-up
+// never re-enters the MITM handler, so it is not itself re-gated.
+func (g *Gateway) newToolgateLLMCaller(req *http.Request, transport *http.Transport, profile string) toolgate.LLMCaller {
+	return func(ctx context.Context, body []byte) ([]byte, error) {
+		fr := req.Clone(context.WithValue(ctx, profileCtxKey{}, profile))
+		fr.Body = io.NopCloser(bytes.NewReader(body))
+		fr.ContentLength = int64(len(body))
+		fr.Header.Set("Content-Type", "application/json")
+		fr.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		// Ask for identity encoding so the JSON is readable without a
+		// gunzip step; we still handle gzip below in case upstream ignores
+		// it.
+		fr.Header.Set("Accept-Encoding", "identity")
+		fr.Header.Del("Content-Encoding")
+
+		resp, err := transport.RoundTrip(fr)
+		if err != nil {
+			return nil, fmt.Errorf("toolgate follow-up roundtrip: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		rb, err := io.ReadAll(http.MaxBytesReader(nil, resp.Body, maxToolgateReqBody))
+		if err != nil {
+			return nil, fmt.Errorf("toolgate follow-up read: %w", err)
+		}
+		if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+			if zr, zerr := gzip.NewReader(bytes.NewReader(rb)); zerr == nil {
+				if d, derr := io.ReadAll(zr); derr == nil {
+					rb = d
+				}
+				_ = zr.Close()
+			}
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("toolgate follow-up upstream status %d", resp.StatusCode)
+		}
+		return rb, nil
+	}
+}
+
+// bufferFullHTTPBody reads up to cap bytes of req.Body, re-attaches what
+// it read in front of the remaining stream so the upstream forward stays
+// byte-exact, and returns the buffered bytes. It returns nil when the
+// body is absent, unreadable, or larger than cap (a too-large body
+// disables the toolgate follow-up for that turn rather than feeding it a
+// truncated, unparseable JSON request).
+func bufferFullHTTPBody(req *http.Request, limit int64) []byte {
+	if req.Body == nil {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(req.Body, limit+1))
+	if err != nil {
+		return nil
+	}
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	if int64(len(b)) > limit {
+		return nil
+	}
+	return b
 }

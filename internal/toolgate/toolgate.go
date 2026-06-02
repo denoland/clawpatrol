@@ -11,14 +11,14 @@
 //     (Synthesising a tool_result the model reads next turn is the
 //     alternative design — see design note #5 in the PR and
 //     doc/tool-call-gating.md — deferred to v2.)
-//   - hitl (human-in-the-loop): the tool_use is replaced with a
-//     polling tool_use that asks the agent to long-poll clawpatrol
-//     for the verdict. A pending entry, keyed by an opaque token,
-//     is stored in the gateway. Once the human approves or denies
-//     in the dashboard, the polling endpoint wakes up and returns
-//     the verdict to the agent. The original tool call's args are
-//     either released to the agent (approve) or substituted with a
-//     deny tool_result (deny) via the model's next turn.
+//   - hitl (human-in-the-loop): the tool_use is parked under an opaque
+//     token, then the gateway runs a follow-up LLM call so the model
+//     picks a polling tool from the agent's *own* advertised tools (the
+//     agent can't dispatch a tool clawpatrol invents). That choice is
+//     forwarded to the agent, which executes it to long-poll clawpatrol
+//     for the verdict. Once the human approves or denies in the
+//     dashboard, the polling endpoint wakes up and returns the verdict.
+//     See followup.go for the gateway-initiated-LLM-choice dance.
 //
 // This is a draft: Anthropic /v1/messages only. Both response shapes
 // are handled — buffered JSON (GateAnthropicResponse) and streaming SSE

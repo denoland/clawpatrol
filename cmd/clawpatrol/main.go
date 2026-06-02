@@ -403,6 +403,11 @@ type Gateway struct {
 	// store. The webMux wrappers dispatch to it rather than rebuilding
 	// a fresh ServeMux per request. nil when toolgate is nil.
 	toolgateAPI http.Handler
+	// toolgateApprovalURL is the base URL the gateway-initiated HITL
+	// follow-up tells the model to poll (<base>/api/approval/poll). Loaded
+	// from CLAWPATROL_TOOLGATE_APPROVAL_URL; empty uses the package
+	// placeholder default.
+	toolgateApprovalURL string
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -2443,7 +2448,24 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
-		if trackKind != "" {
+		// toolgateReqBody holds the COMPLETE original /v1/messages body for
+		// the gateway-initiated HITL follow-up (the conversation has to be
+		// re-serialised as valid JSON, which the 1MB match cap can't
+		// guarantee). Only buffered when toolgate could actually fire on
+		// this host+path+ruleset; nil otherwise (and on over-cap bodies),
+		// which makes the follow-up no-op into the text-block fallback.
+		var toolgateReqBody []byte
+		toolgatePossible := g.toolgate != nil && len(g.toolgateRules) > 0 &&
+			trackKind == "claude_usage" && req.URL.Path == "/v1/messages"
+		switch {
+		case toolgatePossible:
+			toolgateReqBody = bufferFullHTTPBody(req, maxToolgateReqBody)
+			if len(toolgateReqBody) > maxHTTPMatchBody {
+				trackedReqBody = toolgateReqBody[:maxHTTPMatchBody]
+			} else {
+				trackedReqBody = toolgateReqBody
+			}
+		case trackKind != "":
 			trackedReqBody = bufferHTTPBodyForMatch(req)
 		}
 		// Pre-create session from the request body so streaming SSE
@@ -2532,12 +2554,14 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		case toolgateEligible &&
 			strings.Contains(respCT, "json") &&
 			!strings.Contains(respCT, "event-stream"):
-			if rewritten, ok := g.gateAnthropicResponse(resp, &ev); ok {
+			fc := g.newToolgateFollowup(req, transport, profile, toolgateReqBody)
+			if rewritten, ok := g.gateAnthropicResponse(req.Context(), resp, &ev, fc); ok {
 				resp = rewritten
 			}
 		case toolgateEligible &&
 			strings.Contains(respCT, "event-stream"):
-			sseOutcome = g.gateAnthropicSSEStream(resp)
+			fc := g.newToolgateFollowup(req, transport, profile, toolgateReqBody)
+			sseOutcome = g.gateAnthropicSSEStream(req.Context(), resp, fc)
 		}
 
 		// Snapshot the upstream's response headers for the audit log
@@ -2999,7 +3023,8 @@ func runGateway(args []string) {
 		// lands; for now operators experimenting with the prototype
 		// can seed rules via CLAWPATROL_TOOLGATE_RULES (see
 		// loadToolgateRulesFromEnv below).
-		toolgateRules: loadToolgateRulesFromEnv(),
+		toolgateRules:       loadToolgateRulesFromEnv(),
+		toolgateApprovalURL: loadToolgateApprovalURL(),
 	}
 	// Build the approval-endpoint handler once; the webMux wrappers
 	// reuse it instead of constructing a fresh ServeMux per request.
