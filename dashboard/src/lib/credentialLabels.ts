@@ -16,6 +16,7 @@ export const CREDENTIAL_TYPE_LABEL: Record<string, string> = {
   header_token: "Header token",
   cookie_token: "Cookie token",
   tailscale: "Tailscale",
+  passthrough: "Passthrough",
 };
 
 export function credentialTypeLabel(type: string, fallback: string): string {
@@ -61,6 +62,7 @@ const CREDENTIAL_TYPE_CATEGORY: Record<string, CredentialCategory> = {
   bearer_token: "generic",
   header_token: "generic",
   cookie_token: "generic",
+  passthrough: "generic",
 };
 
 export function credentialCategory(type: string): CredentialCategory {

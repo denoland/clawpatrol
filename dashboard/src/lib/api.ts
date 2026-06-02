@@ -63,6 +63,10 @@ export type Integration = {
   avatar_url?: string;
   has_tailscale_auth?: boolean;
   tailscale_auth?: TailscaleAuthStatusUI | null;
+  // True for the `passthrough` credential type, which injects nothing
+  // at request time. The card renders a "no injection" indicator and
+  // offers no connect flow — there's nothing to connect.
+  passthrough?: boolean;
   // Profiles routing requests through any endpoint that binds this
   // credential (directly or via a tunnel). Sorted by name.
   profiles?: string[];

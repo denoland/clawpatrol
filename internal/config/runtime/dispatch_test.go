@@ -1216,6 +1216,96 @@ profile "platform" { credentials = [postgres_credential.pg-writer] }
 	}
 }
 
+// TestResolveCredentialPassthrough: a `passthrough` credential bound
+// to an endpoint and claimed by a profile resolves through the normal
+// credential→endpoint→profile path — and its body satisfies NONE of
+// the request-time injection interfaces, so the gateway forwards the
+// request verbatim (no header, no signature, no WS rewrite) while the
+// profile's policy rules still run. cl-snuf.
+func TestResolveCredentialPassthrough(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "public" {
+  hosts = ["status.example.com"]
+}
+credential "passthrough" "public_pass" { endpoint = https.public }
+profile "default" { credentials = [passthrough.public_pass] }
+`)
+	ep := cp.Endpoints["public"]
+	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "http", Headers: http.Header{}})
+	if got == nil || got.Credential.Symbol.Name != "public_pass" {
+		t.Fatalf("passthrough resolution: got %+v, want public_pass", got)
+	}
+	// The point of the type: it injects nothing. Mirror the gateway's
+	// dispatch type-asserts (main.go) — none must hold, or injection
+	// would fire.
+	body := got.Credential.Body
+	if _, ok := body.(runtime.HTTPCredentialRuntime); ok {
+		t.Errorf("passthrough body satisfies HTTPCredentialRuntime — would stamp auth")
+	}
+	if _, ok := body.(runtime.HTTPRequestSigner); ok {
+		t.Errorf("passthrough body satisfies HTTPRequestSigner — would sign")
+	}
+	if _, ok := body.(runtime.WebSocketCredentialRuntime); ok {
+		t.Errorf("passthrough body satisfies WebSocketCredentialRuntime — would rewrite WS frames")
+	}
+	// It carries the marker the dashboard reads to flag "no injection".
+	if _, ok := body.(config.NonInjectingCredential); !ok {
+		t.Errorf("passthrough body missing config.NonInjectingCredential marker")
+	}
+}
+
+// TestResolveCredentialPassthroughIsolatesProfilesSharingEndpoint:
+// the cl-lgwg sibling-leak guard, applied to passthrough credentials.
+// Two profiles each bind their own passthrough credential to a shared
+// endpoint; neither profile may resolve the other's credential.
+func TestResolveCredentialPassthroughIsolatesProfilesSharingEndpoint(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "shared" {
+  hosts = ["shared.example.com"]
+}
+credential "passthrough" "pass-a" { endpoint = https.shared }
+credential "passthrough" "pass-b" { endpoint = https.shared }
+profile "a" { credentials = [passthrough.pass-a] }
+profile "b" { credentials = [passthrough.pass-b] }
+`)
+	ep := cp.Endpoints["shared"]
+	mkReq := func() *match.Request { return &match.Request{Family: "http", Headers: http.Header{}} }
+
+	got := runtime.ResolveCredential(cp, "a", ep, mkReq())
+	if got == nil || got.Credential.Symbol.Name != "pass-a" {
+		t.Errorf("profile a → %+v, want pass-a", got)
+	}
+	if got != nil && got.Credential.Symbol.Name == "pass-b" {
+		t.Errorf("profile a leaked sibling pass-b: %+v", got)
+	}
+	got = runtime.ResolveCredential(cp, "b", ep, mkReq())
+	if got == nil || got.Credential.Symbol.Name != "pass-b" {
+		t.Errorf("profile b → %+v, want pass-b", got)
+	}
+	if got != nil && got.Credential.Symbol.Name == "pass-a" {
+		t.Errorf("profile b leaked sibling pass-a: %+v", got)
+	}
+}
+
+// TestPassthroughCredentialRejectsAttributes pins the bead's
+// "carries no auth-bearing fields" rule: a passthrough body is an
+// empty struct, so gohcl rejects ANY attribute at decode time. No
+// per-plugin Validate is needed — the type system enforces it.
+func TestPassthroughCredentialRejectsAttributes(t *testing.T) {
+	src := testGatewayPrefix + `
+endpoint "https" "public" { hosts = ["status.example.com"] }
+credential "passthrough" "bad" {
+  endpoint = https.public
+  token    = "should-not-be-allowed"
+}
+profile "default" { credentials = [passthrough.bad] }
+`
+	_, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if !diags.HasErrors() {
+		t.Fatalf("passthrough credential with a `token` attr should be rejected at decode; got no errors")
+	}
+}
+
 // containsAll returns true iff s contains every needle.
 func containsAll(s string, needles ...string) bool {
 	for _, n := range needles {

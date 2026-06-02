@@ -26,3 +26,20 @@ type SecretSlot struct {
 type SecretSlotsProvider interface {
 	SecretSlots() []SecretSlot
 }
+
+// NonInjectingCredential is the optional marker a credential plugin's
+// decoded body implements to declare it injects nothing at request
+// time — the `passthrough` type. Such a credential exists only to
+// give the operator a handle that profiles can claim and bind to
+// endpoints, so the existing credential→endpoint→profile claim path
+// works for endpoints that simply don't need auth injection.
+//
+// The request-time injection path already skips these for free: their
+// body satisfies none of the runtime injection interfaces
+// (HTTPCredentialRuntime / HTTPRequestSigner / WebSocketCredentialRuntime
+// / PostgresCredentialRuntime / …), so the gateway forwards the request
+// verbatim. This marker exists purely so the dashboard can surface a
+// "no injection" indicator without importing the plugin package.
+type NonInjectingCredential interface {
+	IsPassthrough() bool
+}

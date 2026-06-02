@@ -581,6 +581,12 @@ type IntegrationRow struct {
 	HasTailscaleAuth bool                   `json:"has_tailscale_auth,omitempty"`
 	TailscaleAuth    *TailscaleAuthStatusUI `json:"tailscale_auth,omitempty"`
 
+	// Passthrough is true for credentials whose type injects nothing at
+	// request time (the `passthrough` type). They exist only as a
+	// claimable handle for credential-less endpoints; the dashboard
+	// renders a "no injection" indicator and offers no connect flow.
+	Passthrough bool `json:"passthrough,omitempty"`
+
 	// Profiles is the sorted list of profile names that route any
 	// endpoint or tunnel binding this credential. Empty when the
 	// credential is declared but no profile references it.
@@ -708,6 +714,9 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 				StatusURL:     "/api/tailscale/status?id=" + name,
 				DisconnectURL: "/api/tailscale/disconnect?id=" + name,
 			}
+		}
+		if _, ok := ent.Body.(config.NonInjectingCredential); ok {
+			row.Passthrough = true
 		}
 		row.Profiles, row.Endpoints = credentialBindings(policy, name)
 		row.Config = credentialConfig(ent, name)

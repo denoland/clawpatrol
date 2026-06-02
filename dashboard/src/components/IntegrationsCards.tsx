@@ -239,6 +239,11 @@ function Card({
 }) {
   const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
+  // Passthrough credentials inject nothing and have no connect flow —
+  // they're operational the moment they're declared. They carry no
+  // OAuth / slots / tailscale auth, so `clickable` is already false;
+  // the flag drives the neutral status dot and "no injection" label.
+  const passthrough = i.passthrough ?? false;
   const clickable = i.has_oauth || hasSlots || (i.has_tailscale_auth && !connected);
   // Tailscale identities can persist while the live node is *not*
   // running (rejected machine key, expired auth, etc.) — the gateway
@@ -247,17 +252,19 @@ function Card({
   // recover from a stuck registration.
   const canReset = i.has_tailscale_auth && (i.tailscale_auth?.has_state ?? false);
   const showDisconnect = connected || canReset;
-  const status = connected
-    ? i.expires_at
-      ? "expires " + fmtExpiry(i.expires_at)
-      : "connected"
-    : i.has_tailscale_auth
-      ? tailscaleStatusLabel(i.tailscale_auth?.state)
-      : i.has_oauth
-        ? "click to connect"
-        : hasSlots
-          ? "paste secret"
-          : "api key only";
+  const status = passthrough
+    ? "no injection"
+    : connected
+      ? i.expires_at
+        ? "expires " + fmtExpiry(i.expires_at)
+        : "connected"
+      : i.has_tailscale_auth
+        ? tailscaleStatusLabel(i.tailscale_auth?.state)
+        : i.has_oauth
+          ? "click to connect"
+          : hasSlots
+            ? "paste secret"
+            : "api key only";
   // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
   // raw HCL type key for unrecognised plugins.
   const label = credentialTypeLabel(i.type, i.type);
@@ -302,8 +309,10 @@ function Card({
           )}
           <span
             className={
-              "w-[9px] h-[9px] rounded-full " + (connected ? "bg-success-500" : "bg-danger-500")
+              "w-[9px] h-[9px] rounded-full " +
+              (passthrough ? "bg-text-subtle" : connected ? "bg-success-500" : "bg-danger-500")
             }
+            title={passthrough ? "passthrough — injects nothing" : undefined}
           />
         </span>
       </div>
