@@ -49,6 +49,8 @@ import (
 // until a human decides.
 type Verdict string
 
+// The three verdicts a rule can carry. See the Verdict type doc for
+// what each one does to the tool_use block.
 const (
 	VerdictAllow Verdict = "allow"
 	VerdictDeny  Verdict = "deny"

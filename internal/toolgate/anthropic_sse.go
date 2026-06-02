@@ -238,25 +238,29 @@ func GateAnthropicSSE(rules RuleSet, store *Store, src io.Reader, dst io.Writer,
 				}
 				return flushBlock(raw)
 			case "content_block_delta":
-				if hdr.Index == blk.index {
+				// Once errored, skip parsing — the block is already doomed to
+				// be blocked at stop, and bufferHeld is a no-op while errored.
+				if hdr.Index == blk.index && !blk.errored {
 					var ev struct {
 						Delta struct {
 							Type        string `json:"type"`
 							PartialJSON string `json:"partial_json"`
 						} `json:"delta"`
 					}
-					if err := json.Unmarshal(data, &ev); err != nil {
+					if json.Unmarshal(data, &ev) != nil {
+						// Malformed delta on a held block: we can no longer
+						// faithfully reconstruct the input. Mark errored and
+						// let the stop handler fail it closed (the swallowed
+						// parse error is deliberate — the block is blocked,
+						// not forwarded).
 						blk.errored = true
-						return nil
-					}
-					if ev.Delta.Type == "input_json_delta" {
+					} else if ev.Delta.Type == "input_json_delta" {
 						blk.input.WriteString(ev.Delta.PartialJSON)
 						if blk.input.Len() > maxToolInputBytes {
 							// Oversized: stop accumulating, drop replay frames
 							// to bound memory, fail closed at stop.
 							blk.errored = true
 							blk.heldRaw = nil
-							return nil
 						}
 					}
 				}

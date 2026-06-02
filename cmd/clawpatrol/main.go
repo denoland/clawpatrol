@@ -2537,7 +2537,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			}
 		case toolgateEligible &&
 			strings.Contains(respCT, "event-stream"):
-			sseOutcome = g.gateAnthropicSSEStream(resp, &ev)
+			sseOutcome = g.gateAnthropicSSEStream(resp)
 		}
 
 		// Snapshot the upstream's response headers for the audit log

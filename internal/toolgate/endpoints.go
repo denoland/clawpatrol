@@ -159,7 +159,7 @@ func (s *Store) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	fmt.Fprintf(w, "event: pending\ndata: {\"token\":%q}\n\n", token)
+	_, _ = fmt.Fprintf(w, "event: pending\ndata: {\"token\":%q}\n\n", token)
 	flusher.Flush()
 
 	select {
@@ -173,7 +173,7 @@ func (s *Store) handleSSE(w http.ResponseWriter, r *http.Request) {
 		Token: token,
 		By:    pc.By(),
 	})
-	fmt.Fprintf(w, "event: verdict\ndata: %s\n\n", payload)
+	_, _ = fmt.Fprintf(w, "event: verdict\ndata: %s\n\n", payload)
 	flusher.Flush()
 }
 
@@ -187,7 +187,7 @@ func (s *Store) handleSSE(w http.ResponseWriter, r *http.Request) {
 //
 // TODO(v2): proper websocket handler. nhooyr.io/websocket or
 // gorilla, depending on which the gateway already vendors.
-func (s *Store) handleWS(w http.ResponseWriter, r *http.Request) {
+func (s *Store) handleWS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotImplemented)
 	_, _ = fmt.Fprintf(w, `{"error":"ws not implemented in draft","fallback":"/api/approval/poll"}`)

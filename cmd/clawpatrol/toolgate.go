@@ -178,7 +178,7 @@ func (g *Gateway) gateAnthropicResponse(resp *http.Response, ev *Event) (*http.R
 // response rather than leaking the raw tool call. This is the explicit
 // contract for the streaming path (the JSON path above still fails open
 // on parse errors — see GateAnthropicResponse).
-func (g *Gateway) gateAnthropicSSEStream(resp *http.Response, ev *Event) *toolgate.SSEOutcome {
+func (g *Gateway) gateAnthropicSSEStream(resp *http.Response) *toolgate.SSEOutcome {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
