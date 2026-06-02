@@ -576,7 +576,30 @@ function parseSSE(text: string): SseEvent[] | null {
   return events.length > 0 ? events : null;
 }
 
+// BODY_SAMPLE_TRUNCATED_MARKER mirrors the bodySampleTruncatedMarker
+// constant the gateway appends to a persisted body preview when the
+// body ran past the actions-table cap (cmd/clawpatrol/web.go). The two
+// MUST stay in sync. We strip it before rendering so JSON/SSE parsing
+// still works on the prefix, and surface a dedicated "truncated" badge
+// instead of leaking the marker into the rendered body.
+const BODY_SAMPLE_TRUNCATED_MARKER = "\n…[truncated]";
+
 function HttpBody({ text }: { text: string }) {
+  const capTruncated = text.endsWith(BODY_SAMPLE_TRUNCATED_MARKER);
+  const body = capTruncated ? text.slice(0, -BODY_SAMPLE_TRUNCATED_MARKER.length) : text;
+  return (
+    <>
+      <HttpBodyContent text={body} />
+      {capTruncated && (
+        <div className="border-t-1.5 border-navy px-4 py-2 text-2xs text-text-subtle">
+          body truncated to the gateway audit cap — only the first part is stored
+        </div>
+      )}
+    </>
+  );
+}
+
+function HttpBodyContent({ text }: { text: string }) {
   if (!text) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
   const result = tryParseJSON(text);
   if (result) {

@@ -2433,6 +2433,14 @@ func (s *sampler) sha() string {
 	return hex.EncodeToString(s.hash.Sum(nil))
 }
 
+// truncated reports whether the body ran past the sampler cap, i.e. the
+// stored preview is only a prefix of what crossed the wire. Total bytes
+// (s.n) are counted in Write regardless of the cap, so a simple
+// comparison against the cap is authoritative.
+func (s *sampler) truncated() bool {
+	return s.n > int64(s.cap)
+}
+
 // sample returns the audit-log preview of the captured body. When
 // encoding names a compression we know how to decode (gzip, br,
 // deflate, zstd), the buffered prefix is decompressed first so a
@@ -2444,11 +2452,27 @@ func (s *sampler) sample(encoding string) string {
 	}
 	raw := s.buf.Bytes()
 	body := maybeDecode(raw, encoding)
+	var out string
 	if isPrintable(body) {
-		return string(body)
+		out = string(body)
+	} else {
+		out = "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 	}
-	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
+	// Append a visible marker when the body ran past the actions-table
+	// cap so the audit log (and the dashboard) doesn't present a prefix
+	// as the whole body. The dashboard strips this exact suffix and
+	// renders a "truncated" badge instead — keep the two in sync
+	// (BODY_SAMPLE_TRUNCATED_MARKER in RequestDetailPage.tsx).
+	if s.truncated() {
+		out += bodySampleTruncatedMarker
+	}
+	return out
 }
+
+// bodySampleTruncatedMarker is appended to a persisted body preview
+// when the body exceeded the actions-table cap. Mirrored verbatim by
+// the dashboard so it can detect, strip, and badge the truncation.
+const bodySampleTruncatedMarker = "\n…[truncated]"
 
 const (
 	decodedSampleCap             = 4096

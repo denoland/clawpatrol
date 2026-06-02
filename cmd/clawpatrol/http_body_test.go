@@ -8,6 +8,12 @@ import (
 	"testing"
 )
 
+// maxHTTPMatchBody is the rules-engine buffer cap these tests exercise
+// the buffering against. It mirrors config.DefaultRulesEngineBodyCap
+// (1 MiB) — the value the gateway passes when no body_caps override is
+// set — kept local so the buffering tests stay self-contained.
+const maxHTTPMatchBody = 1 << 20
+
 func TestBufferHTTPBodyForMatchPreservesUpstreamForwardingBody(t *testing.T) {
 	const body = `{"prompt":"please forward me"}`
 	var upstreamBody string
@@ -28,7 +34,7 @@ func TestBufferHTTPBodyForMatchPreservesUpstreamForwardingBody(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if string(matchBody) != body {
 		t.Fatalf("match body = %q, want %q", matchBody, body)
 	}
@@ -72,7 +78,7 @@ func TestBufferHTTPBodyForMatchKeepsFullLargeForwardingBody(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if len(matchBody) != maxHTTPMatchBody {
 		t.Fatalf("match body len = %d, want %d", len(matchBody), maxHTTPMatchBody)
 	}
@@ -125,7 +131,7 @@ func TestBufferHTTPBodyForMatchTruncatedFlagsOverflow(t *testing.T) {
 				t.Fatalf("new request: %v", err)
 			}
 
-			match, truncated := bufferHTTPBodyForMatchTruncated(req)
+			match, truncated := bufferHTTPBodyForMatchTruncated(req, maxHTTPMatchBody)
 			if truncated != tc.wantTruncated {
 				t.Errorf("truncated = %v, want %v", truncated, tc.wantTruncated)
 			}
@@ -146,6 +152,44 @@ func TestBufferHTTPBodyForMatchTruncatedFlagsOverflow(t *testing.T) {
 				t.Errorf("upstream got %d bytes, want %d (truncation must not drop bytes from the forwarded body)", upstreamLen, tc.bodyLen)
 			}
 		})
+	}
+}
+
+// TestBufferHTTPBodyForMatchHonorsCustomCap confirms the cap is the
+// caller-supplied value (the resolved gateway.body_caps.rules_engine),
+// not a fixed constant: a small cap truncates the matcher's view while
+// the upstream forward still receives every byte.
+func TestBufferHTTPBodyForMatchHonorsCustomCap(t *testing.T) {
+	const cap = 16
+	body := strings.Repeat("z", cap*4)
+	var upstreamLen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamLen = len(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	req, err := http.NewRequest("POST", upstream.URL+"/cap", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	match, truncated := bufferHTTPBodyForMatchTruncated(req, cap)
+	if !truncated {
+		t.Errorf("truncated = false, want true (body %d > cap %d)", len(body), cap)
+	}
+	if len(match) != cap {
+		t.Errorf("match len = %d, want %d", len(match), cap)
+	}
+
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	_ = resp.Body.Close()
+	if upstreamLen != len(body) {
+		t.Errorf("upstream got %d bytes, want %d (custom cap must not drop forwarded bytes)", upstreamLen, len(body))
 	}
 }
 
@@ -170,7 +214,7 @@ func TestBufferHTTPBodyForMatchStreamsUnknownLengthRemainder(t *testing.T) {
 	}
 	req.ContentLength = -1
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if len(matchBody) != maxHTTPMatchBody {
 		t.Fatalf("match body len = %d, want %d", len(matchBody), maxHTTPMatchBody)
 	}

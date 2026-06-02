@@ -33,6 +33,24 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 | `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
+### Nested block `gateway.body_caps {}`
+
+Gateway-wide caps on how much request/response body the gateway keeps, expressed as human-readable binary size strings (`512B`, `256KiB`, `1MiB`, `2GiB`; a bare number is bytes). The two caps are independent because their concerns differ. Omitting the block — or either field — keeps the historical hardcoded defaults, so existing configs are unaffected. A value smaller on `rules_engine` than `actions_table` is allowed but emits a load-time warning.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `rules_engine` | `size` | no | How much of a request body is buffered before it is handed to the rules engine (every body-bearing request, hot path). Default `1MiB` (1048576 bytes). |
+| `actions_table` | `size` | no | How much of each request/response body is persisted in the actions audit table (cold storage, per action). Bodies longer than this are stored truncated, with a marker the dashboard renders so a prefix is never mistaken for the whole body. Default `4KiB` (4096 bytes). |
+
+```hcl
+gateway {
+  body_caps {
+    rules_engine  = "1MiB"
+    actions_table = "4KiB"
+  }
+}
+```
+
 ## `profile "<name>" { ... }`
 
 Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.

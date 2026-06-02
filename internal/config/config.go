@@ -177,6 +177,12 @@ type GatewaySettings struct {
 	// time.ParseDuration format.
 	SessionKeep string `hcl:"session_keep,optional"`
 
+	// BodyCaps, if present, overrides the gateway-wide caps on how much
+	// request/response body is buffered for the rules engine and
+	// persisted in the actions table. Omitting the block (or either
+	// field) keeps the historical hardcoded defaults — see BodyCaps.
+	BodyCaps *BodyCaps `hcl:"body_caps,block"`
+
 	// WireGuard, if present, enables the embedded userspace WireGuard
 	// server. Required block when running WG-mode deployments.
 	WireGuard *WireGuardBlock `hcl:"wireguard,block"`
@@ -957,6 +963,58 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 				Detail:   fmt.Sprintf("dashboard_session_ttl = %q: %v. Use a time.ParseDuration string like \"24h\" or \"30m\".", gw.Settings.DashboardSessionTTL, err),
 			})
 		}
+	}
+
+	diags = append(diags, validateBodyCaps(gw.Settings.BodyCaps)...)
+
+	return diags
+}
+
+// validateBodyCaps surfaces malformed `gateway.body_caps` size strings
+// as load errors, and emits a soft warning when the rules-engine cap is
+// smaller than the actions-table cap. The inverse is allowed on
+// purpose: a deployment may legitimately log more body than it
+// rule-matches, so it is a warning, not a rejection.
+func validateBodyCaps(bc *BodyCaps) hcl.Diagnostics {
+	if bc == nil {
+		return nil
+	}
+	var diags hcl.Diagnostics
+
+	rules := DefaultRulesEngineBodyCap
+	if bc.RulesEngine != "" {
+		n, err := ParseSize(bc.RulesEngine)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid body_caps.rules_engine",
+				Detail:   fmt.Sprintf("rules_engine = %q: %v. Use a binary size string like \"256KiB\" or \"1MiB\".", bc.RulesEngine, err),
+			})
+		} else {
+			rules = n
+		}
+	}
+
+	actions := DefaultActionsTableBodyCap
+	if bc.ActionsTable != "" {
+		n, err := ParseSize(bc.ActionsTable)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid body_caps.actions_table",
+				Detail:   fmt.Sprintf("actions_table = %q: %v. Use a binary size string like \"64KiB\" or \"1MiB\".", bc.ActionsTable, err),
+			})
+		} else {
+			actions = n
+		}
+	}
+
+	if !diags.HasErrors() && rules < actions {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "body_caps.rules_engine smaller than actions_table",
+			Detail:   fmt.Sprintf("rules_engine (%d bytes) is smaller than actions_table (%d bytes): the audit log will store more body than the rules engine ever sees. This is allowed, but usually the rules-engine cap should be the larger of the two.", rules, actions),
+		})
 	}
 
 	return diags

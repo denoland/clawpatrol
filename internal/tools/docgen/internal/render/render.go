@@ -148,6 +148,21 @@ func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level blocks\n\n")
 	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
+	r.writeBodyCaps()
+}
+
+// writeBodyCaps documents the optional `gateway.body_caps { ... }`
+// sub-block. It is rendered by hand (not via reflection over the
+// gateway block, which the generator otherwise leaves to dedicated
+// sections) so the two size fields get explicit units and defaults.
+func (r *renderer) writeBodyCaps() {
+	fmt.Fprintf(&r.out, "### Nested block `gateway.body_caps {}`\n\n")
+	r.out.WriteString("Gateway-wide caps on how much request/response body the gateway keeps, expressed as human-readable binary size strings (`512B`, `256KiB`, `1MiB`, `2GiB`; a bare number is bytes). The two caps are independent because their concerns differ. Omitting the block — or either field — keeps the historical hardcoded defaults, so existing configs are unaffected. A value smaller on `rules_engine` than `actions_table` is allowed but emits a load-time warning.\n\n")
+	r.out.WriteString("| Attribute | Type | Required | Description |\n")
+	r.out.WriteString("|-----------|------|----------|-------------|\n")
+	fmt.Fprintf(&r.out, "| `rules_engine` | `size` | no | How much of a request body is buffered before it is handed to the rules engine (every body-bearing request, hot path). Default `1MiB` (%d bytes). |\n", config.DefaultRulesEngineBodyCap)
+	fmt.Fprintf(&r.out, "| `actions_table` | `size` | no | How much of each request/response body is persisted in the actions audit table (cold storage, per action). Bodies longer than this are stored truncated, with a marker the dashboard renders so a prefix is never mistaken for the whole body. Default `4KiB` (%d bytes). |\n\n", config.DefaultActionsTableBodyCap)
+	r.out.WriteString("```hcl\ngateway {\n  body_caps {\n    rules_engine  = \"1MiB\"\n    actions_table = \"4KiB\"\n  }\n}\n```\n\n")
 }
 
 // writeProfile documents the `profile "<name>" {}` block. The body
