@@ -18,7 +18,7 @@ func newCVTestDB(t *testing.T) *sql.DB {
 
 func TestRecordConfigVersionDedup(t *testing.T) {
 	db := newCVTestDB(t)
-	rev1, inserted, err := recordConfigVersion(db, []byte("gateway {}\n"), 1, "alice", "first")
+	rev1, inserted, err := recordConfigVersion(db, []byte("gateway {}\n"), 1)
 	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestRecordConfigVersionDedup(t *testing.T) {
 		t.Fatal("first record should insert")
 	}
 	// Same bytes → no new row.
-	rev2, inserted, err := recordConfigVersion(db, []byte("gateway {}\n"), 1, "bob", "dup")
+	rev2, inserted, err := recordConfigVersion(db, []byte("gateway {}\n"), 1)
 	if err != nil {
 		t.Fatalf("record dup: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestRecordConfigVersionDedup(t *testing.T) {
 		t.Fatalf("same bytes → same revision, got %s vs %s", rev1, rev2)
 	}
 	// Different bytes → new row.
-	if _, inserted, _ := recordConfigVersion(db, []byte("gateway {}\n# changed\n"), 1, "alice", "second"); !inserted {
+	if _, inserted, _ := recordConfigVersion(db, []byte("gateway {}\n# changed\n"), 1); !inserted {
 		t.Fatal("changed bytes must insert")
 	}
 	versions, err := listConfigVersions(db, 0)
@@ -47,9 +47,9 @@ func TestRecordConfigVersionDedup(t *testing.T) {
 	if len(versions) != 2 {
 		t.Fatalf("want 2 versions, got %d", len(versions))
 	}
-	// Newest first.
-	if versions[0].Note != "second" {
-		t.Fatalf("want newest-first ordering, got note %q", versions[0].Note)
+	// Newest first (highest serial).
+	if versions[0].ID <= versions[1].ID {
+		t.Fatalf("want newest-first ordering, got ids %d, %d", versions[0].ID, versions[1].ID)
 	}
 }
 

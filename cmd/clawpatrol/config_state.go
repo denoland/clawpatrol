@@ -126,16 +126,16 @@ func forceUnlockConfigLock(db *sql.DB) (bool, error) {
 // rejects a stale apply (one whose plan was computed against a serial
 // another writer has since superseded). ok is false on a CAS miss;
 // serial is the new row's id on success.
-func recordConfigVersionCAS(db *sql.DB, content []byte, schemaVersion int, appliedBy, note string, expectedSerial int64) (revision string, serial int64, ok bool, err error) {
+func recordConfigVersionCAS(db *sql.DB, content []byte, schemaVersion int, expectedSerial int64) (revision string, serial int64, ok bool, err error) {
 	if db == nil {
 		return "", 0, false, fmt.Errorf("no db")
 	}
 	revision = revisionForBytes(content)
 	res, err := db.Exec(
-		`INSERT INTO config_versions (revision, schema_version, content, applied_by, note, applied_ns)
-		 SELECT ?, ?, ?, ?, ?, ?
+		`INSERT INTO config_versions (revision, schema_version, content, applied_ns)
+		 SELECT ?, ?, ?, ?
 		  WHERE (SELECT COALESCE(MAX(id), 0) FROM config_versions) = ?`,
-		revision, schemaVersion, content, appliedBy, note, time.Now().UnixNano(), expectedSerial,
+		revision, schemaVersion, content, time.Now().UnixNano(), expectedSerial,
 	)
 	if err != nil {
 		return "", 0, false, err

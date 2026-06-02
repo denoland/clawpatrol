@@ -635,7 +635,7 @@ func resolveBackendConfig(db *sql.DB, cfgPath string, fileCfg *config.Gateway, f
 		log.Printf("config backend: not seeding (%v); running file config", err)
 		return fileCfg, filePolicy, 0
 	}
-	if _, _, serr := recordConfigVersion(db, raw, fileCfg.SchemaVersion, "boot", ""); serr != nil {
+	if _, _, serr := recordConfigVersion(db, raw, fileCfg.SchemaVersion); serr != nil {
 		log.Printf("config backend: seed: %v", serr)
 	}
 	content, serial, ok, err := activeConfig(db)

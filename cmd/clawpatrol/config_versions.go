@@ -1,8 +1,10 @@
 package main
 
-// Persistence for the gateway config version history — the audit trail
-// behind `clawpatrol apply` and `clawpatrol config history`. See
+// Persistence for the config state backend — the rows behind
+// `clawpatrol apply` and `clawpatrol config history`. See
 // migrations/sqlite/0020_config_versions.sql for the schema rationale.
+// OSS-Terraform-shaped: a row carries only what conflict detection
+// needs (serial=id, content, revision) plus a convenience timestamp.
 
 import (
 	"database/sql"
@@ -17,8 +19,6 @@ type configVersion struct {
 	Revision      string `json:"revision"`
 	SchemaVersion int    `json:"schema_version"`
 	Content       []byte `json:"-"`
-	AppliedBy     string `json:"applied_by"`
-	Note          string `json:"note"`
 	AppliedNs     int64  `json:"applied_ns"`
 }
 
@@ -30,11 +30,11 @@ func latestConfigVersion(db *sql.DB) (configVersion, bool, error) {
 	}
 	var v configVersion
 	err := db.QueryRow(
-		`SELECT id, revision, schema_version, content, applied_by, note, applied_ns
+		`SELECT id, revision, schema_version, content, applied_ns
 		   FROM config_versions
 		  ORDER BY id DESC
 		  LIMIT 1`,
-	).Scan(&v.ID, &v.Revision, &v.SchemaVersion, &v.Content, &v.AppliedBy, &v.Note, &v.AppliedNs)
+	).Scan(&v.ID, &v.Revision, &v.SchemaVersion, &v.Content, &v.AppliedNs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return configVersion{}, false, nil
 	}
@@ -50,7 +50,7 @@ func listConfigVersions(db *sql.DB, limit int) ([]configVersion, error) {
 	if db == nil {
 		return nil, fmt.Errorf("no db")
 	}
-	q := `SELECT id, revision, schema_version, applied_by, note, applied_ns
+	q := `SELECT id, revision, schema_version, applied_ns
 	        FROM config_versions
 	       ORDER BY id DESC`
 	args := []any{}
@@ -66,7 +66,7 @@ func listConfigVersions(db *sql.DB, limit int) ([]configVersion, error) {
 	var out []configVersion
 	for rows.Next() {
 		var v configVersion
-		if err := rows.Scan(&v.ID, &v.Revision, &v.SchemaVersion, &v.AppliedBy, &v.Note, &v.AppliedNs); err != nil {
+		if err := rows.Scan(&v.ID, &v.Revision, &v.SchemaVersion, &v.AppliedNs); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -77,8 +77,8 @@ func listConfigVersions(db *sql.DB, limit int) ([]configVersion, error) {
 // recordConfigVersion inserts a new version row unless its revision
 // matches the latest (so boot + apply + reload of the same config don't
 // pile up duplicates). Returns the revision and whether a row was
-// inserted.
-func recordConfigVersion(db *sql.DB, content []byte, schemaVersion int, appliedBy, note string) (revision string, inserted bool, err error) {
+// inserted. Used for the boot seed; apply uses recordConfigVersionCAS.
+func recordConfigVersion(db *sql.DB, content []byte, schemaVersion int) (revision string, inserted bool, err error) {
 	if db == nil {
 		return "", false, fmt.Errorf("no db")
 	}
@@ -91,9 +91,9 @@ func recordConfigVersion(db *sql.DB, content []byte, schemaVersion int, appliedB
 		return revision, false, nil
 	}
 	_, err = db.Exec(
-		`INSERT INTO config_versions (revision, schema_version, content, applied_by, note, applied_ns)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		revision, schemaVersion, content, appliedBy, note, time.Now().UnixNano(),
+		`INSERT INTO config_versions (revision, schema_version, content, applied_ns)
+		 VALUES (?, ?, ?, ?)`,
+		revision, schemaVersion, content, time.Now().UnixNano(),
 	)
 	if err != nil {
 		return "", false, err

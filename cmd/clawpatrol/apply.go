@@ -236,15 +236,13 @@ func runPlan(args []string) {
 func runApply(args []string) {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	autoApprove := fs.Bool("y", false, "apply without the interactive confirmation prompt")
-	by := fs.String("by", "", "who is applying (default: $SUDO_USER, then $USER)")
-	note := fs.String("note", "", "optional note recorded with this version")
 	expect := fs.Int64("expect", -1, "require the deployed serial to equal this (conflict if not); -1 = no assertion")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: clawpatrol apply [-y] [--expect N] [--by who] [--note text] <config.hcl | planfile>")
+		fmt.Fprintln(os.Stderr, "usage: clawpatrol apply [-y] [--expect N] <config.hcl | planfile>")
 		os.Exit(2)
 	}
 	path := rest[0]
@@ -293,7 +291,7 @@ func runApply(args []string) {
 	}
 	defer db.Close()
 
-	who := lockHolder(*by)
+	who := lockHolder()
 	locked, cur, err := acquireConfigLock(db, who, "apply "+path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "apply: lock: %v\n", err)
@@ -355,7 +353,7 @@ func runApply(args []string) {
 			}
 		}
 
-		rev, serial, ok, err := recordConfigVersionCAS(db, raw, gw.SchemaVersion, resolveApplier(*by), *note, deployedSerial)
+		rev, serial, ok, err := recordConfigVersionCAS(db, raw, gw.SchemaVersion, deployedSerial)
 		if err != nil {
 			return fmt.Errorf("record version: %w", err)
 		}
@@ -364,7 +362,7 @@ func runApply(args []string) {
 			// possible if the lock was forced mid-apply.
 			return fmt.Errorf("state changed during apply (expected serial %d, no longer current). Re-run apply", deployedSerial)
 		}
-		fmt.Printf("Apply complete. serial %d, revision %s, by %s.\n", serial, shortRev(rev), resolveApplier(*by))
+		fmt.Printf("Apply complete. serial %d, revision %s.\n", serial, shortRev(rev))
 		fmt.Println("The running gateway will reload from the backend within a few seconds.")
 		return nil
 	}()
@@ -481,11 +479,7 @@ func runConfigHistory(args []string) {
 	}
 	for _, v := range versions {
 		ts := time.Unix(0, v.AppliedNs).Format(applyTimeFormat)
-		line := fmt.Sprintf("serial %-4d  %s  %s  schema=%d  by %s", v.ID, ts, shortRev(v.Revision), v.SchemaVersion, orUnknown(v.AppliedBy))
-		if v.Note != "" {
-			line += "  — " + v.Note
-		}
-		fmt.Println(line)
+		fmt.Printf("serial %-4d  %s  %s  schema=%d\n", v.ID, ts, shortRev(v.Revision), v.SchemaVersion)
 	}
 }
 
@@ -539,13 +533,6 @@ func shortRev(rev string) string {
 	return rev
 }
 
-func orUnknown(s string) string {
-	if s == "" {
-		return "unknown"
-	}
-	return s
-}
-
 func reasonSuffix(reason string) string {
 	if reason == "" {
 		return ""
@@ -553,25 +540,17 @@ func reasonSuffix(reason string) string {
 	return " (" + reason + ")"
 }
 
-// resolveApplier picks the recorded identity: explicit --by, then
-// $SUDO_USER (apply is usually run as root on the gateway), then $USER.
-func resolveApplier(by string) string {
-	if by != "" {
-		return by
-	}
+// lockHolder is the OS user plus hostname, recorded on the lock so a
+// contended lock names a recognizable owner across machines. This is
+// Terraform's lock "Who" (user@host) — derived from the environment,
+// never a flag.
+func lockHolder() string {
+	who := "unknown"
 	if u := os.Getenv("SUDO_USER"); u != "" {
-		return u
+		who = u
+	} else if u := os.Getenv("USER"); u != "" {
+		who = u
 	}
-	if u := os.Getenv("USER"); u != "" {
-		return u
-	}
-	return "unknown"
-}
-
-// lockHolder is the applier identity plus hostname, so a contended lock
-// names a recognizable owner across machines.
-func lockHolder(by string) string {
-	who := resolveApplier(by)
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return who + "@" + h
 	}

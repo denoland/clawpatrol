@@ -73,7 +73,7 @@ func TestRecordConfigVersionCAS(t *testing.T) {
 	db := newCVTestDB(t)
 
 	// Seed serial 1 from an empty backend (expected serial 0).
-	rev1, s1, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n"), 1, "alice", "v1", 0)
+	rev1, s1, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n"), 1, 0)
 	if err != nil || !ok {
 		t.Fatalf("seed: ok=%v err=%v", ok, err)
 	}
@@ -82,12 +82,12 @@ func TestRecordConfigVersionCAS(t *testing.T) {
 	}
 
 	// A stale writer that still thinks the latest is 0 is rejected.
-	if _, _, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n# x\n"), 1, "bob", "stale", 0); err != nil || ok {
+	if _, _, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n# x\n"), 1, 0); err != nil || ok {
 		t.Fatalf("stale CAS should fail: ok=%v err=%v", ok, err)
 	}
 
 	// A writer with the current serial succeeds and advances it.
-	rev2, s2, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n# x\n"), 1, "alice", "v2", s1)
+	rev2, s2, ok, err := recordConfigVersionCAS(db, []byte("gateway {}\n# x\n"), 1, s1)
 	if err != nil || !ok {
 		t.Fatalf("fresh CAS: ok=%v err=%v", ok, err)
 	}
