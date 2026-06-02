@@ -9,35 +9,35 @@ import (
 )
 
 const (
-	// DefaultBufferBodyLimit is the fallback for
-	// gateway.body_limits.buffer: the most request/response body the
+	// DefaultBodyBufferLimit is the fallback for
+	// gateway.limits.body_buffer: the most request/response body the
 	// gateway buffers before handing it to the rules engine. 1 MiB
 	// preserves the historical hardcoded maxHTTPMatchBody value.
-	DefaultBufferBodyLimit int64 = 1 << 20
+	DefaultBodyBufferLimit int64 = 1 << 20
 
-	// DefaultStorageBodyLimit is the fallback for
-	// gateway.body_limits.storage: the most body the gateway keeps
+	// DefaultBodyStorageLimit is the fallback for
+	// gateway.limits.body_storage: the most body the gateway keeps
 	// when persisting an action's request/response sample to the audit
 	// log. 4 KiB preserves the historical hardcoded sampler cap.
-	DefaultStorageBodyLimit int64 = 4096
+	DefaultBodyStorageLimit int64 = 4096
 )
 
-// BodyLimitsBlock is the optional `body_limits { ... }` sub-block inside
+// LimitsBlock is the optional `limits { ... }` sub-block inside
 // `gateway { ... }`. It exposes the two independent body-size limits as
 // human-readable size strings (e.g. "256KiB", "1MiB"):
 //
-//   - Buffer bounds the hot-path buffer the rules engine matches
+//   - BodyBuffer bounds the hot-path buffer the rules engine matches
 //     against. Trade-off: latency / memory vs. how much body rules see.
-//   - Storage bounds the cold-storage sample persisted per action.
+//   - BodyStorage bounds the cold-storage sample persisted per action.
 //     Trade-off: disk / db size vs. how useful the action details page
 //     is for debugging.
 //
 // Both are independent: a deployment may log more (or less) than it
-// rule-matches. Empty fields fall back to the Default*BodyLimit
+// rule-matches. Empty fields fall back to the DefaultBody*Limit
 // constants, which equal today's hardcoded behavior.
-type BodyLimitsBlock struct {
-	Buffer  string `hcl:"buffer,optional"`
-	Storage string `hcl:"storage,optional"`
+type LimitsBlock struct {
+	BodyBuffer  string `hcl:"body_buffer,optional"`
+	BodyStorage string `hcl:"body_storage,optional"`
 }
 
 // ParseSize parses a human-readable byte-size string into a count of
@@ -87,85 +87,85 @@ func ParseSize(s string) (int64, error) {
 	return bytes, nil
 }
 
-// BufferBodyLimitFromString parses the buffer cap, falling back to
-// DefaultBufferBodyLimit when the string is empty.
-func BufferBodyLimitFromString(s string) (int64, error) {
+// BodyBufferLimitFromString parses the body buffer cap, falling back to
+// DefaultBodyBufferLimit when the string is empty.
+func BodyBufferLimitFromString(s string) (int64, error) {
 	if strings.TrimSpace(s) == "" {
-		return DefaultBufferBodyLimit, nil
+		return DefaultBodyBufferLimit, nil
 	}
 	return ParseSize(s)
 }
 
-// StorageBodyLimitFromString parses the storage cap, falling back to
-// DefaultStorageBodyLimit when the string is empty.
-func StorageBodyLimitFromString(s string) (int64, error) {
+// BodyStorageLimitFromString parses the body storage cap, falling back to
+// DefaultBodyStorageLimit when the string is empty.
+func BodyStorageLimitFromString(s string) (int64, error) {
 	if strings.TrimSpace(s) == "" {
-		return DefaultStorageBodyLimit, nil
+		return DefaultBodyStorageLimit, nil
 	}
 	return ParseSize(s)
 }
 
-// BufferBodyLimit returns the configured buffer body limit in bytes, or
-// DefaultBufferBodyLimit when unset/unparseable. Bad input is surfaced
+// BodyBufferLimit returns the configured body buffer limit in bytes, or
+// DefaultBodyBufferLimit when unset/unparseable. Bad input is surfaced
 // as a load-time error by validateOperational; this runtime accessor
 // falls back to the default so a degraded config still serves.
-func (g *Gateway) BufferBodyLimit() int {
-	bl := g.settings().BodyLimits
+func (g *Gateway) BodyBufferLimit() int {
+	bl := g.settings().Limits
 	if bl == nil {
-		return int(DefaultBufferBodyLimit)
+		return int(DefaultBodyBufferLimit)
 	}
-	n, err := BufferBodyLimitFromString(bl.Buffer)
+	n, err := BodyBufferLimitFromString(bl.BodyBuffer)
 	if err != nil {
-		return int(DefaultBufferBodyLimit)
+		return int(DefaultBodyBufferLimit)
 	}
 	return int(n)
 }
 
-// StorageBodyLimit returns the configured storage body limit in bytes,
-// or DefaultStorageBodyLimit when unset/unparseable.
-func (g *Gateway) StorageBodyLimit() int {
-	bl := g.settings().BodyLimits
+// BodyStorageLimit returns the configured body storage limit in bytes,
+// or DefaultBodyStorageLimit when unset/unparseable.
+func (g *Gateway) BodyStorageLimit() int {
+	bl := g.settings().Limits
 	if bl == nil {
-		return int(DefaultStorageBodyLimit)
+		return int(DefaultBodyStorageLimit)
 	}
-	n, err := StorageBodyLimitFromString(bl.Storage)
+	n, err := BodyStorageLimitFromString(bl.BodyStorage)
 	if err != nil {
-		return int(DefaultStorageBodyLimit)
+		return int(DefaultBodyStorageLimit)
 	}
 	return int(n)
 }
 
-// validateBodyLimits surfaces parse errors at config load time and emits
-// a soft warning when the buffer cap is smaller than the storage cap.
-// The inverse is NOT rejected: a deployment may deliberately log more
-// than it rule-matches.
-func validateBodyLimits(bl *BodyLimitsBlock) hcl.Diagnostics {
+// validateLimits surfaces parse errors at config load time and emits
+// a soft warning when the body buffer cap is smaller than the body
+// storage cap. The inverse is NOT rejected: a deployment may
+// deliberately log more than it rule-matches.
+func validateLimits(bl *LimitsBlock) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	if bl == nil {
 		return diags
 	}
-	buffer, bErr := BufferBodyLimitFromString(bl.Buffer)
+	buffer, bErr := BodyBufferLimitFromString(bl.BodyBuffer)
 	if bErr != nil {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Invalid body_limits.buffer",
-			Detail:   fmt.Sprintf("buffer = %q: %v. Use a size string like \"256KiB\" or \"1MiB\".", bl.Buffer, bErr),
+			Summary:  "Invalid limits.body_buffer",
+			Detail:   fmt.Sprintf("body_buffer = %q: %v. Use a size string like \"256KiB\" or \"1MiB\".", bl.BodyBuffer, bErr),
 		})
 	}
-	storage, sErr := StorageBodyLimitFromString(bl.Storage)
+	storage, sErr := BodyStorageLimitFromString(bl.BodyStorage)
 	if sErr != nil {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Invalid body_limits.storage",
-			Detail:   fmt.Sprintf("storage = %q: %v. Use a size string like \"64KiB\" or \"256KiB\".", bl.Storage, sErr),
+			Summary:  "Invalid limits.body_storage",
+			Detail:   fmt.Sprintf("body_storage = %q: %v. Use a size string like \"64KiB\" or \"256KiB\".", bl.BodyStorage, sErr),
 		})
 	}
 	if bErr == nil && sErr == nil && buffer < storage {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagWarning,
-			Summary:  "body_limits.buffer smaller than body_limits.storage",
+			Summary:  "limits.body_buffer smaller than limits.body_storage",
 			Detail: fmt.Sprintf(
-				"buffer = %d bytes < storage = %d bytes. The rules engine will see less body than is persisted to storage. This is allowed, but usually the buffer cap is the larger of the two.",
+				"body_buffer = %d bytes < body_storage = %d bytes. The rules engine will see less body than is persisted to storage. This is allowed, but usually the buffer cap is the larger of the two.",
 				buffer, storage,
 			),
 		})

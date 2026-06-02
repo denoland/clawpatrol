@@ -193,7 +193,7 @@ func TestBufferHTTPBodyForMatchStreamsUnknownLengthRemainder(t *testing.T) {
 
 // TestBufferHTTPBodyForMatchHonorsCustomCap verifies the rules-engine
 // cap is honored when a non-default value is passed (the value the
-// gateway threads through from gateway.body_limits.buffer): the
+// gateway threads through from gateway.limits.body_buffer): the
 // match view is truncated to the custom cap while the upstream forward
 // still receives every byte.
 func TestBufferHTTPBodyForMatchHonorsCustomCap(t *testing.T) {
