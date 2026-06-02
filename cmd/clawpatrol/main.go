@@ -340,9 +340,13 @@ type Gateway struct {
 	stateDir string // resolved gateway state dir (sqlite + plugin blobs)
 	db       *sql.DB
 	policy   atomic.Pointer[config.CompiledPolicy]
-	certs    *CertCache
-	dialer   *net.Dialer
-	sink     *Sink
+	// configSerial is the config_versions id the gateway is currently
+	// running (0 = pre-backend / file-only). watchConfig polls the
+	// backend's latest serial against this to pick up applies.
+	configSerial atomic.Int64
+	certs        *CertCache
+	dialer       *net.Dialer
+	sink         *Sink
 	// blobs is the gateway-side plugin blob store (sqlite-backed).
 	// Used by endpoint plugins that need per-endpoint persistent
 	// bytes — SSH host keys today, future JWT signing keys.
@@ -571,28 +575,34 @@ func defaultProfileName(p *config.Policy) string {
 // re-decodes the HCL and atomically swaps in the new rules + admin_email
 // + integrations list. Listen ports / CA dir / OAuth dir / Tailscale
 // block changes still require a restart (logged but not applied).
-func (g *Gateway) watchConfig(path string) {
-	st, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	last := st.ModTime()
+// watchConfig polls the state backend for a newer applied serial and
+// hot-swaps the running policy when `clawpatrol apply` records one.
+// This replaces the old file-mtime watch: the backend (config_versions)
+// is authoritative, so editing the file on disk no longer changes the
+// running config — only an apply does.
+func (g *Gateway) watchConfig() {
 	for {
 		time.Sleep(3 * time.Second)
-		st, err := os.Stat(path)
-		if err != nil || !st.ModTime().After(last) {
+		latest, err := currentSerial(g.db)
+		if err != nil || latest <= g.configSerial.Load() {
 			continue
 		}
-		last = st.ModTime()
-		next, policy, err := loadConfig(path)
+		content, serial, ok, err := activeConfig(g.db)
+		if err != nil || !ok {
+			continue
+		}
+		next, policy, err := loadConfigBytes(content)
 		if err != nil {
-			log.Printf("config reload: %v", err)
+			// A recorded version that won't load (e.g. a schema bump this
+			// binary predates). Advance past it so we don't retry every
+			// tick; keep running the previous policy.
+			log.Printf("config reload: serial %d failed to load: %v", serial, err)
+			g.configSerial.Store(serial)
 			continue
 		}
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
-		newConnIdx := runtime.BuildConnIndex(policy)
-		g.connIdx.Store(newConnIdx)
+		g.connIdx.Store(runtime.BuildConnIndex(policy))
 		if g.tunnels != nil {
 			g.tunnels.SetPolicy(context.Background(), policy)
 		}
@@ -602,13 +612,62 @@ func (g *Gateway) watchConfig(path string) {
 			}
 		}
 		// Hot-swap the operational *config.Gateway too — AdminEmail /
-		// PublicURL / DashboardOperators reads pick up immediately.
-		// Listen / CADir / Tailscale changes are not applied (restart).
+		// PublicURL reads pick up immediately. Listen / CADir / Tailscale
+		// changes are not applied (restart).
 		g.cfg = next
-		log.Printf("config reloaded: %d endpoints across %d profile(s)",
-			len(policy.Endpoints), len(policy.Profiles))
+		g.configSerial.Store(serial)
+		log.Printf("config reloaded from backend: serial %d, %d endpoints across %d profile(s)",
+			serial, len(policy.Endpoints), len(policy.Profiles))
 		logDashboardAuthState(g.db, next)
 	}
+}
+
+// resolveBackendConfig seeds the state backend from the bootstrap file
+// when empty, then returns the config the gateway should actually run
+// (the backend's deployed version) along with its serial. The file is
+// only authoritative for the very first boot; thereafter `clawpatrol
+// apply` owns the deployed config.
+func resolveBackendConfig(db *sql.DB, cfgPath string, fileCfg *config.Gateway, filePolicy *config.CompiledPolicy) (*config.Gateway, *config.CompiledPolicy, int64) {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		// Directory config or unreadable path: no single byte stream to
+		// seed/serve from the backend. Run the file as loaded.
+		log.Printf("config backend: not seeding (%v); running file config", err)
+		return fileCfg, filePolicy, 0
+	}
+	if _, _, serr := recordConfigVersion(db, raw, fileCfg.SchemaVersion, "boot", ""); serr != nil {
+		log.Printf("config backend: seed: %v", serr)
+	}
+	content, serial, ok, err := activeConfig(db)
+	if err != nil || !ok {
+		return fileCfg, filePolicy, serial
+	}
+	// Deployed config equals the file we just loaded → reuse the
+	// already-compiled result.
+	if revisionForBytes(content) == revisionForBytes(raw) {
+		return fileCfg, filePolicy, serial
+	}
+	bcfg, bpolicy, cerr := loadConfigBytes(content)
+	if cerr != nil {
+		log.Printf("config backend: deployed serial %d failed to load (%v); running file config", serial, cerr)
+		return fileCfg, filePolicy, serial
+	}
+	log.Printf("config backend: running deployed serial %d (started from file %s)", serial, cfgPath)
+	return bcfg, bpolicy, serial
+}
+
+// loadConfigBytes parses + compiles a config from raw bytes (the
+// backend-stored content). Mirrors loadConfig, which reads from a path.
+func loadConfigBytes(content []byte) (*config.Gateway, *config.CompiledPolicy, error) {
+	gw, diags := config.LoadBytes(content, "deployed.hcl")
+	if diags.HasErrors() {
+		return nil, nil, fmt.Errorf("%s", diags.Error())
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile: %w", err)
+	}
+	return gw, cp, nil
 }
 
 // logDashboardAuthState emits a one-line summary of dashboard-auth
@@ -2725,6 +2784,8 @@ func main() {
 		runEnv(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "plan":
+		runPlan(os.Args[2:])
 	case "apply":
 		runApply(os.Args[2:])
 	case "config":
@@ -2820,8 +2881,10 @@ usage:
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
   clawpatrol validate <config.hcl>       parse + compile a config and exit
-  clawpatrol apply [-y] <config.hcl>     validate, diff vs last applied, record + activate
+  clawpatrol plan <config.hcl>           diff a config against the deployed state
+  clawpatrol apply [-y] <config.hcl>     validate, diff, lock + record (terraform-style)
   clawpatrol config history <config.hcl> list recorded config versions
+  clawpatrol config unlock <config.hcl>  force-release a stuck apply lock
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version | -v | --version    print version and exit
 
@@ -2909,7 +2972,12 @@ func runGateway(args []string) {
 	setDB(db)
 	applyDashboardPasswordFlags(db, *setDashboardPassword, *resetDashboardPassword)
 	logDashboardAuthState(db, cfg)
-	recordBootConfigVersion(db, cfgPath, cfg.SchemaVersion)
+	// State backend: seed the backend from the file when empty, then run
+	// whatever the backend says is deployed. After bootstrap the file is
+	// just desired-config input — `clawpatrol apply` is the path that
+	// changes the running config (validated, locked, audited).
+	var bootSerial int64
+	cfg, policy, bootSerial = resolveBackendConfig(db, cfgPath, cfg, policy)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
 	certs, err := loadOrMintCA(db)
@@ -2949,6 +3017,7 @@ func runGateway(args []string) {
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
+	g.configSerial.Store(bootSerial)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
 	g.tunnels.SetPolicy(context.Background(), policy)
 	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
@@ -2967,7 +3036,7 @@ func runGateway(args []string) {
 	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.sweepDashboardSessions()
-	go g.watchConfig(cfgPath)
+	go g.watchConfig()
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}

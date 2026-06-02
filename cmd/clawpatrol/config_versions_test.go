@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -92,32 +91,5 @@ func TestDiffDigestsEmpty(t *testing.T) {
 	m := map[string]string{"gateway": "a"}
 	if !diffDigests(m, m).empty() {
 		t.Error("identical digests should diff empty")
-	}
-}
-
-func TestWriteFileAtomicPreservesMode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gateway.hcl")
-	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := writeFileAtomic(path, []byte("new content")); err != nil {
-		t.Fatalf("writeFileAtomic: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(got) != "new content" {
-		t.Fatalf("content = %q", got)
-	}
-	fi, _ := os.Stat(path)
-	if fi.Mode().Perm() != 0o640 {
-		t.Fatalf("mode = %o, want 640", fi.Mode().Perm())
-	}
-	// No temp file left behind.
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
-		t.Fatalf("expected only the config file, got %d entries", len(entries))
 	}
 }

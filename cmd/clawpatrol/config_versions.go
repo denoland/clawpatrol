@@ -8,8 +8,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"time"
 )
 
@@ -101,30 +99,4 @@ func recordConfigVersion(db *sql.DB, content []byte, schemaVersion int, appliedB
 		return "", false, err
 	}
 	return revision, true, nil
-}
-
-// recordBootConfigVersion records the config the gateway loaded at
-// startup, so the history begins from the running config rather than
-// from the first `apply`. Best-effort: a recording failure must never
-// block the gateway from starting. Skipped for directory configs
-// (multi-file merges have no single-file byte stream to hash); apply is
-// the path for those.
-func recordBootConfigVersion(db *sql.DB, cfgPath string, schemaVersion int) {
-	fi, err := os.Stat(cfgPath)
-	if err != nil || fi.IsDir() {
-		return
-	}
-	raw, err := os.ReadFile(cfgPath)
-	if err != nil {
-		log.Printf("config history: read boot config: %v", err)
-		return
-	}
-	rev, inserted, err := recordConfigVersion(db, raw, schemaVersion, "boot", "")
-	if err != nil {
-		log.Printf("config history: record boot config: %v", err)
-		return
-	}
-	if inserted {
-		log.Printf("config history: recorded boot config revision %s", rev[:min(12, len(rev))])
-	}
 }
