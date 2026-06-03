@@ -144,7 +144,10 @@ export function CredentialsTypeGrid({
   const containerRef = useRef<HTMLDivElement>(null);
   const cols = useColumnCount(containerRef);
 
-  const groups = groupByType(list);
+  // Passthrough credentials inject nothing and have no connect flow —
+  // there's no operator action to take on them, so they get no card
+  // (and thus no type roll-up or details row) here.
+  const groups = groupByType(list.filter((i) => !i.passthrough));
 
   // Drop the active type if it disappears from the list (e.g. a
   // reload removed every credential of that type).
@@ -421,7 +424,6 @@ function DetailsRow({
             className={
               "w-[6px] h-[6px] rounded-full " + (connected ? "bg-success-500" : "bg-text-subtle")
             }
-            title={i.passthrough ? "passthrough — injects nothing" : undefined}
           />
           <span className="text-text">{status}</span>
         </span>
@@ -480,11 +482,6 @@ function CellList({ items }: { items: string[] }) {
 }
 
 function rowStatus(i: Integration, connected: boolean, hasSlots: boolean): string {
-  // Passthrough credentials inject nothing and have no connect flow,
-  // so they never reach `connected` — without this they would fall
-  // through to the "api key only" default, which misrepresents them.
-  // Mirror the per-device IntegrationsCards card label.
-  if (i.passthrough) return "no injection";
   if (connected) {
     return i.expires_at ? "expires " + fmtExpiry(i.expires_at) : "connected";
   }
