@@ -1,50 +1,66 @@
-import type { ComponentChildren } from "preact";
-
-// Vertical flow with two stacked-card rows around the proxy:
-// destinations on top, agents on the bottom. The stack glyphs hint
-// "many of each kind", not just the one named.
+// Vertical flow: agents on top, the Claw Patrol proxy in the middle,
+// destinations on the bottom. Requests flow downward through the
+// stack of policy switches inside the proxy.
 export function FlowDiagram() {
   return (
     <div
       class="flex flex-col items-stretch w-full md:max-w-[24rem] select-none"
       role="img"
-      aria-label="Many agents on the bottom send requests through Claw Patrol to many destinations on top"
+      aria-label="Your agents send requests through Claw Patrol down to the tools and systems they act on"
     >
-      <ProductionNode />
+      <AgentsNode />
 
       <Riser />
 
-      <CenterNode label="Claw Patrol" sub="" />
+      <CenterNode label="Claw Patrol" />
 
-      <Risers count={4} />
+      <Riser />
 
-      <CardRow>
-        <Card name="Claude" icon="/icons/anthropic.svg" />
-        <Card name="Codex" icon="/icons/openai.svg" />
-        <Card name="OpenClaw" icon="/icons/openclaw.svg" />
-        <Card name="Others" />
-      </CardRow>
+      <ProductionNode />
     </div>
   );
 }
 
-function CardRow({ children }: { children: ComponentChildren }) {
-  // pr-2 / pb-2 reserves room for the stacked-card shadows so they
-  // don’t touch the column edge or the arrows below.
-  return <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>;
+function AgentsNode() {
+  return (
+    <div class=" w-full bg-canvas border border-navy-200
+        text-text px-5 py-5 text-center">
+      <div class="font-display font-bold text-xl leading-none">
+        Your agent(s)
+      </div>
+      <div class="flex justify-center items-end gap-6 mt-4">
+        <AgentItem name="Claude" icon="/icons/anthropic.svg" />
+        <AgentItem name="Codex" icon="/icons/openai.svg" />
+        <AgentItem name="OpenClaw" icon="/icons/openclaw.svg" />
+        <AgentItem name="Others" />
+      </div>
+    </div>
+  );
+}
+
+function AgentItem({ name, icon }: { name: string; icon?: string }) {
+  return (
+    <div class="flex flex-col items-center gap-2 min-w-0">
+      {icon
+        ? <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" />
+        : <RobotGlyph />}
+      <div class="font-display font-semibold text-[11.5px] text-text-muted
+          leading-tight text-center text-balance">
+        {name}
+      </div>
+    </div>
+  );
 }
 
 function ProductionNode() {
   return (
-    <div
-      class=" w-full bg-canvas border border-navy-200
-        text-text px-5 py-5 text-center"
-    >
-      <div class="font-display font-bold text-xl leading-none">Production</div>
-      <div
-        class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-text-muted text-balance"
-      >
+    <div class=" w-full bg-canvas border border-navy-200
+        text-text px-5 py-5 text-center">
+      <div class="font-display font-bold text-xl leading-none">
+        Tools &amp; systems
+      </div>
+      <div class="font-mono text-[11px] uppercase tracking-wider mt-2
+          text-text-muted text-balance">
         postgres / clickhouse / kubernetes / aws / gcp / github / slack / vultr
         / whatever
       </div>
@@ -63,14 +79,14 @@ function Riser() {
         aria-hidden="true"
       >
         <path
-          d="M 8 28 V 5"
+          d="M 8 0 V 23"
           stroke="currentColor"
           stroke-width="1.5"
           stroke-linecap="round"
           fill="none"
         />
         <path
-          d="M 2 10 L 8 4 L 14 10"
+          d="M 2 18 L 8 24 L 14 18"
           stroke="currentColor"
           stroke-width="1.5"
           stroke-linecap="round"
@@ -79,74 +95,6 @@ function Riser() {
         />
       </svg>
     </div>
-  );
-}
-
-function Card({ name, icon }: { name: string; icon?: string }) {
-  // Two trailing box-shadows render as faded duplicate cards sitting
-  // behind this one. Each pair: solid canvas fill + 1px navy ring.
-  // Inline style — Tailwind’s arbitrary shadow syntax doesn’t compose
-  // four space-separated shadows reliably.
-  const stack =
-    "2px 2px 0 0 var(--color-canvas)," +
-    "2px 2px 0 1px var(--color-navy-200)," +
-    "5px 5px 0 0 var(--color-canvas)," +
-    "5px 5px 0 1px var(--color-navy-200)";
-  return (
-    <div
-      class=" flex flex-col items-center justify-center gap-2
-        px-2 py-3 bg-canvas border border-navy-200 min-w-0"
-      style={{ boxShadow: stack }}
-    >
-      {icon ? (
-        <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" />
-      ) : (
-        <RobotGlyph />
-      )}
-      <div
-        class="font-display font-semibold text-[11.5px] text-text-muted
-          leading-tight text-center text-balance"
-      >
-        {name}
-      </div>
-    </div>
-  );
-}
-
-// Parallel arrows between a card row and the proxy.
-function Risers({ count }: { count: number }) {
-  const w = 380;
-  const h = 30;
-  // 4 cols, gap-3 (12px). Centers in viewBox coords.
-  const cellW = (w - (count - 1) * 12 - 8) / count; // -8 = pr-2 in row
-  const cx = (i: number) => cellW / 2 + i * (cellW + 12);
-  return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      width="100%"
-      height={h}
-      class="text-navy-300 my-4"
-      aria-hidden="true"
-      preserveAspectRatio="none"
-    >
-      <g
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        fill="none"
-      >
-        {Array.from({ length: count }, (_, i) => {
-          const x = cx(i);
-          return (
-            <>
-              <path d={`M ${x} ${h - 2} V 5`} />
-              <path d={`M ${x - 5} 10 L ${x} 4 L ${x + 5} 10`} />
-            </>
-          );
-        })}
-      </g>
-    </svg>
   );
 }
 
@@ -163,20 +111,18 @@ function CenterNode({ label }: { label: string }) {
   // reads as the same brand surface; full Claw Patrol logo (icon +
   // wordmark) is the same public asset the header uses.
   return (
-    <div
-      class=" w-full border border-navy text-text
-      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas to-navy-50 "
-    >
+    <div class=" w-full border border-navy text-text
+      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas to-navy-50 ">
       <img
         src="/claw-patrol-logo.svg"
         alt={label}
         class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas"
       />
-      <SwitchTag label="Inject credentials" />
+      <SwitchTag label="Rules - action allowed?" />
       <Riser />
       <SwitchTag label="Approvers - action requires approval?" />
       <Riser />
-      <SwitchTag label="Rules - action allowed?" />
+      <SwitchTag label="Inject credentials" />
       <Riser />
       <SwitchTag label="Log every action" />
     </div>

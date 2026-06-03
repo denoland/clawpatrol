@@ -17,14 +17,14 @@ export function Landing() {
       <HeroSection />
       <DotField class="text-canvas-400" />
       <ProblemSection />
+      <DemoSection />
+      <DotField class="text-canvas-400" />
       <RunSection />
       <ShadeGradient color="text-navy-700" />
       <RulesSection />
       <ShadeGradient color="text-navy" invert />
       <ApproversSection />
       <TestSection />
-      <DemoSection />
-      <DotField class="text-canvas-400" />
       <ComparisonSection />
       <DotField class="text-canvas-400" />
       <CtaSection />
