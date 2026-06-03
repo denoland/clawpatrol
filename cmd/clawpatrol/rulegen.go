@@ -95,8 +95,10 @@ func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGe
 		return nil, fmt.Errorf("action has no endpoint or host")
 	}
 	endpointName := generatedEndpointName(policy, host)
+	credName := generatedPassthroughCredName(policy, endpointName)
 	ruleName := generatedHostBlockRuleName(ev, endpointName, host)
-	hcl, err := generatedEndpointBlockRuleHCL(endpointName, host, ruleName)
+	profiles := generatedProfileNames(policy)
+	hcl, err := generatedEndpointBlockRuleHCL(endpointName, credName, host, profiles, ruleName)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +108,7 @@ func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGe
 		HCL:          hcl,
 		Patch:        generatedAppendPatch("gateway.hcl", hcl),
 		Warnings: []string{
-			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host and a catch-all deny rule for it.",
+			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host, claims it from existing profiles via a passthrough credential, and adds a catch-all deny rule.",
 		},
 	}, nil
 }
@@ -211,16 +213,30 @@ func generatedRuleHCL(name, endpoint, condition string) (string, error) {
 	return string(f.Bytes()), nil
 }
 
-func generatedEndpointBlockRuleHCL(endpointName, host, ruleName string) (string, error) {
+func generatedEndpointBlockRuleHCL(endpointName, credName, host string, profiles []string, ruleName string) (string, error) {
 	f := hclwrite.NewEmptyFile()
+	endpointRef := "https." + endpointName
+	credRef := "passthrough." + credName
+
 	eb := f.Body().AppendNewBlock("endpoint", []string{"https", endpointName}).Body()
 	eb.SetAttributeValue("hosts", cty.ListVal([]cty.Value{cty.StringVal(host)}))
+
+	f.Body().AppendNewline()
+	cb := f.Body().AppendNewBlock("credential", []string{"passthrough", credName}).Body()
+	cb.SetAttributeRaw("endpoint", config.TraversalTokens(endpointRef))
+
 	f.Body().AppendNewline()
 	rb := f.Body().AppendNewBlock("rule", []string{ruleName}).Body()
-	rb.SetAttributeRaw("endpoint", config.TraversalTokens("https."+endpointName))
+	rb.SetAttributeRaw("endpoint", config.TraversalTokens(endpointRef))
 	rb.SetAttributeValue("priority", cty.NumberIntVal(100))
 	rb.SetAttributeValue("verdict", cty.StringVal("deny"))
 	rb.SetAttributeValue("reason", cty.StringVal("Blocked from dashboard: generated from observed passthrough host"))
+
+	for _, profile := range profiles {
+		f.Body().AppendNewline()
+		pb := f.Body().AppendNewBlock("profile", []string{profile}).Body()
+		config.SetIdentList(pb, "credentials", []string{credRef})
+	}
 	return string(f.Bytes()), nil
 }
 
@@ -244,6 +260,31 @@ func generatedHostBlockRuleName(ev *Event, endpointName, host string) string {
 	}
 	sum := sha256.Sum256([]byte(sumInput))
 	return fmt.Sprintf("%s_%x", base, sum[:3])
+}
+
+func generatedProfileNames(policy *config.CompiledPolicy) []string {
+	if policy == nil || len(policy.Profiles) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(policy.Profiles))
+	for name := range policy.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func generatedPassthroughCredName(policy *config.CompiledPolicy, endpointName string) string {
+	base := endpointName + "_passthrough"
+	if policy == nil || policy.Credentials[base] == nil {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%d", base, i)
+		if policy.Credentials[candidate] == nil {
+			return candidate
+		}
+	}
 }
 
 func generatedEndpointName(policy *config.CompiledPolicy, host string) string {

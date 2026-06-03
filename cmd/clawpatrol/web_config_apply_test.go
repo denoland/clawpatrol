@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 func TestConfigApplyRejectsWhenDashboardWritesDisabled(t *testing.T) {
@@ -62,6 +63,59 @@ func TestConfigApplyRejectsInvalidSnippet(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatalf("config changed after rejected apply")
+	}
+}
+
+func TestConfigApplyMergesGeneratedProfileCredentials(t *testing.T) {
+	w := configApplyTestMux(t, true)
+	before, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snippet := `endpoint "https" "tinyclouds_org" {
+  hosts = ["tinyclouds.org"]
+}
+
+credential "passthrough" "tinyclouds_org_passthrough" {
+  endpoint = https.tinyclouds_org
+}
+
+rule "block_tinyclouds_org" {
+  endpoint = https.tinyclouds_org
+  verdict = "deny"
+}
+
+profile "default" {
+  credentials = [passthrough.tinyclouds_org_passthrough]
+}`
+	candidate := appendConfigSnippet(before, snippet)
+	if strings.Count(string(candidate), `profile "default"`) != 1 {
+		t.Fatalf("candidate should keep one default profile block:\n%s", candidate)
+	}
+	rw := httptest.NewRecorder()
+	w.apiConfigApply(rw, jsonReq(map[string]string{
+		"base_revision": revisionForBytes(before),
+		"append_hcl":    snippet,
+	}))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	after, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(after), `profile "default"`) != 1 {
+		t.Fatalf("config should keep one default profile block:\n%s", after)
+	}
+	if !strings.Contains(string(after), `passthrough.tinyclouds_org_passthrough`) {
+		t.Fatalf("config missing merged profile credential:\n%s", after)
+	}
+	if !strings.Contains(string(after), `bearer_token.tok`) {
+		t.Fatalf("config should retain existing credential:\n%s", after)
+	}
+	ep := runtime.HostEndpoint(w.g.Policy(), "default", "tinyclouds.org")
+	if ep == nil || ep.Name != "tinyclouds_org" {
+		t.Fatalf("HostEndpoint = %#v, want generated endpoint", ep)
 	}
 }
 

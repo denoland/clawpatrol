@@ -105,6 +105,12 @@ func TestGenerateRuleSpliceHostCreatesEndpointAndDenyRule(t *testing.T) {
 	if !strings.Contains(rule.HCL, `endpoint = https.tinyclouds_org`) {
 		t.Fatalf("hcl missing generated endpoint reference:\n%s", rule.HCL)
 	}
+	if !strings.Contains(rule.HCL, `credential "passthrough" "tinyclouds_org_passthrough"`) {
+		t.Fatalf("hcl missing generated passthrough credential:\n%s", rule.HCL)
+	}
+	if !strings.Contains(rule.HCL, `credentials = [passthrough.tinyclouds_org_passthrough]`) {
+		t.Fatalf("hcl missing profile credential claim:\n%s", rule.HCL)
+	}
 	if strings.Contains(rule.HCL, `condition`) {
 		t.Fatalf("host block rule should be catch-all:\n%s", rule.HCL)
 	}
@@ -114,14 +120,27 @@ func TestGenerateRuleSpliceHostCreatesEndpointAndDenyRule(t *testing.T) {
 }
 
 func TestGeneratedSpliceHostBlockRoutesInDefaultProfile(t *testing.T) {
-	g := gatewayWithPolicy(t, fixtureHCL+`
+	g := gatewayWithPolicy(t, `
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+credential "bearer_token" "tok" { endpoint = https.github }
+
 endpoint "https" "tinyclouds_org" {
   hosts = ["tinyclouds.org"]
+}
+
+credential "passthrough" "tinyclouds_org_passthrough" {
+  endpoint = https.tinyclouds_org
 }
 
 rule "block_tinyclouds_org" {
   endpoint = https.tinyclouds_org
   verdict  = "deny"
+}
+
+profile "default" {
+  credentials = [bearer_token.tok, passthrough.tinyclouds_org_passthrough]
 }
 `)
 	ep := runtime.HostEndpoint(g.Policy(), "default", "tinyclouds.org")

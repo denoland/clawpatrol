@@ -1414,14 +1414,125 @@ func revisionForBytes(b []byte) string {
 }
 
 func appendConfigSnippet(current []byte, snippet string) []byte {
+	if mergedCurrent, remainingSnippet, ok := mergeGeneratedProfileCredentials(current, []byte(snippet)); ok {
+		current = mergedCurrent
+		snippet = string(remainingSnippet)
+	}
 	out := make([]byte, 0, len(current)+len(snippet)+4)
 	out = append(out, current...)
 	if len(out) > 0 && out[len(out)-1] != '\n' {
 		out = append(out, '\n')
 	}
+	if strings.TrimSpace(snippet) == "" {
+		return out
+	}
 	out = append(out, '\n')
 	out = append(out, strings.TrimRight(snippet, "\n")...)
 	out = append(out, '\n')
+	return out
+}
+
+// mergeGeneratedProfileCredentials folds any `profile "<name>" {
+// credentials = [...] }` blocks in the snippet into the existing
+// profile blocks in current, returning the updated current and the
+// snippet stripped of those merged blocks. Returns ok=false when
+// nothing was merged so the caller falls back to plain append.
+func mergeGeneratedProfileCredentials(current, snippet []byte) ([]byte, []byte, bool) {
+	currentText := string(current)
+	snippetText := string(snippet)
+	changed := false
+
+	snippetText = generatedProfileCredentialsBlockRE.ReplaceAllStringFunc(snippetText, func(block string) string {
+		m := generatedProfileCredentialsBlockRE.FindStringSubmatch(block)
+		if len(m) != 3 {
+			return block
+		}
+		profile := m[1]
+		addRefs := credentialRefsFromListText(m[2])
+		if len(addRefs) == 0 {
+			return block
+		}
+		updated, ok := mergeProfileCredentialRefs(currentText, profile, addRefs)
+		if !ok {
+			return block
+		}
+		currentText = updated
+		changed = true
+		return ""
+	})
+
+	if !changed {
+		return current, snippet, false
+	}
+	return []byte(currentText), []byte(strings.TrimSpace(snippetText)), true
+}
+
+var generatedProfileCredentialsBlockRE = regexp.MustCompile(`(?ms)\n*profile\s+"([^"]+)"\s*\{\s*credentials\s*=\s*\[([^\]]*)\]\s*\}\s*`)
+
+func mergeProfileCredentialRefs(current, profile string, addRefs []string) (string, bool) {
+	profileName := regexp.QuoteMeta(profile)
+	oneLineRE := regexp.MustCompile(`(?m)^(\s*profile\s+"` + profileName + `"\s*\{\s*)([^{}\n]*?)(\s*\}\s*)$`)
+	if loc := oneLineRE.FindStringSubmatchIndex(current); loc != nil {
+		body := strings.TrimSpace(current[loc[4]:loc[5]])
+		existing := credentialRefsFromProfileBody(body)
+		refs := mergeRefLists(existing, addRefs)
+		var replacement strings.Builder
+		replacement.WriteString(`profile "` + profile + `" {` + "\n")
+		if body != "" && !profileCredentialsLineRE.MatchString(body) {
+			replacement.WriteString("  " + body + "\n")
+		}
+		replacement.WriteString("  credentials = [" + strings.Join(refs, ", ") + "]\n")
+		replacement.WriteString("}")
+		return current[:loc[0]] + replacement.String() + current[loc[1]:], true
+	}
+
+	blockRE := regexp.MustCompile(`(?ms)(profile\s+"` + profileName + `"\s*\{\n)(.*?)(\n\})`)
+	loc := blockRE.FindStringSubmatchIndex(current)
+	if loc == nil {
+		return current, false
+	}
+	body := current[loc[4]:loc[5]]
+	existing := credentialRefsFromProfileBody(body)
+	refs := mergeRefLists(existing, addRefs)
+	if profileCredentialsLineRE.MatchString(body) {
+		body = profileCredentialsLineRE.ReplaceAllString(body, "  credentials = ["+strings.Join(refs, ", ")+"]")
+	} else {
+		body = strings.TrimRight(body, "\n") + "\n  credentials = [" + strings.Join(refs, ", ") + "]"
+	}
+	return current[:loc[4]] + body + current[loc[5]:], true
+}
+
+var profileCredentialsLineRE = regexp.MustCompile(`(?m)^\s*credentials\s*=\s*\[([^\]]*)\]`)
+
+func credentialRefsFromProfileBody(body string) []string {
+	m := profileCredentialsLineRE.FindStringSubmatch(body)
+	if len(m) != 2 {
+		return nil
+	}
+	return credentialRefsFromListText(m[1])
+}
+
+func credentialRefsFromListText(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		ref := strings.TrimSpace(part)
+		if ref != "" {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func mergeRefLists(existing, added []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(existing)+len(added))
+	for _, ref := range append(existing, added...) {
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
 	return out
 }
 
