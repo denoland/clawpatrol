@@ -8,11 +8,13 @@ import {
   type Integration,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
+import { Button } from "./Button";
 import { HITLBar } from "./HITLBar";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
 import { DeviceIcon } from "./Logos";
 import { Main } from "./Main";
+import { Modal } from "./Modal";
 import { PageTitle } from "./PageTitle";
 import { RulesPanel } from "./RulesPanel";
 import { SessionsTable } from "./SessionsTable";
@@ -39,6 +41,7 @@ export function DevicePage({
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
+  const [pendingProfile, setPendingProfile] = useState<string | null>(null);
   // Per-profile credential list — server-filters to only the
   // credentials referenced by endpoints in this device's profile,
   // so a "writer" device doesn't see the readonly's pg-cred and vice
@@ -106,18 +109,10 @@ export function DevicePage({
               profiles={profiles}
               saving={profileSaving}
               err={profileErr}
-              onPick={async (next) => {
+              onPick={(next) => {
                 if (!next || next === a.profile) return;
-                setProfileSaving(true);
                 setProfileErr(null);
-                try {
-                  await setDeviceProfile(a.ip, next);
-                  onRefresh();
-                } catch (err: any) {
-                  setProfileErr(String(err.message ?? err));
-                } finally {
-                  setProfileSaving(false);
-                }
+                setPendingProfile(next);
               }}
             />
             <a
@@ -241,7 +236,111 @@ export function DevicePage({
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />
+
+      {pendingProfile && (
+        <ConfirmProfileChange
+          deviceLabel={a.hostname || a.ip}
+          current={a.profile ?? ""}
+          next={pendingProfile}
+          saving={profileSaving}
+          onCancel={() => setPendingProfile(null)}
+          onConfirm={async () => {
+            setProfileSaving(true);
+            setProfileErr(null);
+            try {
+              await setDeviceProfile(a.ip, pendingProfile);
+              setPendingProfile(null);
+              onRefresh();
+            } catch (err: any) {
+              setProfileErr(String(err.message ?? err));
+            } finally {
+              setProfileSaving(false);
+            }
+          }}
+        />
+      )}
     </Main>
+  );
+}
+
+function ConfirmProfileChange({
+  deviceLabel,
+  current,
+  next,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  deviceLabel: string;
+  current: string;
+  next: string;
+  saving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const matches = typed.trim() === next;
+  return (
+    <Modal title="Change profile" size="sm" onClose={saving ? () => {} : onCancel}>
+      <div className="p-4 space-y-4">
+        <p className="text-sm text-text">
+          You are about to change the profile for <span className="font-mono">{deviceLabel}</span>{" "}
+          from <span className="font-mono">{current || "—"}</span> to{" "}
+          <span className="font-mono">{next}</span>.
+        </p>
+        <div className="text-xs text-text-muted space-y-2 border-l-2 border-rust-400 pl-3">
+          <p>
+            The profile dictates which credentials this device can use and which rules apply to its
+            traffic. Switching profiles can immediately grant new access or revoke existing access.
+          </p>
+          <p>Do not change profiles unless you know what this device should reach.</p>
+        </div>
+        <label className="block space-y-1">
+          <span className="text-2xs font-mono uppercase tracking-wider text-text-muted">
+            Type <span className="text-text normal-case tracking-normal">{next}</span> to confirm
+          </span>
+          <input
+            autoFocus
+            type="text"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={saving}
+            spellCheck={false}
+            autoComplete="off"
+            className={
+              "w-full px-2 py-1 border-1.5 bg-canvas text-sm font-mono " +
+              "focus:outline-none disabled:opacity-50 " +
+              (matches ? "border-success-500" : "border-navy")
+            }
+          />
+        </label>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="outline" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={!matches || saving}>
+            <span className="inline-flex items-center gap-2">
+              {saving && (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  className="animate-spin"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              )}
+              {saving ? "Switching" : "Switch profile"}
+            </span>
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
