@@ -1947,10 +1947,13 @@ func (w *countWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-const maxHTTPMatchBody = 1 << 20
+// maxHTTPMatchBody is the default rules-engine body cap. The live cap
+// comes from gateway.limits.body_buffer (config.BodyBufferLimit); this
+// constant remains the fallback and matches that field's default.
+const maxHTTPMatchBody = int(config.DefaultBodyBufferLimit)
 
-func bufferHTTPBodyForMatch(req *http.Request) []byte {
-	b, _ := bufferHTTPBodyForMatchTruncated(req)
+func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
+	b, _ := bufferHTTPBodyForMatchTruncated(req, capBytes)
 	return b
 }
 
@@ -1962,21 +1965,21 @@ func bufferHTTPBodyForMatch(req *http.Request) []byte {
 // maxHTTPMatchBody; callers stash this on match.Request.Truncated so
 // the dispatcher can fail-close rules that read http.body /
 // http.body_json.
-func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated bool) {
+func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []byte, truncated bool) {
 	if req.Body == nil {
 		return nil, false
 	}
-	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody+1))
+	b, err := io.ReadAll(io.LimitReader(req.Body, int64(capBytes)+1))
 	if err != nil {
 		return nil, false
 	}
-	if len(b) > maxHTTPMatchBody {
+	if len(b) > capBytes {
 		// Pulled one byte past the cap — body is over-sized. Keep
 		// the cap-sized prefix as the matcher's view; re-attach the
 		// full read (including the probe byte) in front of the
 		// remaining stream so the upstream forward stays byte-exact.
 		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-		return b[:maxHTTPMatchBody], true
+		return b[:capBytes], true
 	}
 	// Body fit inside the cap (or was exactly cap bytes). Re-attach
 	// what we read — req.Body may still hold bytes past it on a
@@ -2056,7 +2059,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		var truncated bool
 		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
-			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req)
+			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req, g.cfg.BodyBufferLimit())
 		}
 
 		mreq := &match.Request{
@@ -2444,7 +2447,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" {
-			trackedReqBody = bufferHTTPBodyForMatch(req)
+			trackedReqBody = bufferHTTPBodyForMatch(req, g.cfg.BodyBufferLimit())
 		}
 		// Pre-create session from the request body so streaming SSE
 		// responses (codex /backend-api/codex/responses, anthropic
@@ -2459,7 +2462,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
 			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
 		}
-		reqS := newSampler(4096)
+		reqS := newSampler(g.cfg.BodyStorageLimit())
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
@@ -2498,7 +2501,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
 		}
-		respS := newSampler(4096)
+		respS := newSampler(g.cfg.BodyStorageLimit())
 		resp.Body = wrapBodySampler(resp.Body, respS)
 		// Close-delimited responses (no Content-Length, no Transfer-
 		// Encoding) come from h2 upstreams that we forced to http/1.1

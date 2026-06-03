@@ -2433,6 +2433,17 @@ func (s *sampler) sha() string {
 	return hex.EncodeToString(s.hash.Sum(nil))
 }
 
+// bodyTruncatedMarker is appended to a persisted body sample when the
+// full body exceeded the actions-table cap, so the dashboard can render
+// a "truncated" badge instead of pretending the prefix is the whole
+// body. The marker is a fixed ASCII sentinel the dashboard strips before
+// parsing/rendering; see HttpBody in dashboard RequestDetailPage.tsx.
+const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
+
+// truncated reports whether the sampler saw more bytes than it kept,
+// i.e. the persisted sample is a prefix of the real body.
+func (s *sampler) truncated() bool { return s.n > int64(s.cap) }
+
 // sample returns the audit-log preview of the captured body. When
 // encoding names a compression we know how to decode (gzip, br,
 // deflate, zstd), the buffered prefix is decompressed first so a
@@ -2440,14 +2451,26 @@ func (s *sampler) sha() string {
 // it's still on the wire compressed.
 func (s *sampler) sample(encoding string) string {
 	if s.buf.Len() == 0 {
+		// An empty buffer with bytes counted means the cap was 0 (or the
+		// body never reached the buffer); still flag truncation so the
+		// dashboard doesn't render a capped body as the full thing.
+		if s.truncated() {
+			return bodyTruncatedMarker
+		}
 		return ""
 	}
 	raw := s.buf.Bytes()
 	body := maybeDecode(raw, encoding)
+	var out string
 	if isPrintable(body) {
-		return string(body)
+		out = string(body)
+	} else {
+		out = "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 	}
-	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
+	if s.truncated() {
+		out += bodyTruncatedMarker
+	}
+	return out
 }
 
 const (

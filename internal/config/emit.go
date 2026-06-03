@@ -200,6 +200,16 @@ func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
 	}
 	setStr("session_keep", s.SessionKeep)
 
+	if s.Limits != nil {
+		bl := gw.AppendNewBlock("limits", nil).Body()
+		if s.Limits.BodyBuffer != "" {
+			bl.SetAttributeValue("body_buffer", cty.StringVal(s.Limits.BodyBuffer))
+		}
+		if s.Limits.BodyStorage != "" {
+			bl.SetAttributeValue("body_storage", cty.StringVal(s.Limits.BodyStorage))
+		}
+	}
+
 	if s.WireGuard != nil {
 		emitWireGuardBlock(gw, s.WireGuard)
 	}

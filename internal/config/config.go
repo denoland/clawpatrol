@@ -177,6 +177,12 @@ type GatewaySettings struct {
 	// time.ParseDuration format.
 	SessionKeep string `hcl:"session_keep,optional"`
 
+	// Limits, if present, overrides the two gateway-wide body-size
+	// limits (rules-engine body buffer and persisted action body
+	// storage). nil uses the DefaultBody*Limit constants, which match
+	// today's hardcoded behavior.
+	Limits *LimitsBlock `hcl:"limits,block"`
+
 	// WireGuard, if present, enables the embedded userspace WireGuard
 	// server. Required block when running WG-mode deployments.
 	WireGuard *WireGuardBlock `hcl:"wireguard,block"`
@@ -958,6 +964,8 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 			})
 		}
 	}
+
+	diags = append(diags, validateLimits(gw.Settings.Limits)...)
 
 	return diags
 }

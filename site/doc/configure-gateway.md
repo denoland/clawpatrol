@@ -205,6 +205,39 @@ so off-tailnet devices can join and OAuth callbacks can land. **The
 dashboard itself is not Funnel-reachable** — Funnel does not replace
 the tailnet (or SSH) path for operator access.
 
+## Body size limits
+
+The gateway buffers request and response bodies for two independent
+purposes, each with its own size limit. Both live in an optional
+`limits {}` block inside `gateway {}` and accept human-readable size
+strings (`B`, `KiB`, `MiB`, `GiB` — all binary, so `1KiB` = 1024 bytes;
+a bare number is bytes):
+
+```hcl
+gateway {
+  limits {
+    body_buffer  = "1MiB"  # buffer at most this much before the rules engine sees it
+    body_storage = "4KiB"  # keep at most this much when persisting an action
+  }
+}
+```
+
+| Field | Default | What it bounds |
+|-------|---------|----------------|
+| `body_buffer` | `1MiB` (1048576 bytes) | The hot-path buffer the rules engine matches against (`http.body` / `http.body_json`). Every request pays this. Larger means rules can match more body at the cost of latency and memory; bodies past the cap are matched on the prefix and flagged truncated so body-reading rules fail closed. |
+| `body_storage` | `4KiB` (4096 bytes) | The body sample persisted per action for the audit log shown on the action details page. Cold storage, per action. Larger means more useful debugging at the cost of disk and database size. |
+
+Both fields are optional; omitting the block (or either field) keeps
+today's defaults, so existing configs are unaffected. The two limits are
+independent — a deployment may deliberately log more than it
+rule-matches, or vice versa. If `body_buffer` is set smaller than
+`body_storage` the gateway loads but emits a warning, since the rules
+engine would then see less of the body than is persisted.
+
+When a persisted body is truncated to the `body_storage` cap, the
+action details page renders a **truncated** badge on that body section
+so you know you are looking at a prefix, not the whole body.
+
 ## Run under systemd
 
 For anything beyond a quick test, run the gateway as a dedicated
