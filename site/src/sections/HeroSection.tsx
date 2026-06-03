@@ -1,4 +1,3 @@
-import { FlowDiagram } from "../components/FlowDiagram";
 import { InstallTerminal } from "../components/InstallTerminal";
 
 // Single source of truth for the hero H1 and the page <title>.
@@ -15,8 +14,8 @@ export function HeroSection() {
       pt-16 sm:pt-28 pb-16"
     >
       <div
-        class="grid md:grid-cols-2 gap-10
-        md:gap-16 items-center"
+        class="grid md:grid-cols-[5fr_7fr] gap-10
+        md:gap-12 items-center"
       >
         <div class="min-w-0">
           <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-6 font-display text-balance text-text">
@@ -39,8 +38,16 @@ export function HeroSection() {
           <InstallTerminal />
         </div>
 
-        <div class="flex md:justify-center w-full mt-16 md:mt-0 min-w-0">
-          <FlowDiagram />
+        <div class="w-full mt-16 md:mt-0 min-w-0">
+          <video
+            src="/clawpatrol-demo3.mp4"
+            autoPlay
+            loop
+            muted
+            playsInline
+            class="w-full h-auto border border-navy squircle-lg shadow-[4px_6px_0_0_var(--color-canvas-300)]"
+            aria-label="Claw Patrol demo screencast"
+          />
         </div>
       </div>
     </section>
