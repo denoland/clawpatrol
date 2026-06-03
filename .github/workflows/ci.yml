@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Belt-and-suspenders: the gateway's 30s telemetry grace already shields
+# short-lived CI invocations, but set DO_NOT_TRACK so any future job that
+# runs the binary longer can't pollute the active-gateway count.
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
