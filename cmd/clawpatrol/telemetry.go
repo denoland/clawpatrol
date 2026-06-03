@@ -65,6 +65,11 @@ type updateBanner struct {
 var currentUpdateBanner atomic.Pointer[updateBanner]
 
 func telemetryEnabled(cfg *config.Gateway) bool {
+	// Dev builds (no -ldflags version stamp) never ping. Keeps local
+	// `go run` and `make run` out of the active-gateway count.
+	if buildVersion == "dev" {
+		return false
+	}
 	if os.Getenv("DO_NOT_TRACK") == "1" {
 		return false
 	}

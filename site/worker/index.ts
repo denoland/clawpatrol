@@ -72,6 +72,13 @@ async function handleCheck(
     return new Response(null, { status: 400 });
   }
 
+  // Dev builds (unreleased local binaries) are not real installs.
+  // Drop the ping silently so they don't show up in active counts.
+  // The Go client already skips sending; this guards legacy binaries.
+  if (version === "dev") {
+    return new Response(null, { status: 204 });
+  }
+
   const now = Math.floor(Date.now() / 1000);
   await env.TELEMETRY_DB.prepare(
     `INSERT INTO gateways (
