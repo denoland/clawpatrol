@@ -104,7 +104,11 @@ type KubernetesPortForwardTunnel struct {
 
 	// Cleanup controls whether a template-created pod is deleted on tunnel
 	// teardown. "delete" (default) is right for the common create-on-demand
-	// case; "keep" disables deletion.
+	// case; "keep" disables deletion. Created pods are stamped with
+	// `clawpatrol.dev/managed-by=clawpatrol` and `clawpatrol.dev/tunnel=<name>`
+	// labels; unless cleanup is "keep", a startup sweep deletes any pod
+	// carrying those labels that a previous daemon lifetime left behind
+	// (e.g. after a crash skipped graceful teardown).
 	Cleanup string `hcl:"cleanup,optional"`
 
 	// Server is the Kubernetes apiserver URL. When set the plugin
@@ -165,19 +169,46 @@ func (*KubernetesPortForwardTunnel) Sharing() runtime.TunnelSharing {
 // Open resolves the target, starts a `kubectl port-forward`
 // subprocess, and parses its stdout for the bound local port.
 func (t *KubernetesPortForwardTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ runtime.Tunnel) (runtime.Tunnel, error) {
-	logger := host.Logger
-	if logger == nil {
-		logger = log.Default()
-	}
 	if err := t.validateModes(); err != nil {
 		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
 	}
-	if _, err := exec.LookPath("kubectl"); err != nil {
+	if err := lookupKubectl(); err != nil {
 		return nil, fmt.Errorf(
 			"kubernetes_port_forward/%s: `kubectl` not found in $PATH — "+
 				"install it (https://kubernetes.io/docs/tasks/tools/) and "+
 				"make sure it's on the gateway's PATH",
 			host.Name)
+	}
+	rt, err := t.newRuntime(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+	}
+	target, err := t.resolveTarget(ctx, rt)
+	if err != nil {
+		_ = rt.cleanupCreatedPod(context.Background())
+		rt.removeKubeconfig()
+		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+	}
+	if err := rt.startPortForward(ctx, target, t.Port); err != nil {
+		_ = rt.cleanupCreatedPod(context.Background())
+		rt.removeKubeconfig()
+		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+	}
+	rt.logger.Printf("kubernetes_port_forward/%s: forwarding %s/%s → %s",
+		host.Name, rt.ns, target, rt.localAddr)
+	return rt, nil
+}
+
+// newRuntime builds the request-time runtime struct shared by Open and
+// ReconcileOrphans: it resolves the namespace default and, when the
+// plugin owns its kubeconfig (Server set), mints the EKS bearer and
+// writes a per-tunnel kubeconfig plus the reauth closure that re-mints
+// it on demand. Callers that materialise a kubeconfig must call
+// rt.removeKubeconfig() when done.
+func (t *KubernetesPortForwardTunnel) newRuntime(ctx context.Context, host runtime.TunnelHost) (*kubernetesPortForwardTunnel, error) {
+	logger := host.Logger
+	if logger == nil {
+		logger = log.Default()
 	}
 	ns := t.Namespace
 	if ns == "" {
@@ -191,81 +222,87 @@ func (t *KubernetesPortForwardTunnel) Open(ctx context.Context, host runtime.Tun
 		cleanup: t.Cleanup != "keep",
 	}
 	if t.Server != "" {
-		path, err := t.writeKubeconfig(ctx, host)
+		path, reauth, err := t.writeKubeconfig(ctx, host)
 		if err != nil {
-			return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+			return nil, err
 		}
 		rt.kubeconfig = path
+		rt.reauth = reauth
 		// Context (kubeconfig context name) is meaningless once we own
 		// the kubeconfig — clear it so kctlArgs doesn't double up with
 		// a --context flag.
 		rt.ctx = ""
 	}
-	target, err := t.resolveTarget(ctx, rt)
-	if err != nil {
-		rt.cleanupCreatedPod(context.Background())
-		rt.removeKubeconfig()
-		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
-	}
-	if err := rt.startPortForward(ctx, target, t.Port); err != nil {
-		rt.cleanupCreatedPod(context.Background())
-		rt.removeKubeconfig()
-		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
-	}
-	logger.Printf("kubernetes_port_forward/%s: forwarding %s/%s → %s",
-		host.Name, ns, target, rt.localAddr)
 	return rt, nil
 }
 
 // writeKubeconfig materialises a self-contained kubeconfig (server +
-// ca + bearer) backed by the bound credential, and returns the temp
-// file path. EKS bearer tokens have a 15-minute TTL (60s when minted
-// the way aws-cli does it), but kubectl's port-forward holds open one
-// authenticated session for its whole lifetime — the bearer's only
-// consumed at handshake, so a single mint per Open() is fine.
-func (t *KubernetesPortForwardTunnel) writeKubeconfig(ctx context.Context, host runtime.TunnelHost) (string, error) {
+// ca + bearer) backed by the bound credential. It returns the temp
+// file path plus a reauth closure that re-mints a fresh bearer and
+// rewrites the file in place.
+//
+// Why reauth exists: an EKS bearer embeds a presigned STS URL valid for
+// only ~60 seconds (see eksPresignMiddleware's X-Amz-Expires=60).
+// `kubectl port-forward` consumes the bearer once at handshake — within
+// 60s of Open — and then holds the session, so the long-lived forward
+// is fine with a single mint. But cleanupCreatedPod (and the startup
+// reconcile sweep) make a *fresh* `kubectl delete` call long after Open,
+// when the cached bearer has expired; without re-minting that delete
+// 401s, the error is swallowed, and the pod leaks. reauth lets those
+// late callers refresh the token before they shell out.
+func (t *KubernetesPortForwardTunnel) writeKubeconfig(ctx context.Context, host runtime.TunnelHost) (string, func(context.Context) error, error) {
 	if t.CACert == "" {
-		return "", errors.New("`server` set without `ca_cert`; inline the cluster CA (or `<<file:cluster-ca.pem>>`) so kubectl can verify the apiserver")
+		return "", nil, errors.New("`server` set without `ca_cert`; inline the cluster CA (or `<<file:cluster-ca.pem>>`) so kubectl can verify the apiserver")
 	}
 	if host.Credential == nil {
-		return "", errors.New("`server` is set but no `credential` is bound; kubectl can't authenticate")
+		return "", nil, errors.New("`server` is set but no `credential` is bound; kubectl can't authenticate")
 	}
 	minter, ok := host.Credential.Body.(runtime.EKSBearerMinter)
 	if !ok {
-		return "", fmt.Errorf("credential %q (%s) does not implement EKSBearerMinter — bind an `aws_credential`",
+		return "", nil, fmt.Errorf("credential %q (%s) does not implement EKSBearerMinter — bind an `aws_credential`",
 			host.Credential.Name, host.Credential.Type)
 	}
 	if t.ClusterName == "" || t.Region == "" {
-		return "", errors.New("`server` is set against an EKS-auth credential, so `cluster_name` + `region` are required")
+		return "", nil, errors.New("`server` is set against an EKS-auth credential, so `cluster_name` + `region` are required")
 	}
-	sec, err := host.SecretStore.Get(host.Credential.Name)
-	if err != nil {
-		return "", fmt.Errorf("fetch credential secret %q: %w", host.Credential.Name, err)
-	}
-	bearer, err := minter.MintEKSBearer(ctx, sec, t.Region, t.ClusterName)
-	if err != nil {
-		return "", fmt.Errorf("mint EKS bearer: %w", err)
-	}
-	yaml := buildEKSKubeconfig(t.Server, t.CACert, bearer)
 	dir := filepath.Join(host.StateDir, "tunnels", "kubernetes_port_forward")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+		return "", nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	f, err := os.CreateTemp(dir, host.Name+"-kubeconfig-*.yaml")
 	if err != nil {
-		return "", fmt.Errorf("create kubeconfig temp: %w", err)
+		return "", nil, fmt.Errorf("create kubeconfig temp: %w", err)
 	}
-	if _, err := f.Write([]byte(yaml)); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("write kubeconfig: %w", err)
-	}
+	path := f.Name()
 	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("close kubeconfig: %w", err)
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("close kubeconfig: %w", err)
 	}
-	_ = os.Chmod(f.Name(), 0o600)
-	return f.Name(), nil
+	_ = os.Chmod(path, 0o600)
+
+	credName := host.Credential.Name
+	secrets := host.SecretStore
+	reauth := func(ctx context.Context) error {
+		// Re-fetch the secret each mint so credential rotation is
+		// picked up without re-Opening the tunnel.
+		sec, err := secrets.Get(credName)
+		if err != nil {
+			return fmt.Errorf("fetch credential secret %q: %w", credName, err)
+		}
+		bearer, err := minter.MintEKSBearer(ctx, sec, t.Region, t.ClusterName)
+		if err != nil {
+			return fmt.Errorf("mint EKS bearer: %w", err)
+		}
+		if err := os.WriteFile(path, []byte(buildEKSKubeconfig(t.Server, t.CACert, bearer)), 0o600); err != nil {
+			return fmt.Errorf("write kubeconfig: %w", err)
+		}
+		return nil
+	}
+	if err := reauth(ctx); err != nil {
+		_ = os.Remove(path)
+		return "", nil, err
+	}
+	return path, reauth, nil
 }
 
 // buildEKSKubeconfig produces a minimal v1 kubeconfig with cluster
@@ -437,9 +474,18 @@ func kctlArgs(kubeconfig, kctx, ns string, args ...string) []string {
 	return append(out, args...)
 }
 
+// lookupKubectl reports whether `kubectl` is on PATH. A package var so
+// tests can exercise the kubectl-driven paths without the binary
+// installed.
+var lookupKubectl = func() error {
+	_, err := exec.LookPath("kubectl")
+	return err
+}
+
 // runKubectl runs `kubectl ARGS...` and returns its stdout. Stderr
-// is folded into the returned error on failure.
-func runKubectl(ctx context.Context, args []string) (string, error) {
+// is folded into the returned error on failure. It's a package var so
+// tests can stub the kubectl boundary without a live cluster.
+var runKubectl = func(ctx context.Context, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -461,6 +507,13 @@ type kubernetesPortForwardTunnel struct {
 	ctx        string // kubectl --context (skipped when kubeconfig is set)
 	kubeconfig string // kubectl --kubeconfig path, or "" to fall back to KUBECONFIG / ~/.kube/config
 	ns         string
+
+	// reauth re-mints the EKS bearer and rewrites the kubeconfig in
+	// place. nil when the plugin uses an external kubeconfig (no Server
+	// set) — there's no bearer to refresh. Late kubectl calls (pod
+	// delete on Close, reconcile sweep) invoke it first because the
+	// bearer minted at Open expires after ~60s.
+	reauth func(context.Context) error
 
 	// createdPod, if non-empty, is the name of a pod the plugin
 	// applied at Open and should delete on Close (when cleanup=true).
@@ -490,9 +543,15 @@ func (t *kubernetesPortForwardTunnel) removeKubeconfig() {
 // --for=condition=Ready`. Returns the resolved pod name (which may
 // differ from doc.name when `generateName` is used).
 func (t *kubernetesPortForwardTunnel) applyAndWait(ctx context.Context, doc *podDoc) (string, error) {
+	// Stamp the Clawpatrol-managed labels so the startup reconcile sweep
+	// can find and delete pods orphaned by a previous daemon lifetime.
+	raw, err := injectManagedLabels(doc.raw, t.name)
+	if err != nil {
+		return "", fmt.Errorf("label pod template: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, "kubectl",
 		kctlArgs(t.kubeconfig, t.ctx, t.ns, "create", "-f", "-", "-o", "name")...)
-	cmd.Stdin = strings.NewReader(doc.raw)
+	cmd.Stdin = strings.NewReader(raw)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -591,27 +650,147 @@ func (t *kubernetesPortForwardTunnel) Dial(ctx context.Context, network, _ strin
 }
 
 func (t *kubernetesPortForwardTunnel) Close() error {
+	var err error
 	t.once.Do(func() {
 		t.killPF()
-		t.cleanupCreatedPod(context.Background())
+		err = t.cleanupCreatedPod(context.Background())
 		t.removeKubeconfig()
 	})
-	return nil
+	return err
 }
 
-func (t *kubernetesPortForwardTunnel) cleanupCreatedPod(ctx context.Context) {
+// cleanupCreatedPod deletes the template-created pod, returning (not
+// swallowing) any failure so the manager's CloseAll surfaces it. The
+// createdPod name is cleared only on success: a failed delete keeps the
+// name so the leak is observable in logs and the startup reconcile sweep
+// (which matches on the managed labels) can mop it up next boot.
+func (t *kubernetesPortForwardTunnel) cleanupCreatedPod(ctx context.Context) error {
 	if t.createdPod == "" {
-		return
+		return nil
 	}
 	name := t.createdPod
-	t.createdPod = ""
 	t.logger.Printf("kubernetes_port_forward/%s: deleting pod %s/%s", t.name, t.ns, name)
 	delCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// Re-mint the bearer first: the kubeconfig written at Open carries a
+	// ~60s presigned STS URL, long expired by the time a tunnel closes.
+	// Without this the delete 401s and the pod leaks. Best-effort — an
+	// external kubeconfig (no Server set) has no reauth and authenticates
+	// on its own.
+	if t.reauth != nil {
+		if err := t.reauth(delCtx); err != nil {
+			t.logger.Printf("kubernetes_port_forward/%s: re-mint bearer for pod delete failed: %v", t.name, err)
+		}
+	}
 	args := kctlArgs(t.kubeconfig, t.ctx, t.ns, "delete", "pod/"+name, "--wait=false")
 	if _, err := runKubectl(delCtx, args); err != nil {
-		t.logger.Printf("kubernetes_port_forward/%s: delete pod failed: %v", t.name, err)
+		t.logger.Printf("kubernetes_port_forward/%s: delete pod %s/%s failed: %v", t.name, t.ns, name, err)
+		return fmt.Errorf("delete pod %s/%s: %w", t.ns, name, err)
 	}
+	t.createdPod = ""
+	return nil
+}
+
+// Managed-pod labels. The plugin stamps these on every
+// template-created pod so a freshly-started gateway can find and delete
+// pods orphaned by a previous lifetime (a SIGKILL / OOM / panic skips
+// the SIGTERM-driven CloseAll, leaving the pod behind with no live
+// owner). managedByLabelKey scopes the sweep to Clawpatrol; tunnelLabel
+// scopes it to one tunnel so a sweep only ever touches pods its own
+// config declares.
+const (
+	managedByLabelKey = "clawpatrol.dev/managed-by"
+	managedByLabelVal = "clawpatrol"
+	tunnelLabelKey    = "clawpatrol.dev/tunnel"
+)
+
+// managedBySelector renders the label selector matching pods this
+// tunnel created.
+func managedBySelector(tunnelName string) string {
+	return managedByLabelKey + "=" + managedByLabelVal + "," + tunnelLabelKey + "=" + tunnelName
+}
+
+// injectManagedLabels round-trips the pod manifest through YAML to set
+// metadata.labels[managed-by] + [tunnel] without disturbing the rest of
+// the operator's template. Done programmatically (not by string
+// splicing) so it survives any template shape — labels present or
+// absent, metadata present or absent.
+func injectManagedLabels(raw, tunnelName string) (string, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return "", fmt.Errorf("decode pod yaml: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	meta, ok := doc["metadata"].(map[string]any)
+	if !ok || meta == nil {
+		meta = map[string]any{}
+		doc["metadata"] = meta
+	}
+	labels, ok := meta["labels"].(map[string]any)
+	if !ok || labels == nil {
+		labels = map[string]any{}
+		meta["labels"] = labels
+	}
+	labels[managedByLabelKey] = managedByLabelVal
+	labels[tunnelLabelKey] = tunnelName
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("encode pod yaml: %w", err)
+	}
+	return string(out), nil
+}
+
+// ReconcileOrphans sweeps template-created pods left behind by a
+// previous daemon lifetime. The host calls it once at startup (after
+// config load) for every tunnel; it's a no-op for non-template modes
+// and when cleanup is disabled. It lists pods carrying this tunnel's
+// managed labels and deletes each one by name from that snapshot — safe
+// to run concurrently with serving because a pod created after the list
+// (a fresh generateName) can't appear in the snapshot, so a live
+// forward is never torn out from under itself.
+//
+// Default-on: any template tunnel with cleanup != "keep" is swept. This
+// catches both the daemon-crash case and any pods that leaked before
+// this fix shipped.
+func (t *KubernetesPortForwardTunnel) ReconcileOrphans(ctx context.Context, host runtime.TunnelHost) error {
+	if t.Template == "" || t.Cleanup == "keep" {
+		return nil
+	}
+	if err := lookupKubectl(); err != nil {
+		// No kubectl means Open would fail too; stay quiet at startup.
+		return nil
+	}
+	rt, err := t.newRuntime(ctx, host)
+	if err != nil {
+		return fmt.Errorf("kubernetes_port_forward/%s: reconcile: %w", host.Name, err)
+	}
+	defer rt.removeKubeconfig()
+
+	sel := managedBySelector(host.Name)
+	listArgs := kctlArgs(rt.kubeconfig, rt.ctx, rt.ns, "get", "pods", "-l", sel, "-o", "name")
+	out, err := runKubectl(ctx, listArgs)
+	if err != nil {
+		return fmt.Errorf("kubernetes_port_forward/%s: list orphan pods (%s): %w", host.Name, sel, err)
+	}
+	names := strings.Fields(strings.TrimSpace(out))
+	if len(names) == 0 {
+		return nil
+	}
+	var firstErr error
+	for _, raw := range names {
+		name := strings.TrimPrefix(raw, "pod/")
+		rt.logger.Printf("kubernetes_port_forward/%s: reconcile deleting orphan pod %s/%s", host.Name, rt.ns, name)
+		delArgs := kctlArgs(rt.kubeconfig, rt.ctx, rt.ns, "delete", "pod/"+name, "--wait=false")
+		if _, err := runKubectl(ctx, delArgs); err != nil {
+			rt.logger.Printf("kubernetes_port_forward/%s: reconcile delete pod %s/%s failed: %v", host.Name, rt.ns, name, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete orphan pod %s/%s: %w", rt.ns, name, err)
+			}
+		}
+	}
+	return firstErr
 }
 
 func init() {

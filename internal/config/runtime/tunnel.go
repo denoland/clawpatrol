@@ -101,6 +101,20 @@ type TunnelDisconnector interface {
 	Disconnect(ctx context.Context) error
 }
 
+// TunnelReconciler is an optional interface a tunnel plugin implements
+// when it leaves out-of-band cluster state (e.g. a kubectl-created jump
+// pod) that a daemon crash can orphan. The host calls ReconcileOrphans
+// once at startup, after config load and before serving, for every
+// declared tunnel — the plugin sweeps resources it owns that no live
+// tunnel references. Best-effort: a returned error is logged, not fatal.
+//
+// Only safe to call at startup, when no tunnel instance is live: a
+// running gateway may legitimately own pods a sweep would otherwise
+// delete.
+type TunnelReconciler interface {
+	ReconcileOrphans(ctx context.Context, host TunnelHost) error
+}
+
 // TunnelHost bundles host-side dependencies a tunnel plugin's Open
 // callback may need. Kept narrow so plugin packages don't have to
 // import the gateway main package.

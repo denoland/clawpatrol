@@ -148,19 +148,7 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 			e.openErr = fmt.Errorf("tunnel %q: body %T does not implement TunnelRuntime", ct.Name, ct.Body)
 			return
 		}
-		host := runtime.TunnelHost{
-			Name:        ct.Name,
-			SecretStore: m.secrets,
-			StateDir:    m.stateDir,
-			Logger:      log.New(log.Writer(), "tunnel/"+ct.Name+": ", log.LstdFlags),
-		}
-		if ct.Credential != nil {
-			host.Credential = &runtime.TunnelCredential{
-				Name: ct.Credential.Symbol.Name,
-				Type: ct.Credential.Plugin.Type,
-				Body: ct.Credential.Body,
-			}
-		}
+		host := m.tunnelHost(ct)
 		t, err := body.Open(ctx, host, viaHandle)
 		if err != nil {
 			if viaRelease != nil {
@@ -190,6 +178,47 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 	}
 
 	return wrapTunnel(e.tunnel), m.releaseFunc(mk), nil
+}
+
+// tunnelHost assembles the host-side dependency bundle a plugin's Open
+// (or ReconcileOrphans) callback needs from a compiled tunnel.
+func (m *TunnelManager) tunnelHost(ct *config.CompiledTunnel) runtime.TunnelHost {
+	host := runtime.TunnelHost{
+		Name:        ct.Name,
+		SecretStore: m.secrets,
+		StateDir:    m.stateDir,
+		Logger:      log.New(log.Writer(), "tunnel/"+ct.Name+": ", log.LstdFlags),
+	}
+	if ct.Credential != nil {
+		host.Credential = &runtime.TunnelCredential{
+			Name: ct.Credential.Symbol.Name,
+			Type: ct.Credential.Plugin.Type,
+			Body: ct.Credential.Body,
+		}
+	}
+	return host
+}
+
+// ReconcileOrphans gives every tunnel plugin that implements
+// runtime.TunnelReconciler a chance to sweep out-of-band state a
+// previous daemon lifetime orphaned (e.g. kubectl jump pods left when a
+// SIGKILL skipped CloseAll). Call ONCE at startup, before serving and
+// before any Acquire: a reconciler assumes no tunnel instance is live,
+// so running it on a hot manager could delete pods in active use.
+// Best-effort — per-tunnel failures are logged and skipped.
+func (m *TunnelManager) ReconcileOrphans(ctx context.Context, policy *config.CompiledPolicy) {
+	if m == nil || policy == nil {
+		return
+	}
+	for _, ct := range policy.Tunnels {
+		r, ok := ct.Body.(runtime.TunnelReconciler)
+		if !ok {
+			continue
+		}
+		if err := r.ReconcileOrphans(ctx, m.tunnelHost(ct)); err != nil {
+			log.Printf("tunnel %q: reconcile orphans: %v", ct.Name, err)
+		}
+	}
 }
 
 // shareKey produces the sharing-bucket key for a tunnel + endpoint.

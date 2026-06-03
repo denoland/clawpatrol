@@ -2962,6 +2962,12 @@ func runGateway(args []string) {
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
 	g.tunnels.SetPolicy(context.Background(), policy)
+	// Sweep tunnel pods orphaned by a previous daemon lifetime (a
+	// SIGKILL / OOM / panic skips the SIGTERM-driven CloseAll). Runs in
+	// the background so a slow or unreachable cluster can't stall
+	// startup, and only here at boot — never on reload, when live
+	// tunnels may own pods a sweep would wrongly delete.
+	go g.tunnels.ReconcileOrphans(context.Background(), policy)
 	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
 	// allocator stays empty and ServeUDP / ServeTCP are never called
 	// (no endpoint dispatches port-53 to them). Construct
