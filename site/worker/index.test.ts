@@ -57,6 +57,30 @@ test("rejects oversized telemetry payloads from Content-Length before reading th
   assert.equal(calls.prepare, 0);
 });
 
+test("check ping with version=dev is dropped without touching the DB", async () => {
+  const { env: testEnv, calls } = env();
+  globalThis.fetch = async () => {
+    calls.releaseFetch++;
+    return Response.json({ tag_name: "v1.0.0", html_url: "https://x" });
+  };
+  const res = await worker.fetch(
+    new Request("https://clawpatrol.dev/api/telemetry/v1/check", {
+      method: "POST",
+      body: JSON.stringify({
+        instance_id: "01HZDEV",
+        version: "dev",
+        os: "linux",
+        arch: "amd64",
+      }),
+    }),
+    testEnv,
+  );
+
+  assert.equal(res.status, 204);
+  assert.equal(calls.prepare, 0);
+  assert.equal(calls.releaseFetch, 0);
+});
+
 test("install ping inserts a row and 204s", async () => {
   const { env: testEnv, calls } = env();
   const body = JSON.stringify({
