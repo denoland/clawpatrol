@@ -38,14 +38,14 @@ export function HeroSection() {
           <InstallTerminal />
         </div>
 
-        <div class="w-full mt-16 md:mt-0 min-w-0">
+        <div class="w-full mt-16 md:mt-0 min-w-0 flex md:justify-end">
           <video
             src="/clawpatrol-demo4.mp4"
             autoPlay
             loop
             muted
             playsInline
-            class="w-full h-auto border border-navy squircle-lg shadow-[4px_6px_0_0_var(--color-canvas-300)]"
+            class="w-full md:max-w-[85%] h-auto border border-navy squircle-lg shadow-[4px_6px_0_0_var(--color-canvas-300)]"
             aria-label="Claw Patrol demo screencast"
           />
         </div>
