@@ -23,7 +23,6 @@ type GeneratedRule struct {
 	RuleName              string   `json:"rule_name"`
 	EndpointName          string   `json:"endpoint_name,omitempty"`
 	HCL                   string   `json:"hcl"`
-	Patch                 string   `json:"patch,omitempty"`
 	ConfigRevision        string   `json:"config_revision,omitempty"`
 	DashboardConfigWrites bool     `json:"dashboard_config_writes"`
 	Warnings              []string `json:"warnings,omitempty"`
@@ -73,7 +72,6 @@ func GenerateRuleFromEvent(
 		RuleName:     name,
 		EndpointName: ep.Name,
 		HCL:          hcl,
-		Patch:        generatedAppendPatch("gateway.hcl", hcl),
 		Warnings:     warnings,
 	}, nil
 }
@@ -107,7 +105,6 @@ func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGe
 		RuleName:     ruleName,
 		EndpointName: endpointName,
 		HCL:          hcl,
-		Patch:        generatedAppendPatch("gateway.hcl", hcl),
 		Warnings: []string{
 			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host, claims it from existing profiles via a passthrough credential, and adds a catch-all deny rule.",
 		},
@@ -378,48 +375,3 @@ func celString(s string) string {
 	return strconv.Quote(s)
 }
 
-func generatedAppendPatch(path, hcl string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", path, path)
-	fmt.Fprintf(&b, "--- a/%s\n", path)
-	fmt.Fprintf(&b, "+++ b/%s\n", path)
-	b.WriteString("@@ -0,0 +1 @@\n")
-	for _, line := range strings.Split(strings.TrimRight(hcl, "\n"), "\n") {
-		b.WriteString("+")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func generatedAppendPatchFromBytes(path string, current []byte, hcl string) string {
-	added := strings.Split(strings.TrimRight(string(appendConfigSnippet(current, hcl)), "\n"), "\n")
-	if len(current) > 0 {
-		prefix := strings.Split(strings.TrimRight(string(current), "\n"), "\n")
-		if len(prefix) <= len(added) {
-			added = added[len(prefix):]
-		}
-	}
-	oldLine := 0
-	if len(current) > 0 {
-		oldLine = strings.Count(string(current), "\n")
-		if current[len(current)-1] != '\n' {
-			oldLine++
-		}
-	}
-	newStart := oldLine + 1
-	if oldLine == 0 {
-		newStart = 1
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", path, path)
-	fmt.Fprintf(&b, "--- a/%s\n", path)
-	fmt.Fprintf(&b, "+++ b/%s\n", path)
-	fmt.Fprintf(&b, "@@ -%d,0 +%d,%d @@\n", oldLine, newStart, len(added))
-	for _, line := range added {
-		b.WriteString("+")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-	return b.String()
-}

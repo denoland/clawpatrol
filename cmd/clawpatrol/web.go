@@ -1694,10 +1694,8 @@ func (w *webMux) apiActionRulePreview(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	b, err := os.ReadFile(w.g.cfgPath)
-	if err == nil {
+	if b, err := os.ReadFile(w.g.cfgPath); err == nil {
 		rule.ConfigRevision = revisionForBytes(b)
-		rule.Patch = generatedAppendPatchFromBytes(filepath.Base(w.g.cfgPath), b, rule.HCL)
 	}
 	rule.DashboardConfigWrites = w.g.cfg.DashboardConfigWrites()
 	writeJSON(rw, rule)

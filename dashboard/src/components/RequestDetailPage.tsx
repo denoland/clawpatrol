@@ -326,17 +326,6 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
     }
   }
 
-  async function downloadFixture() {
-    if (!ev.id || !ev.endpoint) return;
-    const blob = await downloadActionFixture(ev.id);
-    downloadBlob(blob, `${ev.id}.json`);
-  }
-
-  function downloadPatch() {
-    if (!preview?.patch) return;
-    downloadBlob(new Blob([preview.patch], { type: "text/plain;charset=utf-8" }), "rule.patch");
-  }
-
   const writesEnabled = !!preview?.dashboard_config_writes;
   const createsEndpoint = !!preview?.endpoint_name && preview.endpoint_name !== ev.endpoint;
   const passthrough = createsEndpoint || ev.mode === "splice";
@@ -421,16 +410,6 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
         {!applied && writesEnabled && (
           <Button variant="outline" disabled={!preview} onClick={copyHCL}>
             Copy HCL
-          </Button>
-        )}
-        {!applied && !writesEnabled && (
-          <Button variant="outline" disabled={!preview?.patch} onClick={downloadPatch}>
-            Download patch
-          </Button>
-        )}
-        {!applied && (
-          <Button variant="outline" disabled={!ev.id || !ev.endpoint} onClick={downloadFixture}>
-            Download fixture
           </Button>
         )}
       </div>
