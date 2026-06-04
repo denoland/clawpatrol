@@ -134,7 +134,7 @@ rule "k8s-no-secrets" {
 | `k8s.resource` | `string` | `<resource>` or `<resource>/<sub>` for subresources |
 | `k8s.namespace` | `string` | Kubernetes namespace |
 | `k8s.name` | `string` | Resource name |
-| `k8s.params` | `map<string, string>` | Query-string params (e.g. `kubectl exec --stdin`) |
+| `k8s.params` | `map<string, string>` | Query-string params (e.g. `kubectl exec --stdin`). Selecting a key the request doesn't carry is an evaluation error, which **fails closed** — guard with `'<key>' in k8s.params` (see "Unevaluable conditions fail closed" below). |
 
 ```hcl
 condition = "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods'"
@@ -463,7 +463,10 @@ fail open. A condition becomes unevaluable in three ways:
    `http.body_json.archived == true` errors on `{"title": "x"}`.
    Guard optional fields with `has()`:
    `has(http.body_json.archived) && http.body_json.archived == true`
-   cleanly no-matches when the field is absent.
+   cleanly no-matches when the field is absent. The same applies to
+   any map-typed facet — `k8s.params.stdin == 'true'` errors when the
+   request URL carries no `stdin` query param; guard with
+   `'stdin' in k8s.params && ...`.
 
 ### Viral unknowns
 
@@ -684,6 +687,7 @@ rule "k8s-no-interactive" {
   priority  = 1000
   condition = <<-CEL
     k8s.resource in ['pods/exec', 'pods/attach']
+    && 'stdin' in k8s.params
     && k8s.params.stdin == 'true'
   CEL
   verdict = "deny"
