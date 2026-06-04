@@ -216,10 +216,11 @@ func hasScope(scopes []string, want string) bool {
 }
 
 // TestInstallClaudeCodeOAuthShim covers the `clawpatrol run claude`
-// workaround: when ANTHROPIC_AUTH_TOKEN is in the env and the wrapped
-// command is `claude` with no operator CLAUDE_CONFIG_DIR, the shim must
-// (1) carve out a managed CLAUDE_CONFIG_DIR and point the env var at it,
-// (2) write a synthesized credentials.json with
+// workaround when the operator has opted in with
+// CLAWPATROL_CLAUDE_OAUTH_SHIM=1: with ANTHROPIC_AUTH_TOKEN in the env,
+// the wrapped command `claude`, and no operator CLAUDE_CONFIG_DIR, the
+// shim must (1) carve out a managed CLAUDE_CONFIG_DIR and point the env
+// var at it, (2) write a synthesized credentials.json with
 // `user:sessions:claude_code` in the scopes list, and (3) strip
 // ANTHROPIC_AUTH_TOKEN so Claude Code's local auth-mode gate falls
 // through to subscription OAuth (precedence #6).
@@ -228,7 +229,7 @@ func TestInstallClaudeCodeOAuthShim(t *testing.T) {
 	t.Setenv("HOME", dir)
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-clawpatrol-placeholder-do-not-use")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+	t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 
 	installClaudeCodeOAuthShim([]string{"/usr/local/bin/claude", "--help"})
 
@@ -278,7 +279,7 @@ func TestInstallClaudeCodeOAuthShim_OperatorConfigDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-clawpatrol-placeholder-do-not-use")
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+	t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 
 	installClaudeCodeOAuthShim([]string{"claude"})
 
@@ -304,7 +305,7 @@ func TestInstallClaudeCodeOAuthShim_PreservesRealLogin(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-clawpatrol-placeholder-do-not-use")
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+	t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 
 	credPath := filepath.Join(cfg, ".credentials.json")
 	realLogin := []byte(`{"claudeAiOauth":{"accessToken":"real-login-token"}}`)
@@ -327,8 +328,8 @@ func TestInstallClaudeCodeOAuthShim_PreservesRealLogin(t *testing.T) {
 }
 
 // TestInstallClaudeCodeOAuthShim_NoOpPaths covers every case where the
-// shim should leave the environment alone: opt-out, empty argv,
-// non-claude binary, ANTHROPIC_AUTH_TOKEN unset.
+// shim should leave the environment alone: not opted in (the default),
+// empty argv, non-claude binary, ANTHROPIC_AUTH_TOKEN unset.
 func TestInstallClaudeCodeOAuthShim_NoOpPaths(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -337,9 +338,11 @@ func TestInstallClaudeCodeOAuthShim_NoOpPaths(t *testing.T) {
 		wantEnv string // expected ANTHROPIC_AUTH_TOKEN after the call
 	}{
 		{
-			name: "opt_out",
+			// Default: no opt-in → print guidance, touch nothing. This
+			// is the R&D-decided behavior (don't silently overwrite).
+			name: "not_opted_in",
 			setup: func(t *testing.T) {
-				t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "1")
+				t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "")
 				t.Setenv("ANTHROPIC_AUTH_TOKEN", "keep")
 			},
 			cmd:     []string{"claude"},
@@ -348,7 +351,7 @@ func TestInstallClaudeCodeOAuthShim_NoOpPaths(t *testing.T) {
 		{
 			name: "empty_argv",
 			setup: func(t *testing.T) {
-				t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+				t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 				t.Setenv("ANTHROPIC_AUTH_TOKEN", "keep")
 			},
 			cmd:     nil,
@@ -357,7 +360,7 @@ func TestInstallClaudeCodeOAuthShim_NoOpPaths(t *testing.T) {
 		{
 			name: "non_claude_binary",
 			setup: func(t *testing.T) {
-				t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+				t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 				t.Setenv("ANTHROPIC_AUTH_TOKEN", "keep")
 			},
 			cmd:     []string{"/usr/bin/python3", "script.py"},
@@ -366,7 +369,7 @@ func TestInstallClaudeCodeOAuthShim_NoOpPaths(t *testing.T) {
 		{
 			name: "no_anthropic_token",
 			setup: func(t *testing.T) {
-				t.Setenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM", "")
+				t.Setenv("CLAWPATROL_CLAUDE_OAUTH_SHIM", "1")
 				t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 			},
 			cmd:     []string{"claude"},

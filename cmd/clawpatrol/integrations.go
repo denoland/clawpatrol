@@ -354,24 +354,40 @@ func applyEnvPushdownVars(vars []pushdownEnvVar) {
 // user:sessions:claude_code) is what authenticates the session-register
 // call `/remote-control` depends on.
 //
-// No-op when:
+// This rewrite of the worker's environment and config dir is OFF by
+// default (R&D decision, 2026-06-03): silently materializing credentials
+// and pointing CLAUDE_CONFIG_DIR at a clawpatrol-managed dir would shadow
+// the worker's existing ~/.claude (skills, memory, MCP servers, project
+// state) and edit files clawpatrol doesn't own. Instead, when the shim
+// *would* apply we print how to turn it on and otherwise leave the env
+// untouched; the operator opts in explicitly with
+// CLAWPATROL_CLAUDE_OAUTH_SHIM=1.
+//
+// No-op (env left unchanged) when:
 //   - the wrapped command is not `claude` — raw Anthropic SDK clients
 //     (Python, Node, …) still want ANTHROPIC_AUTH_TOKEN unchanged.
 //   - ANTHROPIC_AUTH_TOKEN is unset — the OAuth subscription plugin
 //     isn't bound to this profile, so there's nothing to shim.
-//   - the operator opted out via CLAWPATROL_NO_CLAUDE_OAUTH_SHIM=1.
-//   - the operator pointed CLAUDE_CONFIG_DIR at a dir that already holds
-//     a real `.credentials.json` — that login wins once we drop the
-//     bearer, so we leave it untouched.
+//   - the operator hasn't opted in via CLAWPATROL_CLAUDE_OAUTH_SHIM=1 —
+//     a one-time notice is printed pointing at the opt-in.
+//
+// Once opted in, it is also a no-op (beyond dropping the bearer) when the
+// operator pointed CLAUDE_CONFIG_DIR at a dir that already holds a real
+// `.credentials.json` — that login wins once we drop the bearer, so we
+// leave it untouched.
 func installClaudeCodeOAuthShim(cmd []string) {
-	if os.Getenv("CLAWPATROL_NO_CLAUDE_OAUTH_SHIM") == "1" {
-		return
-	}
 	if len(cmd) == 0 || filepath.Base(cmd[0]) != "claude" {
 		return
 	}
 	bearer := os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	if bearer == "" {
+		return
+	}
+	// Opt-in only. Writing credentials + repointing CLAUDE_CONFIG_DIR can
+	// shadow the worker's ~/.claude and touch files we don't own, so we
+	// never do it silently — tell the operator how to enable it instead.
+	if os.Getenv("CLAWPATROL_CLAUDE_OAUTH_SHIM") != "1" {
+		warnClaudeCodeRemoteControlDisabled()
 		return
 	}
 	// Honor an operator-set CLAUDE_CONFIG_DIR so Claude Code keeps its
@@ -408,6 +424,26 @@ func installClaudeCodeOAuthShim(cmd []string) {
 		_ = os.Setenv("CLAUDE_CONFIG_DIR", dir)
 	}
 	_ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
+}
+
+// warnClaudeCodeRemoteControlDisabled tells the operator why
+// /remote-control (and other claude.ai subscription-only features) won't
+// work in this session, and how to opt into the credential shim that
+// makes them work. Printed instead of silently rewriting the worker's
+// environment and config dir (R&D decision, 2026-06-03).
+func warnClaudeCodeRemoteControlDisabled() {
+	log.Printf(`clawpatrol: Claude Code /remote-control and other claude.ai
+subscription-only features are disabled in this session: ANTHROPIC_AUTH_TOKEN
+is set, so Claude Code treats this as API-key auth and gates them off locally.
+
+To enable them, opt into the OAuth shim:
+
+    CLAWPATROL_CLAUDE_OAUTH_SHIM=1 clawpatrol run claude ...
+
+The shim writes a synthesized .credentials.json and points CLAUDE_CONFIG_DIR at
+it for the child. Because that shadows your existing ~/.claude (skills, memory,
+MCP servers, project state), it is off by default — set CLAUDE_CONFIG_DIR to
+your own dir first if you want both. See doc/claude-code-oauth.md.`)
 }
 
 // writeClaudeCodeCredentials emits the JSON shape Claude Code's

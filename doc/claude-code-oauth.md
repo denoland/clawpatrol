@@ -71,19 +71,37 @@ For SDK clients (Python, Node, the raw Anthropic SDKs) the
 gateway rewrites the header upstream so the placeholder never reaches
 Anthropic.
 
-For the `claude` CLI specifically, `clawpatrol run` installs a small
+For the `claude` CLI specifically, `clawpatrol run` can install a small
 shim (`installClaudeCodeOAuthShim`, `cmd/clawpatrol/integrations.go`)
-that runs just before the wrapped command starts:
+just before the wrapped command starts. **It is opt-in** (R&D decision,
+2026-06-03): rewriting the worker's environment and config dir is too
+invasive to do silently — pointing `CLAUDE_CONFIG_DIR` at a
+clawpatrol-managed dir shadows the worker's existing `~/.claude` (skills,
+memory, MCP servers, project state), and writing into an operator's dir
+touches files clawpatrol doesn't own. So by default the shim only prints
+a notice telling the operator how to turn it on; it changes nothing.
 
-- It synthesizes a `.credentials.json` in a `CLAUDE_CONFIG_DIR` with the
+Opt in per invocation:
+
+```
+CLAWPATROL_CLAUDE_OAUTH_SHIM=1 clawpatrol run claude ...
+```
+
+Once opted in, the shim:
+
+- Synthesizes a `.credentials.json` in a `CLAUDE_CONFIG_DIR` with the
   `claudeAiOauth` shape Claude Code's `/login` writes — placeholder
   access/refresh tokens, a far-future `expiresAt` (so Claude Code never
   tries to refresh against the un-intercepted
   `console.anthropic.com`), and a `scopes` list including
   `user:sessions:claude_code`.
-- It strips `ANTHROPIC_AUTH_TOKEN` from the child's environment so
+- Strips `ANTHROPIC_AUTH_TOKEN` from the child's environment so
   Claude Code drops out of precedence #2 and falls through to
   subscription OAuth (#6).
+
+To keep the worker's `~/.claude` (skills/memory/MCP) intact while opting
+in, set `CLAUDE_CONFIG_DIR` to your own dir first — the shim writes into
+it rather than carving out a managed one (see below).
 
 The gateway still rewrites the `Authorization` header at MITM time
 using the operator's gateway-stored OAuth bearer, so the placeholder
@@ -93,19 +111,23 @@ succeed — which is why `AnthropicOAuthSubscription.OAuthFlow()` requests
 that scope (operators who connected the credential before the scope was
 added must re-run the dashboard OAuth flow once).
 
-### Scoping & opt-outs
+### Scoping & opt-in
 
-- The shim only fires when the wrapped binary is `claude` and
-  `ANTHROPIC_AUTH_TOKEN` is set. Non-claude clients are untouched.
+- The shim is off unless `CLAWPATROL_CLAUDE_OAUTH_SHIM=1` is set. Without
+  it, `clawpatrol run claude` prints a one-time notice explaining why
+  `/remote-control` is disabled and how to enable it, and changes nothing.
+- Even when opted in, it only fires when the wrapped binary is `claude`
+  and `ANTHROPIC_AUTH_TOKEN` is set. Non-claude clients are untouched.
 - If the operator has set `CLAUDE_CONFIG_DIR`, the shim writes the
   synthesized credentials into that dir (so Claude Code keeps its
   settings/MCP/project state) instead of overriding it. A real
   `.credentials.json` already present there is left alone — dropping
   `ANTHROPIC_AUTH_TOKEN` lets that login win on its own.
 - Otherwise the shim carves out a clawpatrol-managed dir
-  (`~/.clawpatrol/claude-config`) and leaves the worker's `~/.claude`
-  untouched.
-- Set `CLAWPATROL_NO_CLAUDE_OAUTH_SHIM=1` to disable the shim entirely.
+  (`~/.clawpatrol/claude-config`). Note this dir becomes Claude Code's
+  whole config home for the session, so the worker's `~/.claude` skills,
+  memory, and MCP servers are *not* visible — set `CLAUDE_CONFIG_DIR`
+  yourself if you need them.
 
 ## Caveat: macOS Keychain
 
@@ -113,5 +135,6 @@ On macOS, an interactive `claude /login` stores credentials in the
 Keychain rather than `.credentials.json`. The shim writes a file and
 points `CLAUDE_CONFIG_DIR` at it, which Claude Code reads on all
 platforms; clawpatrol's primary target (Linux workers) uses the file
-store natively. Operators on macOS who rely on a pre-existing Keychain
-login can opt out with `CLAWPATROL_NO_CLAUDE_OAUTH_SHIM=1`.
+store natively. macOS operators who rely on a pre-existing Keychain
+login should simply leave the shim off (it is off by default) and rely on
+that login.
