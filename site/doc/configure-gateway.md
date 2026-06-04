@@ -224,7 +224,7 @@ gateway {
 
 | Field | Default | What it bounds |
 |-------|---------|----------------|
-| `body_buffer` | `1MiB` (1048576 bytes) | The hot-path buffer the rules engine matches against (`http.body` / `http.body_json`). Every request pays this. Larger means rules can match more body at the cost of latency and memory; bodies past the cap are matched on the prefix and flagged truncated so body-reading rules fail closed. |
+| `body_buffer` | `1MiB` (1048576 bytes) | The hot-path buffer the rules engine matches against (`http.body` / `http.body_json`). Every request pays this. Larger means rules can match more body at the cost of latency and memory; bodies past the cap are matched on the prefix and flagged truncated so rules whose outcome depends on the body fail closed. |
 | `body_storage` | `4KiB` (4096 bytes) | The body sample persisted per action for the audit log shown on the action details page. Cold storage, per action. Larger means more useful debugging at the cost of disk and database size. |
 
 Both fields are optional; omitting the block (or either field) keeps

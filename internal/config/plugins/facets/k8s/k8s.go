@@ -147,9 +147,9 @@ func (Facet) CELContrib() facet.CELContrib {
 		},
 		AddActivation:   addActivation,
 		LowercasedPaths: []string{"k8s.verb"},
-		// k8s has no parser; the Unparseable gate is a no-op for k8s
-		// rules. UnparseablePaths stays nil so the AST pre-walk skips
-		// any unparseable-fail-close check for k8s.* fields. Composed
+		// k8s has no parser; Request.Unparseable marks nothing
+		// unknown for k8s rules. UnparseablePaths stays nil so no
+		// k8s.* field is poisoned on an unparseable request. Composed
 		// http.* fields keep their own truncation contract through the
 		// http facet's TruncatablePaths.
 	}

@@ -68,22 +68,22 @@ type Request struct {
 	// Truncated is set by a wire frontend when the bytes it could
 	// expose to the matcher were capped by a per-plugin inspection
 	// buffer (HTTPS body cap, postgres frame cap, clickhouse query
-	// body cap). The dispatcher reads it together with each rule's
-	// InspectsTruncatableFacet() to synthesize a fail-closed deny on
-	// any rule whose CEL condition reads bytes that aren't there —
-	// rules that don't read the truncated facet still fire on their
-	// other predicates.
+	// body cap). The matcher marks every truncatable facet path as a
+	// CEL unknown on such a request, so a condition whose outcome
+	// depends on the capped bytes evaluates Unevaluable (→ the
+	// dispatcher fails closed), while a condition that resolves on
+	// its other predicates still matches or no-matches honestly.
 	Truncated bool
 
 	// Unparseable is set by a wire frontend when its SQL parser
 	// refuses the Query bytes outright (the statement is still on
 	// Meta.Statement, but Verb / Tables / Functions are left zero
-	// because the parser couldn't derive them). The dispatcher reads
-	// it together with each rule's InspectsUnparseableFacet() to
-	// synthesize a fail-closed deny on any rule whose CEL condition
-	// references a parser-derived SQL facet that wasn't populated —
-	// rules keyed only on connection-level facets (credential,
-	// peer_ip) or on the raw statement still fire normally.
+	// because the parser couldn't derive them). The matcher marks
+	// every parser-derived facet path as a CEL unknown on such a
+	// request — a condition whose outcome depends on one evaluates
+	// Unevaluable, while rules keyed only on connection-level facets
+	// (credential, peer_ip) or on the raw statement still fire
+	// normally.
 	//
 	// Differs from Truncated in two ways: (a) the statement text
 	// IS populated when Unparseable=true, so `sql.statement` rules
@@ -93,31 +93,51 @@ type Request struct {
 	Unparseable bool
 }
 
-// Matcher walks a Request and returns true when the rule's match
-// predicate is satisfied. Implementations are family-specific and
-// live in their facet plugin's package.
+// Result is the three-valued outcome of evaluating a rule's
+// condition against a request.
+type Result int
+
+const (
+	// NoMatch reports that the condition evaluated cleanly to false.
+	NoMatch Result = iota
+	// Matched reports that the condition evaluated cleanly to true.
+	Matched
+	// Unevaluable reports that the condition's outcome could not be
+	// determined honestly — it depends on a facet value the gateway
+	// doesn't have (truncated bytes, parser-refused fields), or
+	// evaluation errored at runtime (missing JSON key, type
+	// mismatch). The dispatcher fails closed on this result: an
+	// unevaluable rule synthesizes a deny rather than being silently
+	// skipped, because "skipped" would let a deny rule fail open.
+	Unevaluable
+)
+
+// Decision is a Result plus, for Unevaluable, a human-readable
+// detail naming what made the condition unevaluable (the unknown
+// facet paths, or the CEL evaluation error). Detail is "" for
+// NoMatch / Matched.
+type Decision struct {
+	Result Result
+	Detail string
+}
+
+// Matcher evaluates a rule's match predicate against a Request and
+// returns a three-valued Decision. Implementations are
+// family-specific and live in their facet plugin's package.
 //
 // InspectsTruncatableFacet reports whether the matcher's compiled
 // condition reads any field of the request whose value could be
 // truncated by a wire frontend's inspection buffer (HTTPS body /
-// body_json, SQL verb / tables / functions / statement). The
-// dispatcher gates on this together with Request.Truncated to fail
-// closed on policy-bypass-by-truncation: a rule that asks about the
-// body of a request whose body was capped is auto-denied; a rule
-// that only reads the request method or credential is allowed to
-// run its own Match against whatever bytes did fit.
+// body_json, SQL verb / tables / functions / statement, SSH stdin).
+// It does NOT drive verdicts — those come from Match's Unevaluable
+// result — it is the compile-time laziness signal: Compile rolls it
+// up into CompiledEndpoint.InspectsTruncatable so wire frontends
+// know whether any rule needs the capped bytes buffered at all
+// (e.g. the ssh endpoint only takes the stdin-buffering path when
+// some rule reads ssh.stdin).
 type Matcher interface {
-	Match(req *Request) bool
+	Match(req *Request) Decision
 	InspectsTruncatableFacet() bool
-	// InspectsUnparseableFacet reports whether the matcher's compiled
-	// condition reads any field of the request whose value the
-	// frontend's parser would leave zero on parse failure (SQL verb,
-	// tables, functions). The dispatcher gates on this together with
-	// Request.Unparseable to fail closed on policy-bypass-by-unparser:
-	// a rule that asks about the verb of a query the parser rejected
-	// is auto-denied; a rule that only reads the raw statement or
-	// the credential is allowed to run its own Match.
-	InspectsUnparseableFacet() bool
 }
 
 // PathOf returns the URL's path, or "" when u is nil. Common enough

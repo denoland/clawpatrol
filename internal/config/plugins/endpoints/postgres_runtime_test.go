@@ -704,9 +704,10 @@ func TestPgEvaluate_Audit143(t *testing.T) {
 // statement to the matcher at all, the matcher will fire."
 type passThrough struct{}
 
-func (passThrough) Match(*match.Request) bool      { return true }
+func (passThrough) Match(*match.Request) match.Decision {
+	return match.Decision{Result: match.Matched}
+}
 func (passThrough) InspectsTruncatableFacet() bool { return false }
-func (passThrough) InspectsUnparseableFacet() bool { return false }
 
 // TestPgEvaluateUnparseableSynthDeny exercises the postgres side of
 // the Unparseable contract end-to-end: a request whose parser
@@ -748,7 +749,7 @@ rule "ban-drops" {
 		t.Fatalf("pgEvaluate(\"DROP;\") verdict = %q reason = %q, want deny", v, reason)
 	}
 	// The synth reason names the rule whose contract the unparseable
-	// request broke — dispatch.go:134's generic phrasing.
+	// request broke and the cause the matcher reported.
 	if !strings.Contains(reason, "ban-drops") || !strings.Contains(reason, "unparseable") {
 		t.Errorf("reason = %q, want it to name the rule and mention 'unparseable'", reason)
 	}

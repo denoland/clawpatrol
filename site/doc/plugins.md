@@ -170,9 +170,10 @@ The gateway pulls bytes only as deeply as needed:
   to ~1 MiB so the matcher sees the full value, then cancels.
 
 When the plugin sees the cancel it can drop its source reader.
-Bodies that overflow the cap mark the request `Truncated`; any
-rule reading the truncated field is auto-denied (the dispatcher’s
-fail-closed gate, same one that protects the built-in HTTPS body
+Bodies that overflow the cap mark the request `Truncated`: the
+stream-typed fields become CEL unknowns and any rule whose
+condition outcome depends on one is auto-denied (the same
+unevaluable fail-close that protects the built-in HTTPS body
 buffer).
 
 ### Optional facet fields

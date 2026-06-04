@@ -676,9 +676,9 @@ rule "verb-allow-select" {
 // TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows is the
 // Unparseable analogue of the Truncated/credential test: a rule that
 // reads zero parser-derived facets (here, only the credential pin)
-// must still fire normally on an Unparseable request. The
-// fail-closed gate keys on `InspectsUnparseableFacet()`, and that
-// returns false for a connection-only rule.
+// must still fire normally on an Unparseable request: no parser
+// facet path appears in its condition, so no CEL unknown is in
+// play and the condition resolves honestly.
 func TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" {
@@ -1343,4 +1343,140 @@ func containsCI(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestMatchRequestUnparseableAbsorptionAndFalse pins the precision
+// the value-level unknowns buy over the old reads-the-path gate: a
+// rule that MENTIONS a parser-derived facet still resolves honestly
+// when its outcome doesn't depend on it. `sql.verb == 'select' &&
+// sql.database == 'prod'` on an unparseable request against database
+// 'dev' evaluates `unknown && false == false` — the rule cleanly
+// no-matches and the catch-all fires, instead of a synthesized deny
+// attributed to the verb rule.
+func TestMatchRequestUnparseableAbsorptionAndFalse(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
+
+rule "select-on-prod" {
+  endpoint  = postgres.db
+  condition = "sql.verb == 'select' && sql.database == 'prod'"
+  verdict   = "allow"
+}
+rule "default-deny" {
+  endpoint = postgres.db
+  priority = -100
+  verdict  = "deny"
+  reason   = "no policy matched"
+}
+`)
+	ep := cp.Endpoints["db"]
+	req := &match.Request{
+		Family:      "sql",
+		Database:    "dev",
+		Unparseable: true,
+		Meta:        &sqlfacet.Meta{Statement: "DROP;", Database: "dev"},
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil || r.Name != "default-deny" {
+		t.Fatalf("got %+v, want default-deny (verb rule should cleanly no-match via absorption)", r)
+	}
+	if r.Outcome.Reason != "no policy matched" {
+		t.Errorf("reason = %q, want the catch-all's own reason, not a synthesized one", r.Outcome.Reason)
+	}
+}
+
+// TestMatchRequestUnparseableAbsorptionOrTrue pins the symmetric
+// case: `unknown || true == true`. An allow rule whose outcome
+// provably doesn't depend on the parser-derived facet fires on an
+// unparseable request — whatever the verb was, the database
+// predicate alone satisfies the disjunction.
+func TestMatchRequestUnparseableAbsorptionOrTrue(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
+
+rule "select-or-prod" {
+  endpoint  = postgres.db
+  condition = "sql.verb == 'select' || sql.database == 'prod'"
+  verdict   = "allow"
+}
+rule "default-deny" {
+  endpoint = postgres.db
+  priority = -100
+  verdict  = "deny"
+  reason   = "no policy matched"
+}
+`)
+	ep := cp.Endpoints["db"]
+	req := &match.Request{
+		Family:      "sql",
+		Database:    "prod",
+		Unparseable: true,
+		Meta:        &sqlfacet.Meta{Statement: "DROP;", Database: "prod"},
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil || r.Name != "select-or-prod" || r.Outcome.Verdict != "allow" {
+		t.Fatalf("got %+v, want select-or-prod allow (the disjunction resolves without the verb)", r)
+	}
+}
+
+// TestMatchRequestEvalErrorFailsClosed pins the closure of the old
+// fail-open hole: a deny rule whose condition errors at runtime
+// (selecting a body_json field the payload doesn't carry) used to be
+// silently skipped — the request fell through as if the rule didn't
+// exist. It now synthesizes a deny attributed to that rule.
+func TestMatchRequestEvalErrorFailsClosed(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" {
+  hosts = ["api.example.com"]
+}
+credential "bearer_token" "tok" {
+  endpoint = https.api
+}
+profile "default" { credentials = [bearer_token.tok] }
+
+rule "deny-rm-tool" {
+  endpoint  = https.api
+  condition = "http.body_json.tool == 'rm'"
+  verdict   = "deny"
+}
+rule "allow-rest" {
+  endpoint = https.api
+  priority = -100
+  verdict  = "allow"
+}
+`)
+	ep := cp.Endpoints["api"]
+	req := &match.Request{
+		Family: "https",
+		Method: "POST",
+		Body:   []byte(`{"other":"field"}`),
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil {
+		t.Fatalf("got nil, want synth deny attributed to deny-rm-tool")
+	}
+	if r.Name != "deny-rm-tool" {
+		t.Errorf("rule = %q, want deny-rm-tool (eval error must not skip the rule)", r.Name)
+	}
+	if r.Outcome.Verdict != "deny" {
+		t.Errorf("verdict = %q, want deny", r.Outcome.Verdict)
+	}
+	if !strings.Contains(r.Outcome.Reason, "deny-rm-tool") {
+		t.Errorf("reason = %q, want it to name the rule", r.Outcome.Reason)
+	}
+
+	// A body that does carry the field keeps evaluating honestly.
+	req.Body = []byte(`{"tool":"ls"}`)
+	r = runtime.MatchRequest(ep, req)
+	if r == nil || r.Name != "allow-rest" || r.Outcome.Verdict != "allow" {
+		t.Fatalf("got %+v, want allow-rest (tool != 'rm' cleanly no-matches)", r)
+	}
 }

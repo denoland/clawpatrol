@@ -607,9 +607,10 @@ func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs
 // client→server stdin up to stdinMatchCap, withholding it from upstream
 // until a rule verdict, so a denied script never runs. Buffering stops
 // at the first of: agent EOF (the bounded `ssh host < file` case), the
-// cap (truncated → the dispatcher fail-closes any rule reading
-// ssh.stdin), or stdinIdle with no new bytes (so typed/streamed stdin
-// doesn't hang — its prefix is judged, the rest streams on unjudged).
+// cap (truncated → ssh.stdin becomes a CEL unknown and any rule
+// whose outcome depends on it fail-closes), or stdinIdle with no new
+// bytes (so typed/streamed stdin doesn't hang — its prefix is judged,
+// the rest streams on unjudged).
 const (
 	stdinMatchCap = 1 << 20 // mirror cmd/clawpatrol maxHTTPMatchBody
 	stdinIdle     = 250 * time.Millisecond
@@ -925,9 +926,10 @@ func (rt *SSHEndpointRuntime) makeGate(ch *runtime.ConnHandle, emit func(runtime
 			User:       agentUser,
 			Meta:       m,
 			// Truncated is only ever set on the stdin pre-gate path,
-			// when buffered stdin overflowed the cap; the dispatcher
-			// then fail-closes any rule reading ssh.stdin. Every other
-			// caller leaves it false, so the fast path is unchanged.
+			// when buffered stdin overflowed the cap; ssh.stdin then
+			// becomes a CEL unknown and any rule whose outcome depends
+			// on it fail-closes. Every other caller leaves it false,
+			// so the fast path is unchanged.
 			Truncated: m.Truncated,
 		}
 		var facets map[string]any

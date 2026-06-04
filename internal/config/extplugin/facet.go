@@ -41,8 +41,8 @@ type pluginFacet struct {
 	optionalFields map[string]bool
 	// streamFields lists the FACET_STREAM field names. Passed to
 	// the CEL compiler as truncatablePaths so the dispatcher's
-	// fail-closed-on-truncation gate (req.Truncated +
-	// matcher.InspectsTruncatableFacet) applies to plugin facets.
+	// fail-closed-on-truncation contract (req.Truncated marks the
+	// stream paths CEL-unknown) applies to plugin facets.
 	streamFields []string
 }
 

@@ -93,8 +93,9 @@ type Meta struct {
 	// Stdin is the buffered client→server stdin for a shell/exec action,
 	// populated only when the endpoint has a rule reading ssh.stdin (the
 	// runtime keeps the splice untouched otherwise). Truncated is set
-	// when the stdin exceeded the inspection cap; the dispatcher then
-	// fail-closes any rule reading ssh.stdin.
+	// when the stdin exceeded the inspection cap; ssh.stdin then
+	// becomes a CEL unknown and any rule whose outcome depends on it
+	// fail-closes.
 	Stdin     string
 	Truncated bool
 }
@@ -187,8 +188,9 @@ func init() {
 // truncatablePaths: ssh.stdin. Stdin is the one field drawn from a
 // streamed, capped inspection buffer (the endpoint buffers a session's
 // client→server bytes up to a cap before forwarding); when it overflows
-// the endpoint sets req.Truncated and the dispatcher fail-closes any
-// rule reading ssh.stdin. Declaring it here is also what makes
+// the endpoint sets req.Truncated, ssh.stdin becomes a CEL unknown,
+// and any rule whose outcome depends on it is denied. Declaring it
+// here is also what makes
 // matcher.InspectsTruncatableFacet() report true for stdin rules, which
 // the endpoint reads (via CompiledEndpoint.InspectsTruncatable) to keep
 // the splice untouched when no rule needs stdin. The remaining ssh

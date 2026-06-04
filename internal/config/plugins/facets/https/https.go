@@ -105,10 +105,11 @@ func init() {
 // case-sensitive (paths, headers, body bytes are operator-controlled).
 //
 // truncatablePaths: http.body and http.body_json come from the buffer
-// the gateway capped at maxHTTPMatchBody (main.go); a rule that
-// reads either on a request whose body overflowed can't be evaluated
-// honestly, so the dispatcher synthesizes a deny. Fields whose value
-// is body-independent (method, path, query, headers) are
+// the gateway capped at maxHTTPMatchBody (main.go). On a request
+// whose body overflowed, both paths are marked CEL-unknown; a
+// condition whose outcome depends on the capped bytes evaluates
+// Unevaluable and the dispatcher synthesizes a deny. Fields whose
+// value is body-independent (method, path, query, headers) are
 // intentionally absent — `http.method == "GET"` still fires on its
 // own predicate even when the body was capped. Because the k8s
 // family composes the http facet alongside its own, a k8s_rule that
@@ -130,8 +131,8 @@ func (Facet) CELContrib() facet.CELContrib {
 		// HTTPS has no parser-failure mode: every field (method,
 		// headers, body, body_json) is decoded directly from the wire,
 		// not derived by a parser that could refuse the input.
-		// UnparseablePaths stays nil so the dispatcher's Unparseable
-		// gate is a no-op for HTTPS rules.
+		// UnparseablePaths stays nil so Request.Unparseable marks
+		// nothing unknown for HTTPS rules.
 	}
 }
 
@@ -164,9 +165,11 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	}
 	// body_json is parsed eagerly when the body looks like JSON. The
 	// cost is bounded by request body size, which the gateway already
-	// limits. Empty body / parse error → an empty struct value, so
-	// `http.body_json.<field>` evaluates to null rather than blowing
-	// up at request time.
+	// limits. Empty body / parse error → an empty struct value.
+	// NOTE: selecting a field the payload doesn't carry is a CEL
+	// eval error, and eval errors fail closed (Unevaluable → deny).
+	// Rules over optional fields must guard with has():
+	// `has(http.body_json.archived) && http.body_json.archived == true`.
 	f.BodyJSON = parseBodyJSON(req.Body)
 	act["http"] = f
 	return true
@@ -176,7 +179,9 @@ func addActivation(req *match.Request, act map[string]any) bool {
 // for the body_json field. JSON-shaped input lands as the matching
 // structpb tree (objects → Struct, arrays → List, scalars → their
 // natural type); non-JSON / empty input falls back to an empty
-// struct so field accesses yield null.
+// struct. Selecting a missing field off the struct is a CEL eval
+// error — fail-closed per the strict Unevaluable contract — so
+// conditions over optional fields need a has() guard.
 func parseBodyJSON(body []byte) *structpb.Value {
 	empty := structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{}})
 	if len(body) == 0 {

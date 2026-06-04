@@ -92,17 +92,17 @@ func TestCompile(t *testing.T) {
 	}
 	getReq := &match.Request{Family: "http", Method: "GET"}
 	postReq := &match.Request{Family: "http", Method: "POST"}
-	if !reads.Matcher.Match(getReq) {
+	if reads.Matcher.Match(getReq).Result != match.Matched {
 		t.Errorf("github-reads should match GET")
 	}
-	if reads.Matcher.Match(postReq) {
-		t.Errorf("github-reads should NOT match POST")
+	if got := reads.Matcher.Match(postReq).Result; got != match.NoMatch {
+		t.Errorf("github-reads should NOT match POST, got %v", got)
 	}
-	if !writes.Matcher.Match(postReq) {
+	if writes.Matcher.Match(postReq).Result != match.Matched {
 		t.Errorf("github-writes should match POST")
 	}
-	if writes.Matcher.Match(getReq) {
-		t.Errorf("github-writes should NOT match GET")
+	if got := writes.Matcher.Match(getReq).Result; got != match.NoMatch {
+		t.Errorf("github-writes should NOT match GET, got %v", got)
 	}
 
 	// Outcomes wired correctly.

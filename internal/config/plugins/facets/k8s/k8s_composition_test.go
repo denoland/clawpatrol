@@ -62,8 +62,8 @@ func TestK8sMatcherComposesHTTPFacets(t *testing.T) {
 				Headers: http.Header{"Content-Type": []string{"application/json"}},
 				Meta:    &k8sfacet.Meta{Verb: "create", Resource: "pods", Namespace: "default"},
 			}
-			if got := m.Match(req); got != tc.want {
-				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			if got := m.Match(req).Result; got != wantResult(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q)", got, wantResult(tc.want), tc.condition)
 			}
 		})
 	}

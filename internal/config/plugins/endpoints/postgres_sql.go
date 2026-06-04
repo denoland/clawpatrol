@@ -45,9 +45,9 @@ import (
 //   - Parse succeeds → unparseable=false, every facet populated.
 //   - Parse fails    → unparseable=true,  only Statement populated
 //     (Verb / Tables / Functions left zero). The runtime stashes
-//     the flag on match.Request.Unparseable, and the dispatcher's
-//     fail-closed-on-Unparseable gate (config/runtime/dispatch.go)
-//     synth-denies any rule whose CEL reads the unset facets.
+//     the flag on match.Request.Unparseable; the matcher marks the
+//     unset facets as CEL unknowns and any rule whose condition
+//     outcome depends on one synth-denies (fail closed).
 //
 // No verb-sniffing fallback: any input pgplex refuses (exotic
 // syntax, garbled bytes, future shapes the grammar doesn't yet

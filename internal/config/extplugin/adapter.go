@@ -394,8 +394,8 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	// Build a match.Request rich enough for the matcher AND for the
 	// HITL prompt fields a human approver might render. Truncated
 	// is set when at least one stream field hit its cap before
-	// EOF — runtime.MatchRequest's fail-closed gate then auto-denies
-	// any rule whose matcher reads a stream-typed field.
+	// EOF — the matcher then marks stream-typed fields CEL-unknown
+	// and any rule whose outcome depends on one is denied.
 	var req *match.Request
 	if pf != nil {
 		req = &match.Request{

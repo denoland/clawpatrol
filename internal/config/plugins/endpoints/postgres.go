@@ -124,8 +124,8 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 // Returns *sqlfacet.Meta as `any` to keep the runtime interface free
 // of the facets-package import. The bool mirrors the Unparseable
 // contract — true when pgplex refused the bytes; the fixture loader
-// then sets match.Request.Unparseable so the dispatcher's fail-closed
-// gate evaluates the test request the same way live dispatch would.
+// then sets match.Request.Unparseable so the unevaluable fail-close
+// evaluates the test request the same way live dispatch would.
 func (PostgresEndpointRuntime) ParseStatement(sql string) (any, bool) {
 	info, unparseable := parseSQL(sql)
 	return &sqlfacet.Meta{
@@ -390,8 +390,8 @@ func pgStartupParam(body []byte, key string) string {
 // force the gateway to either accumulate it (OOM) or forward it
 // uninspected. The wire pump refuses to buffer past this cap: Q / P
 // frames whose declared length exceeds it take the truncated-frame
-// path (pgHandleOversizeFrame), which lets the dispatcher fail-close
-// any rule that would have read the now-discarded statement bytes,
+// path (pgHandleOversizeFrame), which fail-closes any rule whose
+// outcome would have depended on the now-discarded statement bytes,
 // and otherwise streams the frame through unbuffered.
 const maxPgMessage = 1 << 20
 
@@ -635,9 +635,9 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string,
 // suppresses emission on allow / hitl_allow so synthesised
 // sub-statements don't pollute the dashboard; deny emissions still
 // fire either way (operators need to see *why* a batch was denied).
-// unparseable propagates onto match.Request so the dispatcher's
-// fail-closed-on-Unparseable gate auto-denies any rule reading
-// verb / tables / functions for a piece pgplex refused.
+// unparseable propagates onto match.Request so the matcher marks
+// verb / tables / functions as CEL unknowns for a piece pgplex
+// refused — any rule whose outcome depends on them is denied.
 func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow, unparseable bool) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
@@ -872,10 +872,10 @@ type pgInfo struct {
 // Unparseable mirrors match.Request.Unparseable for this piece — set
 // when pgplex's grammar refuses the bytes outright. The wire-protocol
 // gateway propagates the flag onto each per-statement match.Request,
-// so the dispatcher's fail-closed-on-Unparseable gate auto-denies any
-// rule whose CEL reads verb / tables / functions on a piece the
-// parser couldn't analyse. Statement text is preserved either way,
-// so `sql.statement.contains(...)` rules still evaluate honestly.
+// so verb / tables / functions become CEL unknowns on a piece the
+// parser couldn't analyse and any rule whose outcome depends on them
+// is denied. Statement text is preserved either way, so
+// `sql.statement.contains(...)` rules still evaluate honestly.
 type analysedStmt struct {
 	Outer       pgInfo
 	Inner       []pgInfo

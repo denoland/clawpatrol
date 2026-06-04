@@ -11,6 +11,16 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/https"
 )
 
+// wantResult adapts a boolean match expectation to the three-valued
+// Result, so an unexpected Unevaluable fails the assertion
+// instead of being conflated with "no match".
+func wantResult(b bool) match.Result {
+	if b {
+		return match.Matched
+	}
+	return match.NoMatch
+}
+
 // httpReq builds a minimal Request for the HTTP matcher tests.
 // Header / body / credential default to empty unless the test sets
 // them via the Request returned (callers mutate before calling Match).
@@ -86,8 +96,8 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			if got := m.Match(tc.req); got != tc.want {
-				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			if got := m.Match(tc.req).Result; got != wantResult(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q)", got, wantResult(tc.want), tc.condition)
 			}
 		})
 	}
@@ -132,8 +142,8 @@ func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			if got := m.Match(httpReq(tc.method, "/x")); got != tc.want {
-				t.Errorf("Match=%v want %v (condition=%q method=%q)", got, tc.want, tc.condition, tc.method)
+			if got := m.Match(httpReq(tc.method, "/x")).Result; got != wantResult(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q method=%q)", got, wantResult(tc.want), tc.condition, tc.method)
 			}
 		})
 	}
@@ -146,11 +156,91 @@ func TestHTTPMatcherBodyJSON(t *testing.T) {
 	}
 	req := httpReq("PATCH", "/v1/pages/abc")
 	req.Body = []byte(`{"archived":true,"title":"x"}`)
-	if !m.Match(req) {
+	if m.Match(req).Result != match.Matched {
 		t.Errorf("expected body_json subset match")
 	}
 	req.Body = []byte(`{"archived":false,"title":"x"}`)
-	if m.Match(req) {
-		t.Errorf("expected body_json mismatch")
+	if got := m.Match(req).Result; got != match.NoMatch {
+		t.Errorf("expected body_json mismatch, got %v", got)
+	}
+}
+
+// TestHTTPMatcherBodyJSONMissingFieldUnevaluable pins strict-mode
+// fail-closed evaluation: selecting a body_json field the payload
+// doesn't carry is a CEL eval error, which surfaces as Unevaluable
+// (the dispatcher synthesizes a deny) instead of silently
+// no-matching — silent no-match would let a deny rule fail open.
+// Rules with optional fields must guard with has().
+func TestHTTPMatcherBodyJSONMissingFieldUnevaluable(t *testing.T) {
+	m, err := facet.NewMatcher("http", "http.body_json.archived == true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httpReq("PATCH", "/v1/pages/abc")
+	req.Body = []byte(`{"title":"x"}`)
+	if got := m.Match(req).Result; got != match.Unevaluable {
+		t.Errorf("missing field: Match=%v, want Unevaluable", got)
+	}
+	// Empty / non-JSON bodies parse to an empty object — same deal.
+	req.Body = nil
+	if got := m.Match(req).Result; got != match.Unevaluable {
+		t.Errorf("empty body: Match=%v, want Unevaluable", got)
+	}
+}
+
+// TestHTTPMatcherBodyJSONHasGuard pins the has() escape hatch on a
+// fully captured body: presence-testing a missing key is false, not
+// an error, so the guarded condition cleanly no-matches and the
+// rule keeps working for payloads where the field is optional.
+func TestHTTPMatcherBodyJSONHasGuard(t *testing.T) {
+	m, err := facet.NewMatcher("http", "has(http.body_json.archived) && http.body_json.archived == true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httpReq("PATCH", "/v1/pages/abc")
+	req.Body = []byte(`{"title":"x"}`)
+	if got := m.Match(req).Result; got != match.NoMatch {
+		t.Errorf("guarded missing field: Match=%v, want NoMatch", got)
+	}
+	req.Body = []byte(`{"archived":true}`)
+	if got := m.Match(req).Result; got != match.Matched {
+		t.Errorf("guarded present field: Match=%v, want Matched", got)
+	}
+}
+
+// TestHTTPMatcherTruncatedBodyUnknown pins the viral-unknown
+// contract on a Truncated request: http.body / http.body_json are
+// marked CEL-unknown, so a condition whose outcome depends on the
+// capped bytes is Unevaluable — and has() cannot rescue it, because
+// the presence test itself is unknown (whatever was cut off might
+// have carried the key). Conditions that resolve through &&/||
+// absorption still evaluate honestly.
+func TestHTTPMatcherTruncatedBodyUnknown(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		method    string
+		want      match.Result
+	}{
+		{"body contains", "http.body.contains('drop')", "POST", match.Unevaluable},
+		{"body_json field", "http.body_json.archived == true", "POST", match.Unevaluable},
+		{"has() is unknown too", "has(http.body_json.archived) && http.body_json.archived == true", "POST", match.Unevaluable},
+		{"absorbed by false &&", "http.method == 'post' && http.body.contains('drop')", "GET", match.NoMatch},
+		{"absorbed by true ||", "http.method == 'get' || http.body.contains('drop')", "GET", match.Matched},
+		{"method only — unaffected", "http.method == 'get'", "GET", match.Matched},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("http", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := httpReq(tc.method, "/x")
+			req.Body = []byte(`{"archived":true}`) // whatever fit before the cap
+			req.Truncated = true
+			if got := m.Match(req).Result; got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
 	}
 }

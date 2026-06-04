@@ -60,31 +60,23 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 // applies the defaults.unknown_host policy (or the endpoint plugin's
 // own default).
 //
-// Truncated-request fail-close: when req.Truncated is set, a rule
-// whose matcher reports InspectsTruncatableFacet() == true is
-// auto-fired with a synthesized deny verdict — the matcher is NOT
-// called, because its CEL condition reads bytes the wire frontend
-// already discarded. Higher-priority rules that don't read truncated
-// facets still get to match normally; this only fails the rules
-// that would have been evaluating ghost bytes. The returned
+// Unevaluable fail-close: a matcher returns three-valued Decisions.
+// When a rule's condition cannot be evaluated honestly — its outcome
+// depends on a facet value the gateway doesn't have (bytes capped at
+// the inspection buffer, parser-refused SQL fields, both surfaced as
+// viral CEL unknowns), or evaluation errored at runtime — the rule is
+// fired with a synthesized deny verdict instead of being silently
+// skipped (skipping would let a deny rule fail open). The returned
 // CompiledRule keeps the original rule's identity (name / priority)
-// so logs still attribute the deny to the rule whose contract the
-// truncation broke.
+// so logs still attribute the deny to the rule whose contract broke.
 //
-// Unparseable-request fail-close: same shape as the truncated path,
-// but keyed on req.Unparseable + InspectsUnparseableFacet(). When a
-// frontend's parser refused the inbound bytes, the parser-derived
-// facets (e.g. for SQL: verb / tables / functions) are zero on the
-// request; a rule that reads any of them on an Unparseable request
-// would be evaluating zero values that don't reflect the actual
-// payload, so it synthesizes a deny instead. Rules that read only
-// the raw payload (e.g. sql.statement), the credential, or the
-// peer IP still get a normal Match call — those facets are populated
-// regardless of parse success. Rule priority is walked first, so a
-// higher-priority payload-only rule that matches keeps its verdict;
-// an unparseable request only triggers the synthesized deny when no
-// higher-priority rule covers it AND a lower-priority rule references
-// an unset parser facet.
+// Because the unknowns are value-level, a rule that merely mentions a
+// truncated / unparseable facet still resolves honestly when its
+// outcome doesn't depend on it: `sql.verb == 'select' && sql.database
+// == 'x'` on an unparseable request with database 'y' evaluates
+// `unknown && false == false` and cleanly falls through to the next
+// rule. Rules keyed only on always-available facets (credential,
+// peer IP, sql.statement on an unparseable query) are unaffected.
 func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
 	if ep == nil {
 		return nil
@@ -110,44 +102,26 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 			// req.Truncated.
 			return r
 		}
-		if req != nil && req.Truncated && r.Matcher.InspectsTruncatableFacet() {
-			return synthesizeTruncatedDeny(r)
-		}
-		if req != nil && req.Unparseable && r.Matcher.InspectsUnparseableFacet() {
-			return synthesizeUnparseableDeny(r)
-		}
-		if r.Matcher.Match(req) {
+		switch d := r.Matcher.Match(req); d.Result {
+		case match.Matched:
 			return r
+		case match.Unevaluable:
+			return synthesizeUnevaluableDeny(r, d.Detail)
 		}
 	}
 	return nil
 }
 
-// synthesizeTruncatedDeny returns a CompiledRule that mirrors r's
+// synthesizeUnevaluableDeny returns a CompiledRule that mirrors r's
 // identity but forces a deny verdict with a fabricated reason. Used
-// by MatchRequest when a rule that reads a truncatable facet meets
-// a request whose facet bytes were capped at the wire — the rule's
-// match predicate can't be evaluated honestly, so we surface a
-// fail-closed deny attributed to the rule that owns the contract.
-func synthesizeTruncatedDeny(r *config.CompiledRule) *config.CompiledRule {
-	reason := "rule \"" + r.Name + "\" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed"
-	synth := *r
-	synth.Outcome = config.Outcome{
-		Verdict: "deny",
-		Reason:  reason,
-	}
-	return &synth
-}
-
-// synthesizeUnparseableDeny mirrors synthesizeTruncatedDeny for the
-// parser-failure gate. The reason names the rule whose contract the
-// unparseable-request case broke, so logs / dashboard cards attribute
-// the synthesized deny to the matching rule rather than to an opaque
-// "unparseable" line item. The string is intentionally generic across
-// facet families: any plugin whose parser refused its inbound bytes
-// (SQL today; an external rule plugin tomorrow) routes through here.
-func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
-	reason := "rule \"" + r.Name + "\" references a facet that the gateway's parser could not derive from the unparseable request; failing closed"
+// by MatchRequest when a rule's match predicate can't be evaluated
+// honestly — its condition depends on a facet value the gateway
+// doesn't have (truncated bytes, parser-refused fields) or errored
+// at runtime — so we surface a fail-closed deny attributed to the
+// rule that owns the contract. The detail comes from the matcher and
+// names what broke (the unknown facet paths or the eval error).
+func synthesizeUnevaluableDeny(r *config.CompiledRule, detail string) *config.CompiledRule {
+	reason := "rule \"" + r.Name + "\" could not be evaluated against this request (" + detail + "); failing closed"
 	synth := *r
 	synth.Outcome = config.Outcome{
 		Verdict: "deny",

@@ -144,8 +144,9 @@ func init() {
 // the matcher one piece of text — the raw statement — and every
 // CEL field (verb, tables, functions, statement) is derived from
 // the same parsed bytes. When the frontend caps the frame, all four
-// are simultaneously untrustworthy, so any condition reading any of
-// them must fail closed on a truncated request.
+// are simultaneously untrustworthy — they become CEL unknowns, so
+// any condition whose outcome depends on one fails closed on a
+// truncated request.
 //
 // Note credential and database are intentionally absent: they
 // resolve off-wire (StartupMessage user / database, Hello username
@@ -158,8 +159,8 @@ func init() {
 // unparseablePaths declares the SQL fields a wire frontend's parser
 // derives from the Query bytes — verb, tables, functions. When the
 // parser refuses the input, the frontend leaves these zero and sets
-// req.Unparseable=true; the dispatcher then auto-denies any rule
-// whose CEL reads one of these paths (see runtime/dispatch.go).
+// req.Unparseable=true; the matcher then marks these paths as CEL
+// unknowns and any rule whose outcome depends on one is denied.
 //
 // sql.statement is intentionally absent: the frontend populates it
 // with the raw bytes regardless of parse success, so a rule keyed on

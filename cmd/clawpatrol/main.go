@@ -1963,8 +1963,8 @@ func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
 // front of the original stream so upstream still receives the body
 // byte-for-byte. truncated is true iff the body extended beyond
 // maxHTTPMatchBody; callers stash this on match.Request.Truncated so
-// the dispatcher can fail-close rules that read http.body /
-// http.body_json.
+// http.body / http.body_json become CEL unknowns and rules whose
+// outcome depends on them fail-close.
 func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []byte, truncated bool) {
 	if req.Body == nil {
 		return nil, false

@@ -13,7 +13,8 @@ import (
 // ActivationBuilder builds a CEL activation (variable bindings) from
 // a request. Each facet owns its own builder so it can pull the
 // right fields off Request / Request.Meta. Returning nil means the
-// matcher should refuse to match (e.g. wrong-shaped Meta).
+// condition can't be evaluated against this request (e.g.
+// wrong-shaped Meta) — the matcher reports Unevaluable.
 type ActivationBuilder func(req *Request) map[string]any
 
 // CompileCondition compiles a CEL condition source against env and
@@ -35,21 +36,24 @@ type ActivationBuilder func(req *Request) map[string]any
 //
 // truncatablePaths names the dotted identifier paths whose activation
 // values come from bytes a wire frontend may truncate at its
-// inspection cap (HTTPS body, SQL statement). CompileCondition walks
-// the AST and pre-computes a single bool: does this condition read
-// any of those paths? The result is exposed via
-// InspectsTruncatableFacet() so the dispatcher can fail-close on a
-// truncated request without re-walking the AST per match.
+// inspection cap (HTTPS body, SQL statement, SSH stdin). On a request
+// with Truncated set, these paths are marked as CEL unknowns via a
+// partial activation: a condition whose outcome depends on one
+// evaluates Unevaluable (the unknown propagates virally, NaN-style),
+// while a condition that resolves through &&/|| absorption on its
+// other predicates still matches or no-matches honestly. The same
+// paths also feed a pre-computed bool exposed via
+// InspectsTruncatableFacet() — that one is purely the compile-time
+// laziness signal (does any rule need the capped bytes buffered at
+// all), not a verdict input.
 //
 // unparseablePaths names the dotted identifier paths whose activation
 // values are derived by a frontend's parser and therefore left zero
 // when the parser refuses the input (SQL verb / tables / functions).
-// Pre-computed the same way as truncatablePaths and exposed via
-// InspectsUnparseableFacet() so the dispatcher can fail-close on an
-// unparseable request without re-walking the AST per match. The
-// raw statement text is intentionally NOT in this set — it's still
-// populated when the parser fails, so rules that key only on
-// `<facet>.statement` keep evaluating honestly.
+// On a request with Unparseable set, these are marked unknown the
+// same way. The raw statement text is intentionally NOT in this set —
+// it's still populated when the parser fails, so rules that key only
+// on `<facet>.statement` keep evaluating honestly.
 //
 // Paths must be of the form "<var>.<field>" — single-level selection
 // off a top-level identifier. That's all the facets need today.
@@ -69,22 +73,28 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		normalizeWantLiterals(ast.NativeRep().Expr(), paths)
 	}
 	var inspectsTruncatable bool
+	var truncatedUnknowns []*cel.AttributePatternType
 	if len(truncatablePaths) > 0 {
 		paths, err := parsePaths(truncatablePaths)
 		if err != nil {
 			return nil, err
 		}
 		inspectsTruncatable = referencesPath(ast.NativeRep().Expr(), paths)
+		truncatedUnknowns = unknownPatterns(paths)
 	}
-	var inspectsUnparseable bool
+	var unparseableUnknowns []*cel.AttributePatternType
 	if len(unparseablePaths) > 0 {
 		paths, err := parsePaths(unparseablePaths)
 		if err != nil {
 			return nil, err
 		}
-		inspectsUnparseable = referencesPath(ast.NativeRep().Expr(), paths)
+		unparseableUnknowns = unknownPatterns(paths)
 	}
-	prog, err := env.Program(ast)
+	// OptPartialEval swaps in the partial-attribute factory so the
+	// unknown patterns of a PartialVars activation are honored at
+	// attribute-resolution time. With a plain map activation (the
+	// common untruncated case) it changes nothing.
+	prog, err := env.Program(ast, cel.EvalOptions(cel.OptPartialEval))
 	if err != nil {
 		return nil, fmt.Errorf("cel program: %w", err)
 	}
@@ -94,8 +104,21 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		buildAct:            buildAct,
 		refs:                refs,
 		inspectsTruncatable: inspectsTruncatable,
-		inspectsUnparseable: inspectsUnparseable,
+		truncatedUnknowns:   truncatedUnknowns,
+		unparseableUnknowns: unparseableUnknowns,
 	}, nil
+}
+
+// unknownPatterns converts parsed "<var>.<field>" paths into the
+// attribute patterns a partial activation uses to mark those values
+// unknown. Built once at compile time; the patterns are immutable
+// afterwards, so sharing them across concurrent Match calls is safe.
+func unknownPatterns(paths []celPath) []*cel.AttributePatternType {
+	out := make([]*cel.AttributePatternType, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, cel.AttributePattern(p.ident).QualString(p.field))
+	}
+	return out
 }
 
 // MatcherReferences returns the variable names a Matcher's compiled
@@ -106,22 +129,19 @@ func (m *celMatcher) References() map[string]bool { return m.refs }
 
 // InspectsTruncatableFacet reports whether the matcher's CEL
 // condition reads any of the truncatablePaths declared when the
-// matcher was compiled. Pre-computed at compile time so the
-// dispatcher's fail-closed check is O(1) per match.
+// matcher was compiled. This is the laziness signal Compile rolls
+// up into CompiledEndpoint.InspectsTruncatable — wire frontends use
+// it to skip buffering capped bytes no rule reads. Verdicts on
+// truncated requests come from Match's Unevaluable result, not from
+// this flag.
 func (m *celMatcher) InspectsTruncatableFacet() bool { return m.inspectsTruncatable }
 
-// InspectsUnparseableFacet reports whether the matcher's CEL
-// condition reads any of the unparseablePaths declared when the
-// matcher was compiled. Mirror of InspectsTruncatableFacet for the
-// parser-failure gate; see CompileCondition.
-func (m *celMatcher) InspectsUnparseableFacet() bool { return m.inspectsUnparseable }
-
-// PassThrough is a Matcher that always returns true. Facets use it
-// for empty conditions (catch-all rules).
+// PassThrough is a Matcher that always matches. Facets use it for
+// empty conditions (catch-all rules).
 type PassThrough struct{}
 
-// Match always returns true.
-func (PassThrough) Match(*Request) bool { return true }
+// Match always reports Matched.
+func (PassThrough) Match(*Request) Decision { return Decision{Result: Matched} }
 
 // References reports no variable use.
 func (PassThrough) References() map[string]bool { return nil }
@@ -132,36 +152,103 @@ func (PassThrough) References() map[string]bool { return nil }
 // request — operators can still attach a default-deny verdict to it.
 func (PassThrough) InspectsTruncatableFacet() bool { return false }
 
-// InspectsUnparseableFacet reports false: a catch-all rule reads no
-// parser-derived facet, so an unparseable request can still match it
-// normally. Same reasoning as InspectsTruncatableFacet.
-func (PassThrough) InspectsUnparseableFacet() bool { return false }
-
 type celMatcher struct {
 	prog                cel.Program
 	buildAct            ActivationBuilder
 	refs                map[string]bool
 	inspectsTruncatable bool
-	inspectsUnparseable bool
+	truncatedUnknowns   []*cel.AttributePatternType
+	unparseableUnknowns []*cel.AttributePatternType
 }
 
-func (m *celMatcher) Match(req *Request) bool {
+// Match evaluates the compiled condition against req. Anything that
+// prevents an honest true/false — a CEL runtime error, a result that
+// depends on a facet marked unknown (truncated / unparseable), a
+// wrong-shaped activation — comes back Unevaluable so the dispatcher
+// fails closed instead of treating the rule as silently non-matching
+// (which would let a deny rule fail open).
+func (m *celMatcher) Match(req *Request) Decision {
 	if m == nil || m.prog == nil {
-		return false
+		return unevaluable("matcher has no compiled program")
 	}
 	act := m.buildAct(req)
 	if act == nil {
-		return false
+		return unevaluable("facet activation could not be built for this request")
 	}
-	out, _, err := m.prog.Eval(act)
+	// On a truncated / unparseable request, mark the affected facet
+	// paths unknown via a partial activation. The unknowns propagate
+	// virally through evaluation; &&/|| absorption still lets the
+	// condition resolve when its outcome provably doesn't depend on
+	// the unavailable value (false && unknown == false).
+	var vars any = act
+	if req != nil {
+		var patterns []*cel.AttributePatternType
+		if req.Truncated {
+			patterns = append(patterns, m.truncatedUnknowns...)
+		}
+		if req.Unparseable {
+			patterns = append(patterns, m.unparseableUnknowns...)
+		}
+		if len(patterns) > 0 {
+			pv, err := cel.PartialVars(act, patterns...)
+			if err != nil {
+				return unevaluable("partial activation: " + err.Error())
+			}
+			vars = pv
+		}
+	}
+	out, _, err := m.prog.Eval(vars)
+	if types.IsUnknown(out) {
+		return unevaluable("condition depends on " + unknownDetail(out.(*types.Unknown), req))
+	}
 	if err != nil {
-		return false
+		return unevaluable("evaluation error: " + err.Error())
 	}
 	b, ok := out.(types.Bool)
 	if !ok {
-		return false
+		return unevaluable(fmt.Sprintf("condition yielded non-bool %v", out))
 	}
-	return bool(b)
+	if bool(b) {
+		return Decision{Result: Matched}
+	}
+	return Decision{Result: NoMatch}
+}
+
+// unevaluable builds the fail-closed Decision with its detail line.
+func unevaluable(detail string) Decision {
+	return Decision{Result: Unevaluable, Detail: detail}
+}
+
+// unknownDetail renders a CEL unknown as an operator-readable line:
+// the facet paths the condition's outcome depends on, deduplicated
+// and without cel-go's expression-id noise, plus why they were
+// unavailable (truncated / unparseable, taken from the request
+// flags that caused the partial activation).
+func unknownDetail(unk *types.Unknown, req *Request) string {
+	var paths []string
+	seen := map[string]bool{}
+	for _, id := range unk.IDs() {
+		trails, _ := unk.GetAttributeTrails(id)
+		for _, tr := range trails {
+			s := fmt.Sprintf("%v", tr)
+			if !seen[s] {
+				seen[s] = true
+				paths = append(paths, s)
+			}
+		}
+	}
+	var causes []string
+	if req != nil && req.Truncated {
+		causes = append(causes, "bytes truncated at the inspection buffer")
+	}
+	if req != nil && req.Unparseable {
+		causes = append(causes, "statement unparseable")
+	}
+	cause := strings.Join(causes, "; ")
+	if cause == "" {
+		cause = "unavailable"
+	}
+	return "facet value(s) the gateway does not have (" + cause + "): " + strings.Join(paths, ", ")
 }
 
 // collectReferencedVars walks the CEL AST and returns every top-level

@@ -24,11 +24,11 @@ func TestSSHMatcherVerb(t *testing.T) {
 	m := mustMatcher(t, "ssh.verb == 'shell'")
 	shell := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell}}
 	exec := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbExec, Command: "ls"}}
-	if !m.Match(shell) {
+	if m.Match(shell).Result != match.Matched {
 		t.Errorf("expected shell to match ssh.verb == 'shell'")
 	}
-	if m.Match(exec) {
-		t.Errorf("expected exec to NOT match ssh.verb == 'shell'")
+	if got := m.Match(exec).Result; got != match.NoMatch {
+		t.Errorf("expected exec to NOT match ssh.verb == 'shell', got %v", got)
 	}
 }
 
@@ -50,8 +50,12 @@ func TestSSHMatcherVerbCaseInsensitive(t *testing.T) {
 		t.Run(tc.cond, func(t *testing.T) {
 			m := mustMatcher(t, tc.cond)
 			req := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell}}
-			if got := m.Match(req); got != tc.want {
-				t.Errorf("Match=%v want %v", got, tc.want)
+			want := match.NoMatch
+			if tc.want {
+				want = match.Matched
+			}
+			if got := m.Match(req).Result; got != want {
+				t.Errorf("Match=%v want %v", got, want)
 			}
 		})
 	}
@@ -65,11 +69,11 @@ func TestSSHMatcherPTY(t *testing.T) {
 	m := mustMatcher(t, "ssh.verb == 'pty'")
 	pty := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbPTY}}
 	exec := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbExec, Command: "uname -a"}}
-	if !m.Match(pty) {
+	if m.Match(pty).Result != match.Matched {
 		t.Errorf("expected pty-req to match ssh.verb == 'pty'")
 	}
-	if m.Match(exec) {
-		t.Errorf("expected a command to NOT match ssh.verb == 'pty'")
+	if got := m.Match(exec).Result; got != match.NoMatch {
+		t.Errorf("expected a command to NOT match ssh.verb == 'pty', got %v", got)
 	}
 }
 
@@ -84,11 +88,11 @@ func TestSSHMatcherCommand(t *testing.T) {
 	restore := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
 		Verb: sshfacet.VerbExec, Command: "restore --all /data",
 	}}
-	if !m.Match(backup) {
+	if m.Match(backup).Result != match.Matched {
 		t.Errorf("expected `backup ...` to match")
 	}
-	if m.Match(restore) {
-		t.Errorf("expected `restore ...` to NOT match")
+	if got := m.Match(restore).Result; got != match.NoMatch {
+		t.Errorf("expected `restore ...` to NOT match, got %v", got)
 	}
 }
 
@@ -98,11 +102,11 @@ func TestSSHMatcherSubsystem(t *testing.T) {
 	m := mustMatcher(t, "ssh.subsystem == 'sftp'")
 	sftp := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbSubsystem, Subsystem: "sftp"}}
 	shell := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell}}
-	if !m.Match(sftp) {
+	if m.Match(sftp).Result != match.Matched {
 		t.Errorf("expected sftp subsystem to match")
 	}
-	if m.Match(shell) {
-		t.Errorf("expected shell to NOT match a subsystem condition")
+	if got := m.Match(shell).Result; got != match.NoMatch {
+		t.Errorf("expected shell to NOT match a subsystem condition, got %v", got)
 	}
 }
 
@@ -117,11 +121,11 @@ func TestSSHMatcherForwardPort(t *testing.T) {
 	web := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
 		Verb: sshfacet.VerbForward, ForwardHost: "db.internal", ForwardPort: 8080,
 	}}
-	if !m.Match(pg) {
+	if m.Match(pg).Result != match.Matched {
 		t.Errorf("expected forward to :5432 to match")
 	}
-	if m.Match(web) {
-		t.Errorf("expected forward to :8080 to NOT match")
+	if got := m.Match(web).Result; got != match.NoMatch {
+		t.Errorf("expected forward to :8080 to NOT match, got %v", got)
 	}
 }
 
@@ -133,28 +137,29 @@ func TestSSHMatcherUserFromRequest(t *testing.T) {
 	fromReq := &match.Request{Family: "ssh", User: "deploy", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell}}
 	fromMeta := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell, User: "deploy"}}
 	other := &match.Request{Family: "ssh", User: "intern", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell, User: "deploy"}}
-	if !m.Match(fromReq) {
+	if m.Match(fromReq).Result != match.Matched {
 		t.Errorf("expected req.User=deploy to match")
 	}
-	if !m.Match(fromMeta) {
+	if m.Match(fromMeta).Result != match.Matched {
 		t.Errorf("expected meta.User=deploy fallback to match")
 	}
-	if m.Match(other) {
-		t.Errorf("expected req.User to win over meta.User")
+	if got := m.Match(other).Result; got != match.NoMatch {
+		t.Errorf("expected req.User to win over meta.User, got %v", got)
 	}
 }
 
-// TestSSHMatcherWrongMeta confirms a non-ssh Meta fails the match
-// cleanly (the activation builder refuses), rather than panicking —
-// e.g. if an ssh rule somehow saw a request without a *Meta.
+// TestSSHMatcherWrongMeta confirms a non-ssh Meta is Unevaluable
+// (the activation builder refuses, and the dispatcher fails closed)
+// rather than panicking or silently no-matching — e.g. if an ssh
+// rule somehow saw a request without a *Meta.
 func TestSSHMatcherWrongMeta(t *testing.T) {
 	m := mustMatcher(t, "ssh.verb == 'shell'")
 	req := &match.Request{Family: "ssh", Meta: struct{}{}}
-	if m.Match(req) {
-		t.Errorf("expected non-ssh Meta to fail the match")
+	if got := m.Match(req).Result; got != match.Unevaluable {
+		t.Errorf("expected non-ssh Meta to be Unevaluable, got %v", got)
 	}
-	if m.Match(&match.Request{Family: "ssh"}) {
-		t.Errorf("expected nil Meta to fail the match")
+	if got := m.Match(&match.Request{Family: "ssh"}).Result; got != match.Unevaluable {
+		t.Errorf("expected nil Meta to be Unevaluable, got %v", got)
 	}
 }
 
@@ -164,7 +169,7 @@ func TestSSHMatcherWrongMeta(t *testing.T) {
 func TestSSHEmptyConditionMatchesEverything(t *testing.T) {
 	m := mustMatcher(t, "")
 	req := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbExec, Command: "anything"}}
-	if !m.Match(req) {
+	if m.Match(req).Result != match.Matched {
 		t.Errorf("expected empty condition to match everything")
 	}
 }
@@ -179,18 +184,19 @@ func TestSSHStdinMatch(t *testing.T) {
 	ok := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
 		Verb: sshfacet.VerbShell, Stdin: "#!/bin/sh\necho hello\n",
 	}}
-	if !m.Match(bad) {
+	if m.Match(bad).Result != match.Matched {
 		t.Errorf("expected a destructive script to match ssh.stdin.contains(...)")
 	}
-	if m.Match(ok) {
-		t.Errorf("expected a benign script to NOT match")
+	if got := m.Match(ok).Result; got != match.NoMatch {
+		t.Errorf("expected a benign script to NOT match, got %v", got)
 	}
 }
 
 // TestSSHStdinIsTruncatable pins the wiring that makes lazy buffering
 // work: a rule reading ssh.stdin reports InspectsTruncatableFacet()
-// (so CompiledEndpoint.InspectsTruncatable flips and the dispatcher
-// fail-closes on overflow), while a rule that doesn't read stdin does
+// (so CompiledEndpoint.InspectsTruncatable flips and the endpoint
+// takes the buffering path; overflow then fail-closes through the
+// matcher's stdin-unknown), while a rule that doesn't read stdin does
 // not — keeping the splice on the zero-overhead fast path.
 func TestSSHStdinIsTruncatable(t *testing.T) {
 	if !mustMatcher(t, "ssh.stdin.contains('x')").InspectsTruncatableFacet() {

@@ -760,9 +760,9 @@ type PlaceholderDetector interface {
 // Implementations return the per-family `*sqlfacet.Meta` value the
 // SQL matcher expects on `match.Request.Meta`, plus a bool reporting
 // whether the parser refused the input. When the bool is true the
-// fixture loader sets `match.Request.Unparseable` so the dispatcher's
-// fail-closed-on-unparseable gate (config/runtime/dispatch.go) runs
-// against the test rule set, mirroring live wire-frame dispatch.
+// fixture loader sets `match.Request.Unparseable` so the unevaluable
+// fail-close (parser facets become CEL unknowns) runs against the
+// test rule set, mirroring live wire-frame dispatch.
 // Endpoints whose runtime doesn't implement this aren't usable as
 // SQL test fixtures.
 type SQLParser interface {

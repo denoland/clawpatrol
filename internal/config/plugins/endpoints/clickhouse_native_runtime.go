@@ -900,9 +900,9 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 // entering. The new value only enters circulation on the next
 // statement.
 //
-// unparseable propagates onto match.Request so the dispatcher's
-// fail-closed-on-Unparseable gate auto-denies any rule reading
-// verb / tables / functions for a query the parser refused.
+// unparseable propagates onto match.Request so verb / tables /
+// functions become CEL unknowns for a query the parser refused —
+// any rule whose outcome depends on them is denied.
 func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool) (verdict, reason, nextDB string) {
 	info, unparseable := parseChSQL(sql)
 	defer func() {

@@ -13,7 +13,8 @@ import (
 // matcher: env options that declare its variable(s) and the Go types
 // behind them, an activation builder that populates its bindings on
 // the request's activation map, and the path lists CompileCondition
-// needs for case-normalization and truncation-fail-close.
+// needs for case-normalization and the unevaluable-fail-close
+// contract (truncated / unparseable values become CEL unknowns).
 //
 // Built-in facets return their own contribution via CELContributor.
 // Composition (a k8s_rule referencing http.method) is performed in
@@ -27,8 +28,8 @@ import (
 //
 // AddActivation writes the facet's bindings into act. It returns
 // false to refuse the match (e.g. wrong Meta type for the family);
-// when any contributor refuses, the composed matcher's Match returns
-// false without evaluating the CEL program.
+// when any contributor refuses, the composed matcher's Match reports
+// Unevaluable (fail closed) without evaluating the CEL program.
 type CELContrib struct {
 	EnvOptions       []cel.EnvOption
 	AddActivation    func(req *match.Request, act map[string]any) bool
@@ -36,9 +37,10 @@ type CELContrib struct {
 	TruncatablePaths []string
 	// UnparseablePaths lists the fields a wire frontend's parser
 	// derives from the request bytes — when the parser refuses the
-	// input, the frontend sets req.Unparseable=true and the
-	// dispatcher auto-denies any rule whose CEL reads one of these
-	// paths. Empty for facets with no parser-failure mode (http, k8s).
+	// input, the frontend sets req.Unparseable=true and the matcher
+	// marks these paths as CEL unknowns: any rule whose condition
+	// outcome depends on one evaluates Unevaluable and is denied.
+	// Empty for facets with no parser-failure mode (http, k8s).
 	UnparseablePaths []string
 }
 

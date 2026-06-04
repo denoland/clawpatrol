@@ -19,11 +19,12 @@ import (
 //
 // streamFields names the FACET_STREAM fields on the facet. They're
 // passed to match.CompileCondition as truncatablePaths so the
-// dispatcher's existing fail-closed-on-truncation gate applies to
-// plugin facets too: when the gateway's pullStream had to cap a
-// stream short of EOF, the EvaluateAction handler sets
-// Request.Truncated and runtime.MatchRequest auto-denies any rule
-// whose CEL condition reads the stream-typed bytes.
+// fail-closed-on-truncation contract applies to plugin facets too:
+// when the gateway's pullStream had to cap a stream short of EOF,
+// the EvaluateAction handler sets Request.Truncated, the matcher
+// marks the stream-typed paths as CEL unknowns, and any rule whose
+// condition outcome depends on the capped bytes evaluates
+// Unevaluable — which runtime.MatchRequest turns into a deny.
 //
 // The returned matcher additionally implements SubFieldReferencer
 // so the gateway adapter can decide, per evaluation, which
@@ -81,20 +82,16 @@ type pluginMatcher struct {
 	subFieldRefs map[string]bool
 }
 
-func (m *pluginMatcher) Match(req *match.Request) bool { return m.inner.Match(req) }
+func (m *pluginMatcher) Match(req *match.Request) match.Decision { return m.inner.Match(req) }
 
-// InspectsTruncatableFacet forwards the inner CEL matcher's
-// answer. The dispatcher uses it together with Request.Truncated
-// to fail-close any rule that reads a stream-typed field on a
-// request the gateway had to cap mid-pull.
+// InspectsTruncatableFacet forwards the inner CEL matcher's answer —
+// the compile-time laziness signal that tells the adapter whether
+// any rule needs a stream-typed field pulled in full. Verdicts on
+// truncated streams come from the inner matcher's Unevaluable result
+// (the stream fields are marked CEL-unknown on a Truncated request).
 func (m *pluginMatcher) InspectsTruncatableFacet() bool {
 	return m.inner.InspectsTruncatableFacet()
 }
-
-// InspectsUnparseableFacet always returns false: plugin facets have
-// no parser failure mode (see newPluginFacetMatcher's nil unparseable
-// path), so the Unparseable gate is structurally a no-op here.
-func (m *pluginMatcher) InspectsUnparseableFacet() bool { return false }
 
 // References preserves whatever the inner matcher reports so the
 // gateway's existing body-buffering check (top-level identifier
