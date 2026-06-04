@@ -8,12 +8,12 @@
 // amount. Mirrors the FlowDiagram's top-to-bottom data path
 // (agents → CP → tools).
 //
-// CP top face is a rhombus with W=130. The four sub-rhombus centers
-// are at (0, -32.5), (65, 0), (-65, 0), (0, 32.5) — those are the
-// cx values used for each small tile, regardless of cy.
-//
-// Tiles render painter-order (back-to-front by screen y) so any
-// overlap z-stacks correctly. Static for now; animation is planned.
+// Four semi-transparent vertical wall panels enclose the clusters
+// above and below CP: a V-shaped pair rising from CP's back edges
+// (W-N and N-E) over the top cluster, and a mirrored pair dropping
+// from CP's front edges (W-S and S-E) below it. Drawn at the back
+// of the SVG so tiles and CP cover them where they overlap — the
+// visible portions read as a faint 3D box framing the stack.
 
 type Fill = {
   topFill: string;
@@ -50,17 +50,7 @@ type Tile = {
   cy: number;
   W: number;
   D: number;
-  // (x, y) on CP's top face where this tile's tether line lands.
-  // Omit on CP itself; required on every small tile.
-  anchor?: [number, number];
 } & Fill;
-
-// Slot anchor positions on CP's top face — the centers of its four
-// sub-rhombi. Each small tile tethers down (or up) to one of these.
-const NW: [number, number] = [0, -32.5];
-const NE: [number, number] = [65, 0];
-const SW: [number, number] = [-65, 0];
-const SE: [number, number] = [0, 32.5];
 
 // AI cluster on top: back row (further from CP) higher up in screen,
 // front row (closer to CP) just above it. Each tile's cx and cy is
@@ -78,7 +68,6 @@ const TILES: Tile[] = [
     cy: -290,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: NW,
     ...CANVAS_FILL,
   },
   {
@@ -88,7 +77,6 @@ const TILES: Tile[] = [
     cy: -170,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: NE,
     ...CANVAS_FILL,
   },
   {
@@ -98,7 +86,6 @@ const TILES: Tile[] = [
     cy: -220,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: SW,
     ...CANVAS_FILL,
   },
   {
@@ -108,7 +95,6 @@ const TILES: Tile[] = [
     cy: -95,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: SE,
     ...CANVAS_FILL,
   },
   // Middle — Claw Patrol (the big tile)
@@ -132,7 +118,6 @@ const TILES: Tile[] = [
     cy: 110,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: SE,
     ...CANVAS_FILL,
   },
   {
@@ -142,7 +127,6 @@ const TILES: Tile[] = [
     cy: 175,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: SW,
     ...CANVAS_FILL,
   },
   {
@@ -152,7 +136,6 @@ const TILES: Tile[] = [
     cy: 215,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: NE,
     ...CANVAS_FILL,
   },
   {
@@ -162,55 +145,37 @@ const TILES: Tile[] = [
     cy: 290,
     W: SMALL_W,
     D: SMALL_D,
-    anchor: NW,
     ...CANVAS_FILL,
   },
 ];
 
 // Painter's algorithm — in iso view the camera is above-and-front,
 // so raised tiles (small cy) are closer to the viewer than CP, and
-// lowered tiles (large cy) are further away. Top-cluster tether
-// lines paint AFTER CP so they're visible landing on CP's top face,
-// terminating at the slot anchor. Bottom-cluster tether lines paint
-// BEFORE CP so CP covers their on-face portion — visually each
-// bottom line drops from CP's edge and goes down to its tile.
+// lowered tiles (large cy) are further away. Paint back-to-front:
+// bottom cluster, then CP, then top cluster.
 const SORTED = [...TILES].sort((a, b) => b.cy - a.cy);
 const BOTTOM_CLUSTER = SORTED.filter((t) => t.cy > 0);
 const CP_TILE = SORTED.find((t) => t.alt === "Claw Patrol")!;
 const TOP_CLUSTER = SORTED.filter((t) => t.cy < 0);
-const TOP_LINES = TILES.filter((t) => t.cy < 0 && t.anchor);
-const BOTTOM_LINES = TILES.filter((t) => t.cy > 0 && t.anchor);
 
-// For a small tile's tether, return the (x, y) point where the line
-// should visibly end. Default = the tile's slot anchor on CP.
-//
-// Top cluster: if another top tile sits in the same cx column
-// between this tile and CP, the line stops at that occluder's top
-// vertex. The occluder paints on top of the line anyway (top tiles
-// render last), so this just avoids the line reappearing on CP
-// below the occluder and overlapping the occluder's own tether.
-//
-// Bottom cluster: never truncates — bottom-cluster lines render on
-// top of bottom tiles, so the line crossing an in-column tile reads
-// as the line lying on that tile's face, in front of it.
-function tetherEnd(tile: Tile): [number, number] {
-  if (tile.cy > 0) return tile.anchor!;
-  const between = TOP_CLUSTER.filter((o) =>
-    o !== tile && o.cx === tile.cx && o.cy > tile.cy
-  );
-  if (between.length === 0) return tile.anchor!;
-  const nearest = between.reduce((min, o) => (o.cy < min.cy ? o : min));
-  return [tile.cx, nearest.cy - nearest.W / 2];
-}
-
-// ViewBox extent — derived from every tile's bounding box so the
-// SVG hugs the cluster without manual fiddling when positions move.
+// ViewBox extent — derived from every tile's bounding box. The
+// vertical bounds are padded by WALL_OVERHANG so the back/front
+// wall apexes (which always land at yMin/yMax in screen space)
+// extend a touch past the highest top tile and the lowest bottom
+// tile, framing them.
+const WALL_OVERHANG = 100;
 const xMin = Math.min(...TILES.map((t) => t.cx - t.W)) - 2;
 const xMax = Math.max(...TILES.map((t) => t.cx + t.W)) + 2;
-const yMin = Math.min(...TILES.map((t) => t.cy - t.W / 2)) - 2;
-const yMax = Math.max(...TILES.map((t) => t.cy + t.W / 2 + t.D)) + 2;
+const yMin = Math.min(...TILES.map((t) => t.cy - t.W / 2)) - WALL_OVERHANG;
+const yMax = Math.max(...TILES.map((t) => t.cy + t.W / 2 + t.D)) +
+  WALL_OVERHANG;
 const TOTAL_W = xMax - xMin;
 const TOTAL_H = yMax - yMin;
+
+// Wall heights — the apex of each V (where the two walls meet at
+// the N or S column) lands exactly at the viewBox edge.
+const TOP_WALL_H = -yMin - BIG_W / 2;
+const BOT_WALL_H = yMax - BIG_W / 2;
 
 export function IsometricStack({ class: cls = "" }: { class?: string }) {
   return (
@@ -218,77 +183,157 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
       role="img"
       aria-label="Cluster of isometric panels: four AI agents above Claw Patrol, four downstream tools below it"
       viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
-      class={`block ${cls}`}
+      class={`block -my-24 ${cls}`}
     >
-      {/* Bottom cluster — drawn first (furthest from camera). */}
+      {
+        /* Two back walls — vertical 3D planes that contain CP's
+          W-N and N-E top-face edges, extended both up (over the
+          top cluster) and down (through CP into the bottom
+          cluster). Each gradient peaks opaque near CP and fades
+          toward both the top and bottom apex of the wall. Color
+          per wall is for visual ID — unify later. */
+      }
+      <defs>
+        {
+          /* Back walls share a darker navy, front walls share a
+            lighter step — two shades total, suggesting the back of
+            the box recedes into shadow. Each gradient peaks at the
+            CP midline (~y=0) and fades to nearly transparent at
+            both apexes. */
+        }
+        <linearGradient
+          id="wallBack"
+          x1="0"
+          y1={yMin}
+          x2="0"
+          y2={yMax}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop
+            offset="0%"
+            stop-color="var(--color-navy-300)"
+            stop-opacity="0"
+          />
+          <stop
+            offset="50%"
+            stop-color="var(--color-navy-300)"
+            stop-opacity="0.18"
+          />
+          <stop
+            offset="100%"
+            stop-color="var(--color-navy-300)"
+            stop-opacity="0"
+          />
+        </linearGradient>
+        <linearGradient
+          id="wallFrontLeft"
+          x1="0"
+          y1={yMin}
+          x2="0"
+          y2={yMax}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop
+            offset="0%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0"
+          />
+          <stop
+            offset="50%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0.18"
+          />
+          <stop
+            offset="100%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0"
+          />
+        </linearGradient>
+        <linearGradient
+          id="wallFrontRight"
+          x1="0"
+          y1={yMin}
+          x2="0"
+          y2={yMax}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop
+            offset="0%"
+            stop-color="var(--color-navy-200)"
+            stop-opacity="0"
+          />
+          <stop
+            offset="50%"
+            stop-color="var(--color-navy-200)"
+            stop-opacity="0.18"
+          />
+          <stop
+            offset="100%"
+            stop-color="var(--color-navy-200)"
+            stop-opacity="0"
+          />
+        </linearGradient>
+      </defs>
+      {
+        /* Back walls — two big parallelograms along CP's back-left
+          (W-N) and back-right (N-E) edges, extending the full
+          height of the viewBox (up to enclose the top cluster,
+          down through CP into the bottom cluster). Drawn first,
+          behind everything. */
+      }
+      <g aria-hidden="true">
+        {/* Back-left wall (3D plane at x=-65), full vertical extent */}
+        <polygon
+          fill="url(#wallBack)"
+          points={`0,${
+            -BIG_W / 2 - TOP_WALL_H
+          } ${-BIG_W},${-TOP_WALL_H} ${-BIG_W},${BOT_WALL_H} 0,${
+            -BIG_W / 2 + BOT_WALL_H
+          }`}
+        />
+        {/* Back-right wall (3D plane at y=-65), full vertical extent */}
+        <polygon
+          fill="url(#wallBack)"
+          points={`0,${
+            -BIG_W / 2 - TOP_WALL_H
+          } ${BIG_W},${-TOP_WALL_H} ${BIG_W},${BOT_WALL_H} 0,${
+            -BIG_W / 2 + BOT_WALL_H
+          }`}
+        />
+      </g>
+
+      {
+        /* Bottom cluster — drawn after back walls so the tiles
+          appear in front of the walls. */
+      }
       {BOTTOM_CLUSTER.map((t) => <Tile key={t.alt} tile={t} />)}
 
-      {
-        /* Bottom-cluster tether lines drawn BEFORE CP. Start slightly
-          inside the tile's top face (cy - W/4) so the line reads as
-          emerging from the face rather than from the back corner;
-          the on-CP portion is hidden by CP, so the visible segment
-          runs from the tile face up to CP's bottom-front edge. */
-      }
-      <g
-        stroke="var(--color-navy-200)"
-        stroke-width="1.5"
-        stroke-dasharray="1 3"
-        stroke-linecap="round"
-        fill="none"
-        aria-hidden="true"
-      >
-        {BOTTOM_LINES.map((t) => {
-          const [endX, endY] = tetherEnd(t);
-          return (
-            <line
-              key={`bot-tether-${t.alt}`}
-              x1={t.cx}
-              y1={t.cy - t.W / 4}
-              x2={endX}
-              y2={endY}
-            />
-          );
-        })}
-      </g>
-
-      {/* CP — covers the on-face end of bottom-cluster tethers. */}
       <Tile tile={CP_TILE} />
 
-      {
-        /* Top-cluster tether lines drawn AFTER CP so they appear on
-          CP's top face, terminating at the slot anchor. Start at
-          the tile's center — the inside-tile portion gets hidden by
-          the top tile (drawn next), so the line visually emerges
-          from the tile's bottom-front edge. */
-      }
-      <g
-        stroke="var(--color-navy-200)"
-        stroke-width="1.5"
-        stroke-dasharray="1 3"
-        stroke-linecap="round"
-        fill="none"
-        aria-hidden="true"
-      >
-        {TOP_LINES.map((t) => {
-          const [endX, endY] = tetherEnd(t);
-          return (
-            <line
-              key={`top-tether-${t.alt}`}
-              x1={t.cx}
-              y1={t.cy}
-              x2={endX}
-              y2={endY}
-            />
-          );
-        })}
-      </g>
+      {/* Top cluster — drawn before front walls. */}
+      {TOP_CLUSTER.map((t) => <Tile key={t.alt} tile={t} />)}
 
       {
-        /* Top cluster — drawn last so raised tiles sit in front of
-          CP and cover their own tether lines' inside-tile portion. */
+        /* Front walls — two big parallelograms along CP's front-left
+          (W-S) and front-right (S-E) edges, full vertical extent.
+          Drawn last so they wash over every tile from in front. */
       }
-      {TOP_CLUSTER.map((t) => <Tile key={t.alt} tile={t} />)}
+      <g aria-hidden="true">
+        {/* Front-left wall (3D plane at y=65), full vertical extent */}
+        <polygon
+          fill="url(#wallFrontLeft)"
+          points={`${-BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
+            BIG_W / 2 + BOT_WALL_H
+          } ${-BIG_W},${BOT_WALL_H}`}
+        />
+        {/* Front-right wall (3D plane at x=65), full vertical extent */}
+        <polygon
+          fill="url(#wallFrontRight)"
+          points={`${BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
+            BIG_W / 2 + BOT_WALL_H
+          } ${BIG_W},${BOT_WALL_H}`}
+        />
+      </g>
     </svg>
   );
 }

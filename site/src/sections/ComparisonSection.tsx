@@ -5,39 +5,44 @@ import { SectionLabel } from "../components/SectionLabel";
 const CAPABILITIES: { heading: string; body: string }[] = [
   {
     heading: "Watches tool calls at the protocol layer",
-    body: "Postgres, Kubernetes, HTTPS — with a plugin API for the rest. " +
+    body:
+      "Postgres, Kubernetes, HTTPS — with a plugin API for the rest. " +
       "Rules match SQL verbs and k8s resources directly, not just URLs.",
   },
   {
     heading: "Routes risky calls for approval",
-    body: "A human or an LLM judge gates the actions that need a second look " +
+    body:
+      "A human or an LLM judge gates the actions that need a second look " +
       "before the request leaves the proxy.",
   },
   {
-    heading: "Holds the secrets",
-    body: "Credentials live in the gateway and get stamped onto outbound " +
+    heading: "Safely holds the secrets",
+    body:
+      "Credentials live in the gateway and get stamped onto outbound " +
       "requests. A compromised agent has nothing to leak.",
   },
   {
     heading: "Records every byte",
-    body: "Every request and response, across every system, in one audit " +
+    body:
+      "Every request and response, across every system, in one audit " +
       'stream. "What just happened?" has one place to look.',
   },
 ];
 
 export function ComparisonSection() {
   return (
-    <section class="bg-canvas-muted py-24 sm:py-32">
+    <section class="py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel class="ml-0 mb-4!">Comparison</SectionLabel>
         <h3 class="text-3xl sm:text-5xl font-display mb-3">
-          Comprehensive capabilities
+          Control everything in one place
         </h3>
         <p class="text-text-muted text-base sm:text-lg max-w-2xl mb-16">
-          Most tools tackle one side of the issue; Claw Patrol does it all.
+          Other tools cover one piece. Claw Patrol watches, gates, holds, and
+          audits, all at the same wire.
         </p>
 
-        <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-12 md:gap-16 items-center">
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-12 md:gap-16">
           <ul class="space-y-8 max-w-xl">
             {CAPABILITIES.map((c) => (
               <Capability key={c.heading} heading={c.heading}>
@@ -52,9 +57,13 @@ export function ComparisonSection() {
   );
 }
 
-function Capability(
-  { heading, children }: { heading: string; children: ComponentChildren },
-) {
+function Capability({
+  heading,
+  children,
+}: {
+  heading: string;
+  children: ComponentChildren;
+}) {
   return (
     <li class="flex items-start gap-3">
       <CheckIcon />

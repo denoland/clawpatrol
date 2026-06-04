@@ -23,8 +23,10 @@ export function FlowDiagram() {
 
 function AgentsNode() {
   return (
-    <div class=" w-full border border-navy-200
-        text-text px-5 py-5 text-center">
+    <div
+      class=" w-full border border-navy-200
+        text-text px-5 py-5 text-center"
+    >
       <div class="font-display font-bold text-xl leading-none">
         Your agent(s)
       </div>
@@ -41,11 +43,15 @@ function AgentsNode() {
 function AgentItem({ name, icon }: { name: string; icon?: string }) {
   return (
     <div class="flex flex-col items-center gap-2 min-w-0">
-      {icon
-        ? <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" />
-        : <RobotGlyph />}
-      <div class="font-display font-semibold text-[11.5px] text-text-muted
-          leading-tight text-center text-balance">
+      {icon ? (
+        <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" />
+      ) : (
+        <RobotGlyph />
+      )}
+      <div
+        class="font-display font-semibold text-[11.5px] text-text-muted
+          leading-tight text-center text-balance"
+      >
         {name}
       </div>
     </div>
@@ -54,13 +60,17 @@ function AgentItem({ name, icon }: { name: string; icon?: string }) {
 
 function ProductionNode() {
   return (
-    <div class=" w-full border border-navy-200
-        text-text px-5 py-5 text-center">
+    <div
+      class=" w-full border border-navy-200
+        text-text px-5 py-5 text-center"
+    >
       <div class="font-display font-bold text-xl leading-none">
         Tools &amp; systems
       </div>
-      <div class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-text-muted text-balance">
+      <div
+        class="font-mono text-[11px] uppercase tracking-wider mt-2
+          text-text-muted text-balance"
+      >
         postgres / clickhouse / kubernetes / aws / gcp / github / slack / vultr
         / whatever
       </div>
@@ -111,12 +121,14 @@ function CenterNode({ label }: { label: string }) {
   // reads as the same brand surface; full Claw Patrol logo (icon +
   // wordmark) is the same public asset the header uses.
   return (
-    <div class=" w-full border border-navy text-text
-      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas-muted to-canvas-50 ">
+    <div
+      class=" w-full border border-navy text-text
+      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas to-navy-50 "
+    >
       <img
         src="/claw-patrol-logo.svg"
         alt={label}
-        class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas-muted"
+        class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas"
       />
       <SwitchTag label="Rules - action allowed?" />
       <Riser />

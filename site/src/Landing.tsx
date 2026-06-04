@@ -24,7 +24,9 @@ export function Landing() {
       <RulesSection />
       <ShadeGradient color="text-navy" invert />
       <ApproversSection />
+      <DotField class="text-canvas-400" />
       <TestSection />
+      <DotField class="text-canvas-400" />
       <ComparisonSection />
       <DotField class="text-canvas-400" />
       <CtaSection />
