@@ -23,7 +23,7 @@ export function FlowDiagram() {
 
 function AgentsNode() {
   return (
-    <div class=" w-full bg-canvas border border-navy-200
+    <div class=" w-full border border-navy-200
         text-text px-5 py-5 text-center">
       <div class="font-display font-bold text-xl leading-none">
         Your agent(s)
@@ -54,7 +54,7 @@ function AgentItem({ name, icon }: { name: string; icon?: string }) {
 
 function ProductionNode() {
   return (
-    <div class=" w-full bg-canvas border border-navy-200
+    <div class=" w-full border border-navy-200
         text-text px-5 py-5 text-center">
       <div class="font-display font-bold text-xl leading-none">
         Tools &amp; systems
@@ -112,11 +112,11 @@ function CenterNode({ label }: { label: string }) {
   // wordmark) is the same public asset the header uses.
   return (
     <div class=" w-full border border-navy text-text
-      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas to-navy-50 ">
+      px-5 py-5 pt-14 relative text-center mt-6 bg-linear-to-b from-canvas-muted to-canvas-50 ">
       <img
         src="/claw-patrol-logo.svg"
         alt={label}
-        class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas"
+        class="h-auto w-64 mx-auto px-4 absolute -top-6.5 left-[calc(50%-8.5rem)] bg-canvas-muted"
       />
       <SwitchTag label="Rules - action allowed?" />
       <Riser />

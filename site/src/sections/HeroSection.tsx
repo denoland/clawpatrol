@@ -9,28 +9,41 @@ export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;
 
 export function HeroSection() {
   return (
-    <section class="max-w-6xl mx-auto px-6 sm:px-8
-      pt-16 sm:pt-28 pb-16">
-      <div class="grid md:grid-cols-2 lg:grid-cols-[2fr_3fr] gap-10
-        md:gap-16 lg:gap-24 items-center">
-        <div class="min-w-0">
+    <section
+      class="max-w-6xl mx-auto px-6 sm:px-8
+      pt-16 sm:pt-28 pb-16"
+    >
+      <div class="flex flex-col items-center gap-16 sm:gap-24">
+        <div class="flex flex-col items-center text-center w-full">
           <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-6 font-display text-balance text-text">
             {HERO_H1}
           </h1>
-          <p class="text-sm mb-6 max-w-lg font-sans
-            font-bold uppercase text-text text-balance">
-            Give agents prod access and still sleep easy
+          <p class="text-sm mb-6 max-w-2xl font-sans font-bold uppercase text-text text-balance">
+            Give agents power, without giving up control
           </p>
-          <p class="mb-10 max-w-lg
-            text-text-muted">
+          <p class="mb-10 max-w-2xl text-text-muted">
             Claw Patrol holds agent credentials, parses their traffic at the
-            wire, and gates actions they take with rules you write, all while
-            keeping an audit log of every action.
+            wire, and gates actions with rules you write, all while keeping an
+            audit log of everything that happens.
           </p>
           <InstallTerminal />
         </div>
 
-        <div class="flex md:justify-center w-full mt-16 md:mt-0 min-w-0">
+        <div class="w-full max-w-4xl flex flex-col squircle-lg overflow-hidden shadow-[4px_6px_0_0_var(--color-canvas-300)] bg-navy">
+          <div class="flex items-center gap-1.5 px-4 py-2.5 border-b border-canvas/10">
+            <span
+              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
+              aria-hidden="true"
+            />
+            <span
+              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
+              aria-hidden="true"
+            />
+            <span
+              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
+              aria-hidden="true"
+            />
+          </div>
           <video
             src="/video/demo2.mp4"
             autoPlay
@@ -39,9 +52,8 @@ export function HeroSection() {
             playsInline
             preload="auto"
             aria-label="Claw Patrol dashboard demo"
-            class="w-full aspect-video"
+            class="block w-full aspect-video"
           />
-          {/* <FlowDiagram /> */}
         </div>
       </div>
     </section>

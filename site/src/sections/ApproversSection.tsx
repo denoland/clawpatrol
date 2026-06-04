@@ -24,7 +24,7 @@ const HUMAN_CONFIG = snippet(approver_human);
 
 function DiagramFrame({ children }: { children: ComponentChildren }) {
   return (
-    <div class="bg-canvas-muted border border-rust-200/60 squircle-md p-4 pb-0 flex flex-col gap-3">
+    <div class="bg-canvas-muted border w-full border-rust-200/60 squircle-md p-4 pb-0 flex flex-col gap-3 lg:absolute lg:bottom-[calc(-100%+2rem)]">
       {children}
     </div>
   );
@@ -70,8 +70,7 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px]  text-text-muted">
-          Reply body contains banned term{" "}
-          <code class="text-text font-mono">moron</code>.
+          Reply body contains banned term.
         </div>
       </div>
 
@@ -130,7 +129,7 @@ function ApproverCard({
   diagram: ComponentChildren;
 }) {
   return (
-    <article class="isolate min-w-0 bg-transparent relative lg:p-8 xl:p-12">
+    <article class="isolate min-w-0 bg-transparent relative lg:p-8 pb-24! xl:p-12">
       <div className="hidden w-full h-full border lg:block border-navy  z-10 absolute inset-0"></div>
       <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-horizontal-stripes z-0" />
       <div className="relative z-10 flex flex-col gap-4">
@@ -169,7 +168,7 @@ export function ApproversSection() {
 
         <div class="max-w-3xl mb-14">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display text-balance mb-5 text-text">
-            Humans, models, <span class="text-rust">your call</span>
+            Put a human in the loop, or have another agent double-check
           </h3>
           <p class="text-base  text-text-muted">
             Defer the ambiguous requests. A model with your prompt, or a person
