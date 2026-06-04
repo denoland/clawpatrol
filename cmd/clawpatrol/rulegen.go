@@ -337,7 +337,15 @@ func safeRuleNamePart(s string) string {
 	return s
 }
 
+// celString quotes s as a CEL string literal. CEL accepts both ' and "
+// quoting; we prefer single quotes so the surrounding HCL string
+// (double-quoted) doesn't need backslash-escaped inner quotes. Values
+// containing a single quote or backslash fall back to strconv.Quote,
+// which produces a valid (if escape-heavy) CEL double-quoted string.
 func celString(s string) string {
+	if !strings.ContainsAny(s, "'\\") {
+		return "'" + s + "'"
+	}
 	return strconv.Quote(s)
 }
 
