@@ -40,7 +40,7 @@ export function HeroSection() {
 
         <div class="w-full mt-16 md:mt-0 min-w-0">
           <video
-            src="/clawpatrol-demo3.mp4"
+            src="/clawpatrol-demo4.mp4"
             autoPlay
             loop
             muted
