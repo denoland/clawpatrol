@@ -1047,7 +1047,7 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing ip or profile", 400)
 		return
 	}
-	names := orderedProfileNames(w.g.cfg.Policy)
+	names := orderedProfileNames(w.g.cfg.Load().Policy)
 	known := false
 	for _, n := range names {
 		if n == profile {
@@ -1066,7 +1066,7 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 // apiProfiles lists declared profile names so the dashboard can
 // render a profile picker per device.
 func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
-	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
+	writeJSON(rw, orderedProfileNames(w.g.cfg.Load().Policy))
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.

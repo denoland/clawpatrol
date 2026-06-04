@@ -151,7 +151,6 @@ func newCredentialMatchHarness(t *testing.T, policyHCL string) *credentialMatchH
 
 	certs, _ := inMemoryCertCache(t)
 	g := &Gateway{
-		cfg:     gw,
 		db:      db,
 		certs:   certs,
 		sink:    sink,
@@ -159,6 +158,7 @@ func newCredentialMatchHarness(t *testing.T, policyHCL string) *credentialMatchH
 		secrets: newGatewaySecretStore(db, nil),
 		onboard: newOnboardRegistry(),
 	}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 	g.transports.Store(ep, transport)
 

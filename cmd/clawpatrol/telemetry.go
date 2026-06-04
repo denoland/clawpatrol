@@ -85,7 +85,7 @@ func telemetryEnabled(cfg *config.Gateway) bool {
 }
 
 func startTelemetry(g *Gateway) {
-	if !telemetryEnabled(g.cfg) {
+	if !telemetryEnabled(g.cfg.Load()) {
 		log.Printf("telemetry: disabled")
 		return
 	}
@@ -221,10 +221,10 @@ func buildTelemetryPayload(
 	// order (wireguard|tailscale). Single-transport gateways report
 	// just the one. Empty string only when the config is misconfigured.
 	var transports []string
-	if g.cfg.IsWireGuardEnabled() {
+	if g.cfg.Load().IsWireGuardEnabled() {
 		transports = append(transports, "wireguard")
 	}
-	if g.cfg.IsTailscaleEnabled() {
+	if g.cfg.Load().IsTailscaleEnabled() {
 		transports = append(transports, "tailscale")
 	}
 	transport := strings.Join(transports, "+")

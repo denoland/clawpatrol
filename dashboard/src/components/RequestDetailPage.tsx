@@ -361,7 +361,17 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
           <>
             {!writesEnabled && (
               <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs text-text">
-                Dashboard config writes are disabled for this gateway. Copy this rule into your HCL
+                Dashboard config writes are disabled for this gateway. Set{" "}
+                <code>dashboard_config_writes = true</code> in the{" "}
+                <a
+                  href="https://clawpatrol.dev/docs/config-reference/#gateway--"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  gateway block
+                </a>{" "}
+                to let the dashboard apply rules directly; until then, copy this HCL into your
                 config and deploy it through your normal workflow.
               </div>
             )}

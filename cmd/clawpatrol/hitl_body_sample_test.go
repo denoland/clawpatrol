@@ -69,7 +69,8 @@ profile "default" { credentials = [bearer_token.pat] }
 	}
 	defer close(sink.ch)
 	certs, _ := inMemoryCertCache(t)
-	g := &Gateway{cfg: gw, certs: certs, sink: sink}
+	g := &Gateway{certs: certs, sink: sink}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 
 	serverConn, clientConn := net.Pipe()

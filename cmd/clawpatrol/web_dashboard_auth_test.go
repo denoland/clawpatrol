@@ -29,7 +29,9 @@ func newDashboardTestMux(t *testing.T, cfg *config.Gateway, rootPassword string)
 			t.Fatalf("seed root password: %v", err)
 		}
 	}
-	return &webMux{g: &Gateway{cfg: cfg, db: db}}
+	g := &Gateway{db: db}
+	g.cfg.Store(cfg)
+	return &webMux{g: g}
 }
 
 // mintTestSessionCookie creates a real session row + returns the

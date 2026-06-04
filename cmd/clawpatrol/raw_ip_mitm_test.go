@@ -48,7 +48,8 @@ func TestHandleInterceptsRawIPHTTPSOnDeclaredNonDefaultPort(t *testing.T) {
 	}
 	defer tr.CloseIdleConnections()
 
-	g := &Gateway{cfg: gw, certs: certs, sink: sink, secrets: fakeSecretStore{}}
+	g := &Gateway{certs: certs, sink: sink, secrets: fakeSecretStore{}}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 	g.transports.Store(ep, tr)
 
@@ -123,7 +124,8 @@ func TestHandleInterceptsRawIPHTTPSOnDeclaredNonDefaultPort(t *testing.T) {
 func TestRawIPHTTPSMITMPortDispatchIsLimitedToDeclaredEndpoints(t *testing.T) {
 	const rawIP = "192.168.1.50"
 	gw, policy, _ := compileRawIPPolicy(t, rawIP, 8006)
-	g := &Gateway{cfg: gw}
+	g := &Gateway{}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 
 	if ep, authority, certHost := g.httpsMITMEndpoint("default", rawIP, 8006); ep == nil || ep.Name != "proxmox" ||

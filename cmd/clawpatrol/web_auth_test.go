@@ -56,10 +56,10 @@ func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 		Policy:   &config.Policy{},
 	}
 	g := &Gateway{
-		cfg:     cfg,
 		db:      db,
 		onboard: newOnboardRegistry(),
 	}
+	g.cfg.Store(cfg)
 	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	w.routeAuth = routeAuthIndex(w.routes())
 	return w
@@ -297,7 +297,7 @@ func TestOnboardApproveWithDashboardPasswordInTailscaleModeDoesNotRequireTailnet
 // on operator-class routes; the test config now reflects that.
 func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
+	w.g.cfg.Load().Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -316,7 +316,7 @@ func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *test
 
 func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "")
-	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
+	w.g.cfg.Load().Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -341,7 +341,7 @@ func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(
 // own onboards.
 func TestOnboardApproveRejectsTailnetPrincipalNotInOperators(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
+	w.g.cfg.Load().Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -377,7 +377,8 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 		},
 		Policy: &config.Policy{},
 	}
-	g := &Gateway{cfg: cfg, db: db, onboard: newOnboardRegistry()}
+	g := &Gateway{db: db, onboard: newOnboardRegistry()}
+	g.cfg.Store(cfg)
 	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	h := w.handler()
 
@@ -414,7 +415,7 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 // effect for the gate's purposes.
 func TestDashboardAuthGateAllowsTailnetOperatorWhenAllowlisted(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.Settings.Tailscale.Operators = []string{"alice@example.com", "*@example.org"}
+	w.g.cfg.Load().Settings.Tailscale.Operators = []string{"alice@example.com", "*@example.org"}
 	h := w.handler()
 
 	cases := []struct {

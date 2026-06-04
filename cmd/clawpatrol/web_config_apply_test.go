@@ -119,6 +119,85 @@ profile "default" {
 	}
 }
 
+// TestConfigApplyBailsOnComplexProfileBody confirms the regex merge
+// refuses to touch profile blocks it can't safely rewrite (inline
+// disambiguator entries, here) — the fallback is a plain append that
+// validates as a duplicate-profile error rather than silently
+// corrupting the existing block.
+func TestConfigApplyBailsOnComplexProfileBody(t *testing.T) {
+	w := configApplyTestMux(t, true)
+	// Replace the simple "default" profile in the seed config with a
+	// disambiguator-heavy one so the merge has to bail.
+	complexSrc := `gateway {
+  state_dir = "` + filepath.ToSlash(filepath.Dir(w.g.cfgPath)) + `"
+  dashboard_config_writes = true
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint = "127.0.0.1:51820"
+  }
+}
+
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+credential "bearer_token" "tok-a" { endpoint = https.github }
+credential "bearer_token" "tok-b" { endpoint = https.github }
+
+profile "default" {
+  credentials = [
+    { placeholder = "PH_a", credential = bearer_token.tok-a },
+    { placeholder = "PH_b", credential = bearer_token.tok-b },
+  ]
+}
+`
+	if err := os.WriteFile(w.g.cfgPath, []byte(complexSrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, policy, err := loadConfig(w.g.cfgPath)
+	if err != nil {
+		t.Fatalf("reload seeded config: %v", err)
+	}
+	w.g.cfg.Store(cfg)
+	w.g.policy.Store(policy)
+
+	before, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snippet := `endpoint "https" "tinyclouds_org" {
+  hosts = ["tinyclouds.org"]
+}
+credential "passthrough" "tinyclouds_org_passthrough" {
+  endpoint = https.tinyclouds_org
+}
+profile "default" {
+  credentials = [passthrough.tinyclouds_org_passthrough]
+}`
+	rw := httptest.NewRecorder()
+	w.apiConfigApply(rw, jsonReq(map[string]string{
+		"base_revision": revisionForBytes(before),
+		"append_hcl":    snippet,
+	}))
+	// Plain append produces a duplicate "default" profile, which
+	// loadConfig rejects. We want the file unchanged and a 400 with
+	// the loader's error.
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	after, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("config changed after rejected apply")
+	}
+	// The disambiguator entries must still be intact in the
+	// untouched config.
+	if !strings.Contains(string(after), `placeholder = "PH_a"`) {
+		t.Fatalf("disambiguator body corrupted:\n%s", after)
+	}
+}
+
 func TestConfigApplyAppendsAndReloads(t *testing.T) {
 	w := configApplyTestMux(t, true)
 	before, err := os.ReadFile(w.g.cfgPath)
@@ -191,7 +270,8 @@ profile "default" { credentials = [bearer_token.tok] }
 		t.Fatalf("OpenDB: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	g := &Gateway{cfg: cfg, cfgPath: cfgPath, stateDir: dir, db: db}
+	g := &Gateway{cfgPath: cfgPath, stateDir: dir, db: db}
+	g.cfg.Store(cfg)
 	g.policy.Store(policy)
 	return &webMux{g: g}
 }

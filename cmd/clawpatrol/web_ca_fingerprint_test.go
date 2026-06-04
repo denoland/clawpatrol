@@ -26,10 +26,10 @@ func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 		Policy: &config.Policy{},
 	}
 	g := &Gateway{
-		cfg:     cfg,
 		certs:   cc,
 		onboard: newOnboardRegistry(),
 	}
+	g.cfg.Store(cfg)
 	w := &webMux{
 		g:         g,
 		ts:        cfg.Join(),

@@ -85,11 +85,11 @@ rule "allow-telegram" {
 
 	certs, _ := inMemoryCertCache(t)
 	g := &Gateway{
-		cfg:     gw,
 		certs:   certs,
 		sink:    sink,
 		secrets: telegramRequestBodySecretStore{},
 	}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 	g.transports.Store(ep, tr)
 

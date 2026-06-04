@@ -296,13 +296,13 @@ profile "default" {
 
 	certs, _ := inMemoryCertCache(t)
 	g := &Gateway{
-		cfg:     gw,
 		db:      db,
 		certs:   certs,
 		sink:    sink,
 		hitl:    newHITLRegistry(sink),
 		secrets: newGatewaySecretStore(db, nil),
 	}
+	g.cfg.Store(gw)
 	g.policy.Store(policy)
 	g.transports.Store(ep, transport)
 

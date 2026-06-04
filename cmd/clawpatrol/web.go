@@ -179,7 +179,7 @@ func (w *webMux) skipsDashboardPassword(path string) bool {
 
 func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
 	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
-		w.g.cfg.IsTailscaleEnabled()
+		w.g.cfg.Load().IsTailscaleEnabled()
 }
 
 func (w *webMux) skipsTailnetGate(path string) bool {
@@ -312,7 +312,7 @@ const cpSessionCookieName = "cp_session"
 // the duplicate parse here is so a hot-reloaded config can change
 // the TTL without restarting.
 func (w *webMux) dashboardSessionTTL() time.Duration {
-	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL())
+	d, err := config.DashboardSessionTTLFromString(w.g.cfg.Load().DashboardSessionTTL())
 	if err != nil {
 		// Validator at config load would have caught this; defensive
 		// fallback to the default keeps a hot-reload typo from
@@ -367,7 +367,7 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 		// configured operators allowlist. Only relevant when the
 		// `tailscale {}` block is enabled — without it there's no
 		// whois identity to resolve.
-		if w.g.cfg.IsTailscaleEnabled() && len(w.g.cfg.Operators()) > 0 {
+		if w.g.cfg.Load().IsTailscaleEnabled() && len(w.g.cfg.Load().Operators()) > 0 {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -571,7 +571,7 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, sta
 // gate is skipped and dashboardAuthGate's password requirement is
 // the only auth.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	skipGate := !w.g.cfg.IsTailscaleEnabled()
+	skipGate := !w.g.cfg.Load().IsTailscaleEnabled()
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if w.skipsTailnetGate(r.URL.Path) || skipGate {
@@ -629,7 +629,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		// dashboardAuthGate upstream and short-circuit this gate at
 		// the principalFromContext check above.
 		if needsOperatorGate(w.authRequirementForPath(r.URL.Path)) {
-			if !config.MatchDashboardOperator(login, w.g.cfg.Operators()) {
+			if !config.MatchDashboardOperator(login, w.g.cfg.Load().Operators()) {
 				http.Error(rw, "operator routes require a dashboard password session or a tailnet login matching the operators allowlist", http.StatusForbidden)
 				return
 			}
@@ -825,8 +825,10 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 func (w *webMux) hitlPublicURL() string {
 	// Prefer the live config — public_url may be auto-derived from the
 	// tsnet Funnel cert AFTER webMux is constructed.
-	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL() != "" {
-		return w.g.cfg.PublicURL()
+	if w.g != nil {
+		if cfg := w.g.cfg.Load(); cfg != nil && cfg.PublicURL() != "" {
+			return cfg.PublicURL()
+		}
 	}
 	return w.publicURL
 }
@@ -1061,7 +1063,7 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 	if p := r.Header.Get("X-Clawpatrol-Profile"); p != "" {
 		return p, p
 	}
-	if def := defaultProfileName(w.g.cfg.Policy); def != "" {
+	if def := defaultProfileName(w.g.cfg.Load().Policy); def != "" {
 		return def, def
 	}
 	user, _, host := w.callerIdentity(r)
@@ -1083,7 +1085,7 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 // the context (e.g. on a route the gate let through without one,
 // which shouldn't happen for authDashboard but stays defensive).
 func (w *webMux) whoamiData(r *http.Request) map[string]string {
-	pu := w.g.cfg.PublicURL()
+	pu := w.g.cfg.Load().PublicURL()
 	if pu == "" {
 		pu = w.publicURL
 	}
@@ -1155,7 +1157,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"agents":                  w.agentsList(),
 		"update":                  currentUpdateBanner.Load(),
 		"config_file":             filepath.Base(w.g.cfgPath),
-		"dashboard_config_writes": w.g.cfg.DashboardConfigWrites(),
+		"dashboard_config_writes": w.g.cfg.Load().DashboardConfigWrites(),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -1346,16 +1348,19 @@ func (w *webMux) apiConfigApply(rw http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !w.g.cfg.DashboardConfigWrites() {
+	w.g.configMu.Lock()
+	defer w.g.configMu.Unlock()
+
+	// Re-check writes inside the lock: a concurrent reload could
+	// have flipped the setting between the request arriving and us
+	// acquiring the lock.
+	if !w.g.cfg.Load().DashboardConfigWrites() {
 		writeJSONError(rw, http.StatusForbidden, map[string]any{
 			"error":                   "dashboard config writes are disabled",
 			"dashboard_config_writes": false,
 		})
 		return
 	}
-
-	w.g.configMu.Lock()
-	defer w.g.configMu.Unlock()
 
 	current, err := os.ReadFile(w.g.cfgPath)
 	if err != nil {
@@ -1393,6 +1398,12 @@ func (w *webMux) apiConfigApply(rw http.ResponseWriter, r *http.Request) {
 			"error": err.Error(),
 		})
 		return
+	}
+	// Preserve the original file's permissions across the atomic
+	// rename — os.CreateTemp gives us 0600 by default, which would
+	// silently downgrade a group-readable deploy file.
+	if st, err := os.Stat(w.g.cfgPath); err == nil {
+		_ = os.Chmod(tmpPath, st.Mode().Perm())
 	}
 	if err := os.Rename(tmpPath, w.g.cfgPath); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -1492,6 +1503,16 @@ func mergeProfileCredentialRefs(current, profile string, addRefs []string) (stri
 		return current, false
 	}
 	body := current[loc[4]:loc[5]]
+	// Bail out if the body contains anything we can't reason about
+	// with the simple credentials-list regex: nested braces (inline
+	// disambiguator entries), multi-line credentials lists with `,`
+	// on continuation lines, or any non-credentials attribute that
+	// could swallow our edit. The caller falls back to a plain
+	// append, which surfaces a clean "duplicate profile" diagnostic
+	// from the loader.
+	if strings.ContainsAny(body, "{}") || !profileBodyMergeSafe(body) {
+		return current, false
+	}
 	existing := credentialRefsFromProfileBody(body)
 	refs := mergeRefLists(existing, addRefs)
 	if profileCredentialsLineRE.MatchString(body) {
@@ -1500,6 +1521,29 @@ func mergeProfileCredentialRefs(current, profile string, addRefs []string) (stri
 		body = strings.TrimRight(body, "\n") + "\n  credentials = [" + strings.Join(refs, ", ") + "]"
 	}
 	return current[:loc[4]] + body + current[loc[5]:], true
+}
+
+// profileBodyMergeSafe returns true only when every non-blank line in
+// the profile body is either the single `credentials = [...]` line we
+// know how to edit or a comment / whitespace. Anything else (extra
+// attributes, multi-line credentials lists, disambiguator literals
+// the simple regex would mis-tokenise) makes the merge unsafe.
+func profileBodyMergeSafe(body string) bool {
+	credSeen := false
+	for _, line := range strings.Split(body, "\n") {
+		s := strings.TrimSpace(line)
+		if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, "//") {
+			continue
+		}
+		if !profileCredentialsLineRE.MatchString(line) {
+			return false
+		}
+		if credSeen {
+			return false
+		}
+		credSeen = true
+	}
+	return true
 }
 
 var profileCredentialsLineRE = regexp.MustCompile(`(?m)^\s*credentials\s*=\s*\[([^\]]*)\]`)
@@ -1697,7 +1741,7 @@ func (w *webMux) apiActionRulePreview(rw http.ResponseWriter, r *http.Request) {
 	if b, err := os.ReadFile(w.g.cfgPath); err == nil {
 		rule.ConfigRevision = revisionForBytes(b)
 	}
-	rule.DashboardConfigWrites = w.g.cfg.DashboardConfigWrites()
+	rule.DashboardConfigWrites = w.g.cfg.Load().DashboardConfigWrites()
 	writeJSON(rw, rule)
 }
 

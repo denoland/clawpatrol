@@ -219,7 +219,6 @@ profile "default" {
 	certs, _ := inMemoryCertCache(t)
 	registry := newHITLRegistry(sink)
 	g := &Gateway{
-		cfg:     gw,
 		db:      db,
 		certs:   certs,
 		sink:    sink,
@@ -227,6 +226,7 @@ profile "default" {
 		secrets: newGatewaySecretStore(db, nil),
 		onboard: newOnboardRegistry(),
 	}
+	g.cfg.Store(gw)
 	registry.asyncGrantResolver = g.resolveAsyncHITLGrant
 	g.policy.Store(policy)
 	g.transports.Store(ep, transport)

@@ -432,7 +432,8 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 	}
 
 	gwCfg := loadHITLOperationAPITestConfig(t)
-	g := &Gateway{cfg: gwCfg, db: db, onboard: newOnboardRegistry()}
+	g := &Gateway{db: db, onboard: newOnboardRegistry()}
+	g.cfg.Store(gwCfg)
 	w := newWebMux(g, gwCfg.Join(), gwCfg.PublicURL())
 	return hitlOperationAPITestHarness{
 		handler:    w,

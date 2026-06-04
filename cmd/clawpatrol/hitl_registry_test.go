@@ -25,7 +25,8 @@ func (a captureApproveRequestApprover) Approve(_ context.Context, req runtime.Ap
 
 func TestGatewayRunApproveChainWiresPendingMessageUpdateSink(t *testing.T) {
 	approver := captureApproveRequestApprover{got: make(chan runtime.ApproveRequest, 1)}
-	g := &Gateway{cfg: &config.Gateway{}, hitl: newHITLRegistry(nil)}
+	g := &Gateway{hitl: newHITLRegistry(nil)}
+	g.cfg.Store(&config.Gateway{})
 	g.policy.Store(&config.CompiledPolicy{Approvers: map[string]*config.Entity{"ops": {Body: approver}}})
 
 	verdict := g.runApproveChain(context.Background(), []config.ApproveStage{{Name: "ops"}}, runApproveCtx{Host: "api.example.test", Method: "POST", Path: "/v1/write"})
