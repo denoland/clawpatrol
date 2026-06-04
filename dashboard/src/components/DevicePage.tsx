@@ -278,8 +278,7 @@ function ConfirmProfileChange({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const [typed, setTyped] = useState("");
-  const matches = typed.trim() === next;
+  const [agreed, setAgreed] = useState(false);
   return (
     <Modal title="Change profile" size="sm" onClose={saving ? () => {} : onCancel}>
       <div className="p-4 space-y-4">
@@ -288,37 +287,29 @@ function ConfirmProfileChange({
           from <span className="font-mono">{current || "—"}</span> to{" "}
           <span className="font-mono">{next}</span>.
         </p>
-        <div className="text-xs text-text-muted space-y-2 border-l-2 border-rust-400 pl-3">
-          <p>
-            The profile dictates which credentials this device can use and which rules apply to its
-            traffic. Switching profiles can immediately grant new access or revoke existing access.
-          </p>
-          <p>Do not change profiles unless you know what this device should reach.</p>
-        </div>
-        <label className="block space-y-1">
-          <span className="text-2xs font-mono uppercase tracking-wider text-text-muted">
-            Type <span className="text-text normal-case tracking-normal">{next}</span> to confirm
-          </span>
+        <p className="text-xs text-text-muted border-l-2 border-rust-400 pl-3">
+          The profile dictates which credentials this device can use and which rules apply to its
+          traffic. Switching profiles can immediately grant new access or revoke existing access.
+        </p>
+        <label className="flex items-start gap-2 text-sm text-text cursor-pointer select-none">
           <input
             autoFocus
-            type="text"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
             disabled={saving}
-            spellCheck={false}
-            autoComplete="off"
-            className={
-              "w-full px-2 py-1 border-1.5 bg-canvas text-sm font-mono " +
-              "focus:outline-none disabled:opacity-50 " +
-              (matches ? "border-success-500" : "border-navy")
-            }
+            className="mt-0.5 accent-rust-400 disabled:opacity-50"
           />
+          <span>
+            I understand this changes what <span className="font-mono">{deviceLabel}</span> can
+            reach.
+          </span>
         </label>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="outline" onClick={onCancel} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={onConfirm} disabled={!matches || saving}>
+          <Button onClick={onConfirm} disabled={!agreed || saving}>
             <span className="inline-flex items-center gap-2">
               {saving && (
                 <svg
