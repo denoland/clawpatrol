@@ -74,8 +74,11 @@ func (g *Gateway) asyncHumanApproverFor(stages []config.ApproveStage) (string, h
 }
 
 func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsyncOperationInput) (hitlAsyncOperationStart, bool, error) {
+	if g == nil || g.db == nil || in.HTTPRequest == nil || in.Endpoint == nil || in.Rule == nil || in.Approver == nil {
+		return hitlAsyncOperationStart{}, false, nil
+	}
 	cfg := g.cfg.Load()
-	if g == nil || g.db == nil || cfg == nil || cfg.PublicURL() == "" || in.HTTPRequest == nil || in.Endpoint == nil || in.Rule == nil || in.Approver == nil {
+	if cfg == nil || cfg.PublicURL() == "" {
 		return hitlAsyncOperationStart{}, false, nil
 	}
 	if in.ProfileID == "" || in.PrincipalID == "" || in.ApproverID == "" || in.MatchReq == nil {
