@@ -374,4 +374,3 @@ func celString(s string) string {
 	}
 	return strconv.Quote(s)
 }
-
