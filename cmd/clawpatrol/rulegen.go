@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -206,11 +207,39 @@ func generatedRuleHCL(name, endpoint, condition string) (string, error) {
 	b.SetAttributeRaw("endpoint", config.TraversalTokens(endpoint))
 	b.SetAttributeValue("priority", cty.NumberIntVal(100))
 	if condition != "" {
-		b.SetAttributeValue("condition", cty.StringVal(condition))
+		setCELCondition(b, condition)
 	}
 	b.SetAttributeValue("verdict", cty.StringVal("deny"))
 	b.SetAttributeValue("reason", cty.StringVal("Blocked from dashboard: generated from observed action"))
 	return string(f.Bytes()), nil
+}
+
+// setCELCondition writes `condition = ...` either as a plain quoted
+// string for single-clause expressions or as a `<<-CEL ... CEL`
+// heredoc when the expression has multiple `&&`-joined clauses,
+// matching the convention in examples/*.hcl. Splitting on ` && `
+// keeps the marker line-anchored so future readers diff each clause
+// independently.
+func setCELCondition(b *hclwrite.Body, condition string) {
+	parts := strings.Split(condition, " && ")
+	if len(parts) < 2 {
+		b.SetAttributeValue("condition", cty.StringVal(condition))
+		return
+	}
+	var body strings.Builder
+	for i, p := range parts {
+		body.WriteString("    ")
+		if i > 0 {
+			body.WriteString("&& ")
+		}
+		body.WriteString(p)
+		body.WriteString("\n")
+	}
+	b.SetAttributeRaw("condition", hclwrite.Tokens{
+		{Type: hclsyntax.TokenOHeredoc, Bytes: []byte("<<-CEL\n")},
+		{Type: hclsyntax.TokenStringLit, Bytes: []byte(body.String())},
+		{Type: hclsyntax.TokenCHeredoc, Bytes: []byte("  CEL")},
+	})
 }
 
 func generatedEndpointBlockRuleHCL(endpointName, credName, host string, profiles []string, ruleName string) (string, error) {

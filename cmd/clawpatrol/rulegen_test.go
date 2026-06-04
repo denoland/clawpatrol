@@ -22,7 +22,8 @@ func TestGenerateRuleHTTPExact(t *testing.T) {
 	if !strings.Contains(rule.HCL, `endpoint  = https.github`) {
 		t.Fatalf("hcl missing typed endpoint:\n%s", rule.HCL)
 	}
-	if !strings.Contains(rule.HCL, `condition = "http.method == 'DELETE' && http.path == '/repos/me/sandbox/issues/1'"`) {
+	wantHTTP := "condition = <<-CEL\n    http.method == 'DELETE'\n    && http.path == '/repos/me/sandbox/issues/1'\n  CEL"
+	if !strings.Contains(rule.HCL, wantHTTP) {
 		t.Fatalf("hcl missing exact HTTP condition:\n%s", rule.HCL)
 	}
 	if !strings.Contains(rule.HCL, `verdict   = "deny"`) {
@@ -47,7 +48,8 @@ profile "default" { credentials = [postgres_credential.pg-user] }
 	if err != nil {
 		t.Fatalf("GenerateRuleFromEvent: %v", err)
 	}
-	if !strings.Contains(rule.HCL, `condition = "sql.verb == 'drop' && 'users' in sql.tables"`) {
+	wantSQL := "condition = <<-CEL\n    sql.verb == 'drop'\n    && 'users' in sql.tables\n  CEL"
+	if !strings.Contains(rule.HCL, wantSQL) {
 		t.Fatalf("hcl missing SQL condition:\n%s", rule.HCL)
 	}
 }
@@ -71,7 +73,7 @@ profile "default" { credentials = [bearer_token.k8s-token] }
 	if err != nil {
 		t.Fatalf("GenerateRuleFromEvent: %v", err)
 	}
-	want := `condition = "k8s.verb == 'delete' && k8s.resource == 'secrets' && k8s.namespace == 'prod' && k8s.name == 'api-token'"`
+	want := "condition = <<-CEL\n    k8s.verb == 'delete'\n    && k8s.resource == 'secrets'\n    && k8s.namespace == 'prod'\n    && k8s.name == 'api-token'\n  CEL"
 	if !strings.Contains(rule.HCL, want) {
 		t.Fatalf("hcl missing K8s condition:\n%s", rule.HCL)
 	}
