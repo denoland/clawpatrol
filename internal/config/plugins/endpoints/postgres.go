@@ -507,24 +507,27 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //
 //   - Build a SQL match.Request with Truncated=true and empty
 //     Verb / Statement / Tables / Functions. The frontend can't
-//     parse SQL out of bytes it refused to buffer, and the
-//     dispatcher's job is to decide off the rule's truncatable-facet
-//     references, not off whatever prefix did fit.
-//   - runtime.MatchRequest walks the rule list. A rule whose CEL
-//     reads sql.* will be auto-synthesized to deny (config/runtime/
-//     dispatch.go); a rule that only reads credential or has no
-//     condition still matches normally.
+//     parse SQL out of bytes it refused to buffer; every sql.* facet
+//     path is a CEL unknown, so a rule whose outcome depends on the
+//     discarded bytes evaluates Unevaluable and synth-denies, while
+//     a rule that resolves on credential / sql.database / a catch-all
+//     still matches normally.
+//   - runtime.MatchRequestFailClosed walks the rule list. When the
+//     endpoint declares rules and none matched (every condition
+//     resolved independent of the missing bytes), it synthesizes a
+//     deny rather than letting the uninspectable frame ride the
+//     implicit-allow default. Rule-less endpoints keep pass-through.
 //
 // Then:
 //
 //   - Deny → drain remaining frame bytes from the wire, send
 //     ErrorResponse + ReadyForQuery to the agent (pgWriteDeny), do
 //     NOT touch upstream.
-//   - Allow / no match → forward every byte verbatim to upstream
-//     (the buffered prefix + the wire tail streamed through
-//     io.CopyN). The upstream sees a single oversize Q / P frame
-//     exactly as the agent emitted it; the gateway just declined to
-//     materialize the body in memory.
+//   - Allow (a rule explicitly matched) / no rules on the endpoint →
+//     forward every byte verbatim to upstream (the buffered prefix +
+//     the wire tail streamed through io.CopyN). The upstream sees a
+//     single oversize Q / P frame exactly as the agent emitted it;
+//     the gateway just declined to materialize the body in memory.
 //   - Approve chain → treated as deny. HITL can't make a decision
 //     on bytes that aren't there.
 func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, database string, buf []byte, length uint32) ([]byte, bool) {
@@ -550,7 +553,7 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 	if f := facet.Lookup("sql"); f != nil {
 		facets = f.Report(mreq)
 	}
-	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	cr := runtime.MatchRequestFailClosed(ch.Endpoint, mreq)
 
 	deny, reason := false, ""
 	if cr != nil {
@@ -662,7 +665,7 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 	if f := facet.Lookup("sql"); f != nil {
 		facets = f.Report(mreq)
 	}
-	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	cr := runtime.MatchRequestFailClosed(ch.Endpoint, mreq)
 	if cr == nil {
 		// No rule matched — implicit allow. Emit so the query
 		// shows up in the dashboard's actions tab anyway; the

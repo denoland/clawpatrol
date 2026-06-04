@@ -8,16 +8,6 @@ import (
 	k8sfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/k8s"
 )
 
-// wantResult adapts a boolean match expectation to the three-valued
-// Result, so an unexpected Unevaluable fails the assertion
-// instead of being conflated with "no match".
-func wantResult(b bool) match.Result {
-	if b {
-		return match.Matched
-	}
-	return match.NoMatch
-}
-
 // TestK8sMatcherVerbCaseInsensitive locks in that a rule written as
 // `k8s.verb == "GET"` matches a list/get request even though the
 // activation normalizes the got value to lowercase. CompileCondition
@@ -43,8 +33,8 @@ func TestK8sMatcherVerbCaseInsensitive(t *testing.T) {
 				t.Fatalf("NewMatcher: %v", err)
 			}
 			req := &match.Request{Family: "k8s", Meta: &k8sfacet.Meta{Verb: tc.verb}}
-			if got := m.Match(req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v (condition=%q)", got, wantResult(tc.want), tc.condition)
+			if got := m.Match(req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q)", got, match.ResultOf(tc.want), tc.condition)
 			}
 		})
 	}
@@ -70,8 +60,8 @@ func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &match.Request{Family: "k8s", Meta: tc.meta}
-			if got := m.Match(req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v", got, wantResult(tc.want))
+			if got := m.Match(req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v", got, match.ResultOf(tc.want))
 			}
 		})
 	}

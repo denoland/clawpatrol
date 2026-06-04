@@ -11,16 +11,6 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/https"
 )
 
-// wantResult adapts a boolean match expectation to the three-valued
-// Result, so an unexpected Unevaluable fails the assertion
-// instead of being conflated with "no match".
-func wantResult(b bool) match.Result {
-	if b {
-		return match.Matched
-	}
-	return match.NoMatch
-}
-
 // httpReq builds a minimal Request for the HTTP matcher tests.
 // Header / body / credential default to empty unless the test sets
 // them via the Request returned (callers mutate before calling Match).
@@ -96,8 +86,8 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			if got := m.Match(tc.req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v (condition=%q)", got, wantResult(tc.want), tc.condition)
+			if got := m.Match(tc.req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q)", got, match.ResultOf(tc.want), tc.condition)
 			}
 		})
 	}
@@ -142,8 +132,8 @@ func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			if got := m.Match(httpReq(tc.method, "/x")).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v (condition=%q method=%q)", got, wantResult(tc.want), tc.condition, tc.method)
+			if got := m.Match(httpReq(tc.method, "/x")).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q method=%q)", got, match.ResultOf(tc.want), tc.condition, tc.method)
 			}
 		})
 	}

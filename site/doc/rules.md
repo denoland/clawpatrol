@@ -505,14 +505,27 @@ For each rule:
   a deny attributed to that rule, with this reason shape:
 
   ```
-  rule "<name>" could not be evaluated against this request (<detail>); failing closed
+  rule "<name>" could not be evaluated against this request (<cause>); failing closed
   ```
 
-  where `<detail>` names the unknown facet paths and the cause
-  (truncated / unparseable), or the CEL evaluation error. The
-  synthesized rule keeps the original rule's name and priority, so
-  logs and dashboards still attribute the deny to the rule whose
-  contract broke.
+  where `<cause>` is the coarse category: truncated at the inspection
+  buffer, unparseable, or evaluation error. The full detail — which
+  facet paths the condition depended on, or the CEL error text — is
+  written to the gateway log only. Deny reasons are returned to the
+  agent verbatim, and evaluator errors like `no such key: <field>`
+  would let an agent probe which fields a rule inspects by varying
+  request payloads. The synthesized rule keeps the original rule's
+  name and priority, so logs and dashboards still attribute the deny
+  to the rule whose contract broke.
+
+- **No rule matches at all** (SQL endpoints): when a truncated or
+  unparseable request resolves every rule via absorption and the
+  endpoint declares at least one rule, the gateway denies instead of
+  applying the implicit-allow default — "no rule matched" may simply
+  mean every condition was independent of the missing bytes, not that
+  the operator intended them to flow. Endpoints with no rules keep
+  pass-through, and the backstop never fires on fully-inspected
+  requests.
 
 The upshot: a rule matching on `http.method` and/or `credential` on
 an `https` endpoint still fires on a 2 MiB body, but a

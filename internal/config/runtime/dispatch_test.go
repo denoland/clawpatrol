@@ -1472,11 +1472,107 @@ rule "allow-rest" {
 	if !strings.Contains(r.Outcome.Reason, "deny-rm-tool") {
 		t.Errorf("reason = %q, want it to name the rule", r.Outcome.Reason)
 	}
+	// The agent-visible reason must NOT carry the raw cel-go error
+	// text — `no such key: tool` would let an agent probe which
+	// fields the rule inspects by varying payloads and reading deny
+	// reasons. The full detail goes to the gateway log instead.
+	if strings.Contains(r.Outcome.Reason, "no such key") || strings.Contains(r.Outcome.Reason, "tool'") {
+		t.Errorf("reason = %q leaks evaluator internals", r.Outcome.Reason)
+	}
 
 	// A body that does carry the field keeps evaluating honestly.
 	req.Body = []byte(`{"tool":"ls"}`)
 	r = runtime.MatchRequest(ep, req)
 	if r == nil || r.Name != "allow-rest" || r.Outcome.Verdict != "allow" {
 		t.Fatalf("got %+v, want allow-rest (tool != 'rm' cleanly no-matches)", r)
+	}
+}
+
+// TestMatchRequestFailClosedBackstop pins the uninspectable-request
+// backstop: when every rule on the endpoint resolves independently of
+// the missing bytes (absorption → NoMatch) and there is no catch-all,
+// MatchRequestFailClosed synthesizes a deny instead of returning nil —
+// an oversize/unparseable payload must not ride the implicit-allow
+// default past a rule set that exists. Rule-less endpoints keep the
+// legacy pass-through, and fully-inspected requests are unaffected.
+func TestMatchRequestFailClosedBackstop(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
+
+rule "deny-prod-writes" {
+  endpoint  = postgres.db
+  condition = "sql.verb == 'insert' && sql.database == 'prod'"
+  verdict   = "deny"
+}
+`)
+	ep := cp.Endpoints["db"]
+
+	// Truncated frame against database 'dev': the rule absorbs
+	// (`unknown && false == false`) → NoMatch → the backstop denies.
+	req := &match.Request{
+		Family:    "sql",
+		Database:  "dev",
+		Truncated: true,
+		Meta:      &sqlfacet.Meta{Database: "dev"},
+	}
+	r := runtime.MatchRequestFailClosed(ep, req)
+	if r == nil {
+		t.Fatalf("truncated no-match: got nil, want backstop deny")
+	}
+	if r.Outcome.Verdict != "deny" {
+		t.Errorf("verdict = %q, want deny", r.Outcome.Verdict)
+	}
+	if !strings.Contains(r.Outcome.Reason, "truncated") {
+		t.Errorf("reason = %q, want it to name the truncation", r.Outcome.Reason)
+	}
+
+	// Same shape, unparseable: backstop denies and the reason names
+	// the cause without leaking which facet paths rules read.
+	req = &match.Request{
+		Family:      "sql",
+		Database:    "dev",
+		Unparseable: true,
+		Meta:        &sqlfacet.Meta{Statement: "DROP;", Database: "dev"},
+	}
+	r = runtime.MatchRequestFailClosed(ep, req)
+	if r == nil || r.Outcome.Verdict != "deny" {
+		t.Fatalf("unparseable no-match: got %+v, want backstop deny", r)
+	}
+	if strings.Contains(r.Outcome.Reason, "sql.verb") {
+		t.Errorf("reason = %q leaks rule facet paths", r.Outcome.Reason)
+	}
+
+	// Fully-inspected request: identical to MatchRequest — a SELECT
+	// against 'dev' matches nothing and returns nil (implicit allow).
+	req = &match.Request{
+		Family:   "sql",
+		Database: "dev",
+		Meta:     &sqlfacet.Meta{Verb: "select", Database: "dev"},
+	}
+	if r := runtime.MatchRequestFailClosed(ep, req); r != nil {
+		t.Errorf("inspected no-match: got %+v, want nil", r)
+	}
+
+	// Rule-less endpoint: keeps the legacy pass-through default even
+	// for a truncated request.
+	cpNone := compileFixture(t, `
+endpoint "postgres" "bare" {
+  host = "bare.example.com:5432"
+}
+credential "postgres_credential" "bare-cred" { endpoint = postgres.bare }
+profile "default" { credentials = [postgres_credential.bare-cred] }
+`)
+	bare := cpNone.Endpoints["bare"]
+	req = &match.Request{
+		Family:    "sql",
+		Truncated: true,
+		Meta:      &sqlfacet.Meta{},
+	}
+	if r := runtime.MatchRequestFailClosed(bare, req); r != nil {
+		t.Errorf("rule-less endpoint: got %+v, want nil (pass-through)", r)
 	}
 }

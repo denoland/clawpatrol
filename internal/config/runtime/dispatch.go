@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -106,10 +107,50 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 		case match.Matched:
 			return r
 		case match.Unevaluable:
-			return synthesizeUnevaluableDeny(r, d.Detail)
+			return synthesizeUnevaluableDeny(r, req, d.Detail)
 		}
 	}
 	return nil
+}
+
+// MatchRequestFailClosed wraps MatchRequest for wire frontends whose
+// request bytes the gateway could not fully inspect (Truncated /
+// Unparseable). On such a request, "no rule matched" may simply mean
+// every rule's outcome was independent of the missing bytes
+// (absorption) — not that the operator intended the bytes to flow.
+// When the endpoint declares at least one enabled rule and none
+// matched, this returns a synthesized catch-all deny instead of nil,
+// so an uninspectable payload never rides the implicit-allow default
+// past a rule set that exists. Endpoints with no rules at all keep
+// their legacy pass-through default, and fully-inspected requests
+// behave exactly like MatchRequest.
+//
+// SQL frontends (postgres, clickhouse_native) route their statement
+// evaluation through this; the HTTPS path deliberately does NOT —
+// rule-less LLM endpoints routinely forward >cap request bodies, and
+// inspectable header/method facets remain matchable there.
+func MatchRequestFailClosed(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
+	cr := MatchRequest(ep, req)
+	if cr != nil || ep == nil || req == nil || (!req.Truncated && !req.Unparseable) {
+		return cr
+	}
+	hasRules := false
+	for _, r := range ep.Rules {
+		if !r.Disabled {
+			hasRules = true
+			break
+		}
+	}
+	if !hasRules {
+		return nil
+	}
+	return &config.CompiledRule{
+		Outcome: config.Outcome{
+			Verdict: "deny",
+			Reason: "request bytes were " + unevaluableCause(req) +
+				" and no rule explicitly allowed the request; failing closed",
+		},
+	}
 }
 
 // synthesizeUnevaluableDeny returns a CompiledRule that mirrors r's
@@ -118,16 +159,42 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 // honestly — its condition depends on a facet value the gateway
 // doesn't have (truncated bytes, parser-refused fields) or errored
 // at runtime — so we surface a fail-closed deny attributed to the
-// rule that owns the contract. The detail comes from the matcher and
-// names what broke (the unknown facet paths or the eval error).
-func synthesizeUnevaluableDeny(r *config.CompiledRule, detail string) *config.CompiledRule {
-	reason := "rule \"" + r.Name + "\" could not be evaluated against this request (" + detail + "); failing closed"
+// rule that owns the contract.
+//
+// The agent-visible reason names only the rule and the coarse cause.
+// The matcher's full detail (the unknown facet paths, or the CEL
+// evaluation error text) is deliberately kept out of it: cel-go
+// errors like `no such key: <field>` would let an agent probe which
+// fields a rule inspects by varying request payloads and reading
+// deny reasons. The detail goes to the gateway log for the operator
+// instead.
+func synthesizeUnevaluableDeny(r *config.CompiledRule, req *match.Request, detail string) *config.CompiledRule {
+	reason := "rule \"" + r.Name + "\" could not be evaluated against this request (" + unevaluableCause(req) + "); failing closed"
+	log.Printf("rule %q unevaluable: %s", r.Name, detail)
 	synth := *r
 	synth.Outcome = config.Outcome{
 		Verdict: "deny",
 		Reason:  reason,
 	}
 	return &synth
+}
+
+// unevaluableCause renders the agent-safe cause of an unevaluable
+// condition from the request's inspection flags. The agent already
+// knows it sent an oversized or garbled payload, so naming the
+// category leaks nothing; anything finer-grained stays in the
+// operator log.
+func unevaluableCause(req *match.Request) string {
+	switch {
+	case req != nil && req.Truncated && req.Unparseable:
+		return "truncated at the inspection buffer and unparseable"
+	case req != nil && req.Truncated:
+		return "truncated at the inspection buffer"
+	case req != nil && req.Unparseable:
+		return "unparseable"
+	default:
+		return "evaluation error"
+	}
 }
 
 // ResolveCredential picks the credential entry that applies to req

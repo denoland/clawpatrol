@@ -933,7 +933,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 	if f := facet.Lookup("sql"); f != nil {
 		facets = f.Report(mreq)
 	}
-	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	cr := runtime.MatchRequestFailClosed(ch.Endpoint, mreq)
 	if cr == nil {
 		chEmit(ch, runtime.ConnEvent{
 			Action: "allow", Verb: info.Verb, Summary: chSummary(info), Facets: facets,

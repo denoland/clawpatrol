@@ -50,12 +50,8 @@ func TestSSHMatcherVerbCaseInsensitive(t *testing.T) {
 		t.Run(tc.cond, func(t *testing.T) {
 			m := mustMatcher(t, tc.cond)
 			req := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbShell}}
-			want := match.NoMatch
-			if tc.want {
-				want = match.Matched
-			}
-			if got := m.Match(req).Result; got != want {
-				t.Errorf("Match=%v want %v", got, want)
+			if got := m.Match(req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v", got, match.ResultOf(tc.want))
 			}
 		})
 	}

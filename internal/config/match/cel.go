@@ -38,8 +38,10 @@ type ActivationBuilder func(req *Request) map[string]any
 // values come from bytes a wire frontend may truncate at its
 // inspection cap (HTTPS body, SQL statement, SSH stdin). On a request
 // with Truncated set, these paths are marked as CEL unknowns via a
-// partial activation: a condition whose outcome depends on one
-// evaluates Unevaluable (the unknown propagates virally, NaN-style),
+// partial activation (only for conditions that reference one — an
+// unreferenced path cannot affect the outcome): a condition whose
+// outcome depends on one evaluates Unevaluable (the unknown
+// propagates virally, NaN-style),
 // while a condition that resolves through &&/|| absorption on its
 // other predicates still matches or no-matches honestly. The same
 // paths also feed a pre-computed bool exposed via
@@ -79,8 +81,9 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		if err != nil {
 			return nil, err
 		}
-		inspectsTruncatable = referencesPath(ast.NativeRep().Expr(), paths)
-		truncatedUnknowns = unknownPatterns(paths)
+		if inspectsTruncatable = referencesPath(ast.NativeRep().Expr(), paths); inspectsTruncatable {
+			truncatedUnknowns = unknownPatterns(paths)
+		}
 	}
 	var unparseableUnknowns []*cel.AttributePatternType
 	if len(unparseablePaths) > 0 {
@@ -88,13 +91,23 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		if err != nil {
 			return nil, err
 		}
-		unparseableUnknowns = unknownPatterns(paths)
+		if referencesPath(ast.NativeRep().Expr(), paths) {
+			unparseableUnknowns = unknownPatterns(paths)
+		}
 	}
 	// OptPartialEval swaps in the partial-attribute factory so the
 	// unknown patterns of a PartialVars activation are honored at
-	// attribute-resolution time. With a plain map activation (the
-	// common untruncated case) it changes nothing.
-	prog, err := env.Program(ast, cel.EvalOptions(cel.OptPartialEval))
+	// attribute-resolution time. The factory adds a per-attribute
+	// AsPartialActivation check on every eval, so it is only enabled
+	// for conditions that actually reference a truncatable or
+	// parser-derived path — anything else never receives a partial
+	// activation (Match only wraps when a pattern list is non-empty)
+	// and keeps the default factory on the hot path.
+	var progOpts []cel.ProgramOption
+	if len(truncatedUnknowns)+len(unparseableUnknowns) > 0 {
+		progOpts = append(progOpts, cel.EvalOptions(cel.OptPartialEval))
+	}
+	prog, err := env.Program(ast, progOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("cel program: %w", err)
 	}
@@ -230,6 +243,11 @@ func unknownDetail(unk *types.Unknown, req *Request) string {
 	for _, id := range unk.IDs() {
 		trails, _ := unk.GetAttributeTrails(id)
 		for _, tr := range trails {
+			// NOTE: this leans on cel-go's AttributeTrail.String()
+			// ("var.field" / "var[key]" shapes) — an undocumented
+			// format that a cel-go upgrade could change. The output
+			// feeds the operator log only (never agent-visible
+			// reasons, never test assertions), so drift is cosmetic.
 			s := fmt.Sprintf("%v", tr)
 			if !seen[s] {
 				seen[s] = true

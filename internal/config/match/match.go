@@ -112,6 +112,17 @@ const (
 	Unevaluable
 )
 
+// ResultOf converts a boolean match expectation to a Result: true
+// is Matched, false is NoMatch. A convenience for callers (mostly
+// tests) asserting two-valued outcomes; Unevaluable never maps from
+// a bool.
+func ResultOf(matched bool) Result {
+	if matched {
+		return Matched
+	}
+	return NoMatch
+}
+
 // Decision is a Result plus, for Unevaluable, a human-readable
 // detail naming what made the condition unevaluable (the unknown
 // facet paths, or the CEL evaluation error). Detail is "" for

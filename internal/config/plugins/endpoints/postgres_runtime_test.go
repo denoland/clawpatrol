@@ -919,3 +919,45 @@ func TestPgEvaluateThreadsDatabaseIntoMeta(t *testing.T) {
 		t.Errorf("SELECT on Prod verdict = %q, want allow (verb mismatch)", v)
 	}
 }
+
+// TestPgEvaluateUnparseableBackstopDeny pins the wiring of
+// runtime.MatchRequestFailClosed through pgEvaluateInfo: an
+// unparseable statement whose only rule resolves via absorption
+// (`unknown && false == false` → NoMatch) must NOT ride the
+// implicit-allow default — the backstop denies because the endpoint
+// declares rules and the bytes were uninspectable.
+func TestPgEvaluateUnparseableBackstopDeny(t *testing.T) {
+	ep := pgEndpointFromHCL(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
+
+rule "deny-prod-drops" {
+  endpoint  = postgres.db
+  condition = "sql.verb == 'drop' && sql.database == 'prod'"
+  verdict   = "deny"
+}
+`)
+	ch := &runtime.ConnHandle{
+		Endpoint: ep,
+		Emit:     func(runtime.ConnEvent) {},
+	}
+	// Unparseable piece, database 'dev': the rule absorbs to false,
+	// no rule matches, the backstop denies.
+	v, reason := pgEvaluate(ch, "DROP;", "", "dev")
+	if v != "deny" {
+		t.Fatalf("pgEvaluate(\"DROP;\", db=dev) verdict = %q reason = %q, want backstop deny", v, reason)
+	}
+	if !strings.Contains(reason, "unparseable") {
+		t.Errorf("reason = %q, want it to name the cause", reason)
+	}
+	// A parseable SELECT against the same endpoint still falls
+	// through to implicit allow — the backstop only guards
+	// uninspectable requests.
+	v, reason = pgEvaluate(ch, "SELECT 1", "", "dev")
+	if v != "" {
+		t.Fatalf("pgEvaluate(\"SELECT 1\") verdict = %q reason = %q, want implicit allow", v, reason)
+	}
+}

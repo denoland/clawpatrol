@@ -8,16 +8,6 @@ import (
 	sqlfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
 )
 
-// wantResult adapts a boolean match expectation to the three-valued
-// Result, so an unexpected Unevaluable fails the assertion
-// instead of being conflated with "no match".
-func wantResult(b bool) match.Result {
-	if b {
-		return match.Matched
-	}
-	return match.NoMatch
-}
-
 func TestSQLMatcherVerbAndTables(t *testing.T) {
 	m, err := facet.NewMatcher("sql", "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens'])")
 	if err != nil {
@@ -60,8 +50,8 @@ func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
 				t.Fatalf("NewMatcher: %v", err)
 			}
 			req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Verb: "select"}}
-			if got := m.Match(req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v (condition=%q)", got, wantResult(tc.want), tc.condition)
+			if got := m.Match(req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q)", got, match.ResultOf(tc.want), tc.condition)
 			}
 		})
 	}
@@ -94,8 +84,8 @@ func TestSQLMatcherDatabaseCaseSensitive(t *testing.T) {
 			}
 			meta := tc.meta
 			req := &match.Request{Family: "sql", Meta: &meta}
-			if got := m.Match(req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v (condition=%q meta=%+v)", got, wantResult(tc.want), tc.condition, tc.meta)
+			if got := m.Match(req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v (condition=%q meta=%+v)", got, match.ResultOf(tc.want), tc.condition, tc.meta)
 			}
 		})
 	}
@@ -123,8 +113,8 @@ func TestSQLMatcherDatabaseSources(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := m.Match(tc.req).Result; got != wantResult(tc.want) {
-				t.Errorf("Match=%v want %v", got, wantResult(tc.want))
+			if got := m.Match(tc.req).Result; got != match.ResultOf(tc.want) {
+				t.Errorf("Match=%v want %v", got, match.ResultOf(tc.want))
 			}
 		})
 	}
