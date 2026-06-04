@@ -173,6 +173,56 @@ func Emit(gw *Gateway) ([]byte, error) {
 	return f.Bytes(), nil
 }
 
+// PolicyDigest emits each operational and policy block to its own
+// canonical HCL string, keyed by a human label ("gateway", "endpoint
+// anthropic", "profile avocet2", …). It is the basis for the semantic
+// diff `clawpatrol apply` shows: because each block is rendered through
+// the same deterministic Emit hooks, comparing two digests by key
+// surfaces added / removed / changed blocks while ignoring comment,
+// whitespace, and source-ordering noise that a raw text diff would
+// flag.
+func PolicyDigest(gw *Gateway) map[string]string {
+	out := map[string]string{}
+	if gw == nil {
+		return out
+	}
+
+	if gw.Settings != nil {
+		f := hclwrite.NewEmptyFile()
+		emitGatewayBlock(f.Body(), gw.Settings)
+		out["gateway"] = strings.TrimSpace(string(f.Bytes()))
+	}
+	if gw.Defaults != nil {
+		f := hclwrite.NewEmptyFile()
+		emitDefaultsBlock(f.Body(), gw.Defaults)
+		out["defaults"] = strings.TrimSpace(string(f.Bytes()))
+	}
+
+	if gw.Policy == nil {
+		return out
+	}
+	p := gw.Policy
+
+	// Per-Emit RefIndex so emitOne's plugin hooks resolve typed
+	// traversals. Same lock discipline as Emit — never concurrent with
+	// itself.
+	emitRIMu.Lock()
+	defer emitRIMu.Unlock()
+	emitRI = newRefIndex(p)
+	defer func() { emitRI = nil }()
+
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule, KindProfile} {
+		for _, name := range leftoverNames(p, kind, map[string]bool{}) {
+			f := hclwrite.NewEmptyFile()
+			if !emitOne(f.Body(), p, kind, name) {
+				continue
+			}
+			out[string(kind)+" "+name] = strings.TrimSpace(string(f.Bytes()))
+		}
+	}
+	return out
+}
+
 func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	if gw.Settings != nil {
 		emitGatewayBlock(body, gw.Settings)
