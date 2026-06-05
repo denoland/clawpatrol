@@ -83,7 +83,7 @@ const TILES: Tile[] = [
     alt: "Gemini",
     iconSrc: "/icons/gemini.svg",
     cx: -65, // SW slot
-    cy: -220,
+    cy: -210,
     W: SMALL_W,
     D: SMALL_D,
     ...CANVAS_FILL,
@@ -92,7 +92,7 @@ const TILES: Tile[] = [
     alt: "OpenClaw",
     iconSrc: "/icons/openclaw.svg",
     cx: 0, // SE slot — raised least, sits just above CP
-    cy: -95,
+    cy: -90,
     W: SMALL_W,
     D: SMALL_D,
     ...CANVAS_FILL,
@@ -124,7 +124,7 @@ const TILES: Tile[] = [
     alt: "GitHub",
     iconSrc: "/icons/github.svg",
     cx: -65, // SW slot
-    cy: 175,
+    cy: 180,
     W: SMALL_W,
     D: SMALL_D,
     ...CANVAS_FILL,
@@ -167,8 +167,8 @@ const WALL_OVERHANG = 100;
 const xMin = Math.min(...TILES.map((t) => t.cx - t.W)) - 2;
 const xMax = Math.max(...TILES.map((t) => t.cx + t.W)) + 2;
 const yMin = Math.min(...TILES.map((t) => t.cy - t.W / 2)) - WALL_OVERHANG;
-const yMax = Math.max(...TILES.map((t) => t.cy + t.W / 2 + t.D)) +
-  WALL_OVERHANG;
+const yMax =
+  Math.max(...TILES.map((t) => t.cy + t.W / 2 + t.D)) + WALL_OVERHANG;
 const TOTAL_W = xMax - xMin;
 const TOTAL_H = yMax - yMin;
 
@@ -185,22 +185,18 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
       viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
       class={`block -my-24 ${cls}`}
     >
-      {
-        /* Two back walls — vertical 3D planes that contain CP's
+      {/* Two back walls — vertical 3D planes that contain CP's
           W-N and N-E top-face edges, extended both up (over the
           top cluster) and down (through CP into the bottom
           cluster). Each gradient peaks opaque near CP and fades
           toward both the top and bottom apex of the wall. Color
-          per wall is for visual ID — unify later. */
-      }
+          per wall is for visual ID — unify later. */}
       <defs>
-        {
-          /* Back walls share a darker navy, front walls share a
+        {/* Back walls share a darker navy, front walls share a
             lighter step — two shades total, suggesting the back of
             the box recedes into shadow. Each gradient peaks at the
             CP midline (~y=0) and fades to nearly transparent at
-            both apexes. */
-        }
+            both apexes. */}
         <linearGradient
           id="wallBackLeft"
           x1="0"
@@ -298,13 +294,11 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
           />
         </linearGradient>
       </defs>
-      {
-        /* Back walls — two big parallelograms along CP's back-left
+      {/* Back walls — two big parallelograms along CP's back-left
           (W-N) and back-right (N-E) edges, extending the full
           height of the viewBox (up to enclose the top cluster,
           down through CP into the bottom cluster). Drawn first,
-          behind everything. */
-      }
+          behind everything. */}
       <g aria-hidden="true">
         {/* Back-left wall (3D plane at x=-65), full vertical extent */}
         <polygon
@@ -326,22 +320,22 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
         />
       </g>
 
-      {
-        /* Bottom cluster — drawn after back walls so the tiles
-          appear in front of the walls. */
-      }
-      {BOTTOM_CLUSTER.map((t) => <Tile key={t.alt} tile={t} />)}
+      {/* Bottom cluster — drawn after back walls so the tiles
+          appear in front of the walls. */}
+      {BOTTOM_CLUSTER.map((t) => (
+        <Tile key={t.alt} tile={t} />
+      ))}
 
       <Tile tile={CP_TILE} />
 
       {/* Top cluster — drawn before front walls. */}
-      {TOP_CLUSTER.map((t) => <Tile key={t.alt} tile={t} />)}
+      {TOP_CLUSTER.map((t) => (
+        <Tile key={t.alt} tile={t} />
+      ))}
 
-      {
-        /* Front walls — two big parallelograms along CP's front-left
+      {/* Front walls — two big parallelograms along CP's front-left
           (W-S) and front-right (S-E) edges, full vertical extent.
-          Drawn last so they wash over every tile from in front. */
-      }
+          Drawn last so they wash over every tile from in front. */}
       <g aria-hidden="true">
         {/* Front-left wall (3D plane at y=65), full vertical extent */}
         <polygon
