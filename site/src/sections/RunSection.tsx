@@ -13,6 +13,7 @@ export function RunSection() {
         <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
           <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display text-balance mb-5 text-text">
+            {/* Agent communication belongs on a VPN */}
             Connect over <span class="text-rust">WireGuard</span> or{" "}
             <span class="text-rust">Tailscale</span>.
           </h3>

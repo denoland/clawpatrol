@@ -24,8 +24,16 @@ const HUMAN_CONFIG = snippet(approver_human);
 
 function DiagramFrame({ children }: { children: ComponentChildren }) {
   return (
-    <div class="bg-canvas-muted border border-rust-200/60 squircle-md p-4 pb-0 flex flex-col gap-3">
+    <div class="bg-canvas-muted border w-full border-rust-200/60 squircle-md p-4 flex flex-col gap-3">
       {children}
+    </div>
+  );
+}
+
+function ConnectingLine() {
+  return (
+    <div class="flex justify-center" aria-hidden="true">
+      <div class="w-px h-8 bg-navy/40" />
     </div>
   );
 }
@@ -40,10 +48,10 @@ function VerdictPill({
   const styles =
     kind === "allow" ? "bg-rust-400 text-text" : "bg-navy-700 text-canvas";
   return (
-    <div class="flex justify-center relative top-4">
+    <div class="flex justify-center">
       <span
         class={`inline-block text-[10px] uppercase tracking-[0.25em]
-          font-display font-bold px-3 py-1.5 ${styles}`}
+          font-display font-bold px-3 py-1.5 squircle-lg ${styles}`}
       >
         verdict · {label}
       </span>
@@ -70,12 +78,9 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px]  text-text-muted">
-          Reply body contains banned term{" "}
-          <code class="text-text font-mono">moron</code>.
+          Reply body contains banned term.
         </div>
       </div>
-
-      <VerdictPill label="deny · 240ms · cached" kind="deny" />
     </DiagramFrame>
   );
 }
@@ -105,11 +110,9 @@ function HumanDiagram() {
           JC
         </div>
         <div class="bg-rust-100 border border-rust-200  px-3 py-2 text-[12px]  text-text">
-          ✓ approve — that’s fine
+          Approve — that’s fine
         </div>
       </div>
-
-      <VerdictPill label="allow · 14s" kind="allow" />
     </DiagramFrame>
   );
 }
@@ -121,31 +124,26 @@ function ApproverCard({
   verdict,
   pitch,
   config,
-  diagram,
 }: {
   title: string;
   verdict: string;
   pitch: string;
   config: string;
-  diagram: ComponentChildren;
 }) {
   return (
-    <article class="isolate min-w-0 bg-transparent relative lg:p-8 xl:p-12">
-      <div className="hidden w-full h-full border lg:block border-navy  z-10 absolute inset-0"></div>
-      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-horizontal-stripes z-0" />
+    <article class="isolate min-w-0 bg-transparent relative lg:mb-16">
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
           <h4 class="text-3xl font-display text-text">{title}</h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
         </header>
-        <p class="text-sm  text-text-muted">{pitch}</p>
-        <TerminalFrame class="block p-4 squircle-lg">
+        <p class="text-sm text-text-muted">{pitch}</p>
+        <TerminalFrame class="block p-4 squircle-lg lg:-mb-16">
           <HclCode
             source={config}
             class="text-[12px] font-mono text-canvas overflow-x-auto whitespace-pre"
           />
         </TerminalFrame>
-        {diagram}
       </div>
     </article>
   );
@@ -155,7 +153,7 @@ function ApproverCard({
 
 function OrDivider() {
   return (
-    <div class="flex justify-center lg:self-center my-8 bg-rust px-4 squircle-lg mx-auto lg:-mx-8 w-max z-10">
+    <div class="flex justify-center relative lg:self-center my-8 border-8 border-canvas bg-rust px-4 squircle-lg mx-auto w-max z-10">
       <span class="font-mono uppercase text-canvas text-xl">-or-</span>
     </div>
   );
@@ -169,30 +167,44 @@ export function ApproversSection() {
 
         <div class="max-w-3xl mb-14">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display text-balance mb-5 text-text">
-            Humans, models, <span class="text-rust">your call</span>
+            Put a <span className="text-rust">human in the loop</span>, or
+            double-check with another agent
           </h3>
           <p class="text-base  text-text-muted">
-            Defer the ambiguous requests. A model with your prompt, or a person
-            in Slack. You decide which one runs when.
+            Defer ambiguous requests to a model with your prompt, or a real
+            human via Slack. You decide which one runs when.
           </p>
         </div>
 
         <div class="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_auto_1fr] lg:gap-4">
-          <ApproverCard
-            title="LLM judge"
-            verdict="require_llm"
-            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn’t re-bill."
-            config={LLM_CONFIG}
-            diagram={<LlmDiagram />}
-          />
-          <OrDivider />
-          <ApproverCard
-            title="Human In The Loop"
-            verdict="require_human"
-            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one’s home."
-            config={HUMAN_CONFIG}
-            diagram={<HumanDiagram />}
-          />
+          <div class="flex flex-col min-w-0">
+            <ApproverCard
+              title="LLM judge"
+              verdict="require_llm"
+              pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn’t re-bill."
+              config={LLM_CONFIG}
+            />
+            <ConnectingLine />
+            <LlmDiagram />
+            <ConnectingLine />
+            <VerdictPill label="deny · 240ms · cached" kind="deny" />
+          </div>
+          <div className="relative flex flex-col justify-center items-center">
+            <div class="w-full h-0 border-t left-0 top-1/2 absolute lg:w-0 lg:border-r lg:border-t-0 border-dashed border-canvas-dark lg:h-full lg:left-1/2 lg:top-0"></div>
+            <OrDivider />
+          </div>
+          <div class="flex flex-col min-w-0">
+            <ApproverCard
+              title="Human In The Loop"
+              verdict="require_human"
+              pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one’s home."
+              config={HUMAN_CONFIG}
+            />
+            <ConnectingLine />
+            <HumanDiagram />
+            <ConnectingLine />
+            <VerdictPill label="allow · 14s" kind="allow" />
+          </div>
         </div>
       </div>
     </section>
