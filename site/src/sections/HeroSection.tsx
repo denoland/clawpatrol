@@ -10,8 +10,10 @@ export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;
 
 export function HeroSection() {
   return (
-    <section class="max-w-6xl mx-auto px-6 sm:px-8
-      pt-16 sm:pt-28 pb-16">
+    <section
+      class="max-w-6xl mx-auto px-6 sm:px-8
+      pt-16 sm:pt-28 pb-16"
+    >
       <div class="flex flex-col items-center gap-16 sm:gap-24 md:gap-32 lg:gap-40">
         <div class="grid md:grid-cols-2 gap-12 md:gap-12 lg:gap-16 items-center w-full">
           <div class="order-2 md:order-1 min-w-0 flex flex-col items-center md:items-start text-center md:text-left">
@@ -19,7 +21,7 @@ export function HeroSection() {
               {HERO_H1}
             </h1>
             <p class="text-sm mb-6 max-w-2xl font-sans font-bold uppercase text-text text-balance">
-              Give agents power, without giving up control
+              Give agents power. Don't give up control.
             </p>
             <p class="mb-10 max-w-2xl text-text-muted text-pretty">
               Claw Patrol holds agent credentials, parses their traffic at the
@@ -33,32 +35,16 @@ export function HeroSection() {
           </div>
         </div>
 
-        <div class="w-full max-w-4xl flex flex-col squircle-lg overflow-hidden shadow-[4px_6px_0_0_var(--color-canvas-300)] bg-navy">
-          <div class="flex items-center gap-1.5 px-4 py-2.5 border-b border-canvas/10">
-            <span
-              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
-              aria-hidden="true"
-            />
-            <span
-              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
-              aria-hidden="true"
-            />
-            <span
-              class="w-2.5 h-2.5 rounded-full bg-navy-200/70"
-              aria-hidden="true"
-            />
-          </div>
-          <video
-            src="/video/demo2.mp4"
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            aria-label="Claw Patrol dashboard demo"
-            class="block w-full aspect-video"
-          />
-        </div>
+        <video
+          src="/video/demo2.mp4"
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="auto"
+          aria-label="Claw Patrol dashboard demo"
+          class="block w-full max-w-xl shadow-[4px_6px_0_0_var(--color-canvas-300)]"
+        />
       </div>
     </section>
   );

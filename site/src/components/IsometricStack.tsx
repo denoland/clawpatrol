@@ -202,7 +202,31 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
             both apexes. */
         }
         <linearGradient
-          id="wallBack"
+          id="wallBackLeft"
+          x1="0"
+          y1={yMin}
+          x2="0"
+          y2={yMax}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop
+            offset="0%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0"
+          />
+          <stop
+            offset="50%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0.18"
+          />
+          <stop
+            offset="100%"
+            stop-color="var(--color-navy-100)"
+            stop-opacity="0"
+          />
+        </linearGradient>
+        <linearGradient
+          id="wallBackRight"
           x1="0"
           y1={yMin}
           x2="0"
@@ -235,17 +259,17 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
         >
           <stop
             offset="0%"
-            stop-color="var(--color-navy-100)"
+            stop-color="var(--color-navy-50)"
             stop-opacity="0"
           />
           <stop
             offset="50%"
-            stop-color="var(--color-navy-100)"
+            stop-color="var(--color-navy-50)"
             stop-opacity="0.18"
           />
           <stop
             offset="100%"
-            stop-color="var(--color-navy-100)"
+            stop-color="var(--color-navy-50)"
             stop-opacity="0"
           />
         </linearGradient>
@@ -284,7 +308,7 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
       <g aria-hidden="true">
         {/* Back-left wall (3D plane at x=-65), full vertical extent */}
         <polygon
-          fill="url(#wallBack)"
+          fill="url(#wallBackLeft)"
           points={`0,${
             -BIG_W / 2 - TOP_WALL_H
           } ${-BIG_W},${-TOP_WALL_H} ${-BIG_W},${BOT_WALL_H} 0,${
@@ -293,7 +317,7 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
         />
         {/* Back-right wall (3D plane at y=-65), full vertical extent */}
         <polygon
-          fill="url(#wallBack)"
+          fill="url(#wallBackRight)"
           points={`0,${
             -BIG_W / 2 - TOP_WALL_H
           } ${BIG_W},${-TOP_WALL_H} ${BIG_W},${BOT_WALL_H} 0,${

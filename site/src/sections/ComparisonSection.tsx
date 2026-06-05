@@ -35,7 +35,7 @@ export function ComparisonSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel class="ml-0 mb-4!">Comparison</SectionLabel>
         <h3 class="text-3xl sm:text-5xl font-display mb-3">
-          Control everything in one place
+          One LLM gateway to control everything
         </h3>
         <p class="text-text-muted text-base sm:text-lg max-w-2xl mb-16">
           Other tools cover one piece. Claw Patrol watches, gates, holds, and
