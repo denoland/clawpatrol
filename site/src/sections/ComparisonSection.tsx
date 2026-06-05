@@ -4,28 +4,40 @@ import { SectionLabel } from "../components/SectionLabel";
 
 const CAPABILITIES: { heading: string; body: string }[] = [
   {
-    heading: "Watches tool calls at the protocol layer",
+    heading: "LLM Gateways",
     body:
-      "Postgres, Kubernetes, HTTPS — with a plugin API for the rest. " +
-      "Rules match SQL verbs and k8s resources directly, not just URLs.",
+      "Intercept LLM calls to route between providers, manage model keys, " +
+      "and log usage. Claw Patrol sees LLM traffic too, but its focus is " +
+      "the actions the agent takes against your services. A plugin can add " +
+      "gateway features.",
   },
   {
-    heading: "Routes risky calls for approval",
+    heading: "Content Guardrails",
     body:
-      "A human or an LLM judge gates the actions that need a second look " +
-      "before the request leaves the proxy.",
+      "Scan LLM messages for unsafe content. Claw Patrol focuses on the " +
+      "services the agent reaches, not the model output. A plugin can add " +
+      "content scanning.",
   },
   {
-    heading: "Safely holds the secrets",
+    heading: "HTTP and MCP Gateways",
     body:
-      "Credentials live in the gateway and get stamped onto outbound " +
-      "requests. A compromised agent has nothing to leak.",
+      "HTTP proxies that apply policies and hold credentials. Claw Patrol " +
+      "does the same and also speaks non-HTTP wire protocols like Postgres.",
   },
   {
-    heading: "Records every byte",
+    heading: "Sandboxes",
     body:
-      "Every request and response, across every system, in one audit " +
-      'stream. "What just happened?" has one place to look.',
+      "Confine what the agent does on its computer. Claw Patrol doesn't " +
+      "sandbox; it intercepts the network instead. Agents already running " +
+      "in a dedicated VM still need rules on which services they reach. " +
+      "Stack the two.",
+  },
+  {
+    heading: "Credential Stores",
+    body:
+      "Hold credentials so the agent never sees the real secret. Claw " +
+      "Patrol does the same, paired with wire-level rules on every call " +
+      "those credentials authorize.",
   },
 ];
 
@@ -35,11 +47,10 @@ export function ComparisonSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel class="ml-0 mb-4!">Comparison</SectionLabel>
         <h3 class="text-3xl sm:text-5xl font-display mb-3">
-          One LLM gateway to control everything
+          Where Claw Patrol stands
         </h3>
         <p class="text-text-muted text-base sm:text-lg max-w-2xl mb-16">
-          Other tools cover one piece. Claw Patrol watches, gates, holds, and
-          audits, all at the same wire.
+          Many security tools touch agents. The differences matter.
         </p>
 
         <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-12 md:gap-16">
@@ -66,7 +77,7 @@ function Capability({
 }) {
   return (
     <li class="flex items-start gap-3">
-      <CheckIcon />
+      <DotIcon />
       <div>
         <h4 class="text-xl sm:text-2xl font-display text-text leading-tight">
           {heading}
@@ -77,23 +88,16 @@ function Capability({
   );
 }
 
-// Small check glyph — just the checkmark stroke, no surrounding box,
-// sized to sit alongside text-base body copy without crowding it.
-function CheckIcon() {
+function DotIcon() {
   return (
     <svg
       width="20"
       height="20"
       viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      class="shrink-0 mt-1.5 text-navy"
+      class="shrink-0 mt-2 text-navy"
       aria-hidden="true"
     >
-      <path d="m5 12 5 5 9-11" />
+      <circle cx="12" cy="12" r="4" fill="currentColor" />
     </svg>
   );
 }
