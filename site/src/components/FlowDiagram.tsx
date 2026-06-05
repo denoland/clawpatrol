@@ -31,7 +31,7 @@ function AgentsNode() {
         Your agent(s)
       </div>
       <div class="flex justify-center items-end gap-6 mt-4">
-        <AgentItem name="Claude" icon="/icons/anthropic.svg" />
+        <AgentItem name="Claude" icon="/icons/claude.svg" />
         <AgentItem name="Codex" icon="/icons/openai.svg" />
         <AgentItem name="OpenClaw" icon="/icons/openclaw.svg" />
         <AgentItem name="Others" />
@@ -67,14 +67,28 @@ function ProductionNode() {
       <div class="font-display font-bold text-xl leading-none">
         Tools &amp; systems
       </div>
-      <div
-        class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-text-muted text-balance"
-      >
-        postgres / clickhouse / kubernetes / aws / gcp / github / slack / vultr
-        / whatever
+      <div class="grid grid-cols-4 gap-4 mt-4 place-items-center">
+        <ToolIcon src="/icons/postgres-mono.svg" />
+        <ToolIcon src="/icons/clickhouse.svg" />
+        <ToolIcon src="/icons/kubernetes.svg" />
+        <ToolIcon src="/icons/aws.svg" />
+        <ToolIcon src="/icons/gcp.svg" />
+        <ToolIcon src="/icons/github-mono.svg" />
+        <ToolIcon src="/icons/slack.svg" />
+        <ToolIcon src="/icons/vultr.svg" />
       </div>
     </div>
+  );
+}
+
+function ToolIcon({ src }: { src: string }) {
+  return (
+    <img
+      src={src}
+      alt=""
+      class="w-6 h-6 brightness-0 opacity-70"
+      aria-hidden="true"
+    />
   );
 }
 

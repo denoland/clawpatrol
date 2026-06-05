@@ -6,38 +6,30 @@ const CAPABILITIES: { heading: string; body: string }[] = [
   {
     heading: "LLM Gateways",
     body:
-      "Intercept LLM calls to route between providers, manage model keys, " +
-      "and log usage. Claw Patrol sees LLM traffic too, but its focus is " +
-      "the actions the agent takes against your services. A plugin can add " +
-      "gateway features.",
+      "Route LLM calls between providers and log usage. Claw Patrol watches " +
+      "LLM traffic too, but focuses on what agents do downstream.",
   },
   {
     heading: "Content Guardrails",
-    body:
-      "Scan LLM messages for unsafe content. Claw Patrol focuses on the " +
-      "services the agent reaches, not the model output. A plugin can add " +
-      "content scanning.",
+    body: "Scan model output for unsafe content. Claw Patrol scans actions, not words.",
   },
   {
     heading: "HTTP and MCP Gateways",
     body:
-      "HTTP proxies that apply policies and hold credentials. Claw Patrol " +
-      "does the same and also speaks non-HTTP wire protocols like Postgres.",
+      "HTTP proxies that hold credentials and apply policies. Claw Patrol " +
+      "does the same, plus non-HTTP protocols like Postgres.",
   },
   {
     heading: "Sandboxes",
     body:
-      "Confine what the agent does on its computer. Claw Patrol doesn't " +
-      "sandbox; it intercepts the network instead. Agents already running " +
-      "in a dedicated VM still need rules on which services they reach. " +
-      "Stack the two.",
+      "Confine what an agent does on its machine. Claw Patrol limits what " +
+      "it can reach instead — stack the two.",
   },
   {
     heading: "Credential Stores",
     body:
-      "Hold credentials so the agent never sees the real secret. Claw " +
-      "Patrol does the same, paired with wire-level rules on every call " +
-      "those credentials authorize.",
+      "Hold secrets so the agent never sees them. Claw Patrol does that, " +
+      "paired with wire-level rules on every call those credentials authorize.",
   },
 ];
 
@@ -47,10 +39,10 @@ export function ComparisonSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel class="ml-0 mb-4!">Comparison</SectionLabel>
         <h3 class="text-3xl sm:text-5xl font-display mb-3">
-          Where Claw Patrol stands
+          Built for <span class="text-rust">everything agents do</span>
         </h3>
         <p class="text-text-muted text-base sm:text-lg max-w-2xl mb-16">
-          Many security tools touch agents. The differences matter.
+          Adjacent tools overlap. Here's where the lines are.
         </p>
 
         <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-12 md:gap-16">

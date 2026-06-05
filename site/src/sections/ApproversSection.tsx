@@ -32,29 +32,24 @@ function DiagramFrame({ children }: { children: ComponentChildren }) {
 
 function ConnectingLine() {
   return (
-    <div class="flex justify-center" aria-hidden="true">
-      <div class="w-px h-8 bg-navy/40" />
-    </div>
-  );
-}
-
-function VerdictPill({
-  label,
-  kind = "deny",
-}: {
-  label: string;
-  kind?: "deny" | "allow";
-}) {
-  const styles =
-    kind === "allow" ? "bg-rust-400 text-text" : "bg-navy-700 text-canvas";
-  return (
-    <div class="flex justify-center">
-      <span
-        class={`inline-block text-[10px] uppercase tracking-[0.25em]
-          font-display font-bold px-3 py-1.5 squircle-lg ${styles}`}
-      >
-        verdict · {label}
-      </span>
+    <div class="w-full flex justify-center my-2" aria-hidden="true">
+      <svg width="16" height="28" viewBox="0 0 16 28" class="text-navy/40">
+        <path
+          d="M 8 0 V 23"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          fill="none"
+        />
+        <path
+          d="M 2 18 L 8 24 L 14 18"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          fill="none"
+        />
+      </svg>
     </div>
   );
 }
@@ -69,7 +64,8 @@ function LlmDiagram() {
           incoming
         </div>
         <code class="text-text">
-          POST /tickets/reply {"{ "}body: "RTFM you moron"{" }"}
+          SELECT id, name, <span class="text-rust font-bold">api_key</span> FROM
+          users LIMIT 10
         </code>
       </div>
 
@@ -78,7 +74,9 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px]  text-text-muted">
-          Reply body contains banned term.
+          <span class="text-rust font-bold">✗ Denied</span> — projects{" "}
+          <code class="text-text font-mono">api_key</code>, a secret-bearing
+          column.
         </div>
       </div>
     </DiagramFrame>
@@ -90,27 +88,54 @@ function LlmDiagram() {
 function HumanDiagram() {
   return (
     <DiagramFrame>
-      <div class="flex items-center gap-2">
-        <div class="shrink-0 w-7 h-7 rounded-full bg-navy-700 flex items-center justify-center text-[11px] font-display font-bold text-canvas">
+      <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] pb-2 mb-2 border-b border-rust-100 leading-none">
+        #agent-ops
+      </div>
+
+      <div class="flex gap-2">
+        <div class="shrink-0 w-8 h-8 squircle-md bg-navy-700 flex items-center justify-center text-[11px] font-display font-bold text-canvas">
           CP
         </div>
-        <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px] ">
-          <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
-            #agent-ops
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-1.5 leading-none">
+            <span class="font-bold text-text text-[13px]">Claw Patrol</span>
+            <span class="text-text-subtle text-[10px]">APP</span>
+            <span class="text-text-subtle text-[10px]">1:42 PM</span>
           </div>
-          <div class="text-text-muted">
+          <div class="text-[12px] text-text-muted mt-0.5">
             <span class="text-text font-bold">prod-codex</span> wants to DELETE{" "}
             <code class="text-text font-mono">/repos/acme/checkout</code>
           </div>
         </div>
       </div>
 
-      <div class="flex items-center gap-2 flex-row-reverse">
-        <div class="shrink-0 w-7 h-7 rounded-full bg-rust-300 flex items-center justify-center text-[11px] font-display font-bold text-rust-900">
+      <div class="flex gap-2">
+        <div class="shrink-0 w-8 h-8 squircle-md bg-rust-300 flex items-center justify-center text-[11px] font-display font-bold text-rust-900">
           JC
         </div>
-        <div class="bg-rust-100 border border-rust-200  px-3 py-2 text-[12px]  text-text">
-          Approve — that’s fine
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-1.5 leading-none">
+            <span class="font-bold text-text text-[13px]">Josh</span>
+            <span class="text-text-subtle text-[10px]">1:42 PM</span>
+          </div>
+          <div class="text-[12px] text-text mt-0.5">approved</div>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <div class="shrink-0 w-8 h-8 squircle-md bg-navy-700 flex items-center justify-center text-[11px] font-display font-bold text-canvas">
+          CP
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-1.5 leading-none">
+            <span class="font-bold text-text text-[13px]">Claw Patrol</span>
+            <span class="text-text-subtle text-[10px]">APP</span>
+            <span class="text-text-subtle text-[10px]">1:42 PM</span>
+          </div>
+          <div class="text-[12px] text-text-muted mt-0.5">
+            <span class="text-rust font-bold">✓ Allowed</span> — forwarded to
+            upstream (14s).
+          </div>
         </div>
       </div>
     </DiagramFrame>
@@ -153,8 +178,8 @@ function ApproverCard({
 
 function OrDivider() {
   return (
-    <div class="flex justify-center relative lg:self-center my-8 border-8 border-canvas bg-rust px-4 squircle-lg mx-auto w-max z-10">
-      <span class="font-mono uppercase text-canvas text-xl">-or-</span>
+    <div class="flex justify-center relative lg:self-center my-8 border-8 border-canvas bg-rust px-3 py-1 squircle-lg mx-auto w-max z-10">
+      <span class="font-mono uppercase text-canvas text-base">-or-</span>
     </div>
   );
 }
@@ -186,8 +211,6 @@ export function ApproversSection() {
             />
             <ConnectingLine />
             <LlmDiagram />
-            <ConnectingLine />
-            <VerdictPill label="deny · 240ms · cached" kind="deny" />
           </div>
           <div className="relative flex flex-col justify-center items-center">
             <div class="w-full h-0 border-t left-0 top-1/2 absolute lg:w-0 lg:border-r lg:border-t-0 border-dashed border-canvas-dark lg:h-full lg:left-1/2 lg:top-0"></div>
@@ -202,8 +225,6 @@ export function ApproversSection() {
             />
             <ConnectingLine />
             <HumanDiagram />
-            <ConnectingLine />
-            <VerdictPill label="allow · 14s" kind="allow" />
           </div>
         </div>
       </div>

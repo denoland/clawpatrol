@@ -63,7 +63,7 @@ const TILES: Tile[] = [
   // raised straight up by a staggered amount.
   {
     alt: "Claude",
-    iconSrc: "/icons/anthropic.svg",
+    iconSrc: "/icons/claude.svg",
     cx: 0, // NW slot — raised highest
     cy: -290,
     W: SMALL_W,
