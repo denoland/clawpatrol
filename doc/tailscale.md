@@ -213,6 +213,48 @@ they then share a single tsnet node identity (one node per credential,
 not per tunnel). Per-tailnet selection (`control_url`) lives on the
 tunnel block, not the credential.
 
+### OAuth client — self-renewing keys, no Connect click
+
+Set `oauth_client_secret` (a `tskey-client-...` secret from an OAuth
+client with the `write:auth_keys` scope) and `tags` on the tunnel.
+tsnet then mints a fresh, short-lived device key from the OAuth client
+on **every** join — first boot, restart, and re-auth after node-key
+expiry — so there is no long-lived auth key that can expire out from
+under the tunnel. This is the recommended mode for unattended gateways:
+unlike the interactive credential flow there is no Connect click, and
+unlike a static `authkey` there is no key to rotate.
+
+```hcl
+credential "tailscale_auth" "corp-tailnet" {}
+
+tunnel "tailscale" "corp" {
+  credential          = tailscale_auth.corp-tailnet
+  oauth_client_secret = "tskey-client-xxxxx"  # or env CLAWPATROL_TUNNEL_CORP_OAUTH_CLIENT_SECRET
+  tags                = ["tag:bot"]            # required — untagged OAuth keys are rejected
+  keepalive           = "always"              # keep the node joined; avoid lazy cold-starts
+}
+```
+
+Notes:
+
+- The secret comes from the HCL field or the per-tunnel env fallback
+  `CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET` (hyphens folded
+  to underscores), mirroring `authkey`.
+- `tags` are mandatory. Tailscale refuses to mint untagged keys, and an
+  untagged node would be owner-associated (its `whois` returns the OAuth
+  client owner), which could bypass an operator allowlist.
+- clawpatrol appends `?ephemeral=false&preauthorized=true` to the secret
+  so the node persists across restarts and joins without manual
+  approval. Supply your own `?...` query string on the secret to
+  override either default.
+- Pairs with a `credential` block: the credential's SQLite `StateStore`
+  still persists node identity (so steady-state restarts rejoin from
+  cached state), while the OAuth client supplies the key whenever a join
+  actually needs one. The OAuth secret also takes precedence over any
+  ambient `TS_AUTHKEY` in the gateway environment, so a stray static key
+  in the process env can't shadow it.
+- A literal `authkey` (if also set) wins over `oauth_client_secret`.
+
 ### Legacy — literal authkey / env-var fallback
 
 Pre-credential deployments keep working unchanged. The literal

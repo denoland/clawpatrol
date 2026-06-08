@@ -41,6 +41,10 @@ import (
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
+	// Registers the OAuth-client auth-key resolver hook tsnet uses when
+	// a tunnel is configured with `oauth_client_secret` — tsnet exchanges
+	// the `tskey-client-...` secret for a fresh device key on every join.
+	_ "tailscale.com/feature/oauthkey"
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
@@ -53,6 +57,14 @@ import (
 type TailscaleTunnel struct {
 	// AuthKey is the Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY.
 	AuthKey string `hcl:"authkey,optional"`
+	// OAuthClientSecret is a Tailscale OAuth client secret
+	// (tskey-client-...). When set, tsnet mints a fresh, short-lived
+	// device key from the OAuth client on every join instead of relying
+	// on a static authkey — so there is no long-lived key that can
+	// expire out from under the tunnel. Requires `tags` (untagged OAuth
+	// keys are rejected by Tailscale). Env fallback is
+	// CLAWPATROL_TUNNEL_<NAME>_OAUTH_CLIENT_SECRET.
+	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
 	// ControlURL overrides the Tailscale control-plane URL.
 	ControlURL string `hcl:"control_url,optional"`
 	// Hostname is the tsnet node name; defaults to clawpatrol-tunnel-<name>.
@@ -142,8 +154,9 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 	if authKey == "" {
 		authKey = os.Getenv(envAuthKey(host.Name))
 	}
-	if authKey == "" {
-		return nil, fmt.Errorf("tailscale tunnel %q: no authkey (set HCL `authkey = ...`, env %s, or wire a `credential = ...` reference)", host.Name, envAuthKey(host.Name))
+	oauthSecret := t.oauthClientSecret(host.Name)
+	if authKey == "" && oauthSecret == "" {
+		return nil, fmt.Errorf("tailscale tunnel %q: no auth material (set HCL `authkey`/`oauth_client_secret`, env %s/%s, or wire a `credential = ...` reference)", host.Name, envAuthKey(host.Name), envOAuthClientSecret(host.Name))
 	}
 	stateDir, err := tunnelStateDir(t, host)
 	if err != nil {
@@ -156,6 +169,12 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 		ControlURL: t.ControlURL,
 		Dir:        stateDir,
 		Logf:       func(f string, args ...any) { logger.Printf(f, args...) },
+	}
+	// A static authkey wins if both are set; otherwise mint via OAuth.
+	if authKey == "" {
+		if err := t.applyOAuth(srv, host.Name, oauthSecret); err != nil {
+			return nil, err
+		}
 	}
 	// Up brings the node online and waits for it to register with
 	// the control plane. Without this, the first Dial after Open
@@ -210,6 +229,19 @@ func (t *TailscaleTunnel) openWithCredential(_ context.Context, host runtime.Tun
 		Store:      store,
 		Dir:        dir,
 		Logf:       func(f string, args ...any) { logger.Printf(f, args...) },
+	}
+	// When the tunnel carries an OAuth client, mint join keys through it
+	// rather than leaning on the persisted StateStore alone. This both
+	// drives the very first join without an interactive Connect click
+	// and, crucially, overrides any ambient TS_AUTHKEY in the gateway
+	// environment that tsnet would otherwise pick up — a static key that
+	// expires (and whose expiry silently breaks re-auth) is exactly the
+	// failure OAuth minting avoids. The StateStore still persists node
+	// identity, so the key only matters on first join and on re-auth.
+	if oauthSecret := t.oauthClientSecret(host.Name); oauthSecret != "" {
+		if err := t.applyOAuth(srv, host.Name, oauthSecret); err != nil {
+			return nil, err
+		}
 	}
 
 	tc := newTailscaleTunnelConn(host.Name, srv, logger)
@@ -409,6 +441,55 @@ func envAuthKey(name string) string {
 	return "CLAWPATROL_TUNNEL_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_AUTHKEY"
 }
 
+// envOAuthClientSecret returns the env-var name for this tunnel's OAuth
+// client-secret fallback, mirroring envAuthKey:
+// CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET.
+func envOAuthClientSecret(name string) string {
+	return "CLAWPATROL_TUNNEL_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_OAUTH_CLIENT_SECRET"
+}
+
+// oauthClientSecret resolves the tunnel's OAuth client secret from the
+// HCL field, falling back to the per-tunnel env var. Returns "" when
+// neither is set.
+func (t *TailscaleTunnel) oauthClientSecret(name string) string {
+	if t.OAuthClientSecret != "" {
+		return t.OAuthClientSecret
+	}
+	return os.Getenv(envOAuthClientSecret(name))
+}
+
+// oauthSecretWithDefaults appends the device-key attributes a gateway
+// tunnel needs onto a bare OAuth client secret. tsnet's oauthkey
+// resolver defaults to ephemeral=true, preauthorized=false — both wrong
+// here: the credential's StateStore persists node identity across
+// restarts (so the node must not be ephemeral), and there is no
+// operator approval step in the gateway path (so it must be
+// preauthorized). A secret that already carries a `?` query string is
+// left untouched, letting an operator override either default.
+func oauthSecretWithDefaults(secret string) string {
+	if secret == "" || strings.Contains(secret, "?") {
+		return secret
+	}
+	return secret + "?ephemeral=false&preauthorized=true"
+}
+
+// applyOAuth points srv's auth material at the OAuth client secret so
+// tsnet's resolveAuthKey hands it to the oauthkey hook and mints a
+// fresh device key per join. The secret goes in AuthKey (not
+// ClientSecret) deliberately: AuthKey takes precedence over an ambient
+// TS_AUTHKEY in the gateway environment, so a stray static key in the
+// process env can't shadow the OAuth flow. The oauthkey resolver
+// requires non-empty tags, so reject an untagged config up front with a
+// clear error rather than failing deep inside tsnet.Up.
+func (t *TailscaleTunnel) applyOAuth(srv *tsnet.Server, name, secret string) error {
+	if len(t.Tags) == 0 {
+		return fmt.Errorf("tailscale tunnel %q: oauth_client_secret requires `tags` (untagged OAuth keys are rejected by Tailscale)", name)
+	}
+	srv.AuthKey = oauthSecretWithDefaults(secret)
+	srv.AdvertiseTags = t.Tags
+	return nil
+}
+
 func init() {
 	config.Register(&config.Plugin{
 		Kind:    config.KindTunnel,
@@ -421,6 +502,9 @@ func init() {
 			t := body.(*TailscaleTunnel)
 			if t.AuthKey != "" {
 				b.SetAttributeValue("authkey", cty.StringVal(t.AuthKey))
+			}
+			if t.OAuthClientSecret != "" {
+				b.SetAttributeValue("oauth_client_secret", cty.StringVal(t.OAuthClientSecret))
 			}
 			if t.ControlURL != "" {
 				b.SetAttributeValue("control_url", cty.StringVal(t.ControlURL))
