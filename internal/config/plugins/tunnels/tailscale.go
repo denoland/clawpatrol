@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -292,28 +293,50 @@ func newTailscaleTunnelConn(name string, srv *tsnet.Server, logger *log.Logger) 
 	}
 }
 
-// Dial routes through the embedded tsnet node. For credential-driven
-// tunnels in the pending-auth window, returns a clear "node not
-// connected" error so the dashboard's pending integrations list reads
-// correctly; the literal-authkey path is always already joined.
+// tunnelJoinWait bounds how long Dial blocks waiting for a still-joining
+// tunnel before giving up. A credential/OAuth tunnel that idled out and
+// re-opened lazily rejoins from cached state in ~1s; this window covers a
+// slow control-plane/DERP handshake while staying short enough that a
+// credential blocked on interactive operator sign-in (which may never
+// complete) fails fast with the actionable error. A var, not a const, so
+// tests can shorten it.
+var tunnelJoinWait = 15 * time.Second
+
+// Dial routes through the embedded tsnet node. Tunnels open lazily and
+// close on idle, so the first dial after a teardown lands while the
+// background Up is still joining; rather than racing it and returning a
+// spurious "node not connected", wait up to tunnelJoinWait for the join
+// to finish. The literal-authkey path pre-closes joined, so it falls
+// straight through. A credential still in the interactive pending-auth
+// window never closes joined, so it times out into the clear "visit
+// dashboard" error the integrations list keys off.
 func (t *tailscaleTunnelConn) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if t.srv == nil {
 		return nil, errors.New("tailscale tunnel closed")
 	}
 	select {
 	case <-t.joined:
-		if e := t.upErr.Load(); e != nil {
-			if err, ok := e.(error); ok && err != nil {
-				return nil, err
-			}
-		}
-		return t.srv.Dial(ctx, network, addr)
+		// Already joined — fall through to the dial below.
 	default:
-		if t.credential != "" {
-			return nil, fmt.Errorf("tailscale tunnel %q: node not connected — visit dashboard to complete %q sign-in", t.name, t.credential)
+		timer := time.NewTimer(tunnelJoinWait)
+		defer timer.Stop()
+		select {
+		case <-t.joined:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			if t.credential != "" {
+				return nil, fmt.Errorf("tailscale tunnel %q: node not connected — visit dashboard to complete %q sign-in", t.name, t.credential)
+			}
+			return nil, fmt.Errorf("tailscale tunnel %q: still joining", t.name)
 		}
-		return nil, fmt.Errorf("tailscale tunnel %q: still joining", t.name)
 	}
+	if e := t.upErr.Load(); e != nil {
+		if err, ok := e.(error); ok && err != nil {
+			return nil, err
+		}
+	}
+	return t.srv.Dial(ctx, network, addr)
 }
 
 // CredentialName implements runtime.TunnelCredentialNamer so the

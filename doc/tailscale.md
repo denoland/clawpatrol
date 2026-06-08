@@ -231,9 +231,14 @@ tunnel "tailscale" "corp" {
   credential          = tailscale_auth.corp-tailnet
   oauth_client_secret = "tskey-client-xxxxx"  # or env CLAWPATROL_TUNNEL_CORP_OAUTH_CLIENT_SECRET
   tags                = ["tag:bot"]            # required — untagged OAuth keys are rejected
-  keepalive           = "always"              # keep the node joined; avoid lazy cold-starts
+  keepalive           = "5m"                  # optional: keep warm to skip the ~1s rejoin on sparse traffic
 }
 ```
+
+A dial that lands while the tunnel is mid-(re)join waits for the join
+to finish rather than failing, so `keepalive` is a latency optimisation
+(skip the ~1s rejoin), not a correctness requirement. Pick a duration;
+`"always"` pins the node forever, which is rarely what you want.
 
 Notes:
 
