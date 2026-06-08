@@ -671,6 +671,7 @@ Configures the tunnel runtime.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `authkey` | `string` | no | The Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY. |
+| `oauth_client_secret` | `string` | no | A Tailscale OAuth client secret (tskey-client-...). When set, tsnet mints a fresh, short-lived device key from the OAuth client on every join instead of relying on a static authkey — so there is no long-lived key that can expire out from under the tunnel. Requires `tags` (untagged OAuth keys are rejected by Tailscale). Env fallback is CLAWPATROL_TUNNEL_<NAME>_OAUTH_CLIENT_SECRET. |
 | `control_url` | `string` | no | Overrides the Tailscale control-plane URL. |
 | `hostname` | `string` | no | The tsnet node name; defaults to clawpatrol-tunnel-<name>. |
 | `state_dir` | `string` | no | Stores tsnet node state; defaults under the gateway CA directory. |

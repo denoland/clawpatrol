@@ -105,7 +105,7 @@ gateway {
   state_dir        = "/opt/clawpatrol/ts-state"
 
   tailscale {
-    authkey             = "{{secret:TS_AUTHKEY}}"  # gateway-node auth key
+    authkey             = "tskey-auth-xxxxx"       # gateway-node key; or set $TS_AUTHKEY and omit
     hostname            = "clawpatrol-gateway"     # gateway's name on the tailnet
     tags                = ["tag:client"]           # applied to minted client keys
     oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
@@ -213,6 +213,53 @@ they then share a single tsnet node identity (one node per credential,
 not per tunnel). Per-tailnet selection (`control_url`) lives on the
 tunnel block, not the credential.
 
+### OAuth client — self-renewing keys, no Connect click
+
+Set `oauth_client_secret` (a `tskey-client-...` secret from an OAuth
+client with the `write:auth_keys` scope) and `tags` on the tunnel.
+tsnet then mints a fresh, short-lived device key from the OAuth client
+on **every** join — first boot, restart, and re-auth after node-key
+expiry — so there is no long-lived auth key that can expire out from
+under the tunnel. This is the recommended mode for unattended gateways:
+unlike the interactive credential flow there is no Connect click, and
+unlike a static `authkey` there is no key to rotate.
+
+```hcl
+credential "tailscale_auth" "corp-tailnet" {}
+
+tunnel "tailscale" "corp" {
+  credential          = tailscale_auth.corp-tailnet
+  oauth_client_secret = "tskey-client-xxxxx"  # or env CLAWPATROL_TUNNEL_CORP_OAUTH_CLIENT_SECRET
+  tags                = ["tag:bot"]            # required — untagged OAuth keys are rejected
+  keepalive           = "always"              # keep the node joined; avoid lazy cold-starts
+}
+```
+
+Notes:
+
+- The secret comes from the HCL field or the per-tunnel env fallback
+  `CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET` (hyphens folded
+  to underscores), mirroring `authkey`.
+- `tags` are mandatory here. Tailscale refuses to mint untagged keys,
+  and an untagged node would be owner-associated (its `whois` returns
+  the OAuth client owner), which could bypass an operator allowlist.
+  Note the `tags` field is advertised to tsnet **only** in this OAuth
+  mode — with a static `authkey` or the interactive credential login the
+  node's tags come from the key itself or your tailnet's autoApprovers
+  ACL, and the tunnel's `tags` field is ignored.
+- clawpatrol appends `?ephemeral=false&preauthorized=true` to the secret
+  so the node persists across restarts and joins without manual
+  approval. Supplying your own `?...` query string replaces **both**
+  defaults — tsnet falls back to `ephemeral=true`, `preauthorized=false`
+  for anything you omit — so re-specify any attribute you want to keep.
+- Pairs with a `credential` block: the credential's SQLite `StateStore`
+  still persists node identity (so steady-state restarts rejoin from
+  cached state), while the OAuth client supplies the key whenever a join
+  actually needs one. The OAuth secret also takes precedence over any
+  ambient `TS_AUTHKEY` in the gateway environment, so a stray static key
+  in the process env can't shadow it.
+- A literal `authkey` (if also set) wins over `oauth_client_secret`.
+
 ### Legacy — literal authkey / env-var fallback
 
 Pre-credential deployments keep working unchanged. The literal
@@ -222,7 +269,7 @@ configs don't have to migrate in a hurry:
 
 ```hcl
 tunnel "tailscale" "corp" {
-  authkey   = "{{secret:TS_TUNNEL_CORP_AUTHKEY}}"  # or $CLAWPATROL_TUNNEL_CORP_AUTHKEY
+  authkey   = "tskey-auth-xxxxx"  # or env CLAWPATROL_TUNNEL_CORP_AUTHKEY
   hostname  = "clawpatrol-tunnel-corp"
   state_dir = "/opt/clawpatrol/ts-tunnel-corp"
 }
@@ -232,6 +279,16 @@ endpoint "https" "grafana-internal" {
   tunnel = tailscale.corp
 }
 ```
+
+`{{secret:...}}` expansion runs only on a few gateway fields — the
+`tailscale` block's `oauth_client_id`/`oauth_client_secret` and
+integration OAuth credentials — never on any Tailscale `authkey`
+(gateway or tunnel) or a tunnel's `oauth_client_secret`. A
+`{{secret:...}}` placeholder in one of those would reach tsnet
+verbatim. To keep the value out of the HCL, use the env fallback
+instead: `CLAWPATROL_TUNNEL_<UPPER_NAME>_AUTHKEY` /
+`CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET` for tunnels, or
+`$TS_AUTHKEY` for the gateway node.
 
 In this mode the tunnel node joins synchronously at gateway startup
 (`tsnet.Up` blocks), reads `authkey` (literal or env fallback), and
