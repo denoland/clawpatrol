@@ -105,7 +105,7 @@ gateway {
   state_dir        = "/opt/clawpatrol/ts-state"
 
   tailscale {
-    authkey             = "{{secret:TS_AUTHKEY}}"  # gateway-node auth key
+    authkey             = "tskey-auth-xxxxx"       # gateway-node key; or set $TS_AUTHKEY and omit
     hostname            = "clawpatrol-gateway"     # gateway's name on the tailnet
     tags                = ["tag:client"]           # applied to minted client keys
     oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
@@ -264,7 +264,7 @@ configs don't have to migrate in a hurry:
 
 ```hcl
 tunnel "tailscale" "corp" {
-  authkey   = "{{secret:TS_TUNNEL_CORP_AUTHKEY}}"  # or $CLAWPATROL_TUNNEL_CORP_AUTHKEY
+  authkey   = "tskey-auth-xxxxx"  # or env CLAWPATROL_TUNNEL_CORP_AUTHKEY
   hostname  = "clawpatrol-tunnel-corp"
   state_dir = "/opt/clawpatrol/ts-tunnel-corp"
 }
@@ -274,6 +274,16 @@ endpoint "https" "grafana-internal" {
   tunnel = tailscale.corp
 }
 ```
+
+`{{secret:...}}` expansion runs only on a few gateway fields — the
+`tailscale` block's `oauth_client_id`/`oauth_client_secret` and
+integration OAuth credentials — never on any Tailscale `authkey`
+(gateway or tunnel) or a tunnel's `oauth_client_secret`. A
+`{{secret:...}}` placeholder in one of those would reach tsnet
+verbatim. To keep the value out of the HCL, use the env fallback
+instead: `CLAWPATROL_TUNNEL_<UPPER_NAME>_AUTHKEY` /
+`CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET` for tunnels, or
+`$TS_AUTHKEY` for the gateway node.
 
 In this mode the tunnel node joins synchronously at gateway startup
 (`tsnet.Up` blocks), reads `authkey` (literal or env fallback), and
