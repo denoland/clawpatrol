@@ -1,9 +1,13 @@
 package tunnels
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"tailscale.com/tsnet"
 
@@ -107,5 +111,82 @@ func TestApplyOAuth(t *testing.T) {
 	}
 	if len(srv.AdvertiseTags) != 1 || srv.AdvertiseTags[0] != "tag:bot" {
 		t.Errorf("AdvertiseTags = %v", srv.AdvertiseTags)
+	}
+}
+
+func TestDialClosedServer(t *testing.T) {
+	tc := &tailscaleTunnelConn{joined: make(chan struct{})}
+	if _, err := tc.Dial(context.Background(), "tcp", "x:1"); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("want tunnel-closed error, got %v", err)
+	}
+}
+
+func TestDialReturnsUpErrAfterJoin(t *testing.T) {
+	// joined already closed with a permanent up error: Dial surfaces it
+	// without touching srv.Dial.
+	tc := &tailscaleTunnelConn{name: "corp", srv: &tsnet.Server{}, joined: make(chan struct{})}
+	tc.upErr.Store(errors.New("up boom"))
+	close(tc.joined)
+	if _, err := tc.Dial(context.Background(), "tcp", "x:1"); err == nil || !strings.Contains(err.Error(), "up boom") {
+		t.Fatalf("want up boom, got %v", err)
+	}
+}
+
+func TestDialCtxCancelWhileJoining(t *testing.T) {
+	tc := &tailscaleTunnelConn{name: "corp", srv: &tsnet.Server{}, joined: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if _, err := tc.Dial(ctx, "tcp", "x:1"); err != context.Canceled {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("ctx-cancel dial did not return promptly: %v", d)
+	}
+}
+
+func TestDialTimesOutToActionableError(t *testing.T) {
+	old := tunnelJoinWait
+	tunnelJoinWait = 20 * time.Millisecond
+	defer func() { tunnelJoinWait = old }()
+
+	// credential variant -> "node not connected" dashboard hint
+	cred := &tailscaleTunnelConn{name: "corp", credential: "corp-tailnet", srv: &tsnet.Server{}, joined: make(chan struct{})}
+	if _, err := cred.Dial(context.Background(), "tcp", "x:1"); err == nil || !strings.Contains(err.Error(), "node not connected") {
+		t.Fatalf("want node-not-connected, got %v", err)
+	}
+	// literal-authkey variant (no credential) -> "still joining"
+	auth := &tailscaleTunnelConn{name: "corp", srv: &tsnet.Server{}, joined: make(chan struct{})}
+	if _, err := auth.Dial(context.Background(), "tcp", "x:1"); err == nil || !strings.Contains(err.Error(), "still joining") {
+		t.Fatalf("want still-joining, got %v", err)
+	}
+}
+
+func TestDialWaitsForLateJoin(t *testing.T) {
+	// The fix: a dial that lands while the tunnel is still joining waits
+	// for the join instead of failing fast. joined closes ~30ms in; Dial
+	// must block until then (not return immediately) and then proceed past
+	// the join gate (observed here via the up error it surfaces).
+	old := tunnelJoinWait
+	tunnelJoinWait = 2 * time.Second
+	defer func() { tunnelJoinWait = old }()
+
+	tc := &tailscaleTunnelConn{name: "corp", srv: &tsnet.Server{}, joined: make(chan struct{})}
+	tc.upErr.Store(errors.New("joined late"))
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		close(tc.joined)
+	}()
+	start := time.Now()
+	_, err := tc.Dial(context.Background(), "tcp", "x:1")
+	d := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "joined late") {
+		t.Fatalf("want late up error after waiting, got %v", err)
+	}
+	if d < 25*time.Millisecond {
+		t.Fatalf("Dial returned before the join completed (%v) — it did not wait", d)
+	}
+	if d >= tunnelJoinWait {
+		t.Fatalf("Dial hit the timeout (%v) instead of returning when joined closed", d)
 	}
 }
