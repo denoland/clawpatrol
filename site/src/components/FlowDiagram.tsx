@@ -31,7 +31,7 @@ function AgentsNode() {
         Your agent(s)
       </div>
       <div class="flex justify-center items-end gap-6 mt-4">
-        <AgentItem name="Claude" icon="/icons/claude.svg" />
+        <AgentItem name="Claude" icon="/icons/claude-mono.svg" />
         <AgentItem name="Codex" icon="/icons/openai.svg" />
         <AgentItem name="OpenClaw" icon="/icons/openclaw.svg" />
         <AgentItem name="Others" />

@@ -18,7 +18,7 @@ function TestOutput() {
   );
   return (
     <TerminalFrame class="block min-w-0 p-6 sm:p-8 lg:p-10 squircle-xl bg-[repeating-linear-gradient(to_bottom,var(--color-navy),var(--color-navy)_1px,var(--color-navy-700)_1px,var(--color-navy-700)_2px)]">
-      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto text-shadow-navy-100/15 text-shadow-lg">
+      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto text-shadow-navy-100/10 text-shadow-lg">
         <code>
           <span class="text-canvas/40">$ </span>
           clawpatrol test gateway.hcl tests/
@@ -99,9 +99,9 @@ export function TestSection() {
             </h3>
             <p class="text-base text-text-muted mb-5 max-w-xl">
               Record real actions from the dashboard. Drop the JSON files into a
-              fixtures directory. Run <code>clawpatrol test</code>{" "}
-              in CI: when a policy change flips a verdict, the runner prints the
-              diff and fails the build.
+              fixtures directory. Run <code>clawpatrol test</code> in CI: when a
+              policy change flips a verdict, the runner prints the diff and
+              fails the build.
             </p>
             <p class="text-base text-text-muted max-w-xl">
               No gateway, no database, no auth. A single binary that loads your

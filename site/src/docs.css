@@ -46,17 +46,17 @@
 
   h2 {
     font-size: 1.75rem;
-    margin-top: 2.5rem;
+    margin-top: 3.5rem;
   }
 
   h3 {
     font-size: 1.25rem;
-    margin-top: 2.25rem;
+    margin-top: 3rem;
   }
 
   h4 {
     font-size: 1.125rem;
-    margin-top: 1.5rem;
+    margin-top: 2rem;
   }
 
   h5 {
@@ -71,12 +71,12 @@
 
     h2 {
       font-size: 2.25rem;
-      margin-top: 3.5rem;
+      margin-top: 4rem;
     }
 
     h3 {
       font-size: 1.5rem;
-      margin-top: 3rem;
+      margin-top: 3.5rem;
     }
 
     h4 {
@@ -147,6 +147,17 @@
     border: 1px solid var(--color-navy-100);
     font-size: 0.9em;
     line-height: 1;
+  }
+
+  /* Inside headings, code should read as plain monospace: no chip
+     styling, no font-size override (so it tracks the heading scale). */
+  :is(h1, h2, h3, h4, h5, h6) code {
+    background: transparent;
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+    line-height: inherit;
+    font-weight: 600;
   }
 
   a {
