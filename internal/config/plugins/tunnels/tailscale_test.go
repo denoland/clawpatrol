@@ -137,7 +137,7 @@ func TestDialCtxCancelWhileJoining(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	if _, err := tc.Dial(ctx, "tcp", "x:1"); err != context.Canceled {
+	if _, err := tc.Dial(ctx, "tcp", "x:1"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 	if d := time.Since(start); d > time.Second {
