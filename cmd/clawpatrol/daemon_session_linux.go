@@ -35,6 +35,8 @@ import (
 // child-side TUN doesn't need to cap.
 const runStackTunMTU = 65535
 
+var runUDPFlowIdleTimeout = 30 * time.Second
+
 // newRunStack creates a gVisor TCP/IP stack bound to localIP, which
 // is the transport's underlay address (tsnet 100.x.x.x or wg /32).
 // Promiscuous + spoofing enabled so the stack accepts inbound
@@ -212,7 +214,7 @@ func (f *runUDPForwarder) handle(pkt []byte) {
 func (f *runUDPForwarder) readResponses(conn net.Conn, srcIP, dstIP [4]byte, srcPort, dstPort uint16) {
 	buf := make([]byte, 65535)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(runUDPFlowIdleTimeout))
 		n, err := conn.Read(buf)
 		if err != nil {
 			return

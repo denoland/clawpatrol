@@ -3205,6 +3205,7 @@ func runGateway(args []string) {
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
+		g.startTsnetUDPRelay(tsnetServer)
 		// Serve the dashboard mux on tsnet's virtual network so
 		// clawpatrol-run clients connecting to this tsnet IP on the
 		// dashboard port can mint ephemeral auth keys and reach the

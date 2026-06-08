@@ -947,6 +947,12 @@ func (w *webMux) apiPeerTsnetRegister(rw http.ResponseWriter, r *http.Request) {
 		if w.g.agents != nil {
 			w.g.agents.Seed(tsnetIP)
 		}
+	} else if hostname != "" && w.g.onboard.AgentIPFor(tsnetIP) == parentIP {
+		// The UDP relay can promote the placeholder first if it is the daemon's
+		// first successful gateway contact. Preserve the normal register call's
+		// device-identity behavior when it follows that promotion, but do not let a
+		// valid bearer create hostname-only device rows for unrelated tailnet IPs.
+		w.g.onboard.SetHostname(tsnetIP, hostname)
 	}
 	// Map the daemon's IPv6 ULA too — tsnet traffic from this peer
 	// frequently arrives on fd7a:115c:a1e0::/48 rather than the 100.x.

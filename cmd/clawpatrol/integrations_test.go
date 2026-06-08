@@ -113,9 +113,14 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 // vars (client-side) plus the server-supplied ones in a single
 // flat list.
 func TestEnvPushdownVarsServerDriven(t *testing.T) {
-	prev := envPushdownGatewayFetcher
+	prevGateway := envPushdownGatewayFetcher
+	prevDaemon := envPushdownDaemonFetcher
 	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
-	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+	envPushdownDaemonFetcher = nil
+	t.Cleanup(func() {
+		envPushdownGatewayFetcher = prevGateway
+		envPushdownDaemonFetcher = prevDaemon
+	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -160,10 +165,17 @@ func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
 	// init() in run_tsnet_darwin.go rewires this to the NE session
 	// socket, which would dial /tmp/clawpatrol.sock and return whatever
 	// the host's running NE happens to have to say, instead of the
-	// gateway-URL-missing error this test exercises.
-	prev := envPushdownGatewayFetcher
+	// gateway-URL-missing error this test exercises. Disable the Linux daemon
+	// fetcher too, or a joined developer machine with a live daemon can satisfy
+	// the request from its cached gateway state instead of this temp dir.
+	prevGateway := envPushdownGatewayFetcher
+	prevDaemon := envPushdownDaemonFetcher
 	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
-	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+	envPushdownDaemonFetcher = nil
+	t.Cleanup(func() {
+		envPushdownGatewayFetcher = prevGateway
+		envPushdownDaemonFetcher = prevDaemon
+	})
 
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")

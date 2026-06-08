@@ -3,11 +3,11 @@
 package main
 
 // tsnetTransport: daemonTransport implementation backed by an embedded
-// tsnet.Server with the gateway pinned as its exit node. Every Dial
-// returns a tsnet.Server.Dial conn, which the tailnet routes through
-// the gateway — the gateway then picks it up in its tsnet
-// RegisterFallbackTCPHandler with the original dst intact (no
-// PROXY-v1 framing).
+// tsnet.Server with the gateway pinned as its exit node. TCP dials use
+// tsnet.Server.Dial and land in the gateway's tsnet
+// RegisterFallbackTCPHandler with the original dst intact. UDP dials use
+// Claw Patrol's framed tailnet relay because tsnet exposes no arbitrary-UDP
+// fallback equivalent to RegisterFallbackTCPHandler.
 
 import (
 	"context"
@@ -25,11 +25,16 @@ import (
 
 type tsnetTransport struct {
 	s           *tsnet.Server
+	gatewayAddr netip.Addr
+	apiToken    string
 	localAddr   netip.Addr
 	bootWarning string
 }
 
 func (t *tsnetTransport) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	if strings.HasPrefix(network, "udp") {
+		return dialTsnetUDPRelay(ctx, t.s.Dial, t.gatewayAddr, t.localAddr, t.apiToken, addr)
+	}
 	return t.s.Dial(ctx, network, addr)
 }
 
@@ -120,13 +125,15 @@ func startTsnetTransport() (daemonTransport, error) {
 	// gatewayClient → /api/env-pushdown) reach 100.x via tsnet.
 	gatewayDialOverride = s.Dial
 
+	apiToken := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "api-token")))
+
 	// Register this tsnet IP with the gateway so it maps to the host's
 	// device row (and therefore its profile). Best-effort: a failure
 	// only means traffic lands in the default profile until the next
 	// daemon restart.
 	daemonRegisterTsnetPeer(s, tsIP)
 
-	return &tsnetTransport{s: s, localAddr: tsIP, bootWarning: bootWarning}, nil
+	return &tsnetTransport{s: s, gatewayAddr: gwIP, apiToken: apiToken, localAddr: tsIP, bootWarning: bootWarning}, nil
 }
 
 // daemonRegisterTsnetPeer POSTs this daemon's tsnet IP to the

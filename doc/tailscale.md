@@ -28,7 +28,15 @@ no subnet allocation — Tailscale's control plane handles all of that.
 4. All outbound traffic now exits through the gateway. The gateway
    intercepts at L4 — TCP/443 → SNI peek → MITM or splice, everything
    else forwarded via `wgRelay` / `relayUDP`. Tailscale handles NAT
-   traversal and relay (DERP).
+   traversal and relay (DERP). Linux per-process tsnet clients use a
+   Claw Patrol UDP relay over tailnet TCP for child UDP flows because
+   tsnet exposes a TCP fallback hook but no equivalent arbitrary-UDP
+   fallback. The gateway accepts relay streams only from registered
+   onboarded peers or from peers that present the per-peer API token minted
+   during onboarding, attributes them to the peer's profile, applies the
+   same UDP semantics as WireGuard mode (`dnsvip` for UDP/53, transparent
+   relay for other UDP), and then returns datagrams to the child's UDP
+   socket.
 5. Device identity (hostname, OS, Tailscale user) is populated via
    `tailscale whois` at first connection — richer than WireGuard mode
    which only captures hostname at join time.
