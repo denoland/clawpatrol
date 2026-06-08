@@ -21,7 +21,7 @@ function TestOutput() {
       <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto text-shadow-navy-100/15 text-shadow-lg">
         <code>
           <span class="text-canvas/40">$ </span>
-          clawpatrol test deno.hcl tests/
+          clawpatrol test gateway.hcl tests/
           {"\n"}
           <span class="text-text-subtle">
             {ok("tests/anthropic-implicit-allow.json")}
@@ -36,7 +36,7 @@ function TestOutput() {
             {ok("tests/deno-com-require-approval.json")}
           </span>
           <span class="text-text-subtle">
-            {ok("tests/deno-deploy-read.json")}
+            {ok("tests/api-resource-read.json")}
           </span>
           <span class="text-text-subtle">
             {ok("tests/github-api-implicit-allow.json")}
@@ -99,9 +99,9 @@ export function TestSection() {
             </h3>
             <p class="text-base text-text-muted mb-5 max-w-xl">
               Record real actions from the dashboard. Drop the JSON files into a
-              fixtures directory. Run <code>clawpatrol test</code> in CI: when a
-              policy change flips a verdict, the runner prints the diff and
-              fails the build.
+              fixtures directory. Run <code>clawpatrol test</code>{" "}
+              in CI: when a policy change flips a verdict, the runner prints the
+              diff and fails the build.
             </p>
             <p class="text-base text-text-muted max-w-xl">
               No gateway, no database, no auth. A single binary that loads your

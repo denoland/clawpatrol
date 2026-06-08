@@ -40,13 +40,13 @@ Bound to `https` endpoints. The condition is evaluated against the
 parsed HTTP request *before* it is forwarded upstream, after MITM
 has terminated TLS.
 
-Example: require approval for a specific support-ticket mutation.
+Example: require approval for a specific resource mutation.
 
 ```hcl
-rule "support-ticket-status" {
+rule "resource-archive" {
   endpoint  = https.console
-  condition = "http.method == 'POST' && http.path == '/api/admin.supportTickets.updateStatus'"
-  approve   = [human_approver.support]
+  condition = "http.method == 'POST' && http.path == '/v1/resources/archive'"
+  approve   = [human_approver.ops]
 }
 ```
 
@@ -589,37 +589,37 @@ These are trimmed, public-safe versions of real policies. They show the
 same layering pattern across families: hard denies first, explicit
 allows next, then a low-priority default deny.
 
-### HTTP: support ticket mutations
+### HTTP: resource and message mutations
 
-This policy allows console reads, routes specific support-ticket
-mutations to humans, runs outbound support replies through an LLM
-proctor before human review, and denies everything else.
+This policy allows console reads, routes sensitive resource mutations
+to humans, runs outbound user-visible messages through an LLM proctor
+before human review, and denies everything else.
 
 ```hcl
 credential "cookie_token" "console-session" {
   cookie_name = "token"
 }
 credential "anthropic_manual_key" "anthropic-key" {}
-credential "slack_tokens" "support-slack" {}
+credential "slack_tokens" "ops-slack" {}
 
 endpoint "https" "console" {
-  hosts      = ["console.example.com"]
+  hosts      = ["api.example.test"]
   credential = cookie_token.console-session
 }
 
-approver "llm_approver" "reply-content-judge" {
+approver "llm_approver" "message-content-judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = anthropic_manual_key.anthropic-key
   policy     = <<-EOT
-    The JSON body has a body field containing a customer support reply.
-    Deny markdown formatting, missing required context, offensive
-    content, impersonation, and account-harming instructions.
+    The JSON body has a body field containing a user-visible message.
+    Deny markdown formatting, missing required context, unsafe content,
+    impersonation, and account-harming instructions.
   EOT
 }
 
-approver "human_approver" "support-triage" {
-  channel     = "#support"
-  credential  = slack_tokens.support-slack
+approver "human_approver" "ops-review" {
+  channel     = "#ops"
+  credential  = slack_tokens.ops-slack
   interactive = true
   timeout     = 90
 }
@@ -630,27 +630,27 @@ rule "console-reads" {
   verdict   = "allow"
 }
 
-rule "console-ticket-mutations" {
+rule "console-resource-mutations" {
   endpoint = https.console
   condition = <<-CEL
     http.method == 'POST'
     && http.path in [
-      '/api/admin.supportTickets.markAsSpam',
-      '/api/admin.supportTickets.updateStatus',
+      '/v1/resources/archive',
+      '/v1/resources/restore',
     ]
   CEL
-  approve = [human_approver.support-triage]
+  approve = [human_approver.ops-review]
 }
 
-rule "console-reply-on-behalf" {
+rule "console-message-send" {
   endpoint = https.console
   condition = <<-CEL
     http.method == 'POST'
-    && http.path == '/api/admin.supportTickets.replyOnBehalf'
+    && http.path == '/v1/messages/send'
   CEL
   approve = [
-    llm_approver.reply-content-judge,
-    human_approver.support-triage,
+    llm_approver.message-content-judge,
+    human_approver.ops-review,
   ]
 }
 
@@ -658,7 +658,7 @@ rule "console-default" {
   endpoint = https.console
   priority = -100
   verdict  = "deny"
-  reason   = "console mutations require an explicit approval rule"
+  reason   = "write requests require an explicit approval rule"
 }
 ```
 

@@ -236,7 +236,7 @@
 #     otherwise send everything to the lenient `billing` approver.
 #
 #   - Use a negative priority for catch-all / default-deny rules.
-#     Example: `support-console-default` (priority -100) denies
+#     Example: `admin-console-default` (priority -100) denies
 #     everything not matched by an earlier explicit rule.
 #
 # v15 distribution: 11 rules with positive priority (overrides),
@@ -284,7 +284,7 @@
 # stage denying ends the chain.
 #
 #     approve = [llm_approver.pg-secret-columns-judge]            # one LLM proctor
-#     approve = [llm_approver.reply-content-judge, human_approver.support-ops]   # LLM, then human
+#     approve = [llm_approver.message-content-judge, human_approver.ops-review]  # LLM, then human
 #
 # LLM proctor blocks (llm_approver) carry their `policy` text inline
 # as a heredoc string, so the use site stays a single approver
@@ -330,11 +330,11 @@
 # v15 has three profiles:
 #
 #   ops    — full ops coverage (anthropic dual-cred, stripe, orb dual,
-#            support console, both postgres servers (pg-corp dual),
+#            admin console, both postgres servers (pg-corp dual),
 #            all k8s clusters, ClickHouse, Notion, Grafana, Slack).
 #   alice  — operational tools (per-user GitHub/Slack, plus
 #            tool-specific APIs: Smithery, AMem, Checkly, PostHog,
-#            Honeycomb, PagerDuty, customer support helpdesk).
+#            Honeycomb, PagerDuty, and a synthetic admin API).
 #   bob    — light profile (his own GitHub/Slack/Telegram/Codex/Gemini
 #            plus shared access to carol's Codex OAuth).
 #
@@ -393,9 +393,9 @@ defaults {
 #                     (postgres column-level reads, k8s exec content)
 #   content-safety  — Sonnet, used when the prompt requires reasoning
 #                     about user-visible content (Slack reply shape,
-#                     support-console reply-on-behalf)
+#                     admin-console message-send)
 #
-# Human approvers are scoped per concern: support-ops, console-dba,
+# Human approvers are scoped per concern: ops-review, console-dba,
 # scheduler-ops, billing, billing-strict, observability, notion-archive.
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
@@ -410,11 +410,11 @@ approver "llm_approver" "slack-block-kit-shape-judge" {
   credential = anthropic_oauth_subscription.anthropic-ops
   policy     = <<-EOT
     The chat.postMessage body has a Block Kit message containing one
-    or more buttons whose action_id starts with "approve_reply_". The
+    or more buttons whose action_id starts with "approve_message_". The
     reviewer in Slack must see what they're approving, and that text
     will be sent as plain-text email. Approve only if all of:
 
-      1. A "Draft Reply" header block precedes the actions block.
+      1. A "Draft Message" header block precedes the actions block.
       2. The next section block has non-empty text.
       3. After stripping leading/trailing ``` fences, that section
          text equals the button's `value` exactly.
@@ -424,12 +424,12 @@ approver "llm_approver" "slack-block-kit-shape-judge" {
     Otherwise DENY with a precise reason.
   EOT
 }
-approver "llm_approver" "reply-content-judge" {
+approver "llm_approver" "message-content-judge" {
   model      = "claude-sonnet-4-20250514"
   credential = anthropic_oauth_subscription.anthropic-ops
   policy     = <<-EOT
-    The JSON body has a `body` field containing a customer support
-    reply. Apply these checks in order; deny on the first failure.
+    The JSON body has a `body` field containing a user-visible
+    message. Apply these checks in order; deny on the first failure.
 
       (1) Salutation: deny if first line is a salutation. System
           auto-prepends "Hi <name>,". Apology / acknowledgment /
@@ -483,8 +483,8 @@ approver "llm_approver" "k8s-exec-content-judge" {
   EOT
 }
 
-approver "human_approver" "support-ops" {
-  channel = "#support"
+approver "human_approver" "ops-review" {
+  channel = "#ops"
   timeout = 86400
 }
 approver "human_approver" "console-dba"    { channel = "#db-approvals" }
@@ -512,7 +512,7 @@ endpoint "https" "gemini"   { hosts = ["generativelanguage.googleapis.com"] }
 
 endpoint "https" "openai-codex" { hosts = ["chatgpt.com", "auth.openai.com"] }
 
-endpoint "https" "support-console" { hosts = ["admin.example.com"] }
+endpoint "https" "admin-console" { hosts = ["api.example.test"] }
 endpoint "https" "stripe"          { hosts = ["api.stripe.com"] }
 endpoint "https" "orb"             { hosts = ["api.withorb.com"] }
 
@@ -620,8 +620,8 @@ credential "bearer_token" "stripe-live" {
 credential "bearer_token" "orb-test" { endpoint = https.orb }
 credential "bearer_token" "orb-prod" { endpoint = https.orb }
 
-credential "cookie_token" "support-console" {
-  endpoint    = https.support-console
+credential "cookie_token" "admin-console" {
+  endpoint    = https.admin-console
   cookie_name = "session"
 }
 
@@ -695,32 +695,32 @@ credential "header_token" "pagerduty-alice" {
 rule "slack-ops-approve-reply-shape" {
   endpoint   = https.slack
   credential = slack_tokens.slack-ops
-  condition  = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
+  condition  = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_message_')"
   approve    = [llm_approver.slack-block-kit-shape-judge]
 }
 
-# ── Support console ─────────────────────────────────
+# ── Admin console ───────────────────────────────────
 
-rule "support-console-reads" {
-  endpoint  = https.support-console
+rule "admin-console-reads" {
+  endpoint  = https.admin-console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
-rule "support-console-ticket-mutations" {
-  endpoint  = https.support-console
-  condition = "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']"
-  approve   = [human_approver.support-ops]
+rule "admin-console-resource-mutations" {
+  endpoint  = https.admin-console
+  condition = "http.method == 'POST' && http.path in ['/v1/resources/archive', '/v1/resources/restore']"
+  approve   = [human_approver.ops-review]
 }
-rule "support-console-reply-on-behalf" {
-  endpoint  = https.support-console
-  condition = "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'"
-  approve   = [llm_approver.reply-content-judge, human_approver.support-ops]
+rule "admin-console-message-send" {
+  endpoint  = https.admin-console
+  condition = "http.method == 'POST' && http.path == '/v1/messages/send'"
+  approve   = [llm_approver.message-content-judge, human_approver.ops-review]
 }
-rule "support-console-default" {
-  endpoint = https.support-console
+rule "admin-console-default" {
+  endpoint = https.admin-console
   priority = -100
   verdict  = "deny"
-  reason   = "admin.example.com mutations require an explicit approval rule"
+  reason   = "api.example.test writes require an explicit approval rule"
 }
 
 # ── Stripe ──────────────────────────────────────────
@@ -1067,7 +1067,7 @@ profile "ops" {
 
     bearer_token.github-ops,
     slack_tokens.slack-ops,
-    cookie_token.support-console,
+    cookie_token.admin-console,
     bearer_token.stripe-live,
 
     # orb: test + prod at one endpoint.

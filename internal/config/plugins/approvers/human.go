@@ -58,15 +58,15 @@ type HumanApprover struct {
 	Interactive bool `hcl:"interactive,optional"`
 	// Classifier optionally references an llm_approver by name. When set,
 	// the approver calls the classifier's Summarize method before posting
-	// the HITL notification, enriching the Slack card with classification
-	// metadata. Classifier failures are non-fatal — the generic card is
-	// used as fallback.
+	// the HITL notification, enriching the Slack card with request summary
+	// metadata. Classifier failures are non-fatal — the generic card is used
+	// as fallback.
 	Classifier string `hcl:"classifier,optional"`
 	// Message is an optional Go-template-style string with {{var}}
 	// placeholders. When set, the expanded text replaces the default
 	// section body in the Slack (or other notifier) card. Supported
 	// vars mirror the CEL facet namespace: {{http.method}},
-	// {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}},
+	// {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{http.body_json.resource_id}},
 	// {{profile}}, {{endpoint}}, {{reason}}, etc.
 	// Classifier (if also set) still runs; Message takes display precedence.
 	Message string `hcl:"message,optional"`

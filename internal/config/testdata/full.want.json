@@ -59,6 +59,14 @@
         },
         "type": "llm_approver"
       },
+      "message-content-judge": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic-ops",
+          "Policy": "The JSON body has a `body` field containing a user-visible\nmessage. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
+        },
+        "type": "llm_approver"
+      },
       "notion-archive": {
         "body": {
           "Channel": "#notion-approvals",
@@ -83,6 +91,18 @@
         },
         "type": "human_approver"
       },
+      "ops-review": {
+        "body": {
+          "Channel": "#ops",
+          "Credential": "",
+          "Timeout": 86400,
+          "RequireApprovers": 0,
+          "Interactive": false,
+          "Classifier": "",
+          "Message": ""
+        },
+        "type": "human_approver"
+      },
       "pg-secret-columns-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
@@ -96,14 +116,6 @@
           "Model": "claude-haiku-4-5-20251001",
           "Credential": "anthropic-ops",
           "Policy": "Decide whether this SELECT actually returns secret data — i.e.\nit projects or aggregates a column whose name suggests a secret.\nApprove if the secret-named identifier appears only as a string\nliteral or in a non-projected predicate.\n"
-        },
-        "type": "llm_approver"
-      },
-      "reply-content-judge": {
-        "body": {
-          "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops",
-          "Policy": "The JSON body has a `body` field containing a customer support\nreply. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
         },
         "type": "llm_approver"
       },
@@ -123,24 +135,19 @@
         "body": {
           "Model": "claude-sonnet-4-20250514",
           "Credential": "anthropic-ops",
-          "Policy": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_reply_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Reply\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
+          "Policy": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_message_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Message\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
         },
         "type": "llm_approver"
-      },
-      "support-ops": {
-        "body": {
-          "Channel": "#support",
-          "Credential": "",
-          "Timeout": 86400,
-          "RequireApprovers": 0,
-          "Interactive": false,
-          "Classifier": "",
-          "Message": ""
-        },
-        "type": "human_approver"
       }
     },
     "credentials": {
+      "admin-console": {
+        "body": {
+          "CookieName": "session"
+        },
+        "endpoint": "admin-console",
+        "type": "cookie_token"
+      },
       "amem-alice": {
         "body": {
           "IdempotencyKey": false
@@ -336,13 +343,6 @@
         "endpoint": "stripe",
         "type": "bearer_token"
       },
-      "support-console": {
-        "body": {
-          "CookieName": "session"
-        },
-        "endpoint": "support-console",
-        "type": "cookie_token"
-      },
       "telegram-bob": {
         "body": {},
         "endpoint": "telegram",
@@ -355,6 +355,15 @@
       }
     },
     "endpoints": {
+      "admin-console": {
+        "body": {
+          "Hosts": [
+            "api.example.test"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
       "amem": {
         "body": {
           "Hosts": [
@@ -581,15 +590,6 @@
         "family": "http",
         "type": "https"
       },
-      "support-console": {
-        "body": {
-          "Hosts": [
-            "admin.example.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
       "telegram": {
         "body": {
           "Hosts": [
@@ -645,7 +645,7 @@
           "anthropic-ops",
           "github-ops",
           "slack-ops",
-          "support-console",
+          "admin-console",
           "stripe-live",
           "orb-test",
           "orb-prod",
@@ -676,6 +676,62 @@
       }
     },
     "rules": {
+      "admin-console-default": {
+        "body": {
+          "name": "admin-console-default",
+          "family": "http",
+          "endpoints": [
+            "admin-console"
+          ],
+          "priority": -100,
+          "verdict": "deny",
+          "reason": "api.example.test writes require an explicit approval rule"
+        }
+      },
+      "admin-console-message-send": {
+        "body": {
+          "name": "admin-console-message-send",
+          "family": "http",
+          "endpoints": [
+            "admin-console"
+          ],
+          "condition": "http.method == 'POST' && http.path == '/v1/messages/send'",
+          "approve": [
+            {
+              "name": "message-content-judge"
+            },
+            {
+              "name": "ops-review"
+            }
+          ]
+        }
+      },
+      "admin-console-reads": {
+        "body": {
+          "name": "admin-console-reads",
+          "family": "http",
+          "endpoints": [
+            "admin-console"
+          ],
+          "condition": "http.method == 'GET'",
+          "verdict": "allow"
+        }
+      },
+      "admin-console-resource-mutations": {
+        "body": {
+          "name": "admin-console-resource-mutations",
+          "family": "http",
+          "endpoints": [
+            "admin-console"
+          ],
+          "condition": "http.method == 'POST' && http.path in ['/v1/resources/archive', '/v1/resources/restore']",
+          "approve": [
+            {
+              "name": "ops-review"
+            }
+          ]
+        }
+      },
       "clickhouse-default": {
         "body": {
           "name": "clickhouse-default",
@@ -1260,7 +1316,7 @@
           "endpoints": [
             "slack"
           ],
-          "condition": "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')",
+          "condition": "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_message_')",
           "credential": "slack-ops",
           "approve": [
             {
@@ -1344,62 +1400,6 @@
           ],
           "condition": "http.method == 'GET'",
           "verdict": "allow"
-        }
-      },
-      "support-console-default": {
-        "body": {
-          "name": "support-console-default",
-          "family": "http",
-          "endpoints": [
-            "support-console"
-          ],
-          "priority": -100,
-          "verdict": "deny",
-          "reason": "admin.example.com mutations require an explicit approval rule"
-        }
-      },
-      "support-console-reads": {
-        "body": {
-          "name": "support-console-reads",
-          "family": "http",
-          "endpoints": [
-            "support-console"
-          ],
-          "condition": "http.method == 'GET'",
-          "verdict": "allow"
-        }
-      },
-      "support-console-reply-on-behalf": {
-        "body": {
-          "name": "support-console-reply-on-behalf",
-          "family": "http",
-          "endpoints": [
-            "support-console"
-          ],
-          "condition": "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'",
-          "approve": [
-            {
-              "name": "reply-content-judge"
-            },
-            {
-              "name": "support-ops"
-            }
-          ]
-        }
-      },
-      "support-console-ticket-mutations": {
-        "body": {
-          "name": "support-console-ticket-mutations",
-          "family": "http",
-          "endpoints": [
-            "support-console"
-          ],
-          "condition": "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']",
-          "approve": [
-            {
-              "name": "support-ops"
-            }
-          ]
         }
       }
     }

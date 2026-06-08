@@ -275,7 +275,7 @@ approve = [content-safety]                # bare ref → uses approver as-is
 approve = [{ name = fast, policy = pg-secret-columns, cache_ttl = 600 }]
 approve = [
   { name = content-safety, policy = reply-content },  # LLM stage
-  support-ops,                                        # then human
+  ops-review,                                         # then human
 ]
 ```
 

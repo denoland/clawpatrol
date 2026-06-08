@@ -35,10 +35,12 @@ Then a brief one-line reason on the second line.
 
 Be conservative — when the policy is ambiguous about whether the request is permitted, deny.`
 
-const llmClassifierSystem = `You are a request classifier. Analyze the request against the policy and return a JSON classification.
+const llmClassifierSystem = `You are a request classifier. Analyze the request against the policy and return JSON request context.
 
 Reply with JSON only — no markdown fences, no other text:
-{"ticket_id":"<ticket id from path or body, or empty string>","classification":"<label per policy>","confidence":<0-100>,"summary":"<one sentence>"}`
+{"subject":"<short request subject or resource identifier, or empty string>","label":"<short label per policy>","confidence":<0-100>,"summary":"<one sentence>"}
+
+Use generic request details only. Do not assume a domain-specific object type unless the policy says so.`
 
 // LLMApprover carries the model + the credential used to authenticate
 // the call to the model API + the inline policy text the model judges
@@ -261,8 +263,8 @@ func openaiJudgeRequest(ctx context.Context, model, system, user string) (*http.
 }
 
 // Summarize implements runtime.HITLClassifier. It calls the LLM in
-// "summary mode" — sends the classifier system prompt and asks for a
-// structured JSON classification instead of an allow/deny verdict.
+// "summary mode" — sends the classifier system prompt and asks for
+// structured JSON request context instead of an allow/deny verdict.
 // On parse failure or LLM error, returns nil, err so the caller can
 // fall back to the generic card.
 func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest) (*runtime.HITLSummary, error) {

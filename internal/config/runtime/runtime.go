@@ -367,7 +367,7 @@ type HITLTarget struct {
 	ApprovalEffect  HITLApprovalEffect
 	UpstreamCalled  bool
 	ApprovalMessage string
-	// Summary is an optional pre-computed classification. When non-nil,
+	// Summary is optional pre-computed request context. When non-nil,
 	// notifiers render a richer card instead of the generic method/path display.
 	Summary *HITLSummary
 	// Message is an optional pre-expanded template string. When non-empty,
@@ -702,14 +702,14 @@ type HITLDecision struct {
 	By     string
 }
 
-// HITLSummary is an optional pre-computed classification from a
+// HITLSummary is optional pre-computed request context from a
 // classifier LLM. When set on HITLTarget, notifiers build a richer
 // approval card instead of the generic method/path display.
 type HITLSummary struct {
-	TicketID       string `json:"ticket_id"`
-	Classification string `json:"classification"` // "Spam", "Legit", "Unclear", etc.
-	Confidence     int    `json:"confidence"`     // 0–100; 0 = not provided
-	Text           string `json:"summary"`
+	Subject    string `json:"subject"`
+	Label      string `json:"label"`
+	Confidence int    `json:"confidence"` // 0-100; 0 = not provided
+	Summary    string `json:"summary"`
 }
 
 // HITLClassifier is the optional interface an approver plugin

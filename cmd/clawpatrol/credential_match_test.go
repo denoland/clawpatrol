@@ -18,8 +18,7 @@ import (
 )
 
 // TestMITMCredentialPinnedRuleMatchesOnHTTPSPath is a regression test for
-// the bug reported in the "Claw Patrol HITL not triggering for Deno Deploy
-// sandbox deploy mutations" handoff.
+// HTTPS credential-pinned rules silently missing non-GET requests.
 //
 // Root cause: the HTTPS MITM handler ran runtime.MatchRequest *before*
 // resolving the dispatching credential, and never populated

@@ -1,14 +1,14 @@
-# Customer-support replies sent from the agent are scanned by an LLM
-# judge before they go out: catches offensive content, missing
-# salutations, and markdown that shouldn't ship.
+# User-visible messages sent from the agent are scanned by an LLM
+# judge before they go out: catches unsafe content, missing context,
+# and markdown that should not ship.
 
-rule "support-reply-on-behalf" {
-  endpoint = https.deno-deploy
+rule "message-send-content-check" {
+  endpoint = https.messaging-api
   condition = <<-CEL
     http.method == 'POST'
-    && http.path == '/api/admin.supportTickets.replyOnBehalf'
+    && http.path == '/v1/messages/send'
   CEL
-  approve = [llm_approver.reply-content-judge]
+  approve = [llm_approver.message-content-judge]
 }
 
 # ===== harness =====
@@ -19,21 +19,21 @@ gateway {
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 
-endpoint "https" "deno-deploy" {
-  hosts = ["app.example.com"]
+endpoint "https" "messaging-api" {
+  hosts = ["api.example.test"]
 }
 
 credential "anthropic_manual_key" "anthropic-key" {}
-credential "bearer_token" "deno-deploy" { endpoint = https.deno-deploy }
+credential "bearer_token" "messaging-api" { endpoint = https.messaging-api }
 
-approver "llm_approver" "reply-content-judge" {
+approver "llm_approver" "message-content-judge" {
   model      = "claude-sonnet-4-6"
   credential = anthropic_manual_key.anthropic-key
   policy     = <<-EOT
-    The JSON body has a body field containing a customer support
-    reply. Deny if it contains markdown formatting, missing
-    salutations, or offensive content.
+    The JSON body has a body field containing a user-visible
+    message. Deny if it contains markdown formatting, missing
+    required context, or unsafe content.
   EOT
 }
 
-profile "default" { credentials = [bearer_token.deno-deploy] }
+profile "default" { credentials = [bearer_token.messaging-api] }

@@ -68,7 +68,7 @@ func TestSlackNotifyHITLRetriesTransientPostMessageFailure(t *testing.T) {
 		},
 		Method: "POST",
 		Host:   "console.example.com",
-		Path:   "/api/admin.supportTickets.updateStatus",
+		Path:   "/v1/resources/archive",
 	}, runtime.HITLTarget{
 		CredentialName: "slack-dev",
 		Channel:        "C123",
@@ -114,7 +114,7 @@ func TestSlackNotifyHITLRetriesOnceAfterTransportTimeout(t *testing.T) {
 		},
 		Method: "POST",
 		Host:   "console.example.com",
-		Path:   "/api/admin.supportTickets.updateStatus",
+		Path:   "/v1/resources/archive",
 	}, runtime.HITLTarget{
 		CredentialName: "slack-dev",
 		Channel:        "C123",
@@ -160,7 +160,7 @@ func TestSlackNotifyHITLExplainsAsyncRetryGrantApproval(t *testing.T) {
 		},
 		Method: "POST",
 		Host:   "console.example.com",
-		Path:   "/api/admin.supportTickets.updateStatus",
+		Path:   "/v1/resources/archive",
 	}, runtime.HITLTarget{
 		CredentialName: "slack-dev",
 		Channel:        "C123",
@@ -193,6 +193,41 @@ func TestSlackNotifyHITLExplainsAsyncRetryGrantApproval(t *testing.T) {
 	}
 }
 
+func TestSlackHITLContentBlocksRenderGenericSummary(t *testing.T) {
+	blocks := slackHITLContentBlocks(
+		"Approve POST · api.example.test",
+		"Path",
+		"/v1/messages",
+		"",
+		&runtime.HITLSummary{
+			Subject:    "POST /v1/messages",
+			Label:      "Needs review",
+			Confidence: 82,
+			Summary:    "Message changes customer-visible copy.",
+		},
+	)
+
+	buf, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(buf)
+	for _, want := range []string{
+		"POST /v1/messages",
+		"*Label:* Needs review (82%)",
+		"*Summary:* Message changes customer-visible copy.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Slack blocks = %s, want substring %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{"Class" + "ification", "ticket" + "_id", "Sp" + "am", "Leg" + "it"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Slack blocks contain coupled term %q: %s", forbidden, text)
+		}
+	}
+}
+
 func TestSlackNotifyHITLDoesNotRetryNonTransientSlackError(t *testing.T) {
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -220,7 +255,7 @@ func TestSlackNotifyHITLDoesNotRetryNonTransientSlackError(t *testing.T) {
 		},
 		Method: "POST",
 		Host:   "console.example.com",
-		Path:   "/api/admin.supportTickets.updateStatus",
+		Path:   "/v1/resources/archive",
 	}, runtime.HITLTarget{
 		CredentialName: "slack-dev",
 		Channel:        "missing-channel",

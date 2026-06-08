@@ -255,16 +255,22 @@ func slackHITLContentBlocks(title, queryLabel, path, message string, summary *ru
 		}
 	case summary != nil:
 		s := summary
-		headerText := s.TicketID
+		headerText := s.Subject
 		if headerText == "" {
 			headerText = title
 		}
-		emoji := hitlClassificationEmoji(s.Classification)
-		classLine := emoji + " " + s.Classification
+		labelLine := s.Label
 		if s.Confidence > 0 {
-			classLine += fmt.Sprintf(" (%d%%)", s.Confidence)
+			if labelLine == "" {
+				labelLine = fmt.Sprintf("%d%% confidence", s.Confidence)
+			} else {
+				labelLine += fmt.Sprintf(" (%d%%)", s.Confidence)
+			}
 		}
-		sectionText := "*Classification:* " + classLine + "\n*Summary:* " + slackTrunc(s.Text, 500)
+		if labelLine == "" {
+			labelLine = "Unlabeled"
+		}
+		sectionText := "*Label:* " + labelLine + "\n*Summary:* " + slackTrunc(s.Summary, 500)
 		return []map[string]any{
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
 			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
@@ -557,17 +563,6 @@ func slackRedactStatusText(s string) string {
 	s = slackAuthorizationValue.ReplaceAllString(s, `${1}[redacted]`)
 	s = slackSensitiveHeaderValue.ReplaceAllString(s, `${1}[redacted]`)
 	return s
-}
-
-func hitlClassificationEmoji(c string) string {
-	switch strings.ToLower(c) {
-	case "spam":
-		return ":no_entry_sign:"
-	case "legit", "legitimate":
-		return ":white_check_mark:"
-	default:
-		return ":question:"
-	}
 }
 
 // slackSectionTextMax bounds the SQL query / request body shown inside

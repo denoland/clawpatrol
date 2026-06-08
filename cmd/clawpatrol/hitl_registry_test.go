@@ -267,7 +267,7 @@ func TestHITLRegistryListIsOrderedAndStableAcrossUpdates(t *testing.T) {
 		id, _ := registry.Add(runtime.HITLPending{
 			Host:      "console.example.com",
 			Method:    "POST",
-			Path:      fmt.Sprintf("/api/admin.supportTickets.replyOnBehalf/%d", i),
+			Path:      fmt.Sprintf("/v1/messages/send/%d", i),
 			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),
 		})
 		ids = append(ids, id)

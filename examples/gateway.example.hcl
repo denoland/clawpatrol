@@ -308,8 +308,8 @@ approver "human_approver" "ops" {
 
 # Long-running human approval — useful for rules where the human
 # may be off-hours and you'd rather wait than auto-deny.
-approver "human_approver" "support-ops" {
-  channel     = "#agent-support"
+approver "human_approver" "offhours-ops" {
+  channel     = "#agent-ops-longform"
   credential  = slack_tokens.slack
   interactive = true
   timeout     = 86400 # 24h
@@ -403,7 +403,7 @@ rule "pg-writes" {
   endpoint   = postgres.pg
   credential = postgres_credential.pg-writer
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge']"
-  approve    = [human_approver.support-ops]
+  approve    = [human_approver.offhours-ops]
 }
 rule "pg-reads" {
   endpoint  = postgres.pg

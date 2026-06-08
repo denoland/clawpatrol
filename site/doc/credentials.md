@@ -249,7 +249,7 @@ rule "pg-writes" {
   endpoint   = postgres.pg
   credential = postgres_credential.pg-writer
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge']"
-  approve    = [human_approver.support-ops]
+  approve    = [human_approver.db-ops]
 }
 ```
 

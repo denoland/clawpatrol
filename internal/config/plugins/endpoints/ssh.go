@@ -885,7 +885,7 @@ func isProxyDroppedGlobalReq(name string) bool {
 	return false
 }
 
-// ── Per-channel rule evaluation + classification ─────────────────────
+// ── Per-channel rule evaluation + action routing ─────────────────────
 
 // SSH wire payload shapes we decode to derive an action's rule facets
 // (and to log it) — never modify. Field names match the RFC
