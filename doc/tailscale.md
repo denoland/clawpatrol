@@ -240,13 +240,18 @@ Notes:
 - The secret comes from the HCL field or the per-tunnel env fallback
   `CLAWPATROL_TUNNEL_<UPPER_NAME>_OAUTH_CLIENT_SECRET` (hyphens folded
   to underscores), mirroring `authkey`.
-- `tags` are mandatory. Tailscale refuses to mint untagged keys, and an
-  untagged node would be owner-associated (its `whois` returns the OAuth
-  client owner), which could bypass an operator allowlist.
+- `tags` are mandatory here. Tailscale refuses to mint untagged keys,
+  and an untagged node would be owner-associated (its `whois` returns
+  the OAuth client owner), which could bypass an operator allowlist.
+  Note the `tags` field is advertised to tsnet **only** in this OAuth
+  mode — with a static `authkey` or the interactive credential login the
+  node's tags come from the key itself or your tailnet's autoApprovers
+  ACL, and the tunnel's `tags` field is ignored.
 - clawpatrol appends `?ephemeral=false&preauthorized=true` to the secret
   so the node persists across restarts and joins without manual
-  approval. Supply your own `?...` query string on the secret to
-  override either default.
+  approval. Supplying your own `?...` query string replaces **both**
+  defaults — tsnet falls back to `ephemeral=true`, `preauthorized=false`
+  for anything you omit — so re-specify any attribute you want to keep.
 - Pairs with a `credential` block: the credential's SQLite `StateStore`
   still persists node identity (so steady-state restarts rejoin from
   cached state), while the OAuth client supplies the key whenever a join
