@@ -105,7 +105,7 @@ export function VpnSection() {
               playsInline
               preload="auto"
               aria-label="Claw Patrol dashboard demo"
-              class="block w-full max-w-xl shadow-[4px_6px_0_0_var(--color-navy-900)]"
+              class="squircle-lg border-1.5 border-navy-500 block w-full max-w-xl shadow-[4px_6px_0_0_var(--color-navy-900)]"
             />
           </div>
         </div>

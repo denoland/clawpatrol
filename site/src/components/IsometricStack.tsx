@@ -158,6 +158,18 @@ const BOTTOM_CLUSTER = SORTED.filter((t) => t.cy > 0);
 const CP_TILE = SORTED.find((t) => t.alt === "Claw Patrol")!;
 const TOP_CLUSTER = SORTED.filter((t) => t.cy < 0);
 
+// One-shot enter animation: each tile fades + slides up to its
+// resting position. Stagger order is painter's order (deepest
+// tile first → closest tile last), with one exception: CP gets
+// pushed to the very end so it lands last as the keystone of the
+// scene.
+const STAGGER_MS = 90;
+const NON_CP_SORTED = SORTED.filter((t) => t.alt !== CP_TILE.alt);
+const TILE_DELAY: Record<string, number> = Object.fromEntries([
+  ...NON_CP_SORTED.map((t, i) => [t.alt, i * STAGGER_MS]),
+  [CP_TILE.alt, NON_CP_SORTED.length * STAGGER_MS],
+]);
+
 // ViewBox extent — derived from every tile's bounding box. The
 // vertical bounds are padded by WALL_OVERHANG so the back/front
 // wall apexes (which always land at yMin/yMax in screen space)
@@ -185,6 +197,20 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
       viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
       class={`block -my-24 ${cls}`}
     >
+      <style>
+        {`
+          @keyframes iso-tile-enter {
+            from { opacity: 0; transform: translateY(28px); }
+            to   { opacity: 1; transform: translateY(0); }
+          }
+          .iso-tile {
+            animation: iso-tile-enter 950ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .iso-tile { animation: none; }
+          }
+        `}
+      </style>
       {/* Two back walls — vertical 3D planes that contain CP's
           W-N and N-E top-face edges, extended both up (over the
           top cluster) and down (through CP into the bottom
@@ -381,7 +407,10 @@ function Tile({ tile }: { tile: Tile }) {
   const iconTransform = `matrix(1 -0.5 1 0.5 ${e} ${f})`;
 
   return (
-    <g>
+    <g
+      class="iso-tile"
+      style={{ animationDelay: `${TILE_DELAY[tile.alt] ?? 0}ms` }}
+    >
       <polygon
         points={`${left} ${leftB} ${bottomB} ${bottom}`}
         fill={tile.leftFill}

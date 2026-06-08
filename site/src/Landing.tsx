@@ -19,6 +19,7 @@ export function Landing() {
       <VpnSection />
       <ShadeGradient color="text-navy" invert />
       <ProblemSection />
+      <DotField class="text-canvas-400" />
       <DemoSection />
       <ShadeGradient color="text-navy-700" />
       <RulesSection />
@@ -30,7 +31,6 @@ export function Landing() {
       <ComparisonSection />
       <DotField class="text-canvas-400" />
       <DeploymentSection />
-      <DotField class="text-canvas-400" />
       <CtaSection />
     </Layout>
   );
