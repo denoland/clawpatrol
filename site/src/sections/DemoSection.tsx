@@ -68,8 +68,26 @@ export function DemoSection() {
       </div>
 
       <div class="text-center">
-        <Button href={DEMO_URL} size="md">
+        <Button
+          href={DEMO_URL}
+          size="md"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           Open the demo
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="inline-block w-3.5 h-3.5 ml-1.5 align-middle"
+            aria-hidden="true"
+          >
+            <path d="M 7 17 L 17 7" />
+            <path d="M 9 7 L 17 7 L 17 15" />
+          </svg>
         </Button>
       </div>
     </section>

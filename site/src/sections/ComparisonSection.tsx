@@ -11,7 +11,7 @@ const CAPABILITIES: { heading: string; body: string }[] = [
   },
   {
     heading: "Content Guardrails",
-    body: "Scan model output for unsafe content. Claw Patrol scans actions, not words.",
+    body: "Scan model output for unsafe content. Claw Patrol scans actions, not just words.",
   },
   {
     heading: "HTTP and MCP Gateways",

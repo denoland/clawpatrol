@@ -162,7 +162,7 @@ function ApproverCard({
           <h4 class="text-3xl font-display text-text">{title}</h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
         </header>
-        <p class="text-sm text-text-muted">{pitch}</p>
+        <p class="text-sm text-text-muted mb-6">{pitch}</p>
         <TerminalFrame class="block p-4 squircle-lg lg:-mb-16">
           <HclCode
             source={config}

@@ -123,9 +123,8 @@ export function ProblemSection() {
               You can’t see <span class="text-rust">what happened</span>
             </ProblemHeading>
             <ProblemBody>
-              An agent’s work fans out across multiple services. Reconstructing
-              what actually happened means stitching together logs from each
-              one.
+              Reconstructing what actually happened means stitching together
+              logs from multiple services.
             </ProblemBody>
           </Problem>
         </div>

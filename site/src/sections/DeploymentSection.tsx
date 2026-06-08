@@ -11,8 +11,9 @@ export function DeploymentSection() {
         <div class="grid md:grid-cols-[1fr_auto] gap-8 md:gap-12 items-center">
           <div>
             <SectionLabel class="ml-0 mb-3!">Self-hosted</SectionLabel>
-            <h4 class="text-xl sm:text-2xl font-display mb-3 text-text">
-              Runs on WireGuard or Tailscale
+            <h4 class="text-2xl sm:text-3xl font-display mb-3 text-text">
+              Runs on <span className="text-rust">WireGuard</span> or{" "}
+              <span className="text-rust">Tailscale</span>
             </h4>
             <div class="flex items-center gap-5 text-text-muted text-sm">
               <a
@@ -43,8 +44,8 @@ export function DeploymentSection() {
           </div>
           <div class="font-mono text-sm text-text-muted leading-relaxed">
             <div>
-              <span class="text-text-subtle">$</span>{" "}
-              clawpatrol join https://gw.example.com
+              <span class="text-text-subtle">$</span> clawpatrol join
+              https://gw.example.com
             </div>
             <div>
               <span class="text-text-subtle">$</span> clawpatrol run codex

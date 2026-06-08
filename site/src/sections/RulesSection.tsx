@@ -12,8 +12,7 @@ const PROTOCOLS: {
   {
     name: "HTTP",
     body:
-      "Method, path, headers, body. Any host, any service. Match an " +
-      "HTTP request shape, route it through an LLM judge before it " +
+      "Match on method, path, headers, or body, and route it through an LLM judge before it " +
       "goes out.",
     example: snippet(protocol_https),
   },
@@ -46,11 +45,13 @@ export function RulesSection() {
             You write access rules.{" "}
             <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
-          <p class="text-base text-canvas/70">
-            Every outbound request runs through a rule engine before it reaches
-            its destination. Match on HTTP method, SQL verb, k8s resource,
-            plugin-defined facets; not just URLs. Edits are hot: save a rule in
-            the dashboard, the next request sees it.
+          <p class="text-base text-canvas/70 text-balance max-w-prose mx-auto">
+            Every outbound request runs through{" "}
+            <a href="/docs/rules/" class="underline underline-offset-2">
+              Claw Patrol's rule engine
+            </a>
+            . Match on HTTP method, SQL verb, k8s resource, and more; not just
+            URLs. Rules go live the second you press save.
           </p>
         </div>
 
