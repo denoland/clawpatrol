@@ -554,9 +554,17 @@ var udpRelayBufPool = sync.Pool{
 	},
 }
 
+// udpRelayIdleTimeout reclaims a relay flow that's gone silent. UDP has
+// no FIN, so without it a flow whose client or upstream stops talking
+// would leak both conns and both goroutines until process exit. Each
+// side sets its own read deadline (no shared timer → no Reset race); a
+// flow with no traffic from either end for this long is treated as dead.
+// Matches the order of magnitude of tsnet's own netstack UDP forwarder.
+const udpRelayIdleTimeout = 2 * time.Minute
+
 // relayUDP shuttles datagrams between a netstack UDP conn (peer side)
 // and the real upstream over the host's network. Both directions run
-// until one half closes.
+// until one half closes or idles out (udpRelayIdleTimeout).
 func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	defer func() { _ = c.Close() }()
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
@@ -574,6 +582,7 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 		defer udpRelayBufPool.Put(bp)
 		buf := *bp
 		for {
+			_ = c.SetReadDeadline(time.Now().Add(udpRelayIdleTimeout))
 			n, err := c.Read(buf)
 			if err != nil {
 				break
@@ -589,6 +598,7 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 		defer udpRelayBufPool.Put(bp)
 		buf := *bp
 		for {
+			_ = up.SetReadDeadline(time.Now().Add(udpRelayIdleTimeout))
 			n, _, err := up.ReadFromUDP(buf)
 			if err != nil {
 				break

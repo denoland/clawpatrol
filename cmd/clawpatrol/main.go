@@ -2341,6 +2341,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				// an upstream lookup can't accidentally leak them.
 				stripAuthResponseHeaders(r.Header)
 				stripAuthResponseHeaders(r.Trailer)
+				stripAltSvc(r.Header)
 				writeErr := r.Write(tc)
 				if hitlRetryConsumedOperation != nil {
 					toState := HITLOperationStateUpstreamSucceeded

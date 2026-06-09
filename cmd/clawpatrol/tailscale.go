@@ -334,6 +334,10 @@ const (
 //     pass through (no VIP) is *not* dropped — we don't intercept that
 //     host's HTTPS either, so there's nothing to bypass, and breaking its
 //     HTTP/3 would be gratuitous. (WG mode's udpDispatch does the same.)
+//     Limitation: an https-mitm endpoint bound to an IP literal isn't
+//     VIP'd, so its UDP/443 isn't dropped here — rare (those are dialled
+//     by IP, e.g. kubectl, and over TCP), and Alt-Svc stripping still
+//     suppresses h3 discovery for it on the MITM'd TCP path.
 //   - other UDP from an onboarded peer → relay (e.g. NTP, a custom
 //     protocol, or QUIC to a passed-through host).
 //   - everything else → tsnet's default handler.
