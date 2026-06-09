@@ -54,6 +54,21 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+// defaultWGListenPort is the UDP port the gateway binds for WG peers
+// when wireguard.listen_port is unset. Also the port advertised to
+// clients when neither listen_port nor an endpoint port is set.
+const defaultWGListenPort = 51820
+
+// wgBindPort resolves the UDP port the server binds for WG peers,
+// honoring the configured wireguard.listen_port and falling back to
+// defaultWGListenPort when unset (0).
+func wgBindPort(listenPort int) int {
+	if listenPort != 0 {
+		return listenPort
+	}
+	return defaultWGListenPort
+}
+
 // netTun is our own wireguard-go tun.Device backed by a gVisor stack +
 // channel.Endpoint. Can't use golang.zx2c4.com/wireguard/tun/netstack
 // because it builds the stack with HandleLocal=true; combined with
@@ -302,12 +317,10 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
 		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
-	listenPort := 51820
-	if ts.WGEndpoint != "" {
-		if _, p, err := net.SplitHostPort(ts.WGEndpoint); err == nil {
-			_, _ = fmt.Sscanf(p, "%d", &listenPort)
-		}
-	}
+	// The server binds wireguard.listen_port (default 51820). The
+	// endpoint's port is purely client-advertised (it may differ from
+	// the bind port under NAT/split-host) and must NOT drive the bind.
+	listenPort := wgBindPort(ts.WGListenPort)
 
 	priv, err := loadOrGenWGServerKey(globalDB)
 	if err != nil {
@@ -747,8 +760,9 @@ type wireguardOnboarder struct {
 // wgClientEndpoint returns the host:port string clients should put in
 // their WireGuard `Endpoint =` line.
 //
-//   - port: parsed from wgEndpoint, falling back to 51820 when
-//     wgEndpoint is empty or omits a port.
+//   - port: parsed from wgEndpoint, falling back to the configured
+//     listen_port (default 51820) when wgEndpoint is empty or omits a
+//     port.
 //   - host: if wgEndpoint specifies a non-wildcard host (anything
 //     other than empty / "0.0.0.0" / "::"), that host wins — the
 //     escape hatch for split-host deployments where the WG listener
@@ -758,8 +772,8 @@ type wireguardOnboarder struct {
 // Server-side, wgEndpoint's host is reserved for future
 // bind-to-interface support (wireguard-go's DefaultBind doesn't
 // support address-bound listening yet).
-func wgClientEndpoint(wgEndpoint, publicURL string) (string, error) {
-	port := 51820
+func wgClientEndpoint(wgEndpoint, publicURL string, listenPort int) (string, error) {
+	port := wgBindPort(listenPort)
 	var hostOverride string
 	if wgEndpoint != "" {
 		h, p, err := net.SplitHostPort(wgEndpoint)
@@ -797,7 +811,7 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 	if w.ts.WGSubnetCIDR == "" {
 		return "", "", "", fmt.Errorf("wireguard not configured (set wg_subnet_cidr)")
 	}
-	clientEndpoint, err := wgClientEndpoint(w.ts.WGEndpoint, w.ts.PublicURL)
+	clientEndpoint, err := wgClientEndpoint(w.ts.WGEndpoint, w.ts.PublicURL, w.ts.WGListenPort)
 	if err != nil {
 		return "", "", "", err
 	}
