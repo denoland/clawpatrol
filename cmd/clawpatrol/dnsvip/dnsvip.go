@@ -85,6 +85,33 @@ var (
 // pathological reload loops.
 const MaxID uint32 = 0xFFFE
 
+// DiscoveryHostname is the reserved name the gateway answers locally
+// with a manifest of the caller's profile (see cmd/clawpatrol's
+// discovery endpoint). The allocator hands back a fixed VIP for it so
+// `curl https://clawpatrol/` resolves inside the tunnel; the WG
+// forwarder then routes the :443 SYN to the local discovery handler
+// rather than any upstream.
+const DiscoveryHostname = "clawpatrol"
+
+// discoveryID is the VIP slot reserved for the discovery name. It sits
+// one past MaxID so allocateLocked never hands it to a real hostname,
+// giving the discovery name a stable address (x.x.255.255 v4,
+// ::ffff v6 within the configured CIDRs) without consuming a normal
+// allocation.
+const discoveryID uint32 = MaxID + 1
+
+// isDiscoveryName reports whether hostname is the reserved discovery
+// name (case-insensitive; caller has already trimmed the trailing dot).
+func isDiscoveryName(hostname string) bool {
+	return strings.EqualFold(hostname, DiscoveryHostname)
+}
+
+// DiscoveryVIPs returns the fixed (v4, v6) addresses the discovery
+// name resolves to under this allocator's configured CIDRs.
+func (a *Allocator) DiscoveryVIPs() (netip.Addr, netip.Addr) {
+	return a.vipForID(discoveryID)
+}
+
 type entry struct {
 	ID       uint32
 	Hostname string
@@ -624,6 +651,9 @@ func (a *Allocator) handleQuery(q *dns.Msg, dstIP string) *dns.Msg {
 	for _, qq := range q.Question {
 		host := strings.TrimSuffix(qq.Name, ".")
 		v4, v6 := a.VIPsFor(host)
+		if isDiscoveryName(host) {
+			v4, v6 = a.DiscoveryVIPs()
+		}
 		switch qq.Qtype {
 		case dns.TypeA:
 			if v4.IsValid() {
@@ -658,6 +688,11 @@ func (a *Allocator) handleQuery(q *dns.Msg, dstIP string) *dns.Msg {
 // policy).
 func (a *Allocator) intercepts(hostname string) bool {
 	hostname = strings.ToLower(hostname)
+	if isDiscoveryName(hostname) {
+		// Reserved name: answered locally from a fixed VIP, never
+		// forwarded upstream (the name doesn't exist in public DNS).
+		return true
+	}
 	a.mu.RLock()
 	if _, ok := a.byName[hostname]; ok {
 		a.mu.RUnlock()
