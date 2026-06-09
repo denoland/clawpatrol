@@ -3250,13 +3250,14 @@ func runGateway(args []string) {
 				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
 				serveTsnetDNSUDP(pc, g.dnsvip)
 			}()
-			// Layer a UDP/53 catch-all onto tsnet's underlying netstack so
-			// exit-node clients whose system resolver targets a public IP
-			// (8.8.8.8, 1.1.1.1) still reach dnsvip — the IP-bound listener
-			// above only catches packets aimed at the gateway's own tailnet
-			// IP. tsnet has no public UDP fallback hook, so this reaches
-			// through Sys().Netstack (see installTsnetUDPDNSCatchAll).
-			g.installTsnetUDPDNSCatchAll(tsnetServer)
+			// Layer a UDP catch-all onto tsnet's underlying netstack so
+			// exit-node clients' UDP reaches clawpatrol: UDP/53 to any
+			// resolver IP reaches dnsvip (the IP-bound listener above only
+			// catches packets aimed at the gateway's own tailnet IP), and
+			// other UDP from onboarded peers is relayed. tsnet has no public
+			// UDP fallback hook, so this reaches through Sys().Netstack (see
+			// installTsnetUDPCatchAll).
+			g.installTsnetUDPCatchAll(tsnetServer)
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
