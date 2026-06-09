@@ -582,12 +582,6 @@ func (a *Allocator) handleWire(in []byte, dstIP string) []byte {
 	if resp == nil {
 		return nil
 	}
-	// Deny HTTP/3 discovery via DNS: strip the h3 ALPN from any SVCB/
-	// HTTPS (RFC 9460) answer so a client can't learn to use QUIC on
-	// UDP/443 — which the gateway drops to keep HTTPS on the
-	// interceptable TCP path. Without this, the SVCB record is the one
-	// h3-discovery channel that skips Alt-Svc entirely.
-	stripH3ALPN(resp)
 	out, err := resp.Pack()
 	if err != nil {
 		log.Printf("dnsvip: pack response: %v", err)
@@ -601,61 +595,6 @@ func (a *Allocator) handleWire(in []byte, dstIP string) []byte {
 // exit-node UDP DNS listener; callers write the returned bytes directly.
 func (a *Allocator) HandlePacket(in []byte, origDstIP string) []byte {
 	return a.handleWire(in, origDstIP)
-}
-
-// stripH3ALPN removes the HTTP/3 ALPN ("h3" and draft "h3-NN") from
-// every SVCB/HTTPS record in the message's answer and additional
-// sections. A record whose ALPN was h3-only is dropped entirely (it
-// would advertise nothing useful once h3 is gone), so the client falls
-// back to A/AAAA + TCP. No-op for messages without SVCB/HTTPS records.
-func stripH3ALPN(msg *dns.Msg) {
-	if msg == nil {
-		return
-	}
-	msg.Answer = filterSVCBH3(msg.Answer)
-	msg.Extra = filterSVCBH3(msg.Extra)
-}
-
-func filterSVCBH3(rrs []dns.RR) []dns.RR {
-	out := rrs[:0]
-	for _, rr := range rrs {
-		var svcb *dns.SVCB
-		switch v := rr.(type) {
-		case *dns.HTTPS:
-			svcb = &v.SVCB
-		case *dns.SVCB:
-			svcb = v
-		}
-		if svcb != nil && !keepSVCBAfterStrippingH3(svcb) {
-			continue
-		}
-		out = append(out, rr)
-	}
-	return out
-}
-
-// keepSVCBAfterStrippingH3 mutates svcb to drop h3 from its ALPN param
-// and reports whether the record is still worth keeping (false once its
-// ALPN list is emptied — i.e. it was h3-only).
-func keepSVCBAfterStrippingH3(svcb *dns.SVCB) bool {
-	for _, kv := range svcb.Value {
-		alpn, ok := kv.(*dns.SVCBAlpn)
-		if !ok {
-			continue
-		}
-		kept := alpn.Alpn[:0]
-		for _, proto := range alpn.Alpn {
-			if proto == "h3" || strings.HasPrefix(proto, "h3-") {
-				continue
-			}
-			kept = append(kept, proto)
-		}
-		if len(kept) == 0 {
-			return false
-		}
-		alpn.Alpn = kept
-	}
-	return true
 }
 
 // handleQuery is the actual responder. Splits intercepted from

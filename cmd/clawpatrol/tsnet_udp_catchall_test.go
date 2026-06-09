@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"net/netip"
 	"testing"
 
@@ -42,19 +43,37 @@ func TestTsnetUDPPeerOnboarded(t *testing.T) {
 	}
 }
 
-// tsnetUDPDisposition routes UDP/53 to dnsvip, drops UDP/443 (QUIC, so
-// HTTPS falls back to the interceptable TCP path), relays other UDP for
-// onboarded peers, and leaves the rest to tsnet's default handler.
+func newTestDNSVIP(t *testing.T) *dnsvip.Allocator {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE dnsvip_allocations (id INTEGER PRIMARY KEY, hostname TEXT, v4 TEXT, v6 TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	a, err := dnsvip.New(db, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("dnsvip.New: %v", err)
+	}
+	return a
+}
+
+// tsnetUDPDisposition: UDP/53 → dnsvip; UDP/443 to an intercepted (VIP'd)
+// host → drop (force HTTPS to the TCP MITM); UDP/443 to a pass-through
+// host is NOT dropped (we don't intercept it); other UDP from an
+// onboarded peer → relay; the rest → tsnet's default handler.
 func TestTsnetUDPDisposition(t *testing.T) {
 	r := newOnboardRegistry()
 	r.knownDeviceIPs["100.64.0.2"] = true
-	g := &Gateway{onboard: r, dnsvip: &dnsvip.Allocator{}}
+	g := &Gateway{onboard: r, dnsvip: newTestDNSVIP(t)}
 
 	onboarded := netip.MustParseAddr("100.64.0.2")
 	stranger := netip.MustParseAddr("100.99.99.99")
-	mk := func(port uint16) netip.AddrPort {
-		return netip.AddrPortFrom(netip.MustParseAddr("8.8.8.8"), port)
-	}
+	vip := netip.MustParseAddr("10.78.1.2") // inside DefaultCIDR4 → intercepted host
+	pub := netip.MustParseAddr("8.8.8.8")   // public → pass-through host
+	mk := netip.AddrPortFrom
 
 	cases := []struct {
 		name string
@@ -62,12 +81,14 @@ func TestTsnetUDPDisposition(t *testing.T) {
 		src  netip.Addr
 		want udpDisposition
 	}{
-		{"dns from onboarded", mk(53), onboarded, udpDNS},
-		{"dns from stranger", mk(53), stranger, udpDNS}, // DNS is peer-agnostic
-		{"quic from onboarded dropped", mk(443), onboarded, udpDrop},
-		{"quic from stranger dropped", mk(443), stranger, udpDrop}, // never relay QUIC
-		{"ntp from onboarded relayed", mk(123), onboarded, udpRelay},
-		{"ntp from stranger passthrough", mk(123), stranger, udpPassthrough},
+		{"dns onboarded", mk(pub, 53), onboarded, udpDNS},
+		{"dns stranger", mk(pub, 53), stranger, udpDNS},
+		{"quic to intercepted VIP dropped", mk(vip, 443), onboarded, udpDrop},
+		{"quic to intercepted VIP dropped (stranger)", mk(vip, 443), stranger, udpDrop},
+		{"quic to pass-through relayed", mk(pub, 443), onboarded, udpRelay},
+		{"quic to pass-through not relayed for stranger", mk(pub, 443), stranger, udpPassthrough},
+		{"ntp onboarded relayed", mk(pub, 123), onboarded, udpRelay},
+		{"ntp stranger passthrough", mk(pub, 123), stranger, udpPassthrough},
 	}
 	for _, c := range cases {
 		if got := g.tsnetUDPDisposition(c.dst, c.src); got != c.want {
@@ -75,13 +96,10 @@ func TestTsnetUDPDisposition(t *testing.T) {
 		}
 	}
 
-	// With no dnsvip, UDP/53 isn't intercepted — but UDP/443 is still
-	// dropped (QUIC blocking doesn't depend on dnsvip).
+	// Without a dnsvip there's no VIP table, so UDP/443 isn't dropped —
+	// it relays for onboarded peers like any other UDP.
 	g2 := &Gateway{onboard: r}
-	if got := g2.tsnetUDPDisposition(mk(53), onboarded); got != udpRelay {
-		t.Errorf("dns w/o dnsvip from onboarded: disposition = %d, want relay", got)
-	}
-	if got := g2.tsnetUDPDisposition(mk(443), onboarded); got != udpDrop {
-		t.Errorf("quic w/o dnsvip: disposition = %d, want drop", got)
+	if got := g2.tsnetUDPDisposition(mk(vip, 443), onboarded); got != udpRelay {
+		t.Errorf("443 w/o dnsvip from onboarded: disposition = %d, want relay", got)
 	}
 }

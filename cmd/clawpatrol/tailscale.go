@@ -311,7 +311,7 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			return nil, false
 		}
 	}
-	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped, other → relay for onboarded peers)")
+	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped for VIPs, other → relay for onboarded peers)")
 }
 
 // udpDisposition is what the gateway does with a forwarded UDP flow.
@@ -327,12 +327,15 @@ const (
 // tsnetUDPDisposition decides how an exit-node UDP flow is handled.
 //
 //   - UDP/53 → dnsvip (resolve via clawpatrol regardless of resolver IP).
-//   - UDP/443 → drop. That's QUIC / HTTP-3; relaying it would let HTTPS
-//     ride UDP straight past the TCP/443 SNI-peek MITM. Dropping makes
-//     the client fall back to TCP/443, which the gateway intercepts. (WG
-//     mode's udpDispatch does the same.)
-//   - other UDP from an onboarded peer → relay (QUIC-on-:443 aside, e.g.
-//     NTP or a custom protocol the agent legitimately needs).
+//   - UDP/443 to an intercepted (VIP'd) host → drop. That's QUIC / HTTP-3
+//     to a host we MITM; relaying it would let HTTPS ride UDP straight
+//     past the TCP/443 SNI-peek MITM. Dropping makes the client fall back
+//     to TCP/443, which the gateway intercepts. UDP/443 to a host we
+//     pass through (no VIP) is *not* dropped — we don't intercept that
+//     host's HTTPS either, so there's nothing to bypass, and breaking its
+//     HTTP/3 would be gratuitous. (WG mode's udpDispatch does the same.)
+//   - other UDP from an onboarded peer → relay (e.g. NTP, a custom
+//     protocol, or QUIC to a passed-through host).
 //   - everything else → tsnet's default handler.
 func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDisposition {
 	switch dst.Port() {
@@ -341,7 +344,9 @@ func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDis
 			return udpDNS
 		}
 	case 443:
-		return udpDrop
+		if g.dnsvip != nil && g.dnsvip.IsVIP(dst.Addr().String()) {
+			return udpDrop
+		}
 	}
 	if g.tsnetUDPPeerOnboarded(src) {
 		return udpRelay
