@@ -17,12 +17,17 @@ dashboard:
 test:
 	go test ./...
 
+# Our tracked Go sources, excluding the vendored upstream copy under
+# third_party/ (a verbatim tailscale.com tree that must not be
+# reformatted — see third_party/tailscale/PATCH.md).
+GO_SRC = $(shell git ls-files '*.go' | grep -v '^third_party/')
+
 fmt:
-	gofmt -w .
+	gofmt -w $(GO_SRC)
 	cd dashboard && deno task format
 
 fmt-check:
-	test -z "$$(gofmt -l .)"
+	test -z "$$(gofmt -l $(GO_SRC))"
 	cd dashboard && deno task format:check
 
 lint: go-lint dashboard-lint

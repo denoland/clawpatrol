@@ -95,7 +95,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/pires/go-proxyproto v0.8.1 // indirect
 	github.com/prometheus-community/pro-bing v0.4.0 // indirect
-	github.com/prometheus/common v0.67.5 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/safchain/ethtool v0.3.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
@@ -111,7 +110,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
@@ -131,3 +129,17 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+// VENDORED PATCH — remove once tailscale/tailscale#20064 is fixed upstream.
+//
+// third_party/tailscale is a pruned copy of tailscale.com v1.96.5 (only the
+// packages clawpatrol builds) with a single change in net/tstun/wrap.go:
+// injectedRead now runs the outbound filter (RunOut) on netstack-originated
+// packets so their reverse-flow state is recorded. Without it, a
+// userspace/netstack exit-node client drops inbound UDP replies (TCP is
+// unaffected), which breaks native UDP relay through the gateway. See
+// third_party/tailscale/PATCH.md.
+//
+// When upstream ships the fix, delete third_party/tailscale, drop this
+// replace, and bump the tailscale.com require above to the fixed version.
+replace tailscale.com => ./third_party/tailscale
