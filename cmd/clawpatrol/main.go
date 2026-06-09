@@ -2533,6 +2533,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		// still wants to show what the upstream actually sent.
 		ev.RespHeaders = flatHeaders(resp.Header)
 		stripAuthResponseHeaders(resp.Header)
+		stripAltSvc(resp.Header)
 		// Trailers fall outside resp.Header — Go's http.Transport
 		// surfaces them on resp.Trailer and http.Response.Write
 		// emits them after the chunked body. RFC 9110 §6.5.1 bans

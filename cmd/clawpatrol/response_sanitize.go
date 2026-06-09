@@ -35,6 +35,21 @@ func isAuthResponseHeader(name string) bool {
 	return false
 }
 
+// altSvcHeader advertises HTTP/3 (and other alternative services). The
+// gateway intercepts HTTPS on TCP/443 and drops UDP/443, so letting the
+// origin's Alt-Svc through would tell the agent to retry over QUIC —
+// which the gateway can't MITM and now black-holes. Strip it so the
+// agent never learns to leave the interceptable TCP path. (The UDP/443
+// drop is the enforcement; this and the SVCB/HTTPS h3 strip just stop
+// the agent from trying in the first place.)
+const altSvcHeader = "Alt-Svc"
+
+// stripAltSvc removes the Alt-Svc header in-place from a parsed
+// http.Header.
+func stripAltSvc(h http.Header) {
+	h.Del(altSvcHeader)
+}
+
 // stripAuthResponseHeaders removes credential-bearing response
 // headers in-place from a parsed http.Header.
 func stripAuthResponseHeaders(h http.Header) {
@@ -82,7 +97,7 @@ func stripAuthResponseHeadersRaw(headerBytes []byte) []byte {
 		}
 		if c := bytes.IndexByte(line, ':'); c >= 0 {
 			name := strings.TrimSpace(string(line[:c]))
-			if isAuthResponseHeader(name) {
+			if isAuthResponseHeader(name) || strings.EqualFold(name, altSvcHeader) {
 				droppingFold = true
 				continue
 			}

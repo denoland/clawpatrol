@@ -37,7 +37,9 @@ no subnet allocation — Tailscale's control plane handles all of that.
    already receives the datagrams. **UDP/443 (QUIC / HTTP-3) is the
    exception: it's dropped in both modes** so HTTPS can't ride UDP past
    the TCP/443 SNI-peek MITM — the client falls back to interceptable
-   TCP.
+   TCP. To stop agents from even attempting QUIC, the gateway also strips
+   the `Alt-Svc` response header on the MITM path and the `h3` ALPN from
+   SVCB/HTTPS (RFC 9460) DNS answers — the two HTTP/3 discovery channels.
 5. Device identity (hostname, OS, Tailscale user) is populated via
    `tailscale whois` at first connection — richer than WireGuard mode
    which only captures hostname at join time.

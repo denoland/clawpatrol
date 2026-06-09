@@ -197,3 +197,34 @@ func TestStripAuthResponseHeadersRawObsFold(t *testing.T) {
 		t.Errorf("Set-Cookie not stripped, output:\n%s", s2)
 	}
 }
+
+func TestStripAltSvc(t *testing.T) {
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Set("Alt-Svc", `h3=":443"; ma=86400`)
+	stripAltSvc(h)
+	if h.Get("Alt-Svc") != "" {
+		t.Errorf("Alt-Svc survived parsed strip: %q", h.Get("Alt-Svc"))
+	}
+	if h.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type clobbered: %q", h.Get("Content-Type"))
+	}
+}
+
+func TestStripAltSvcRaw(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\r\n" +
+		"Content-Type: text/html\r\n" +
+		"Alt-Svc: h3=\":443\"; ma=86400, h3-29=\":443\"\r\n" +
+		"Set-Cookie: s=1\r\n" +
+		"\r\n")
+	out := string(stripAuthResponseHeadersRaw(raw))
+	if strings.Contains(strings.ToLower(out), "alt-svc") {
+		t.Errorf("Alt-Svc survived raw strip:\n%s", out)
+	}
+	if strings.Contains(strings.ToLower(out), "set-cookie") {
+		t.Errorf("Set-Cookie survived raw strip:\n%s", out)
+	}
+	if !strings.Contains(out, "Content-Type: text/html") {
+		t.Errorf("Content-Type dropped by raw strip:\n%s", out)
+	}
+}
