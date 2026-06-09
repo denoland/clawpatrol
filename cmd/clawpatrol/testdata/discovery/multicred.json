@@ -1,0 +1,50 @@
+{
+  "profile": "dba",
+  "endpoints": [
+    {
+      "name": "pg",
+      "type": "postgres",
+      "family": "sql",
+      "hosts": [
+        "pg.example"
+      ],
+      "port": 5432,
+      "sslmode": "require",
+      "credentials": [
+        {
+          "name": "pg-ro",
+          "type": "postgres_credential",
+          "disambiguators": {
+            "database": "app",
+            "user": "reader"
+          }
+        },
+        {
+          "name": "pg-rw",
+          "type": "postgres_credential",
+          "disambiguators": {
+            "database": "app",
+            "user": "writer"
+          }
+        }
+      ],
+      "hint": "psql \"host=pg.example port=5432 user=reader dbname=app sslmode=require\""
+    }
+  ],
+  "credentials": [
+    {
+      "name": "pg-ro",
+      "type": "postgres_credential",
+      "endpoints": [
+        "pg"
+      ]
+    },
+    {
+      "name": "pg-rw",
+      "type": "postgres_credential",
+      "endpoints": [
+        "pg"
+      ]
+    }
+  ]
+}

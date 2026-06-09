@@ -1,0 +1,31 @@
+{
+  "profile": "simple",
+  "endpoints": [
+    {
+      "name": "github",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "api.github.com"
+      ],
+      "credentials": [
+        {
+          "name": "gh",
+          "type": "bearer_token",
+          "placeholder": "PH_GH"
+        }
+      ],
+      "hint": "curl https://api.github.com/ -H \"Authorization: Bearer PH_GH\""
+    }
+  ],
+  "credentials": [
+    {
+      "name": "gh",
+      "type": "bearer_token",
+      "placeholder": "PH_GH",
+      "endpoints": [
+        "github"
+      ]
+    }
+  ]
+}
