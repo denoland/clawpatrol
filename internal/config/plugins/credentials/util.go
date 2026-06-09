@@ -55,4 +55,11 @@ const (
 	phOpenAI = "sk-clawpatrol-placeholder-do-not-use"
 	phGitHub = "ghp_clawpatrol_placeholder_do_not_use"
 	phGemini = "AIzaClawpatrolPlaceholderDoNotUse00000000"
+	// phAWSKeyID is a 20-char AKIA-prefixed access key id and
+	// phAWSSecret a 40-char secret — the shapes aws-cli expects so its
+	// SigV4 signing succeeds locally. The gateway re-signs the proxied
+	// request with the operator's real stored creds (see aws.go), so
+	// these bytes never authenticate anything upstream.
+	phAWSKeyID  = "AKIACLAWPATROLPLACE0"
+	phAWSSecret = "clawpatrolPlaceholderSecretAccessKeyDoNo"
 )
