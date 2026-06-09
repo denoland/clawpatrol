@@ -9,8 +9,14 @@ import (
 // envParts lists the recognized "multi-part" suffixes EnvSecretStore
 // folds into Secret.Extras when the bare CLAWPATROL_SECRET_<NAME> var
 // is empty. Plugins like mtls_credential need three pieces (cert /
-// key / ca); the env-var convention is one var per piece.
-var envParts = []string{"CA", "CERT", "KEY"}
+// key / ca); aws_credential needs three more (access key id / secret
+// access key / session token). The env-var convention is one var per
+// piece, and the suffix lowercased is the Extras key the plugin reads
+// (e.g. CLAWPATROL_SECRET_AWS_ACCESS_KEY_ID -> Extras["access_key_id"]).
+var envParts = []string{
+	"CA", "CERT", "KEY",
+	"ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "SESSION_TOKEN",
+}
 
 // SecretStore returns the secret material a credential plugin's
 // InjectHTTP / InjectPostgres needs at request time. Lookup key is
