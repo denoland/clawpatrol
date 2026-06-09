@@ -295,20 +295,58 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 	}
 	orig := ns.GetUDPHandlerForFlow
 	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) {
-		if dst.Port() == 53 && g.dnsvip != nil {
+		switch g.tsnetUDPDisposition(dst, src.Addr()) {
+		case udpDNS:
 			return g.serveTsnetUDPDNSFlow, true
-		}
-		if g.tsnetUDPPeerOnboarded(src.Addr()) {
+		case udpDrop:
+			return func(c nettype.ConnPacketConn) { _ = c.Close() }, true
+		case udpRelay:
 			return func(c nettype.ConnPacketConn) {
 				relayUDP(c, dst.Addr().String(), dst.Port())
 			}, true
+		default: // udpPassthrough
+			if orig != nil {
+				return orig(src, dst)
+			}
+			return nil, false
 		}
-		if orig != nil {
-			return orig(src, dst)
-		}
-		return nil, false
 	}
-	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, other → relay for onboarded peers)")
+	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped, other → relay for onboarded peers)")
+}
+
+// udpDisposition is what the gateway does with a forwarded UDP flow.
+type udpDisposition int
+
+const (
+	udpPassthrough udpDisposition = iota // leave it to tsnet's default handler
+	udpDNS                               // intercept via dnsvip
+	udpDrop                              // black-hole (force a TCP fallback)
+	udpRelay                             // transparently relay to the upstream
+)
+
+// tsnetUDPDisposition decides how an exit-node UDP flow is handled.
+//
+//   - UDP/53 → dnsvip (resolve via clawpatrol regardless of resolver IP).
+//   - UDP/443 → drop. That's QUIC / HTTP-3; relaying it would let HTTPS
+//     ride UDP straight past the TCP/443 SNI-peek MITM. Dropping makes
+//     the client fall back to TCP/443, which the gateway intercepts. (WG
+//     mode's udpDispatch does the same.)
+//   - other UDP from an onboarded peer → relay (QUIC-on-:443 aside, e.g.
+//     NTP or a custom protocol the agent legitimately needs).
+//   - everything else → tsnet's default handler.
+func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDisposition {
+	switch dst.Port() {
+	case 53:
+		if g.dnsvip != nil {
+			return udpDNS
+		}
+	case 443:
+		return udpDrop
+	}
+	if g.tsnetUDPPeerOnboarded(src) {
+		return udpRelay
+	}
+	return udpPassthrough
 }
 
 // tsnetUDPPeerOnboarded reports whether an exit-node UDP flow's source

@@ -3113,12 +3113,19 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
+			if dstPort == 443 {
+				// QUIC / HTTP-3: drop so the client falls back to
+				// TCP/443, which we MITM. Relaying it would let HTTPS
+				// bypass interception entirely.
+				_ = c.Close()
+				return true
+			}
 			return false
 		}
 		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, UDP/443=drop(quic), :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	tsnetServer, ln, err := openListener(cfg, stateDir)

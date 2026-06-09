@@ -31,10 +31,13 @@ no subnet allocation — Tailscale's control plane handles all of that.
    traversal and relay (DERP). UDP gets the same dispatch as WireGuard
    mode even on the tsnet exit-node path: a catch-all on tsnet's netstack
    (`GetUDPHandlerForFlow`) sends UDP/53 to any resolver IP to `dnsvip`
-   and relays other UDP from onboarded peers via `relayUDP`, so a
-   tsnet-mode `clawpatrol run` child gets arbitrary UDP (e.g. QUIC)
-   without a UDP-over-TCP shim — the userspace exit node already receives
-   the datagrams.
+   and relays other UDP from onboarded peers via `relayUDP` — so a
+   tsnet-mode `clawpatrol run` child gets arbitrary UDP (NTP, custom
+   protocols) without a UDP-over-TCP shim, since the userspace exit node
+   already receives the datagrams. **UDP/443 (QUIC / HTTP-3) is the
+   exception: it's dropped in both modes** so HTTPS can't ride UDP past
+   the TCP/443 SNI-peek MITM — the client falls back to interceptable
+   TCP.
 5. Device identity (hostname, OS, Tailscale user) is populated via
    `tailscale whois` at first connection — richer than WireGuard mode
    which only captures hostname at join time.
