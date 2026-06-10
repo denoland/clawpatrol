@@ -454,6 +454,7 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
+	Middlewares map[string]*Entity
 
 	Profiles map[string]*Profile
 
@@ -813,6 +814,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
+		Middlewares: make(map[string]*Entity),
 		Profiles:    make(map[string]*Profile),
 	}
 
@@ -1056,6 +1058,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
+			{Type: "middleware", LabelNames: []string{"type", "name"}},
 		},
 	}
 	content, diags := body.Content(schema)
@@ -1130,15 +1133,15 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		p.Order = append(p.Order, sym.Name)
 	}
 
-	// Decode order: credentials and tunnels first (no cross-deps on
-	// other kinds), then endpoints (which reference both), then rules
-	// (which reference endpoints), then approvers (referenced by
-	// rules but with no body-level dep on them at decode time).
-	// Symbol-table-backed ref resolution doesn't actually require this
-	// ordering — symbols are populated in pass 1 — but matching decode
-	// order to compile order keeps Order[] stable across the file's
-	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	// Decode order: credentials, tunnels, and middleware first (no
+	// cross-deps on other kinds), then endpoints (which reference all
+	// three), then rules (which reference endpoints), then approvers
+	// (referenced by rules but with no body-level dep on them at decode
+	// time). Symbol-table-backed ref resolution doesn't actually require
+	// this ordering — symbols are populated in pass 1 — but matching
+	// decode order to compile order keeps Order[] stable across the
+	// file's declaration sequence and avoids surprising readers.
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindMiddleware, KindEndpoint, KindRule} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -1190,6 +1193,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Credentials[sym.Name] = ent
 			case KindTunnel:
 				p.Tunnels[sym.Name] = ent
+			case KindMiddleware:
+				p.Middlewares[sym.Name] = ent
 			case KindEndpoint:
 				p.Endpoints[sym.Name] = ent
 			case KindRule:

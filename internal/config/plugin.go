@@ -16,9 +16,9 @@ import (
 )
 
 // Kind names a class of policy block. The plugin-dispatched two-label
-// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
-// read their type from the block's first label (e.g. `endpoint "https"
-// "github-dev"` → Type="https").
+// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel,
+// KindMiddleware — read their type from the block's first label (e.g.
+// `endpoint "https" "github-dev"` → Type="https").
 //
 // KindRule and KindProfile are one-label blocks. KindRule has a single
 // registered plugin (Type="") and infers its protocol family from the
@@ -34,13 +34,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindMiddleware Kind = "middleware"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindMiddleware:
 		return 2 // first = type, second = name
 	case KindRule, KindProfile:
 		return 1 // name
@@ -109,6 +110,7 @@ type Plugin struct {
 	//   KindApprover   → runtime.ApproverRuntime
 	//   KindRule       → runtime.RuleMatcherFactory
 	//   KindTunnel     → runtime.TunnelRuntime
+	//   KindMiddleware → runtime.HTTPMiddleware
 	// nil means "schema-only; runtime not implemented" — request-time
 	// dispatch reports a clear diagnostic when it tries to use one.
 	Runtime any
@@ -181,6 +183,12 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+		// middleware is an ordered list of request-side hooks that run
+		// after credential injection and before the upstream forward.
+		// Same-stage composition: every entry runs, in declared order
+		// (vs. the approver chain's first-non-error-wins). Reference
+		// each by its typed name, e.g. `[anthropic_system_prompt.foo]`.
+		{Name: "middleware", Kind: KindMiddleware, Optional: true, List: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them

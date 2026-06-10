@@ -2459,6 +2459,31 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			return
 		}
 
+		// HTTP request middleware. After credential injection and
+		// before the upstream forward, each middleware attached to this
+		// endpoint sees the (post-credential) request body and may
+		// rewrite it; the chain runs in declared order. A middleware
+		// error fails the request closed — 502 + dashboard error event,
+		// no upstream call. Body-tracking and the upstream RoundTrip
+		// below see the rewritten body, so the dashboard and any
+		// LLM-usage accounting reflect what was actually sent.
+		if len(ep.Middleware) > 0 {
+			newBody, mwErr := applyRequestMiddleware(req, ep.Middleware)
+			if mwErr != nil {
+				log.Printf("mitm middleware %s %s: %v", host, req.URL.Path, mwErr)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+				ev.Status = 502
+				ev.Action = "error"
+				ev.Reason = mwErr.Error()
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				return
+			}
+			req.Body = io.NopCloser(bytes.NewReader(newBody))
+			req.ContentLength = int64(len(newBody))
+			req.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+		}
+
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" {

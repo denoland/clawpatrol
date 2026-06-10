@@ -45,6 +45,11 @@ type CompiledPolicy struct {
 	// pointers into the same Entity records, no copies.
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
+
+	// Middlewares contains every declared middleware, keyed by name.
+	// Endpoints store an ordered slice of *CompiledMiddleware pointers
+	// in their Middleware field — same instances as the entries here.
+	Middlewares map[string]*CompiledMiddleware
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -126,6 +131,13 @@ type CompiledEndpoint struct {
 	// Populated from the endpoint plugin's optional EndpointTunnel()
 	// accessor.
 	Tunnel *CompiledTunnel
+
+	// Middleware is the ordered request-side hook chain attached to
+	// this endpoint via the `middleware = [...]` framework attr. The
+	// dispatcher runs each entry's runtime (runtime.HTTPMiddleware) in
+	// this order, after credential injection and before the upstream
+	// forward. Empty for endpoints that declare no middleware.
+	Middleware []*CompiledMiddleware
 }
 
 // RequiresVIP reports whether DNS-VIP allocation should claim this
@@ -192,6 +204,27 @@ type CompiledTunnel struct {
 	// reloads without retaining or logging raw config/secret-bearing
 	// fields.
 	Fingerprint string `json:"-"`
+}
+
+// CompiledMiddleware is the runtime-friendly view of one middleware
+// block. Body is whatever the middleware plugin's Build returned;
+// runtime callers type-assert it to runtime.HTTPMiddleware to invoke
+// RewriteHTTPRequest. Endpoints hold pointers into CompiledPolicy.
+// Middlewares via their ordered Middleware slice.
+type CompiledMiddleware struct {
+	Name   string
+	Plugin *Plugin
+	Body   any
+}
+
+// MiddlewareEndpointCompat is the optional interface a middleware
+// plugin's Body implements to reject endpoints it can't operate on —
+// e.g. an Anthropic-specific middleware attached to an endpoint whose
+// hosts don't include api.anthropic.com. compileEndpoint calls it once
+// per (middleware, endpoint) pair at load time; a non-nil error is a
+// fatal compile diagnostic, mirroring the tunnel host-family check.
+type MiddlewareEndpointCompat interface {
+	CheckEndpointHosts(hosts []string) error
 }
 
 // KeepaliveAlwaysSentinel is the duration value that means "pin
@@ -273,6 +306,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
+		Middlewares:    map[string]*CompiledMiddleware{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
 	}
@@ -282,6 +316,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if err := compileTunnels(cp, p); err != nil {
 		return nil, err
 	}
+
+	// Compile middleware so endpoint compilation can resolve
+	// `middleware = [...]` refs to *CompiledMiddleware entries.
+	compileMiddlewares(cp, p)
 
 	// Compile every endpoint once into a CompiledEndpoint with the
 	// (placeholder) rule list. Credentials attach in the next pass —
@@ -536,7 +574,38 @@ func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEnd
 			return nil, fmt.Errorf("tunnel %q routes endpoint %q but it has no hostnames in `hosts` (only IP literals); tunneled endpoints rely on DNS-VIP interception, which needs a name to intercept", tn, name)
 		}
 	}
+	// Resolve the ordered `middleware = [...]` chain into pointers
+	// shared with cp.Middlewares, preserving declared order. Each entry
+	// may veto incompatible endpoints (e.g. an Anthropic-only middleware
+	// on a non-Anthropic host set) via MiddlewareEndpointCompat.
+	for _, mwName := range ent.Framework.RefList("middleware") {
+		cmw, ok := cp.Middlewares[mwName]
+		if !ok {
+			return nil, fmt.Errorf("middleware %q not declared", mwName)
+		}
+		if chk, ok := cmw.Body.(MiddlewareEndpointCompat); ok {
+			if err := chk.CheckEndpointHosts(ce.Hosts); err != nil {
+				return nil, fmt.Errorf("middleware %q on endpoint %q: %w", mwName, name, err)
+			}
+		}
+		ce.Middleware = append(ce.Middleware, cmw)
+	}
 	return ce, nil
+}
+
+// compileMiddlewares lowers every middleware block into a
+// *CompiledMiddleware keyed by name. Middleware carries no cross-entity
+// state of its own (unlike tunnels' via chains), so this is a flat
+// copy; endpoint compilation resolves the `middleware = [...]` refs and
+// runs each entry's optional MiddlewareEndpointCompat check.
+func compileMiddlewares(cp *CompiledPolicy, p *Policy) {
+	for name, ent := range p.Middlewares {
+		cp.Middlewares[name] = &CompiledMiddleware{
+			Name:   name,
+			Plugin: ent.Plugin,
+			Body:   ent.Body,
+		}
+	}
 }
 
 // hasResolvableHostname reports whether at least one entry in hosts

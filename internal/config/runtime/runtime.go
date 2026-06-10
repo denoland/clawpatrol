@@ -30,6 +30,29 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// HTTPMiddleware is the middleware-plugin contract for request-side
+// body rewrites. The dispatcher calls it on every endpoint-attached
+// middleware, in declared order, AFTER credential injection and
+// BEFORE the upstream forward. It sees the post-credential request
+// body and returns the body to forward; the host re-attaches the
+// returned bytes and fixes Content-Length.
+//
+// Returning a non-nil error fails the request closed: the dispatcher
+// writes a 502, emits a dashboard error event, and never contacts the
+// upstream. Implementations that don't apply to a given request (wrong
+// method/path, unparsable body) return (body, nil) unchanged.
+//
+// req is provided so a middleware can gate on method / path / headers;
+// implementations should treat req.Body as already consumed and work
+// from the body slice. Mutating req.Header is allowed (the host writes
+// the request after the chain runs).
+//
+// Implementations live next to their config plugin so the schema and
+// runtime stay co-located, mirroring the credential plugins.
+type HTTPMiddleware interface {
+	RewriteHTTPRequest(ctx context.Context, req *http.Request, body []byte) ([]byte, error)
+}
+
 // HTTPRequestSigner is the credential-plugin contract for HTTP auth
 // shapes whose signature spans the *whole request* (method, URL,
 // headers, body) and need parameters that live on the endpoint, not
