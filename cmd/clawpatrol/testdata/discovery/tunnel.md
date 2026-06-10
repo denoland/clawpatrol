@@ -12,10 +12,17 @@ endpoints listed below. For those, the gateway terminates TLS and acts
 as a transparent man-in-the-middle: the certificate you see is minted on
 the fly by Claw Patrol's own certificate authority, not the host's real
 public certificate. The hostname matches but the issuer is the gateway
-CA. Trust that CA to verify these connections — fetch it from
-https://clawpatrol/ca.crt and check its fingerprint against
-https://clawpatrol/info. A certificate-authority mismatch against the
-public web PKI is expected for these hosts, not an attack.
+CA. You normally don't have to do anything to trust it: Claw Patrol
+already installed its CA on this device when you joined — both in the
+system trust store and via environment-variable pushdown
+(SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+and similar) that `clawpatrol run` sets for the processes it wraps. So
+most clients validate these connections out of the box, and a
+certificate-authority mismatch against the public web PKI is expected
+for these hosts, not an attack. If a client ignores both the system
+store and those env vars, fetch the CA from https://clawpatrol/ca.crt,
+verify its fingerprint against https://clawpatrol/info, and point that
+client at it explicitly.
 
 Every other host is passed through untouched: the gateway does not
 intercept it, you get the upstream's real certificate, and you must
