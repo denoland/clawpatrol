@@ -21,8 +21,9 @@ var updateGolden = flag.Bool("update", false, "rewrite discovery golden files")
 // HCL config, renders one profile's manifest through both output paths,
 // and asserts the result byte-for-byte against a committed golden. They
 // cover the distinct config shapes a profile can produce — an empty
-// profile, a simple single-endpoint/single-credential profile, and a
-// profile with multiple credentials bound to one endpoint.
+// profile, a simple single-endpoint/single-credential profile, a
+// profile with multiple credentials bound to one endpoint, and a
+// profile whose endpoint sits behind a tunnel.
 var discoveryGoldenCases = []struct {
 	name    string // golden file stem under testdata/discovery/
 	hcl     string // HCL fixture file under testdata/discovery/
@@ -31,6 +32,7 @@ var discoveryGoldenCases = []struct {
 	{name: "empty", hcl: "empty.hcl", profile: "empty"},
 	{name: "simple", hcl: "simple.hcl", profile: "simple"},
 	{name: "multicred", hcl: "multicred.hcl", profile: "dba"},
+	{name: "tunnel", hcl: "tunnel.hcl", profile: "tunneled"},
 }
 
 func compileDiscoveryFile(t *testing.T, file string) *config.CompiledPolicy {
