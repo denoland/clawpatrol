@@ -248,6 +248,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			// login.tailscale.com link, reachable from any device. Also
 			// best-effort open a local browser if one exists.
 			printQR(st.AuthURL)
+			fmt.Println()
 			tryOpen(st.AuthURL)
 			printed = true
 		}

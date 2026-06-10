@@ -1021,16 +1021,21 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// tryOpen there: a local browser can't reach the URL anyway.
 		if isTailnetOnlyURL(start.VerifyURL) {
 			printQR(start.VerifyURL)
+			fmt.Println()
 		} else {
 			tryOpen(start.VerifyURL)
 		}
-		// CA fingerprint last, so it sits right next to the approve
-		// action. The dashboard's approval page shows the same value
-		// beside the user_code — the operator visually confirms they
-		// match before clicking approve, blocking an on-path swap of
-		// the CA the CLI just fetched over plain HTTP.
+		// CA fingerprint, with the why. This machine just downloaded
+		// the gateway's CA certificate over plain HTTP, so an on-path
+		// attacker could have swapped it. The dashboard's approve page
+		// shows the fingerprint the gateway actually has — matching
+		// them by eye before approving is what rules that swap out.
 		if setup != nil && setup.caFingerprint != "" {
-			fmt.Printf("  CA fingerprint (must match the dashboard): %s\n", setup.caFingerprint)
+			fmt.Println("  Before approving, check this fingerprint matches the one shown")
+			fmt.Println("  on the dashboard — it confirms the gateway certificate this")
+			fmt.Println("  machine downloaded wasn't tampered with in transit:")
+			fmt.Println()
+			fmt.Printf("    %s\n", setup.caFingerprint)
 			fmt.Println()
 		}
 	}
@@ -1479,12 +1484,12 @@ func approveBaseFromVerifyURL(verifyURL, fallback string) string {
 
 // printQR renders url as a scannable terminal QR, no caption — the URL
 // is always printed directly above the call site and a QR is plainly a
-// QR. GenerateHalfBlock packs two QR rows per line via ▀/▄/█/space,
-// half the height of the block-per-cell variant, and renders cleanly
-// when the join output is piped to a file or pasted into chat.
+// QR. Callers control surrounding blank lines. GenerateHalfBlock packs
+// two QR rows per line via ▀/▄/█/space, half the height of the
+// block-per-cell variant, and renders cleanly when the join output is
+// piped to a file or pasted into chat.
 func printQR(url string) {
 	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
-	fmt.Println()
 }
 
 func tryOpen(u string) {
