@@ -210,6 +210,14 @@ type WireGuardBlock struct {
 	// Default 51820.
 	ListenPort int `hcl:"listen_port,optional"`
 
+	// HostLoopbackPort is the TCP port the gateway binds on
+	// 127.0.0.1 for host-local clients (single-host deployments where
+	// clawpatrol-run loops back to the gateway on the same box).
+	// Default 8443. Make it operator-controlled so two gateways can
+	// coexist on one host (dev/test, blue-green, multi-tenant)
+	// without colliding on the loopback landing pad.
+	HostLoopbackPort int `hcl:"host_loopback_port,optional"`
+
 	// Endpoint is the host:port advertised in client wg.conf as
 	// `Endpoint = ...`. Host defaults to public_url's host; port
 	// defaults to listen_port. Set only for split-host deployments

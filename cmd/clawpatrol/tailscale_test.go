@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -73,6 +74,66 @@ func TestOpenListener_WireGuardOnlyBindsLoopback(t *testing.T) {
 	}
 	if host != "127.0.0.1" && host != "::1" {
 		t.Errorf("expected loopback bind in WG mode, got %s", host)
+	}
+}
+
+func TestHostLoopbackPort(t *testing.T) {
+	if got := hostLoopbackPort(0); got != defaultHostLoopbackPort {
+		t.Errorf("hostLoopbackPort(0) = %d, want %d (default)", got, defaultHostLoopbackPort)
+	}
+	if got := hostLoopbackPort(18443); got != 18443 {
+		t.Errorf("hostLoopbackPort(18443) = %d, want 18443", got)
+	}
+}
+
+// TestOpenListener_WireGuardHonorsHostLoopbackPort is the regression
+// guard for the symmetric gap to wireguard.listen_port: the host-local
+// TCP landing pad used to be hardcoded to 127.0.0.1:8443, so two
+// gateways on one host collided there even with distinct listen_port.
+// Bind an explicit host_loopback_port and confirm openListener honors
+// it.
+func TestOpenListener_WireGuardHonorsHostLoopbackPort(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("TS_AUTHKEY", "")
+
+	// Reserve a free TCP port, then release it so openListener can bind.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	_, portStr, err := net.SplitHostPort(probe.Addr().String())
+	if err != nil {
+		t.Fatalf("split probe addr: %v", err)
+	}
+	_ = probe.Close()
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("parse probe port: %v", err)
+	}
+
+	cfg := &config.Gateway{
+		Settings: &config.GatewaySettings{
+			WireGuard: &config.WireGuardBlock{
+				SubnetCIDR:       "10.55.0.0/24",
+				HostLoopbackPort: port,
+			},
+		},
+	}
+	s, ln, err := openListener(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("openListener: %v", err)
+	}
+	if s != nil {
+		t.Fatal("expected nil tsnet server in WG-only mode")
+	}
+	defer func() { _ = ln.Close() }()
+	_, gotPortStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	if gotPortStr != portStr {
+		t.Errorf("openListener bound port %s, want configured %s", gotPortStr, portStr)
 	}
 }
 

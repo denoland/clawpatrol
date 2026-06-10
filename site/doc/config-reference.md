@@ -83,6 +83,7 @@ transport.
 |-----------|------|----------|-------------|
 | `subnet_cidr` | `string` | no | The private subnet assigned to onboarded clients. Required (e.g. "10.55.0.0/24"). |
 | `listen_port` | `int` | no | The UDP port the gateway binds for WG peers. Default 51820. |
+| `host_loopback_port` | `int` | no | The TCP port the gateway binds on 127.0.0.1 for host-local clients (single-host deployments where clawpatrol-run loops back to the gateway on the same box). Default 8443. Make it operator-controlled so two gateways can coexist on one host (dev/test, blue-green, multi-tenant) without colliding on the loopback landing pad. |
 | `endpoint` | `string` | no | The host:port advertised in client wg.conf as `Endpoint = ...`. Host defaults to public_url's host; port defaults to listen_port. Set only for split-host deployments (gateway sits behind a different hostname/IP for WG than for the dashboard). |
 | `interface` | `string` | no | The WireGuard interface name the gateway manages. Mostly irrelevant in userspace mode; leave unset. |
 | `server_pub` | `string` | no | The WireGuard server public key advertised to clients. Normally derived from gateway state; only set when bootstrapping from an external key. |

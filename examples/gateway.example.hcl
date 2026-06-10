@@ -74,6 +74,11 @@ gateway {
     # for the dashboard) or to override the advertised port. Examples:
     #   listen_port = 41820                          # custom port
     #   endpoint    = "wg.example.com:51820"         # WG host != dashboard host
+    #
+    # host_loopback_port defaults to 8443 — the 127.0.0.1 TCP landing
+    # pad host-local clients dial. Override it to run two gateways on
+    # one host (dev/test, blue-green, multi-tenant) without colliding:
+    #   host_loopback_port = 18443
   }
 
   # Tailscale transport — both blocks may coexist with `wireguard {}`.
