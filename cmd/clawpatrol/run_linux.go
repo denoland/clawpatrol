@@ -85,9 +85,6 @@ func runRun(args []string) {
 	}
 
 	warnIfOnGatewayHost()
-	if os.Geteuid() == 0 {
-		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
-	}
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay (mirrors TCP listeners inside the netns back to the host AND forwards wrapped-cmd connections to 127.0.0.1 out to host loopback services)")
@@ -95,6 +92,19 @@ func runRun(args []string) {
 	cmd := fs.Args()
 	if len(cmd) == 0 {
 		fail("usage: clawpatrol run [--no-auto-expose] -- <cmd> [args...]")
+	}
+
+	// Whole-machine join: the host already routes all traffic through
+	// the gateway, so there's no per-process daemon/sandbox. Inject the
+	// credential env and exec the command directly (this also works as
+	// root, unlike the unprivileged-userns path below).
+	if isWholeMachineJoin() {
+		runWholeMachineDirect(cmd)
+		return
+	}
+
+	if os.Geteuid() == 0 {
+		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
 	}
 	if *noAutoExpose {
 		_ = os.Setenv(runNoAutoExposeEnv, "1")
@@ -107,7 +117,7 @@ func runRun(args []string) {
 	// none is alive. Hello handshake happens inside daemonConnect.
 	ctrl, err := daemonConnect()
 	if err != nil {
-		fail("daemon connect: %v", err)
+		fail("daemon connect: %v\n  (if this machine was joined with --whole-machine, run the command directly — `clawpatrol run` isn't needed; traffic already routes through the gateway)", err)
 	}
 	defer func() { _ = ctrl.Close() }()
 
@@ -279,6 +289,31 @@ func runRun(args []string) {
 			os.Exit(ee.ExitCode())
 		}
 		fail("wait: %v", waitErr)
+	}
+}
+
+// runWholeMachineDirect handles `clawpatrol run <cmd>` on a
+// --whole-machine device. The host already routes all traffic through
+// the gateway, so there's no per-process namespace/daemon: just inject
+// the credential env and exec the command. Env is fetched straight
+// from the gateway — the daemon fetcher would try to spawn the
+// per-host daemon, which whole-machine mode doesn't run.
+func runWholeMachineDirect(cmd []string) {
+	if os.Getenv("CLAWPATROL_NO_ENV") != "1" {
+		caDir := defaultClawpatrolDir()
+		if vars, err := envPushdownGatewayFetcher(caDir); err == nil {
+			applyEnvPushdownVars(vars)
+		} else {
+			fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
+		}
+	}
+	bin, err := exec.LookPath(cmd[0])
+	if err != nil {
+		fail("%s: %v", cmd[0], err)
+	}
+	fmt.Fprintln(os.Stderr, "[clawpatrol] whole-machine join — traffic already routes through the gateway; running directly (no sandbox)")
+	if err := syscall.Exec(bin, cmd, os.Environ()); err != nil {
+		fail("exec %s: %v", bin, err)
 	}
 }
 
