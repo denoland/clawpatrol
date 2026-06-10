@@ -362,7 +362,29 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 // — and worse, the `clawpatrol env` it eval's on every new
 // terminal would dial the gateway's tailnet IP, which the
 // parent shell can't reach (only the NE can).
+// wholeMachineMarkerName is a sentinel file written under the
+// clawpatrol dir by a --whole-machine join. `clawpatrol run` checks for
+// it: in whole-machine mode the host already routes all traffic through
+// the gateway, so there's no per-process daemon/sandbox to attach to.
+const wholeMachineMarkerName = "whole-machine"
+
+// isWholeMachineJoin reports whether this device was joined with
+// --whole-machine (the marker is written by finishJoinSetup).
+func isWholeMachineJoin() bool {
+	_, err := os.Stat(filepath.Join(defaultClawpatrolDir(), wholeMachineMarkerName))
+	return err == nil
+}
+
 func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
+	if wholeMachine && s.caPath != "" {
+		// Record the mode so `clawpatrol run` can short-circuit to a
+		// direct exec instead of trying to spawn the per-host daemon.
+		// Written next to the rest of the join state (mode, gateway,
+		// …). `clawpatrol run` reads defaultClawpatrolDir(), the same
+		// dir the daemon assumes — so, like the other state files, the
+		// marker is only found when join used the default --ca-dir.
+		_ = os.WriteFile(filepath.Join(filepath.Dir(s.caPath), wholeMachineMarkerName), []byte("1\n"), 0o600)
+	}
 	if s.caPath == "" {
 		return
 	}
