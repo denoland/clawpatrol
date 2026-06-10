@@ -455,14 +455,19 @@ func (m *DiscoveryManifest) Markdown() string {
 	b.WriteString("gateway swaps it for the real secret. This manifest is scoped to YOUR\n")
 	b.WriteString("device profile; it lists only what this profile grants.\n\n")
 
-	b.WriteString("TLS is intercepted. The gateway terminates TLS for every host you dial —\n")
-	b.WriteString("it is a transparent man-in-the-middle. The certificate you see for an\n")
-	b.WriteString("upstream is minted on the fly by Claw Patrol's own certificate authority,\n")
-	b.WriteString("not the host's real public certificate: the hostname matches but the\n")
-	b.WriteString("issuer is the gateway CA. Trust that CA to verify these connections —\n")
-	b.WriteString("fetch it from https://clawpatrol/ca.crt and check its fingerprint against\n")
+	b.WriteString("TLS is intercepted only for the hosts this profile grants — the\n")
+	b.WriteString("endpoints listed below. For those, the gateway terminates TLS and acts\n")
+	b.WriteString("as a transparent man-in-the-middle: the certificate you see is minted on\n")
+	b.WriteString("the fly by Claw Patrol's own certificate authority, not the host's real\n")
+	b.WriteString("public certificate. The hostname matches but the issuer is the gateway\n")
+	b.WriteString("CA. Trust that CA to verify these connections — fetch it from\n")
+	b.WriteString("https://clawpatrol/ca.crt and check its fingerprint against\n")
 	b.WriteString("https://clawpatrol/info. A certificate-authority mismatch against the\n")
-	b.WriteString("public web PKI is expected here, not an attack.\n\n")
+	b.WriteString("public web PKI is expected for these hosts, not an attack.\n\n")
+
+	b.WriteString("Every other host is passed through untouched: the gateway does not\n")
+	b.WriteString("intercept it, you get the upstream's real certificate, and you must\n")
+	b.WriteString("still verify it against the public web PKI as usual.\n\n")
 
 	for _, n := range m.Notes {
 		fmt.Fprintf(&b, "> Note: %s\n\n", n)
