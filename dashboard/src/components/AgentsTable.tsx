@@ -61,10 +61,13 @@ export function AgentsTable({
           return (
             <tr
               key={a.ip}
-              onClick={pending ? undefined : () => onSelect?.(a.ip)}
+              onClick={() => onSelect?.(a.ip)}
               className={
-                "border-b border-canvas-muted transition-colors " +
-                (pending ? "opacity-70" : "cursor-pointer hover:bg-canvas-muted")
+                "border-b border-canvas-muted cursor-pointer hover:bg-canvas-muted transition-colors " +
+                // Dim pending rows as a cue, but keep them clickable —
+                // the detail page is where the operator re-assigns the
+                // profile before the device first connects.
+                (pending ? "opacity-70" : "")
               }
             >
               <Td>

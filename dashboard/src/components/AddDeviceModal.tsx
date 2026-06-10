@@ -21,8 +21,8 @@ export function AddDeviceModal({
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profile, setProfile] = useState("");
   // Per-process `clawpatrol run` is the default; --whole-machine
-  // installs system Tailscale and pins the gateway as the host-wide
-  // exit node.
+  // installs system Tailscale and routes all of the machine's network
+  // traffic through clawpatrol.
   const [mode, setMode] = useState<"run" | "whole-machine">("run");
 
   useEffect(() => {
@@ -84,7 +84,9 @@ export function AddDeviceModal({
               className="w-full font-mono text-xs text-text bg-canvas border-1.5 border-navy px-2 py-1.5"
             >
               <option value="run">clawpatrol run (per-process, default)</option>
-              <option value="whole-machine">--whole-machine (host-wide exit node)</option>
+              <option value="whole-machine">
+                --whole-machine (route all of this machine's traffic through clawpatrol)
+              </option>
             </select>
           </label>
         </div>

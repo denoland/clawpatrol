@@ -289,7 +289,16 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	addrPort := netip.AddrPortFrom(addr, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	who, err := r.lc.WhoIs(ctx, addrPort.String())
+	// Snapshot the LocalClient under the lock — SetLocalClient swaps it
+	// in once tsnet is up, and Seed now spawns fillIdentity at boot
+	// (via seedAgentsFromDevices) which can race that write.
+	r.mu.Lock()
+	lc := r.lc
+	r.mu.Unlock()
+	if lc == nil {
+		return
+	}
+	who, err := lc.WhoIs(ctx, addrPort.String())
 	if err != nil || who == nil {
 		return
 	}

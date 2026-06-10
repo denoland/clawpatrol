@@ -372,13 +372,17 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 		}
 		return
 	}
-	if !skipTrust {
+	switch {
+	case s.caInstalled:
+		// Already installed during the tailnet device flow
+		// (onboardViaDeviceFlow). Don't run it — or print it — twice.
+	case !skipTrust:
 		if err := installCATrust(s.caPath); err != nil {
 			s.caHint = manualTrustHint(s.caPath)
 		} else {
 			s.caInstalled = true
 		}
-	} else {
+	default:
 		s.caHint = manualTrustHint(s.caPath)
 	}
 	if wholeMachine {
@@ -814,16 +818,14 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// printTreeItems prints a list as ├-prefixed sub-items with the final
-// entry marked └ (bottom-corner). Same box-drawing family so the glyphs
-// align visually instead of mixing the heavier ⎿ corner.
-func printTreeItems(items []string) {
-	for i, line := range items {
-		prefix := "├ "
-		if i == len(items)-1 {
-			prefix = "└ "
-		}
-		fmt.Println(prefix + line)
+// printChecklist prints each line on its own row. Lines already carry
+// their own status marker ("✓ " success, "! " needs-attention) from the
+// caller / setupSummaryItems, so this is a plain printer — no tree
+// glyphs, which previously made the items read as sub-steps of whatever
+// progress line preceded them.
+func printChecklist(items []string) {
+	for _, line := range items {
+		fmt.Println(line)
 	}
 }
 
@@ -836,12 +838,12 @@ func setupSummaryItems(s joinSetup) []string {
 	var out []string
 	switch {
 	case s.caInstalled:
-		out = append(out, "CA installed in system trust")
+		out = append(out, "✓ CA installed in system trust")
 	case s.caHint != "":
-		out = append(out, "CA at "+s.caPath+" — trust manually: "+s.caHint)
+		out = append(out, "! CA not trusted yet — install manually: "+s.caHint)
 	}
 	if s.shellRC {
-		out = append(out, `Shell rc: eval "$(clawpatrol env)"`)
+		out = append(out, `✓ shell rc updated (eval "$(clawpatrol env)")`)
 	}
 	return out
 }
@@ -1056,7 +1058,14 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		_ = runAsRoot("wg-quick", "down", "clawpatrol").Run()
 	}
 
-	stopSpin := startSpinner("Waiting for approval")
+	// After an operator self-approve the device is already approved;
+	// the poll just collects the minted credentials. Don't claim we're
+	// "waiting for approval" in that case.
+	spinLabel := "Waiting for approval"
+	if autoApproved {
+		spinLabel = "Completing join"
+	}
+	stopSpin := startSpinner(spinLabel)
 	authKey, loginServer, apiToken := "", "", ""
 	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
 	// Track the most recent transport error so a poll loop that never
@@ -1177,14 +1186,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if runtime.GOOS == "darwin" {
 			macErr = macHelperInstall(wholeMachine)
 		}
-		items := []string{}
+		items := setupSummaryItems(*setup)
 		if wgIP := wgAddressFromConf(authKey); wgIP != "" {
-			items = append(items, "Joined as "+wgIP)
+			items = append(items, "✓ joined as "+wgIP)
 		} else {
-			items = append(items, "Joined")
+			items = append(items, "✓ joined")
 		}
-		items = append(items, setupSummaryItems(*setup)...)
-		printTreeItems(items)
+		printChecklist(items)
 		fmt.Println()
 		if !wholeMachine {
 			fmt.Println("Installed! Try: clawpatrol run claude")
@@ -1289,9 +1297,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				return false, fmt.Errorf("write auth-key: %w", err)
 			}
 		}
-		items := []string{"Joined (tsnet mode — persistent daemon node joins tailnet on first `clawpatrol run`)"}
-		items = append(items, setupSummaryItems(*setup)...)
-		printTreeItems(items)
+		items := setupSummaryItems(*setup)
+		items = append(items, "✓ joined — the daemon joins the tailnet on your first `clawpatrol run`")
+		printChecklist(items)
 		fmt.Println()
 		fmt.Println("Installed! Try: clawpatrol run claude")
 		return false, nil
@@ -1431,9 +1439,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 	}
 
-	items := []string{"Joined tailnet as " + tailIP}
-	items = append(items, setupSummaryItems(*setup)...)
-	printTreeItems(items)
+	items := setupSummaryItems(*setup)
+	items = append(items, "✓ joined tailnet as "+tailIP)
+	printChecklist(items)
 	fmt.Println()
 	fmt.Println("Installed! Try: clawpatrol run -- claude")
 
@@ -1482,14 +1490,18 @@ func approveBaseFromVerifyURL(verifyURL, fallback string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// printQR renders url as a scannable terminal QR, no caption — the URL
-// is always printed directly above the call site and a QR is plainly a
-// QR. Callers control surrounding blank lines. GenerateHalfBlock packs
+// printQR renders url as a scannable terminal QR, indented to line up
+// under the URL printed above it. No caption — a QR is plainly a QR,
+// and callers control surrounding blank lines. GenerateHalfBlock packs
 // two QR rows per line via ▀/▄/█/space, half the height of the
 // block-per-cell variant, and renders cleanly when the join output is
 // piped to a file or pasted into chat.
 func printQR(url string) {
-	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
+	var buf bytes.Buffer
+	qrterminal.GenerateHalfBlock(url, qrterminal.M, &buf)
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		fmt.Println("    " + line)
+	}
 }
 
 func tryOpen(u string) {
