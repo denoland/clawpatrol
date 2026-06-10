@@ -455,6 +455,15 @@ func (m *DiscoveryManifest) Markdown() string {
 	b.WriteString("gateway swaps it for the real secret. This manifest is scoped to YOUR\n")
 	b.WriteString("device profile; it lists only what this profile grants.\n\n")
 
+	b.WriteString("TLS is intercepted. The gateway terminates TLS for every host you dial —\n")
+	b.WriteString("it is a transparent man-in-the-middle. The certificate you see for an\n")
+	b.WriteString("upstream is minted on the fly by Claw Patrol's own certificate authority,\n")
+	b.WriteString("not the host's real public certificate: the hostname matches but the\n")
+	b.WriteString("issuer is the gateway CA. Trust that CA to verify these connections —\n")
+	b.WriteString("fetch it from https://clawpatrol/ca.crt and check its fingerprint against\n")
+	b.WriteString("https://clawpatrol/info. A certificate-authority mismatch against the\n")
+	b.WriteString("public web PKI is expected here, not an attack.\n\n")
+
 	for _, n := range m.Notes {
 		fmt.Fprintf(&b, "> Note: %s\n\n", n)
 	}
