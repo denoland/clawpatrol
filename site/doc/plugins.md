@@ -95,6 +95,62 @@ func main() {
 Build with `go build` like any Go binary; deploy by setting
 `source = "<path>"` in the gateway HCL.
 
+### External credential metadata and HTTPS injection
+
+External credential plugins are trusted gateway components. The
+gateway may send them credential secret bytes over the local plugin
+RPC channel when a request is about to leave through the built-in
+HTTPS endpoint. Only load plugin binaries you trust, and protect the
+paths they are loaded from the same way you protect the gateway
+binary.
+
+A credential can return `pluginsdk.CredentialBuildResult` from
+`Build` to publish dashboard secret slots, env pushdown placeholders,
+OAuth flow metadata, and HTTPS injection support while keeping its
+canonical config opaque to the gateway:
+
+```go
+pluginsdk.CredentialDef{
+    TypeName:       "example_bearer",
+    Disambiguators: []string{"placeholder"},
+    HTTPInject:     true,
+    Build: func(req pluginsdk.BuildRequest) (any, error) {
+        return pluginsdk.CredentialBuildResult{
+            Canonical: map[string]any{},
+            Metadata: pluginsdk.CredentialMetadata{
+                SecretSlots: []pluginsdk.SecretSlot{{Label: "Bearer token"}},
+                EnvVars: []pluginsdk.EnvVar{{
+                    Name:  "EXAMPLE_TOKEN",
+                    Value: "PH_example",
+                }},
+                HTTPInject: true,
+            },
+        }, nil
+    },
+    InjectHTTP: func(ctx context.Context, req pluginsdk.HTTPInjectRequest) (*pluginsdk.HTTPInjectResponse, error) {
+        return &pluginsdk.HTTPInjectResponse{Headers: []pluginsdk.HeaderMutation{{
+            Op:     pluginsdk.HeaderSet,
+            Name:   "Authorization",
+            Values: []string{"Bearer " + string(req.CredentialSecret)},
+        }}}, nil
+    },
+}
+```
+
+`Disambiguators` declares which credential/profile attrs are valid
+for multi-credential dispatch. For HTTP credentials the conventional
+field is `placeholder`: the agent sends a placeholder-looking token,
+and the built-in HTTPS endpoint selects the matching credential
+before calling `InjectHTTP`. `InjectHTTP` is intentionally
+header-only; external credentials cannot rewrite the destination URL
+or request body through this hook.
+
+OAuth credentials can set `CredentialMetadata.OAuth` instead of
+secret slots. The gateway owns the OAuth lifecycle and stores or
+refreshes tokens under the credential instance name; the external
+credential receives the current access token as `CredentialSecret`
+when HTTPS injection runs.
+
 ### Endpoints own the connection
 
 For each accepted agent connection on a plugin endpoint, the
