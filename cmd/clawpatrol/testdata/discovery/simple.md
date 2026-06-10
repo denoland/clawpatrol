@@ -12,7 +12,6 @@ device profile; it lists only what this profile grants.
 ### github  (https)
 
 - Host(s): api.github.com
-- Tunnel: none (reachable directly through the gateway)
 - Credential: bearer_token `gh` — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
 

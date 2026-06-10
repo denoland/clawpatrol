@@ -7,25 +7,49 @@ the gateway injects credentials and enforces policy. A credential
 gateway swaps it for the real secret. This manifest is scoped to YOUR
 device profile; it lists only what this profile grants.
 
-## Endpoints (2)
+## Endpoints (5)
 
 ### github  (https)
 
 - Host(s): api.github.com
-- Tunnel: none (reachable directly through the gateway)
 - Credential: bearer_token `gh` — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
+
+### k8s-pg  (postgres)
+
+- Host(s): k8s-pg.example
+- Port: 5432
+- SSL mode: require
+- Credential: postgres_credential `k8s-rw` — connect with database=prod user=app
+- Example: `psql "host=k8s-pg.example port=5432 user=app dbname=prod sslmode=require"`
+
+### metrics  (clickhouse_native)
+
+- Host(s): ch.example
+- Port: 9440
+- Credential: clickhouse_credential `ch-ro` — connect with user=ro
+- Example: `clickhouse-client --host ch.example --port 9440 --user ro`
 
 ### prod-pg  (postgres)
 
 - Host(s): main-pg.example
 - Port: 5432
 - SSL mode: require
-- Tunnel: REQUIRED — `csql` (local_command) must be active to reach this endpoint
 - Credential: postgres_credential `pg-rw` — connect with database=prod user=app
 - Example: `psql "host=main-pg.example port=5432 user=app dbname=prod sslmode=require"`
 
-## Credentials (2)
+### rds-pg  (postgres)
 
+- Host(s): rds.example
+- Port: 5432
+- SSL mode: require
+- Credential: postgres_credential `rds-rw` — connect with database=prod user=app
+- Example: `psql "host=rds.example port=5432 user=app dbname=prod sslmode=require"`
+
+## Credentials (5)
+
+- clickhouse_credential `ch-ro` → endpoints: metrics
 - bearer_token `gh` → placeholder `PH_GH` → endpoints: github
+- postgres_credential `k8s-rw` → endpoints: k8s-pg
 - postgres_credential `pg-rw` → endpoints: prod-pg
+- postgres_credential `rds-rw` → endpoints: rds-pg

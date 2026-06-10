@@ -105,8 +105,12 @@ type DiscoveryManifest struct {
 
 // DiscoveryEndpoint is one reachable endpoint plus the full how-to for
 // connecting to it: protocol/type, host(s)/port(s), database/path
-// where applicable, the credential(s) the profile can present, and
-// whether a tunnel must be active.
+// where applicable, and the credential(s) the profile can present.
+//
+// Deliberately omits any tunnel the endpoint sits behind. The gateway
+// intercepts the agent's connection transparently and brings the tunnel
+// up itself — the agent dials the host below either way and can't act on
+// the tunnel's name or type, so reporting it would only be noise.
 type DiscoveryEndpoint struct {
 	Name        string                   `json:"name"`
 	Type        string                   `json:"type"`   // plugin type: https, postgres, kubernetes, ...
@@ -116,19 +120,10 @@ type DiscoveryEndpoint struct {
 	Database    string                   `json:"database,omitempty"`
 	SSLMode     string                   `json:"sslmode,omitempty"`
 	Path        string                   `json:"path,omitempty"`
-	Tunnel      *DiscoveryTunnel         `json:"tunnel,omitempty"`
 	Credentials []DiscoveryCredentialRef `json:"credentials"`
 	// Hint is a concrete client invocation when the protocol makes one
 	// unambiguous (psql / kubectl / clickhouse-client / ssh / curl).
 	Hint string `json:"hint,omitempty"`
-}
-
-// DiscoveryTunnel reports the tunnel an endpoint dials through. When
-// present the agent must have the named tunnel active to reach the
-// endpoint; the gateway can't recover the upstream otherwise.
-type DiscoveryTunnel struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
 }
 
 // DiscoveryCredentialRef is a credential the profile can present at a
@@ -232,12 +227,6 @@ func describeEndpoint(ep *config.CompiledEndpoint) DiscoveryEndpoint {
 	de := DiscoveryEndpoint{Name: ep.Name, Family: ep.Family}
 	if ep.Plugin != nil {
 		de.Type = ep.Plugin.Type
-	}
-	if ep.Tunnel != nil {
-		de.Tunnel = &DiscoveryTunnel{Name: ep.Tunnel.Name}
-		if ep.Tunnel.Plugin != nil {
-			de.Tunnel.Type = ep.Tunnel.Plugin.Type
-		}
 	}
 
 	switch body := ep.Body.(type) {
@@ -468,11 +457,6 @@ func (m *DiscoveryManifest) Markdown() string {
 		}
 		if ep.Path != "" {
 			fmt.Fprintf(&b, "- Path: %s\n", ep.Path)
-		}
-		if ep.Tunnel != nil {
-			fmt.Fprintf(&b, "- Tunnel: REQUIRED — `%s` (%s) must be active to reach this endpoint\n", ep.Tunnel.Name, ep.Tunnel.Type)
-		} else {
-			b.WriteString("- Tunnel: none (reachable directly through the gateway)\n")
 		}
 		if len(ep.Credentials) == 0 {
 			b.WriteString("- Credential: NONE bound for this profile — you cannot authenticate here\n")

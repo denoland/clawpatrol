@@ -18,6 +18,46 @@
       "hint": "curl https://api.github.com/ -H \"Authorization: Bearer PH_GH\""
     },
     {
+      "name": "k8s-pg",
+      "type": "postgres",
+      "family": "sql",
+      "hosts": [
+        "k8s-pg.example"
+      ],
+      "port": 5432,
+      "sslmode": "require",
+      "credentials": [
+        {
+          "name": "k8s-rw",
+          "type": "postgres_credential",
+          "disambiguators": {
+            "database": "prod",
+            "user": "app"
+          }
+        }
+      ],
+      "hint": "psql \"host=k8s-pg.example port=5432 user=app dbname=prod sslmode=require\""
+    },
+    {
+      "name": "metrics",
+      "type": "clickhouse_native",
+      "family": "sql",
+      "hosts": [
+        "ch.example"
+      ],
+      "port": 9440,
+      "credentials": [
+        {
+          "name": "ch-ro",
+          "type": "clickhouse_credential",
+          "disambiguators": {
+            "user": "ro"
+          }
+        }
+      ],
+      "hint": "clickhouse-client --host ch.example --port 9440 --user ro"
+    },
+    {
       "name": "prod-pg",
       "type": "postgres",
       "family": "sql",
@@ -26,10 +66,6 @@
       ],
       "port": 5432,
       "sslmode": "require",
-      "tunnel": {
-        "name": "csql",
-        "type": "local_command"
-      },
       "credentials": [
         {
           "name": "pg-rw",
@@ -41,9 +77,37 @@
         }
       ],
       "hint": "psql \"host=main-pg.example port=5432 user=app dbname=prod sslmode=require\""
+    },
+    {
+      "name": "rds-pg",
+      "type": "postgres",
+      "family": "sql",
+      "hosts": [
+        "rds.example"
+      ],
+      "port": 5432,
+      "sslmode": "require",
+      "credentials": [
+        {
+          "name": "rds-rw",
+          "type": "postgres_credential",
+          "disambiguators": {
+            "database": "prod",
+            "user": "app"
+          }
+        }
+      ],
+      "hint": "psql \"host=rds.example port=5432 user=app dbname=prod sslmode=require\""
     }
   ],
   "credentials": [
+    {
+      "name": "ch-ro",
+      "type": "clickhouse_credential",
+      "endpoints": [
+        "metrics"
+      ]
+    },
     {
       "name": "gh",
       "type": "bearer_token",
@@ -53,10 +117,24 @@
       ]
     },
     {
+      "name": "k8s-rw",
+      "type": "postgres_credential",
+      "endpoints": [
+        "k8s-pg"
+      ]
+    },
+    {
       "name": "pg-rw",
       "type": "postgres_credential",
       "endpoints": [
         "prod-pg"
+      ]
+    },
+    {
+      "name": "rds-rw",
+      "type": "postgres_credential",
+      "endpoints": [
+        "rds-pg"
       ]
     }
   ]

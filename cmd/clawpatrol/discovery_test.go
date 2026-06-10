@@ -170,27 +170,33 @@ func TestDiscoveryEndpointDetail(t *testing.T) {
 	}
 }
 
-// TestDiscoveryTunnelReported asserts a tunneled endpoint surfaces the
-// tunnel the agent must have active to reach it.
-func TestDiscoveryTunnelReported(t *testing.T) {
+// TestDiscoveryTunnelHidden asserts a tunneled endpoint reads no
+// differently from a directly-reachable one. The gateway brings the
+// tunnel up transparently, so the agent dials the same host either way —
+// the tunnel's name/type would be noise it can't act on. A tunneled
+// endpoint must still surface its host (the one thing the agent needs).
+func TestDiscoveryTunnelHidden(t *testing.T) {
 	policy := compileDiscoveryFixture(t)
 	ops := buildDiscoveryManifest(policy, "ops")
 
 	pg := findEndpoint(ops, "prod-pg")
-	if pg == nil || pg.Tunnel == nil {
-		t.Fatalf("prod-pg tunnel not reported: %+v", pg)
+	if pg == nil {
+		t.Fatal("prod-pg endpoint missing")
 	}
-	if pg.Tunnel.Name != "csql" || pg.Tunnel.Type != "local_command" {
-		t.Errorf("prod-pg tunnel = %+v, want csql/local_command", pg.Tunnel)
+	// The host the agent dials is still reported — that's all it needs.
+	if len(pg.Hosts) != 1 || pg.Hosts[0] != "main-pg.example" {
+		t.Errorf("prod-pg hosts = %v, want [main-pg.example]", pg.Hosts)
 	}
-	// The non-tunneled endpoint must not invent one.
-	if gh := findEndpoint(ops, "github"); gh.Tunnel != nil {
-		t.Errorf("github should have no tunnel, got %+v", gh.Tunnel)
+
+	// No tunnel detail leaks into either render. The JSON has no `tunnel`
+	// key; the markdown has no `Tunnel:` line, REQUIRED or otherwise.
+	js := string(renderJSON(t, policy, "ops"))
+	if strings.Contains(js, "\"tunnel\"") || strings.Contains(js, "csql") || strings.Contains(js, "local_command") {
+		t.Errorf("json leaked tunnel detail:\n%s", js)
 	}
-	// Markdown spells out the REQUIRED tunnel so an LLM acts on it.
 	md := ops.Markdown()
-	if !strings.Contains(md, "Tunnel: REQUIRED") || !strings.Contains(md, "csql") {
-		t.Errorf("markdown missing tunnel requirement:\n%s", md)
+	if strings.Contains(md, "Tunnel") || strings.Contains(md, "csql") {
+		t.Errorf("markdown leaked tunnel detail:\n%s", md)
 	}
 }
 

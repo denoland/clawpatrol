@@ -14,7 +14,6 @@ device profile; it lists only what this profile grants.
 - Host(s): pg.example
 - Port: 5432
 - SSL mode: require
-- Tunnel: none (reachable directly through the gateway)
 - Credential: postgres_credential `pg-ro` — connect with database=app user=reader
 - Credential: postgres_credential `pg-rw` — connect with database=app user=writer
 - Example: `psql "host=pg.example port=5432 user=reader dbname=app sslmode=require"`
