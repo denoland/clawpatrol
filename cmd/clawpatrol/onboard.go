@@ -500,6 +500,17 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.profileByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
+	// Drop the IP from the alias graph too — both as an alias and as a
+	// canonical. Otherwise a stale alias outlives the device and, after
+	// IP reuse, AssignProfile's alias fan-out could re-stamp a profile
+	// onto an address now belonging to a different peer.
+	delete(r.canonicalByAlias, ip)
+	for alias, canonical := range r.canonicalByAlias {
+		if canonical == ip {
+			delete(r.canonicalByAlias, alias)
+			delete(r.profileByIP, alias)
+		}
+	}
 	if r.db != nil {
 		_, _ = r.db.Exec("DELETE FROM devices WHERE id = ?", ip)
 	}
