@@ -181,8 +181,7 @@ func TestTsnetRegisterPromotesSeededPlaceholder(t *testing.T) {
 	h := w.handler()
 
 	const placeholder = tsnetPlaceholderPrefix + "myhost"
-	w.g.onboard.seedPlaceholder(placeholder, "myhost", "op@example.com")
-	w.g.onboard.assignProfileMemOnly(placeholder, "prod")
+	w.g.onboard.seedPlaceholder(placeholder, "myhost", "op@example.com", "prod")
 	w.g.agents.Seed(placeholder)
 
 	var seeded *Agent
@@ -228,6 +227,9 @@ func TestTsnetRegisterPromotesSeededPlaceholder(t *testing.T) {
 	}
 	if got := w.g.onboard.HostnameForIP("100.64.0.7"); got != "myhost" {
 		t.Errorf("HostnameForIP(100.64.0.7) = %q, want myhost", got)
+	}
+	if got := w.g.onboard.OwnerForIP("100.64.0.7"); got != "op@example.com" {
+		t.Errorf("OwnerForIP(100.64.0.7) = %q, want op@example.com (owner must carry across promotion)", got)
 	}
 	if !w.g.onboard.HasDevice("100.64.0.7") {
 		t.Errorf("devices row for 100.64.0.7 missing after register promotion")

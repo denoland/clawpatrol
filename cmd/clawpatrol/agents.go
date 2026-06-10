@@ -195,6 +195,14 @@ func (r *AgentRegistry) Seed(ip string) {
 		}
 	}
 	r.agents[ip] = a
+	// Kick off the whois fill the same way trackUA does on first sight.
+	// Without this, pre-seeding the entry here means the agent-miss
+	// branch in trackUA never fires for this IP, so OS / tailnet login
+	// would never populate. Skip placeholder IDs (tsnet-<host>) — they
+	// aren't real addresses; promotion re-seeds under the tailnet IP.
+	if !strings.HasPrefix(ip, tsnetPlaceholderPrefix) {
+		go r.fillIdentity(ip)
+	}
 }
 
 func (r *AgentRegistry) track(remoteAddr, host string, in, out int64) {
