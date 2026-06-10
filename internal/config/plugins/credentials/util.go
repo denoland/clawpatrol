@@ -46,13 +46,14 @@ func ensureBeta(h http.Header, beta string) {
 	h.Set("anthropic-beta", cur+","+beta)
 }
 
-// Per-provider env-var placeholders. Chosen to look like real tokens
-// so the agent CLI's startup validation accepts them; the gateway
-// overwrites the slot at MITM time so the placeholder bytes never
-// reach the upstream.
+// Per-provider env-var placeholders. Most are chosen to look like real
+// tokens so agent CLIs with startup validation accept them; the gateway
+// overwrites the slot at MITM time so the placeholder bytes never reach
+// the upstream.
 const (
-	phClaude = "sk-ant-oat01-clawpatrol-placeholder-do-not-use"
-	phOpenAI = "sk-clawpatrol-placeholder-do-not-use"
-	phGitHub = "ghp_clawpatrol_placeholder_do_not_use"
-	phGemini = "AIzaClawpatrolPlaceholderDoNotUse00000000"
+	phClaude    = "sk-ant-oat01-clawpatrol-placeholder-do-not-use"
+	phOpenAI    = "sk-clawpatrol-placeholder-do-not-use"
+	phGitHub    = "ghp_clawpatrol_placeholder_do_not_use"
+	phGemini    = "AIzaClawpatrolPlaceholderDoNotUse00000000"
+	phAmplitude = "PH_amplitude_oauth"
 )
