@@ -219,12 +219,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	deadline, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	fmt.Println()
-	fmt.Println("  Tailnet access is needed to reach the gateway. Log in once below.")
-	fmt.Println("  These credentials are discarded when join completes — the agent's")
-	fmt.Println("  identity is the gateway-minted tag.")
-
-	printed := false
+	var finish func(string)
 	for {
 		select {
 		case <-deadline.Done():
@@ -238,22 +233,28 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		if !printed && st.AuthURL != "" {
-			fmt.Println()
-			fmt.Printf("    %s\n", st.AuthURL)
-			fmt.Println()
+		if finish == nil && st.AuthURL != "" {
 			// The box running `clawpatrol join` is usually headless
-			// (SSH session, no browser). Show a QR right under the URL
-			// so the operator can scan from a phone — it's a public
-			// login.tailscale.com link, reachable from any device. Also
-			// best-effort open a local browser if one exists.
-			printQR(st.AuthURL)
+			// (SSH session, no browser). Show the login URL + a QR so
+			// the operator can scan from a phone — it's a public
+			// login.tailscale.com link, reachable from any device. The
+			// whole block collapses to "✓ logged in" once auth lands.
+			detail := []string{
+				"  log in once; these credentials are discarded when join completes",
+				"",
+			}
+			detail = append(detail, linkDetail(st.AuthURL, true)...)
 			fmt.Println()
-			tryOpen(st.AuthURL)
-			printed = true
+			finish = beginStep("Log in to the tailnet to reach the gateway", detail, true)
+			tryOpen(st.AuthURL) // best-effort local browser if one exists
 		}
 		if st.BackendState == "Running" {
-			fmt.Println("✓ tailnet login complete")
+			if finish != nil {
+				finish("✓ logged in to the tailnet")
+			} else {
+				// Cached login — Running before any AuthURL appeared.
+				fmt.Println("✓ logged in to the tailnet")
+			}
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
