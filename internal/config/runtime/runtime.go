@@ -30,6 +30,15 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// HTTPCredentialRedactionProvider is an optional companion to
+// HTTPCredentialRuntime for injectors that derive additional sensitive
+// values at request time. The gateway calls ConsumeHTTPRedactions after
+// InjectHTTP and adds the returned values to request audit redaction.
+// Implementations should forget the values they return for req.
+type HTTPCredentialRedactionProvider interface {
+	ConsumeHTTPRedactions(req *http.Request) []string
+}
+
 // HTTPRequestSigner is the credential-plugin contract for HTTP auth
 // shapes whose signature spans the *whole request* (method, URL,
 // headers, body) and need parameters that live on the endpoint, not

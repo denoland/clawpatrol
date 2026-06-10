@@ -2420,6 +2420,11 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
 						}
+						if rp, ok := injector.(runtime.HTTPCredentialRedactionProvider); ok {
+							for _, secret := range rp.ConsumeHTTPRedactions(req) {
+								reqBodySecretRedactions = appendCredentialSecretRedaction(reqBodySecretRedactions, secret)
+							}
+						}
 					}
 					if wantsWS && isWSUpgrade(req) {
 						wsSec := sec
@@ -2598,7 +2603,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			}
 		}
 		ev.Status = resp.StatusCode
-		ev.ReqHeaders = flatHeaders(req.Header)
+		ev.ReqHeaders = flatHeadersRedacted(req.Header, reqBodySecretRedactions)
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()

@@ -115,7 +115,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 			credSec = secret.Bytes
 			credExtra = secret.Extras
 		}
-		if cb, ok := c.Body.(*dynamicCredentialBody); ok {
+		if cb, ok := credentialBaseOf(c.Body); ok {
 			credCanon = cb.canonicalJSON
 		}
 	}
@@ -752,14 +752,199 @@ func (t *remoteTunnel) Close() error {
 }
 
 // =====================================================================
-// Credential body (storage only — runtime credential injection
-// happens inside the plugin's endpoint code, not via RPC)
+// Credential adapter
 // =====================================================================
 
-// dynamicCredentialBody is what gets stored on Entity.Body for
-// credentials registered by external plugins. It carries the
-// canonical JSON returned by the plugin's Build so endpoint adapters
-// can forward it on ConnInit.
+type credentialAdapter struct {
+	client   *Client
+	typeName string
+}
+
+type credentialMetadata struct {
+	disambiguators []string
+	secretSlots    []config.SecretSlot
+	envVars        []config.EnvVar
+	oauth          *config.OAuthIntegration
+	httpInject     bool
+}
+
+// dynamicCredentialBody is the per-instance base Body for credentials
+// registered by external plugins. It carries the canonical JSON and
+// metadata returned by the plugin's Build so endpoint adapters can
+// forward it on ConnInit and dashboard/env/OAuth surfaces can discover
+// the credential's capabilities.
 type dynamicCredentialBody struct {
+	adapter       *credentialAdapter
+	instanceName  string
 	canonicalJSON []byte
+	metadata      credentialMetadata
+
+	redactionsMu sync.Mutex
+	redactions   map[*http.Request][]string
+}
+
+func (b *dynamicCredentialBody) SecretSlots() []config.SecretSlot {
+	if b == nil || len(b.metadata.secretSlots) == 0 {
+		return nil
+	}
+	return append([]config.SecretSlot(nil), b.metadata.secretSlots...)
+}
+
+func (b *dynamicCredentialBody) EnvVars() []config.EnvVar {
+	if b == nil || len(b.metadata.envVars) == 0 {
+		return nil
+	}
+	return append([]config.EnvVar(nil), b.metadata.envVars...)
+}
+
+type dynamicOAuthCredentialBody struct{ *dynamicCredentialBody }
+
+func (b *dynamicOAuthCredentialBody) OAuthFlow() *config.OAuthIntegration {
+	return cloneOAuthIntegration(b.dynamicCredentialBody.metadata.oauth)
+}
+
+type dynamicHTTPCredentialBody struct{ *dynamicCredentialBody }
+
+type dynamicOAuthHTTPCredentialBody struct{ *dynamicCredentialBody }
+
+func (b *dynamicOAuthHTTPCredentialBody) OAuthFlow() *config.OAuthIntegration {
+	return cloneOAuthIntegration(b.dynamicCredentialBody.metadata.oauth)
+}
+
+func (b *dynamicHTTPCredentialBody) InjectHTTP(ctx context.Context, req *http.Request, sec runtime.Secret) error {
+	return injectHTTPWithExternalCredential(ctx, b.dynamicCredentialBody, req, sec)
+}
+
+func (b *dynamicOAuthHTTPCredentialBody) InjectHTTP(ctx context.Context, req *http.Request, sec runtime.Secret) error {
+	return injectHTTPWithExternalCredential(ctx, b.dynamicCredentialBody, req, sec)
+}
+
+func (b *dynamicHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request) []string {
+	return consumeHTTPRedactions(b.dynamicCredentialBody, req)
+}
+
+func (b *dynamicOAuthHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request) []string {
+	return consumeHTTPRedactions(b.dynamicCredentialBody, req)
+}
+
+func injectHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) error {
+	if body == nil || body.adapter == nil || body.adapter.client == nil || body.adapter.client.credential == nil {
+		return nil
+	}
+	out, err := body.adapter.client.credential.InjectHTTP(ctx, &pb.InjectHTTPRequest{
+		CredentialTypeName:      body.adapter.typeName,
+		CredentialInstance:      body.instanceName,
+		CredentialCanonicalJson: body.canonicalJSON,
+		CredentialSecret:        sec.Bytes,
+		CredentialExtras:        sec.Extras,
+		Method:                  req.Method,
+		Url:                     req.URL.String(),
+		Host:                    req.Host,
+		Headers:                 headersToProto(req.Header),
+	})
+	if err != nil {
+		return fmt.Errorf("extplugin: credential %s.%s InjectHTTP: %w", body.adapter.typeName, body.instanceName, err)
+	}
+	body.recordHTTPRedactions(req, out.GetRedactions())
+	applyHeaderMutations(req.Header, out.GetHeaders())
+	return nil
+}
+
+func (b *dynamicCredentialBody) recordHTTPRedactions(req *http.Request, redactions []string) {
+	if b == nil || req == nil || len(redactions) == 0 {
+		return
+	}
+	b.redactionsMu.Lock()
+	defer b.redactionsMu.Unlock()
+	if b.redactions == nil {
+		b.redactions = map[*http.Request][]string{}
+	}
+	b.redactions[req] = append([]string(nil), redactions...)
+}
+
+func consumeHTTPRedactions(b *dynamicCredentialBody, req *http.Request) []string {
+	if b == nil || req == nil {
+		return nil
+	}
+	b.redactionsMu.Lock()
+	defer b.redactionsMu.Unlock()
+	out := append([]string(nil), b.redactions[req]...)
+	delete(b.redactions, req)
+	return out
+}
+
+func credentialBaseOf(v any) (*dynamicCredentialBody, bool) {
+	switch b := v.(type) {
+	case *dynamicCredentialBody:
+		return b, b != nil
+	case *dynamicHTTPCredentialBody:
+		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+	case *dynamicOAuthCredentialBody:
+		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+	case *dynamicOAuthHTTPCredentialBody:
+		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+	default:
+		return nil, false
+	}
+}
+
+func wrapCredentialBody(b *dynamicCredentialBody) any {
+	if b == nil {
+		return b
+	}
+	switch {
+	case b.metadata.oauth != nil && b.metadata.httpInject:
+		return &dynamicOAuthHTTPCredentialBody{dynamicCredentialBody: b}
+	case b.metadata.oauth != nil:
+		return &dynamicOAuthCredentialBody{dynamicCredentialBody: b}
+	case b.metadata.httpInject:
+		return &dynamicHTTPCredentialBody{dynamicCredentialBody: b}
+	default:
+		return b
+	}
+}
+
+func headersToProto(in http.Header) map[string]*pb.HTTPHeaderValues {
+	out := make(map[string]*pb.HTTPHeaderValues, len(in))
+	for k, vals := range in {
+		out[k] = &pb.HTTPHeaderValues{Values: append([]string(nil), vals...)}
+	}
+	return out
+}
+
+func applyHeaderMutations(h http.Header, mutations []*pb.HeaderMutation) {
+	for _, m := range mutations {
+		if m == nil || m.Name == "" {
+			continue
+		}
+		switch m.Op {
+		case pb.HeaderMutation_ADD:
+			for _, v := range m.Values {
+				h.Add(m.Name, v)
+			}
+		case pb.HeaderMutation_DEL:
+			h.Del(m.Name)
+		default:
+			h.Del(m.Name)
+			for _, v := range m.Values {
+				h.Add(m.Name, v)
+			}
+		}
+	}
+}
+
+func cloneOAuthIntegration(in *config.OAuthIntegration) *config.OAuthIntegration {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.OAuth.Scopes = append([]string(nil), in.OAuth.Scopes...)
+	out.OptionalScopes = make([]config.OptionalScopeGroup, len(in.OptionalScopes))
+	for i, g := range in.OptionalScopes {
+		out.OptionalScopes[i] = config.OptionalScopeGroup{
+			Title:  g.Title,
+			Scopes: append([]config.OptionalScope(nil), g.Scopes...),
+		}
+	}
+	return &out
 }

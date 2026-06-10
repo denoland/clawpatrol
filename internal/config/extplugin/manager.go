@@ -86,12 +86,13 @@ func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.Manife
 		return nil, nil, fmt.Errorf("plugin %q: unexpected client type %T", source, raw)
 	}
 	c := &Client{
-		source:    source,
-		gp:        cli,
-		conn:      conn,
-		pluginCli: pb.NewPluginClient(conn),
-		endpoint:  pb.NewEndpointClient(conn),
-		tunnel:    pb.NewTunnelClient(conn),
+		source:     source,
+		gp:         cli,
+		conn:       conn,
+		pluginCli:  pb.NewPluginClient(conn),
+		credential: pb.NewCredentialClient(conn),
+		endpoint:   pb.NewEndpointClient(conn),
+		tunnel:     pb.NewTunnelClient(conn),
 	}
 	manifest, err := c.pluginCli.Manifest(ctx, &pb.ManifestRequest{})
 	if err != nil {
@@ -251,14 +252,15 @@ func (m *Manager) Stop() {
 // Client is the gateway-side handle to one running plugin subprocess.
 // Adapters use it to issue RPCs.
 type Client struct {
-	name      string
-	source    string
-	manifest  *pb.ManifestResponse
-	gp        *plugin.Client
-	conn      *grpc.ClientConn
-	pluginCli pb.PluginClient
-	endpoint  pb.EndpointClient
-	tunnel    pb.TunnelClient
+	name       string
+	source     string
+	manifest   *pb.ManifestResponse
+	gp         *plugin.Client
+	conn       *grpc.ClientConn
+	pluginCli  pb.PluginClient
+	credential pb.CredentialClient
+	endpoint   pb.EndpointClient
+	tunnel     pb.TunnelClient
 }
 
 // Name returns the plugin's manifest name (lower-case identifier).
@@ -274,6 +276,9 @@ func (c *Client) Manifest() *pb.ManifestResponse { return c.manifest }
 
 // PluginRPC exposes the Build RPC; used by the registration helper.
 func (c *Client) PluginRPC() pb.PluginClient { return c.pluginCli }
+
+// CredentialRPC exposes InjectHTTP for credential adapters.
+func (c *Client) CredentialRPC() pb.CredentialClient { return c.credential }
 
 // EndpointRPC exposes HandleConn for endpoint adapters.
 func (c *Client) EndpointRPC() pb.EndpointClient { return c.endpoint }

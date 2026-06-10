@@ -107,11 +107,16 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 	if err != nil {
 		return fail("plugin %q credential %q: %v", pluginName, decl.TypeName, err)
 	}
+	adapter := &credentialAdapter{client: client, typeName: decl.TypeName}
+	manifestMeta := credentialMetadataFromDecl(decl)
 
 	plug := &config.Plugin{
-		Kind: config.KindCredential,
-		Type: decl.TypeName,
-		New:  func() any { return &dynamicCredentialBody{} },
+		Kind:           config.KindCredential,
+		Type:           decl.TypeName,
+		Disambiguators: append([]string(nil), decl.Disambiguators...),
+		New: func() any {
+			return &dynamicCredentialBody{adapter: adapter, metadata: manifestMeta}
+		},
 		DecodeBody: func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics {
 			b := target.(*dynamicCredentialBody)
 			val, d := hcldec.Decode(body, spec, ctx)
@@ -127,6 +132,7 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 		},
 		Build: func(decoded any, name string, _ *config.BuildCtx) (any, hcl.Diagnostics) {
 			b := decoded.(*dynamicCredentialBody)
+			b.instanceName = name
 			resp, err := client.PluginRPC().Build(context.Background(), &pb.BuildRequest{
 				Kind: "credential", TypeName: decl.TypeName, InstanceName: name, ConfigJson: b.canonicalJSON,
 			})
@@ -139,12 +145,135 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 			if len(resp.CanonicalJson) > 0 {
 				b.canonicalJSON = resp.CanonicalJson
 			}
-			return b, nil
+			meta := manifestMeta
+			if resp.CredentialMetadata != nil {
+				if d := validateBuildDisambiguators(pluginName, decl.TypeName, decl.Disambiguators, resp.CredentialMetadata.Disambiguators); d.HasErrors() {
+					return nil, d
+				}
+				if resp.CredentialMetadata.HttpInject && !decl.HttpInject {
+					return nil, fail("plugin %q credential %q: build metadata declared HTTP injection but manifest did not", pluginName, decl.TypeName)
+				}
+				meta = mergeCredentialMetadata(manifestMeta, credentialMetadataFromProto(resp.CredentialMetadata))
+			}
+			b.metadata = meta
+			return wrapCredentialBody(b), nil
 		},
 		Emit: func(_ any, _ string, _ *hclwrite.Body) {},
 	}
 	if d := registerOrCollide(plug, pluginName, "credential"); d != nil {
 		return d
+	}
+	return nil
+}
+
+func credentialMetadataFromDecl(decl *pb.CredentialDecl) credentialMetadata {
+	if decl == nil {
+		return credentialMetadata{}
+	}
+	return credentialMetadata{
+		disambiguators: append([]string(nil), decl.Disambiguators...),
+		httpInject:     decl.HttpInject,
+	}
+}
+
+func credentialMetadataFromProto(in *pb.CredentialMetadata) credentialMetadata {
+	if in == nil {
+		return credentialMetadata{}
+	}
+	out := credentialMetadata{
+		disambiguators: append([]string(nil), in.Disambiguators...),
+		httpInject:     in.HttpInject,
+	}
+	for _, s := range in.SecretSlots {
+		if s == nil {
+			continue
+		}
+		out.secretSlots = append(out.secretSlots, config.SecretSlot{
+			Name:        s.Name,
+			Label:       s.Label,
+			Multiline:   s.Multiline,
+			Description: s.Description,
+		})
+	}
+	for _, ev := range in.EnvVars {
+		if ev == nil {
+			continue
+		}
+		out.envVars = append(out.envVars, config.EnvVar{
+			Name:        ev.Name,
+			Value:       ev.Value,
+			Description: ev.Description,
+		})
+	}
+	if in.Oauth != nil {
+		out.oauth = oauthIntegrationFromProto(in.Oauth)
+	}
+	return out
+}
+
+func oauthIntegrationFromProto(in *pb.OAuthIntegrationDecl) *config.OAuthIntegration {
+	if in == nil {
+		return nil
+	}
+	out := &config.OAuthIntegration{
+		Type:   in.Type,
+		Header: in.Header,
+		Prefix: in.Prefix,
+		Flow:   in.Flow,
+	}
+	if in.Oauth != nil {
+		out.OAuth = config.OAuthConfig{
+			ClientID:     in.Oauth.ClientId,
+			ClientSecret: in.Oauth.ClientSecret,
+			AuthURL:      in.Oauth.AuthUrl,
+			TokenURL:     in.Oauth.TokenUrl,
+			DeviceURL:    in.Oauth.DeviceUrl,
+			RegisterURL:  in.Oauth.RegisterUrl,
+			RedirectURI:  in.Oauth.RedirectUri,
+			Scopes:       append([]string(nil), in.Oauth.Scopes...),
+			RefreshToken: in.Oauth.RefreshToken,
+		}
+	}
+	for _, g := range in.OptionalScopes {
+		if g == nil {
+			continue
+		}
+		group := config.OptionalScopeGroup{Title: g.Title}
+		for _, s := range g.Scopes {
+			if s == nil {
+				continue
+			}
+			group.Scopes = append(group.Scopes, config.OptionalScope{ID: s.Id, Label: s.Label})
+		}
+		out.OptionalScopes = append(out.OptionalScopes, group)
+	}
+	return out
+}
+
+func mergeCredentialMetadata(base, instance credentialMetadata) credentialMetadata {
+	out := base
+	out.secretSlots = instance.secretSlots
+	out.envVars = instance.envVars
+	out.oauth = instance.oauth
+	// HTTP injection is a registration-time capability. Build metadata
+	// can restate it but cannot enable it for a type whose manifest did
+	// not declare it.
+	out.httpInject = base.httpInject
+	return out
+}
+
+func validateBuildDisambiguators(pluginName, typeName string, supported, got []string) hcl.Diagnostics {
+	if len(got) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, s := range supported {
+		allowed[s] = true
+	}
+	for _, s := range got {
+		if !allowed[s] {
+			return fail("plugin %q credential %q: build metadata declared unsupported disambiguator %q", pluginName, typeName, s)
+		}
 	}
 	return nil
 }
