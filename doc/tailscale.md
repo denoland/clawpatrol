@@ -89,22 +89,48 @@ the tailnet ACL must **auto-approve the gateway as an exit node
 for the client tag**. Without it, the pref is accepted locally
 but every outbound dial silently times out.
 
+Besides the two `/0` exit routes, the gateway advertises the dnsvip
+VIP ranges (`10.78.0.0/16` / `fd78::/64` — the per-endpoint virtual
+IPs that `clawpatrol.internal`, SSH hosts, ClickHouse native, etc.
+resolve to) as plain subnet routes. This is what makes the v4 VIPs
+reachable at all: tailscaled derives its inbound packet filter's
+accept set locally from the advertised routes, and a bare `/0`
+advertisement is deliberately shrunk to public address space
+("guest wifi" semantics — `10.0.0.0/8` and friends are stripped), so
+without the explicit VIP-range advertisement the gateway itself
+silently drops exit-node flows to v4 VIPs. The effect is node-local;
+the VIP routes do **not** need to be approved in the admin console
+for VIP traffic to work (clients reach VIPs through the exit-node
+`/0`, not through subnet routing). Approving or auto-approving them
+merely keeps the gateway's machine entry free of "pending route
+approval" noise.
+
 Add to your tailnet ACL JSON:
 
 ```jsonc
 {
   "autoApprovers": {
-    "exitNode": ["tag:client"]    // must match tailscale.tags below
+    "exitNode": ["tag:client"],   // must match tailscale.tags below
+    "routes": {
+      // dnsvip VIP ranges (optional tidiness, see above); approver
+      // is the GATEWAY node's tag (the tag on the authkey the
+      // gateway itself joined with).
+      "10.78.0.0/16": ["tag:gateway"],
+      "fd78::/64":    ["tag:gateway"]
+    }
   },
   "tagOwners": {
-    "tag:client": ["autogroup:admin"]
+    "tag:client":  ["autogroup:admin"],
+    "tag:gateway": ["autogroup:admin"]
   }
 }
 ```
 
-The gateway already advertises `0.0.0.0/0` + `::/0` via
-`advertiseExitRoutes`, so no operator action is needed in the
-Tailscale admin console — the ACL above is the whole prereq.
+If your ACL is not the permissive default (`accept *:*`), the rules
+must also allow client tags to send to the VIP ranges, e.g.
+`{"action": "accept", "src": ["tag:client"], "dst":
+["10.78.0.0/16:*", "fd78::/64:*"]}` — `autogroup:internet` does not
+include them.
 
 ## Operator setup
 

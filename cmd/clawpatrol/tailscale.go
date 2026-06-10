@@ -153,9 +153,9 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 		return nil, nil, err
 	}
 	_ = bringUp.Close()
-	// Advertise exit routes so whole-machine and per-process tsnet
-	// clients can use this node as a Tailscale exit node.
-	go advertiseExitRoutes(s)
+	// Route advertisement (exit routes + VIP subnet routes) happens in
+	// runGateway via advertiseExitRoutes once the dnsvip allocator's
+	// CIDRs are known.
 	return s, ln, nil
 }
 
@@ -238,7 +238,28 @@ func tsnetCertDomain(s *tsnet.Server) string {
 // node (advertises 0.0.0.0/0 and ::/0). Whole-machine clients on the
 // same tailnet can then route all traffic through this gateway; exit
 // flows are intercepted via RegisterFallbackTCPHandler in runGateway.
-func advertiseExitRoutes(s *tsnet.Server) {
+//
+// The dnsvip CIDRs are advertised alongside as plain subnet routes.
+// The exit-node /0 advertisements alone do NOT make the v4 VIPs
+// reachable: tailscaled derives the inbound packet filter's accept
+// set (localNets) locally from AdvertiseRoutes, and a /0 route is
+// deliberately shrunk to "the internet" (guest-wifi semantics) by
+// subtracting removeFromDefaultRoute — which contains 10.0.0.0/8 and
+// therefore the v4 VIP range. Inbound exit-node flows to a v4 VIP
+// were dropped by the filter's "destination not allowed" check before
+// any clawpatrol handler ran, for every client kind (tsnet
+// `clawpatrol run` and whole-machine alike). The v6 list strips only
+// link-local/multicast/fd7a:115c:a1e0::/48, so fd78:: VIPs always
+// passed — which is why v6-capable clients masked the bug. See
+// ipn/ipnlocal updateFilterLocked + shrinkDefaultRoute.
+//
+// Advertising the VIP CIDRs as non-default routes puts them in
+// localNets verbatim, so VIP-bound flows reach
+// RegisterFallbackTCPHandler / the UDP catch-all like any other
+// intercepted traffic. This is purely node-local: it does not require
+// the routes to be approved in the tailnet (clients route VIPs via
+// the exit-node /0, not via subnet routes). (#653)
+func advertiseExitRoutes(s *tsnet.Server, vipCIDRs ...netip.Prefix) {
 	lc, err := s.LocalClient()
 	if err != nil {
 		log.Printf("tsnet: LocalClient for exit routes: %v", err)
@@ -248,13 +269,18 @@ func advertiseExitRoutes(s *tsnet.Server) {
 		netip.MustParsePrefix("0.0.0.0/0"),
 		netip.MustParsePrefix("::/0"),
 	}
+	for _, p := range vipCIDRs {
+		if p.IsValid() {
+			routes = append(routes, p)
+		}
+	}
 	if _, err := lc.EditPrefs(context.Background(), &ipn.MaskedPrefs{
 		AdvertiseRoutesSet: true,
 		Prefs:              ipn.Prefs{AdvertiseRoutes: routes},
 	}); err != nil {
 		log.Printf("tsnet: advertise exit routes: %v", err)
 	} else {
-		log.Printf("tsnet: advertised exit routes (0.0.0.0/0, ::/0)")
+		log.Printf("tsnet: advertised exit routes (%s)", routes)
 	}
 }
 

@@ -3149,6 +3149,14 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+	if tsnetServer != nil {
+		// Advertise exit routes plus the dnsvip CIDRs as subnet routes;
+		// without the latter, exit-node clients can't reach any v4 VIP
+		// (the local inbound filter shrinks a /0 advertisement to
+		// public space only). See advertiseExitRoutes.
+		vip4, vip6 := g.dnsvip.CIDRs()
+		go advertiseExitRoutes(tsnetServer, vip4, vip6)
+	}
 	if ln != nil {
 		log.Printf("gateway listening on %s, %d endpoints across %d profiles",
 			ln.Addr(), len(policy.Endpoints), len(policy.Profiles))

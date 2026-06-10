@@ -114,6 +114,14 @@ func (a *Allocator) InternalVIPs() (netip.Addr, netip.Addr) {
 	return a.vipForID(internalID)
 }
 
+// CIDRs returns the (v4, v6) prefixes this allocator hands VIPs out
+// of. The gateway advertises them as Tailscale subnet routes so
+// exit-node-routed clients can reach VIPs at all (see
+// advertiseExitRoutes in cmd/clawpatrol).
+func (a *Allocator) CIDRs() (netip.Prefix, netip.Prefix) {
+	return a.cidr4, a.cidr6
+}
+
 type entry struct {
 	ID       uint32
 	Hostname string
