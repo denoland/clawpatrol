@@ -29,6 +29,7 @@ func TestNormalizeOAuthExchangeInput(t *testing.T) {
 		{name: "localhost callback without scheme", in: "localhost:8900/callback?code=loopback-code&state=s", want: "loopback-code"},
 		{name: "absolute path callback", in: "/callback?code=path-code&state=s", want: "path-code"},
 		{name: "raw query", in: "code=query-code&state=s", want: "query-code"},
+		{name: "raw query with state first", in: "state=s&code=query-code", want: "query-code"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -136,6 +137,58 @@ func TestDynamicMCPRefreshSourceSendsClientID(t *testing.T) {
 	}
 }
 
+func TestDynamicMCPCodeExchangeSendsClientIDInParams(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			failOAuthTestHandler(t, w, "Authorization = %q, want no client-auth header", got)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			failOAuthTestHandler(t, w, "parse form: %v", err)
+			return
+		}
+		if got := r.Form.Get("grant_type"); got != "authorization_code" {
+			failOAuthTestHandler(t, w, "grant_type = %q, want authorization_code", got)
+			return
+		}
+		if got := r.Form.Get("client_id"); got != "dyn-client" {
+			failOAuthTestHandler(t, w, "client_id = %q, want dyn-client", got)
+			return
+		}
+		if got := r.Form.Get("code"); got != "auth-code" {
+			failOAuthTestHandler(t, w, "code = %q, want auth-code", got)
+			return
+		}
+		if got := r.Form.Get("code_verifier"); got != "verifier" {
+			failOAuthTestHandler(t, w, "code_verifier = %q, want verifier", got)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer ts.Close()
+
+	sess := &oauthSession{
+		verifier: "verifier",
+		state:    "state",
+		cfg: &oauth2.Config{
+			ClientID:    "dyn-client",
+			RedirectURL: "http://localhost:8900/callback",
+			Endpoint: oauth2.Endpoint{
+				TokenURL:  ts.URL,
+				AuthStyle: oauth2.AuthStyleInParams,
+			},
+		},
+	}
+	tok, err := exchangeOAuthCode(t.Context(), sess, "auth-code", "state")
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if tok.AccessToken != "access" || tok.RefreshToken != "refresh" {
+		t.Fatalf("token = %#v", tok)
+	}
+}
+
 func TestStartDynamicMCPFlowUsesConfiguredRedirectURI(t *testing.T) {
 	registerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got struct {
@@ -186,6 +239,15 @@ func TestStartDynamicMCPFlowUsesConfiguredRedirectURI(t *testing.T) {
 	}
 	if got := authURL.Query().Get("redirect_uri"); got != "http://localhost:8900/callback" {
 		t.Fatalf("auth_url redirect_uri = %q, want localhost callback", got)
+	}
+	w.mu.Lock()
+	sess := w.sessions[body.State]
+	w.mu.Unlock()
+	if sess == nil {
+		t.Fatalf("missing session for state %q", body.State)
+	}
+	if got := sess.cfg.Endpoint.AuthStyle; got != oauth2.AuthStyleInParams {
+		t.Fatalf("token endpoint AuthStyle = %v, want AuthStyleInParams", got)
 	}
 }
 

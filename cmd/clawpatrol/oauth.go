@@ -706,7 +706,11 @@ func (w *webMux) startDynamicMCPFlow(rw http.ResponseWriter, r *http.Request, id
 		ClientID:    clientID,
 		Scopes:      flow.OAuth.Scopes,
 		RedirectURL: redirectURI,
-		Endpoint:    oauth2.Endpoint{AuthURL: flow.OAuth.AuthURL, TokenURL: flow.OAuth.TokenURL},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:   flow.OAuth.AuthURL,
+			TokenURL:  flow.OAuth.TokenURL,
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
 	}
 	authURL := cfg.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("code_challenge", challenge),
@@ -796,6 +800,16 @@ func normalizeOAuthExchangeInput(input string) string {
 
 	// Operators often paste the callback URL after providers redirect to a
 	// loopback URI (for example localhost:8900/callback?code=...&state=...).
+	// Also accept raw query strings, regardless of parameter order.
+	rawQuery := strings.TrimPrefix(s, "?")
+	if strings.Contains(rawQuery, "=") && !strings.Contains(rawQuery, "://") && !strings.Contains(rawQuery, "/") {
+		if vals, err := url.ParseQuery(rawQuery); err == nil {
+			if code := strings.TrimSpace(vals.Get("code")); code != "" {
+				return code
+			}
+		}
+	}
+
 	// Treat anything carrying a code query parameter as URL/query-shaped even
 	// when the browser omitted the scheme in the copied text.
 	if strings.Contains(s, "?code=") || strings.Contains(s, "&code=") {
