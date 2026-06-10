@@ -400,7 +400,7 @@ func installClaudeCodeOAuthShim(cmd []string) {
 		dir = filepath.Join(defaultClawpatrolDir(), "claude-config")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("clawpatrol: claude oauth shim: mkdir %s: %v", dir, err)
+		fmt.Fprintf(os.Stderr, "[clawpatrol] claude oauth shim: mkdir %s: %v\n", dir, err)
 		return
 	}
 	credPath := filepath.Join(dir, ".credentials.json")
@@ -414,7 +414,7 @@ func installClaudeCodeOAuthShim(cmd []string) {
 		}
 	}
 	if err := writeClaudeCodeCredentials(credPath, bearer); err != nil {
-		log.Printf("clawpatrol: claude oauth shim: write credentials: %v", err)
+		fmt.Fprintf(os.Stderr, "[clawpatrol] claude oauth shim: write credentials: %v\n", err)
 		return
 	}
 	// Redirect Claude Code's credential read onto our synthesized file
@@ -433,7 +433,7 @@ func installClaudeCodeOAuthShim(cmd []string) {
 // makes them work. Printed instead of silently rewriting the worker's
 // environment and config dir (R&D decision, 2026-06-03).
 func warnClaudeCodeRemoteControlDisabled() {
-	log.Printf(`clawpatrol: Claude Code /remote-control and other claude.ai
+	fmt.Fprintf(os.Stderr, `[clawpatrol] Claude Code /remote-control and other claude.ai
 subscription-only features are disabled in this session: ANTHROPIC_AUTH_TOKEN
 is set, so Claude Code treats this as API-key auth and gates them off locally.
 
@@ -444,7 +444,8 @@ To enable them, opt into the OAuth shim:
 The shim writes a synthesized .credentials.json and points CLAUDE_CONFIG_DIR at
 it for the child. Because that shadows your existing ~/.claude (skills, memory,
 MCP servers, project state), it is off by default — set CLAUDE_CONFIG_DIR to
-your own dir first if you want both. See doc/claude-code-oauth.md.`)
+your own dir first if you want both. See doc/claude-code-oauth.md.
+`)
 }
 
 // writeClaudeCodeCredentials emits the JSON shape Claude Code's

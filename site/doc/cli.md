@@ -95,6 +95,36 @@ The agent sees a normal network — outbound flows just route through
 the gateway, which matches each request against the rules, injects
 the configured credential, and forwards.
 
+#### No root inside `clawpatrol run` (Linux)
+
+The wrapped command runs in an unprivileged user namespace. As a
+consequence of how Linux user namespaces work, that namespace has no
+mapped root: your own uid is the only one mapped in, host root (uid 0)
+is not. So commands that need real root won't work — `sudo` fails
+with messages like:
+
+```
+sudo: /etc/sudo.conf is owned by uid 65534, should be 0
+sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+```
+
+The first is the namespace mapping root-owned files to "nobody"
+(65534); the second is the `no_new_privileges` flag clawpatrol sets to
+install its unprivileged seccomp filter. This isn't a deliberate
+restriction — it falls out of running unprivileged, and the host's own
+`sudo` is unaffected outside the wrapper.
+
+If a command needs to act as root:
+
+- **Install the tooling on the host first**, then launch — e.g.
+  `sudo apt-get install -y postgresql-client && clawpatrol run -- psql …`.
+  Many tools can also be unpacked into a local prefix (e.g.
+  `dpkg-deb -x`) without root at all.
+- **Use `--whole-machine`** (see `clawpatrol join --whole-machine`).
+  It routes traffic at the host level instead of per-process, so the
+  command runs in the normal host environment where `sudo` works —
+  you run it directly, not through `clawpatrol run`.
+
 ### `clawpatrol test`
 
 Replay recorded gateway actions against a candidate HCL policy and
@@ -174,6 +204,7 @@ device-side knobs:
 | Variable | Effect |
 |---|---|
 | `CLAWPATROL_RUN_CONF` | Override the WG conf path `clawpatrol run` reads |
+| `CLAWPATROL_DEBUG` | Print the relay / auto-expose diagnostic lines, which are otherwise silent |
 | `CLAWPATROL_NO_ENV` | Skip the env pushdown (`SSL_CERT_FILE`, placeholders) when wrapping a command |
 | `CLAWPATROL_TELEMETRY` | `0` to disable telemetry (same as `DO_NOT_TRACK=1`) |
 | `DO_NOT_TRACK` | Standard opt-out, honored |
