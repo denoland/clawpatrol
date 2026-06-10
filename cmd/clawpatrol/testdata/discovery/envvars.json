@@ -1,0 +1,67 @@
+{
+  "profile": "ai",
+  "endpoints": [
+    {
+      "name": "gemini",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "credentials": [
+        {
+          "name": "gem",
+          "type": "gemini_api_key"
+        }
+      ],
+      "hint": "curl https://generativelanguage.googleapis.com/"
+    },
+    {
+      "name": "github",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "api.github.com"
+      ],
+      "credentials": [
+        {
+          "name": "gh",
+          "type": "bearer_token",
+          "placeholder": "PH_GH"
+        }
+      ],
+      "hint": "curl https://api.github.com/ -H \"Authorization: Bearer PH_GH\""
+    }
+  ],
+  "credentials": [
+    {
+      "name": "gem",
+      "type": "gemini_api_key",
+      "endpoints": [
+        "gemini"
+      ]
+    },
+    {
+      "name": "gh",
+      "type": "bearer_token",
+      "placeholder": "PH_GH",
+      "endpoints": [
+        "github"
+      ]
+    }
+  ],
+  "env_vars": [
+    {
+      "name": "GOOGLE_API_KEY",
+      "value": "AIzaClawpatrolPlaceholderDoNotUse00000000",
+      "description": "Gemini SDKs",
+      "type": "gemini_api_key"
+    },
+    {
+      "name": "GEMINI_API_KEY",
+      "value": "AIzaClawpatrolPlaceholderDoNotUse00000000",
+      "description": "Gemini CLI",
+      "type": "gemini_api_key"
+    }
+  ]
+}

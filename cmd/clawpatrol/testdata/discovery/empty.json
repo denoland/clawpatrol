@@ -2,5 +2,6 @@
   "profile": "empty",
   "endpoints": [],
   "credentials": [],
+  "env_vars": [],
   "dashboard": "https://gw.example.test"
 }

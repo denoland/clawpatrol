@@ -98,6 +98,13 @@ type DiscoveryManifest struct {
 	Profile     string                `json:"profile"`
 	Endpoints   []DiscoveryEndpoint   `json:"endpoints"`
 	Credentials []DiscoveryCredential `json:"credentials"`
+	// EnvVars lists the environment variables `clawpatrol run` pushes
+	// into the agent's process environment for THIS profile — the same
+	// set the env-pushdown API serves. An agent reads its credential
+	// out of one of these vars without ever seeing the real secret, so
+	// it needs to know which of its env vars the gateway controls and
+	// what each one carries.
+	EnvVars []DiscoveryEnvVar `json:"env_vars"`
 	// Notes carries profile-level caveats — e.g. the profile resolved
 	// to a name with no policy entry, so the manifest is empty.
 	Notes []string `json:"notes,omitempty"`
@@ -160,6 +167,19 @@ type DiscoveryCredential struct {
 	Type        string   `json:"type"`
 	Placeholder string   `json:"placeholder,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
+}
+
+// DiscoveryEnvVar is one environment variable `clawpatrol run` exports
+// into the agent's process so its CLI/SDK finds its credential without
+// the agent ever holding the real secret. Value is the literal the
+// gateway sets — a placeholder that LOOKS like a real token (swapped
+// for the secret at MITM time) or a synthetic token — NOT the secret
+// itself. Type is the credential/endpoint plugin that pushes it.
+type DiscoveryEnvVar struct {
+	Name        string `json:"name"`
+	Value       string `json:"value,omitempty"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"`
 }
 
 // buildDiscoveryManifest computes the manifest for one profile from the
@@ -230,6 +250,10 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 	}
 	sort.Slice(m.Credentials, func(i, j int) bool { return m.Credentials[i].Name < m.Credentials[j].Name })
 
+	// Env vars pushed into the agent's process for this profile — the
+	// same union the env-pushdown API serves, scoped here too.
+	m.EnvVars = buildDiscoveryEnvVars(prof)
+
 	// A profile that grants nothing leaves the agent with nothing to act
 	// on; surface the dashboard URL so it can point its human at where the
 	// device's profile gets configured. Non-empty manifests already carry
@@ -238,6 +262,78 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 		m.Dashboard = policy.DashboardURL
 	}
 	return m
+}
+
+// buildDiscoveryEnvVars collects the environment variables this profile
+// pushes into the agent's process, mirroring the env-pushdown API
+// (apiEnvPushdown): walk every endpoint the profile reaches, take the
+// EnvVars() of each bound credential first (credential-shaped values
+// win on a name clash) and of each endpoint plugin second, deduping by
+// variable name. Endpoints are visited in sorted order so the result is
+// byte-stable across calls — agents may diff this manifest and the
+// golden tests assert on it.
+//
+// CA-bundle vars (SSL_CERT_FILE and friends) are deliberately excluded:
+// they point at a path on the client's disk, the env-pushdown API omits
+// them for the same reason, and the manifest's intro already explains
+// the CA installation.
+func buildDiscoveryEnvVars(prof *config.CompiledProfile) []DiscoveryEnvVar {
+	out := []DiscoveryEnvVar{}
+	if prof == nil {
+		return out
+	}
+	seen := map[string]bool{}
+	add := func(name, value, description, pluginType string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, DiscoveryEnvVar{Name: name, Value: value, Description: description, Type: pluginType})
+	}
+
+	names := make([]string, 0, len(prof.Endpoints))
+	for name := range prof.Endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Credentials first, so a credential's placeholder wins over an
+	// endpoint plugin that happens to push the same variable name.
+	credSeen := map[string]bool{}
+	for _, name := range names {
+		ep := prof.Endpoints[name]
+		if ep == nil {
+			continue
+		}
+		for _, ent := range ep.Credentials {
+			if ent == nil || ent.Symbol == nil || ent.Plugin == nil || credSeen[ent.Symbol.Name] {
+				continue
+			}
+			credSeen[ent.Symbol.Name] = true
+			provider, ok := ent.Body.(config.EnvPushdownProvider)
+			if !ok {
+				continue
+			}
+			for _, ev := range provider.EnvVars() {
+				add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
+			}
+		}
+	}
+	// Endpoint plugins second (e.g. openai_codex_https pushes its own).
+	for _, name := range names {
+		ep := prof.Endpoints[name]
+		if ep == nil || ep.Plugin == nil {
+			continue
+		}
+		provider, ok := ep.Body.(config.EnvPushdownProvider)
+		if !ok {
+			continue
+		}
+		for _, ev := range provider.EnvVars() {
+			add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type)
+		}
+	}
+	return out
 }
 
 // describeEndpoint extracts the connection how-to from a compiled
@@ -520,6 +616,29 @@ func (m *DiscoveryManifest) Markdown() string {
 		}
 		if ep.Hint != "" {
 			fmt.Fprintf(&b, "- Example: `%s`\n", ep.Hint)
+		}
+		b.WriteString("\n")
+	}
+
+	fmt.Fprintf(&b, "## Environment variables (%d)\n\n", len(m.EnvVars))
+	if len(m.EnvVars) == 0 {
+		b.WriteString("_None pushed for this profile._\n\n")
+	} else {
+		b.WriteString("`clawpatrol run` sets these in your process environment so your CLI/SDK\n")
+		b.WriteString("finds its credential automatically. The value shown is what the gateway\n")
+		b.WriteString("exports — a placeholder that looks like a real token (swapped for the\n")
+		b.WriteString("real secret at request time) or a synthetic token, never the secret\n")
+		b.WriteString("itself. You don't need to set these yourself; this is what is already\n")
+		b.WriteString("in your environment.\n\n")
+		for _, ev := range m.EnvVars {
+			line := fmt.Sprintf("- `%s`", ev.Name)
+			if ev.Value != "" {
+				line += fmt.Sprintf(" = `%s`", ev.Value)
+			}
+			if ev.Description != "" {
+				line += fmt.Sprintf(" — %s", ev.Description)
+			}
+			b.WriteString(line + "\n")
 		}
 		b.WriteString("\n")
 	}

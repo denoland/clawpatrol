@@ -50,3 +50,7 @@ https://clawpatrol/) and the endpoints and credentials will appear below.
 
 _None reachable for this profile._
 
+## Environment variables (0)
+
+_None pushed for this profile._
+

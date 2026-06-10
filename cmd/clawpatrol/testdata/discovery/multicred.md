@@ -39,3 +39,7 @@ still verify it against the public web PKI as usual.
 - Credential: postgres_credential `pg-rw` — connect with database=app user=writer
 - Example: `psql "host=pg.example port=5432 user=reader dbname=app sslmode=require"`
 
+## Environment variables (0)
+
+_None pushed for this profile._
+

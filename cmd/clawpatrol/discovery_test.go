@@ -217,6 +217,85 @@ func TestDiscoveryClickhouseDetail(t *testing.T) {
 	}
 }
 
+// envPushdownFixture has two profiles: `ai` reaches a credential that
+// pushes env vars (gemini_api_key → GOOGLE_API_KEY / GEMINI_API_KEY),
+// while `plain` reaches only a bearer endpoint that pushes none. So the
+// env-var listing and its profile scoping are both observable.
+const envPushdownFixture = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+endpoint "https" "github" { hosts = ["api.github.com"] }
+endpoint "https" "gemini" { hosts = ["generativelanguage.googleapis.com"] }
+
+credential "bearer_token" "gh" {
+  endpoint    = https.github
+  placeholder = "PH_GH"
+}
+credential "gemini_api_key" "gem" {
+  endpoint = https.gemini
+}
+
+profile "ai"    { credentials = [gemini_api_key.gem] }
+profile "plain" { credentials = [bearer_token.gh] }
+`
+
+func envVarNames(m *DiscoveryManifest) []string {
+	out := make([]string, 0, len(m.EnvVars))
+	for _, e := range m.EnvVars {
+		out = append(out, e.Name)
+	}
+	return out
+}
+
+// TestDiscoveryEnvVars: a profile whose credential pushes env vars
+// surfaces them (name/value/description/type); a profile without one
+// reports none; and the listing never leaks another profile's vars.
+func TestDiscoveryEnvVars(t *testing.T) {
+	gw, diags := config.LoadBytes([]byte(envPushdownFixture), "envpushdown.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ai := buildDiscoveryManifest(policy, "ai")
+	if got := strings.Join(envVarNames(ai), ","); got != "GOOGLE_API_KEY,GEMINI_API_KEY" {
+		t.Fatalf("ai env vars = %q, want GOOGLE_API_KEY,GEMINI_API_KEY", got)
+	}
+	for _, ev := range ai.EnvVars {
+		if ev.Type != "gemini_api_key" {
+			t.Errorf("env var %s type = %q, want gemini_api_key", ev.Name, ev.Type)
+		}
+		if ev.Value == "" || ev.Description == "" {
+			t.Errorf("env var %s missing value/description: %+v", ev.Name, ev)
+		}
+	}
+
+	// Plain profile pushes no env vars, and never sees ai's.
+	plain := buildDiscoveryManifest(policy, "plain")
+	if len(plain.EnvVars) != 0 {
+		t.Errorf("plain env vars = %v, want none", envVarNames(plain))
+	}
+
+	// Markdown reflects the listing.
+	md := ai.Markdown()
+	if !strings.Contains(md, "## Environment variables (2)") || !strings.Contains(md, "`GEMINI_API_KEY`") {
+		t.Errorf("markdown missing env var section:\n%s", md)
+	}
+	plainMD := plain.Markdown()
+	if !strings.Contains(plainMD, "_None pushed for this profile._") {
+		t.Errorf("plain markdown should report no env vars:\n%s", plainMD)
+	}
+	if strings.Contains(plainMD, "GEMINI_API_KEY") {
+		t.Errorf("plain markdown leaked ai's env vars:\n%s", plainMD)
+	}
+}
+
 // TestDiscoveryRendersBothFormats checks markdown and JSON come from one
 // representation and reflect the same scoping.
 func TestDiscoveryRendersBothFormats(t *testing.T) {

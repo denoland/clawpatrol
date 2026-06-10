@@ -1,4 +1,4 @@
-# Claw Patrol access manifest — profile: tunneled
+# Claw Patrol access manifest — profile: ai
 
 You are connected through the Claw Patrol gateway. It intercepts your
 connections transparently: dial the hosts below as you normally would and
@@ -28,7 +28,13 @@ Every other host is passed through untouched: the gateway does not
 intercept it, you get the upstream's real certificate, and you must
 still verify it against the public web PKI as usual.
 
-## Endpoints (5)
+## Endpoints (2)
+
+### gemini  (https)
+
+- Host(s): generativelanguage.googleapis.com
+- Credential: gemini_api_key `gem`
+- Example: `curl https://generativelanguage.googleapis.com/`
 
 ### github  (https)
 
@@ -36,38 +42,15 @@ still verify it against the public web PKI as usual.
 - Credential: bearer_token `gh` — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
 
-### k8s-pg  (postgres)
+## Environment variables (2)
 
-- Host(s): k8s-pg.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `k8s-rw` — connect with database=prod user=app
-- Example: `psql "host=k8s-pg.example port=5432 user=app dbname=prod sslmode=require"`
+`clawpatrol run` sets these in your process environment so your CLI/SDK
+finds its credential automatically. The value shown is what the gateway
+exports — a placeholder that looks like a real token (swapped for the
+real secret at request time) or a synthetic token, never the secret
+itself. You don't need to set these yourself; this is what is already
+in your environment.
 
-### metrics  (clickhouse_native)
-
-- Host(s): ch.example
-- Port: 9440
-- Credential: clickhouse_credential `ch-ro` — connect with user=ro
-- Example: `clickhouse-client --host ch.example --port 9440 --user ro`
-
-### prod-pg  (postgres)
-
-- Host(s): main-pg.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `pg-rw` — connect with database=prod user=app
-- Example: `psql "host=main-pg.example port=5432 user=app dbname=prod sslmode=require"`
-
-### rds-pg  (postgres)
-
-- Host(s): rds.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `rds-rw` — connect with database=prod user=app
-- Example: `psql "host=rds.example port=5432 user=app dbname=prod sslmode=require"`
-
-## Environment variables (0)
-
-_None pushed for this profile._
+- `GOOGLE_API_KEY` = `AIzaClawpatrolPlaceholderDoNotUse00000000` — Gemini SDKs
+- `GEMINI_API_KEY` = `AIzaClawpatrolPlaceholderDoNotUse00000000` — Gemini CLI
 

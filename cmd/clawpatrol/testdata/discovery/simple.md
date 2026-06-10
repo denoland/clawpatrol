@@ -36,3 +36,7 @@ still verify it against the public web PKI as usual.
 - Credential: bearer_token `gh` — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
 
+## Environment variables (0)
+
+_None pushed for this profile._
+
