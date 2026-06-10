@@ -132,9 +132,12 @@ func (m *DiscoveryManifest) isEmpty() bool {
 // up itself — the agent dials the host below either way and can't act on
 // the tunnel's name or type, so reporting it would only be noise.
 type DiscoveryEndpoint struct {
-	Name        string                   `json:"name"`
-	Type        string                   `json:"type"`   // plugin type: https, postgres, kubernetes, ...
-	Family      string                   `json:"family"` // http | sql | k8s | ssh
+	Name   string `json:"name"`
+	Type   string `json:"type"`   // plugin type: https, postgres, kubernetes, ...
+	Family string `json:"family"` // http | sql | k8s | ssh
+	// Description is the operator's free-text note from the endpoint
+	// block's `description = "..."`, surfaced to orient the agent.
+	Description string                   `json:"description,omitempty"`
 	Hosts       []string                 `json:"hosts,omitempty"`
 	Port        int                      `json:"port,omitempty"`
 	Database    string                   `json:"database,omitempty"`
@@ -157,6 +160,9 @@ type DiscoveryCredentialRef struct {
 	Type           string            `json:"type"`
 	Placeholder    string            `json:"placeholder,omitempty"`
 	Disambiguators map[string]string `json:"disambiguators,omitempty"`
+	// Description is the operator's free-text note from the credential
+	// block's `description = "..."`, surfaced to orient the agent.
+	Description string `json:"description,omitempty"`
 }
 
 // DiscoveryCredential is the profile-level view of one credential: its
@@ -167,6 +173,9 @@ type DiscoveryCredential struct {
 	Type        string   `json:"type"`
 	Placeholder string   `json:"placeholder,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
+	// Description is the operator's free-text note from the credential
+	// block's `description = "..."`, surfaced to orient the agent.
+	Description string `json:"description,omitempty"`
 }
 
 // DiscoveryEnvVar is one environment variable `clawpatrol run` exports
@@ -233,7 +242,7 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 		if ent == nil || ent.Symbol == nil {
 			continue
 		}
-		dc := DiscoveryCredential{Name: ent.Symbol.Name}
+		dc := DiscoveryCredential{Name: ent.Symbol.Name, Description: ent.Framework.Str("description")}
 		if ent.Plugin != nil {
 			dc.Type = ent.Plugin.Type
 		}
@@ -342,7 +351,7 @@ func buildDiscoveryEnvVars(prof *config.CompiledProfile) []DiscoveryEnvVar {
 // plugin still surfaces in the manifest with its hosts, just without
 // type-specific fields.
 func describeEndpoint(ep *config.CompiledEndpoint) DiscoveryEndpoint {
-	de := DiscoveryEndpoint{Name: ep.Name, Family: ep.Family}
+	de := DiscoveryEndpoint{Name: ep.Name, Family: ep.Family, Description: ep.Description}
 	if ep.Plugin != nil {
 		de.Type = ep.Plugin.Type
 	}
@@ -418,7 +427,10 @@ func profileEndpointCredentials(prof *config.CompiledProfile, endpointName strin
 		if cc == nil || cc.Credential == nil || cc.Credential.Symbol == nil {
 			continue
 		}
-		ref := DiscoveryCredentialRef{Name: cc.Credential.Symbol.Name}
+		ref := DiscoveryCredentialRef{
+			Name:        cc.Credential.Symbol.Name,
+			Description: cc.Credential.Framework.Str("description"),
+		}
 		if cc.Credential.Plugin != nil {
 			ref.Type = cc.Credential.Plugin.Type
 		}
@@ -586,6 +598,9 @@ func (m *DiscoveryManifest) Markdown() string {
 	}
 	for _, ep := range m.Endpoints {
 		fmt.Fprintf(&b, "### %s  (%s)\n\n", ep.Name, ep.Type)
+		if ep.Description != "" {
+			fmt.Fprintf(&b, "%s\n\n", ep.Description)
+		}
 		if len(ep.Hosts) > 0 {
 			fmt.Fprintf(&b, "- Host(s): %s\n", strings.Join(ep.Hosts, ", "))
 		}
@@ -606,6 +621,9 @@ func (m *DiscoveryManifest) Markdown() string {
 		}
 		for _, c := range ep.Credentials {
 			line := fmt.Sprintf("- Credential: %s `%s`", c.Type, c.Name)
+			if c.Description != "" {
+				line += fmt.Sprintf(" — %s", c.Description)
+			}
 			if c.Placeholder != "" {
 				line += fmt.Sprintf(" — send placeholder `%s`", c.Placeholder)
 			}

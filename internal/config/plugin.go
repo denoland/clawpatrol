@@ -181,6 +181,9 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+		// Free-text, human/LLM-readable note describing what this
+		// endpoint is for. Surfaced in the discovery manifest.
+		{Name: "description", Optional: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them
@@ -199,6 +202,9 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		{Name: "endpoint", Kind: KindEndpoint, Optional: true},
 		{Name: "endpoints", Kind: KindEndpoint, Optional: true, List: true},
 		{Name: "placeholder", Optional: true},
+		// Free-text, human/LLM-readable note describing what this
+		// credential is for. Surfaced in the discovery manifest.
+		{Name: "description", Optional: true},
 	},
 }
 

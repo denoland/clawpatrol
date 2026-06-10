@@ -5,6 +5,7 @@
       "name": "github",
       "type": "https",
       "family": "http",
+      "description": "GitHub REST API",
       "hosts": [
         "api.github.com"
       ],
@@ -12,7 +13,8 @@
         {
           "name": "gh",
           "type": "bearer_token",
-          "placeholder": "PH_GH"
+          "placeholder": "PH_GH",
+          "description": "read-only fine-grained PAT"
         }
       ],
       "hint": "curl https://api.github.com/ -H \"Authorization: Bearer PH_GH\""
@@ -25,7 +27,8 @@
       "placeholder": "PH_GH",
       "endpoints": [
         "github"
-      ]
+      ],
+      "description": "read-only fine-grained PAT"
     }
   ],
   "env_vars": []

@@ -32,8 +32,10 @@ still verify it against the public web PKI as usual.
 
 ### github  (https)
 
+GitHub REST API
+
 - Host(s): api.github.com
-- Credential: bearer_token `gh` — send placeholder `PH_GH`
+- Credential: bearer_token `gh` — read-only fine-grained PAT — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
 
 ## Environment variables (0)

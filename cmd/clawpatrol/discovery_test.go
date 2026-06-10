@@ -29,7 +29,10 @@ tunnel "local_command" "csql" {
   keepalive   = "5m"
 }
 
-endpoint "https" "github"   { hosts = ["api.github.com"] }
+endpoint "https" "github" {
+  hosts       = ["api.github.com"]
+  description = "GitHub REST API for the ops team"
+}
 endpoint "https" "internal" { hosts = ["internal.example"] }
 
 endpoint "postgres" "prod-pg" {
@@ -47,6 +50,7 @@ endpoint "clickhouse_native" "metrics" {
 credential "bearer_token" "gh" {
   endpoint    = https.github
   placeholder = "PH_GH"
+  description = "fine-grained PAT, read-only on repos"
 }
 credential "bearer_token" "int" {
   endpoint    = https.internal
@@ -167,6 +171,58 @@ func TestDiscoveryEndpointDetail(t *testing.T) {
 	}
 	if !strings.Contains(pg.Hint, "psql") || !strings.Contains(pg.Hint, "dbname=prod") {
 		t.Errorf("prod-pg hint = %q, want psql ... dbname=prod", pg.Hint)
+	}
+}
+
+// TestDiscoveryDescriptions asserts the optional `description` on an
+// endpoint and a credential block reaches both the JSON manifest and
+// the markdown render. Operators add these as human/LLM-readable notes;
+// they're useless if they don't surface.
+func TestDiscoveryDescriptions(t *testing.T) {
+	policy := compileDiscoveryFixture(t)
+	ops := buildDiscoveryManifest(policy, "ops")
+
+	const epDesc = "GitHub REST API for the ops team"
+	const credDesc = "fine-grained PAT, read-only on repos"
+
+	gh := findEndpoint(ops, "github")
+	if gh == nil {
+		t.Fatal("github endpoint missing")
+	}
+	if gh.Description != epDesc {
+		t.Errorf("endpoint description = %q, want %q", gh.Description, epDesc)
+	}
+	if len(gh.Credentials) != 1 || gh.Credentials[0].Description != credDesc {
+		t.Errorf("credential ref description = %+v, want %q", gh.Credentials, credDesc)
+	}
+
+	// Top-level credentials view carries it too.
+	var ghCred *DiscoveryCredential
+	for i := range ops.Credentials {
+		if ops.Credentials[i].Name == "gh" {
+			ghCred = &ops.Credentials[i]
+		}
+	}
+	if ghCred == nil {
+		t.Fatal("gh credential missing from manifest")
+	}
+	if ghCred.Description != credDesc {
+		t.Errorf("credential description = %q, want %q", ghCred.Description, credDesc)
+	}
+
+	// Both descriptions render into the markdown an LLM consumes.
+	md := ops.Markdown()
+	if !strings.Contains(md, epDesc) {
+		t.Errorf("markdown missing endpoint description %q:\n%s", epDesc, md)
+	}
+	if !strings.Contains(md, credDesc) {
+		t.Errorf("markdown missing credential description %q:\n%s", credDesc, md)
+	}
+
+	// And into the JSON.
+	js := string(renderJSON(t, policy, "ops"))
+	if !strings.Contains(js, epDesc) || !strings.Contains(js, credDesc) {
+		t.Errorf("json missing descriptions:\n%s", js)
 	}
 }
 

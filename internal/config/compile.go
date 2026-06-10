@@ -118,6 +118,11 @@ type CompiledEndpoint struct {
 	Credentials []*Entity       // credentials globally bound to this endpoint
 	Rules       []*CompiledRule // sorted by priority desc
 
+	// Description is the operator-supplied free-text note from the
+	// block's `description = "..."` framework attr, or "" if unset.
+	// Surfaced in the discovery manifest to orient agents.
+	Description string
+
 	// InspectsTruncatable is true when any rule on this endpoint reads a
 	// facet whose bytes a wire frontend buffers under a cap (for ssh:
 	// ssh.stdin; the http/sql bodies are buffered by their own frontends
@@ -516,10 +521,11 @@ func attachCredentials(cp *CompiledPolicy, p *Policy) error {
 
 func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEndpoint, error) {
 	ce := &CompiledEndpoint{
-		Name:   name,
-		Family: ent.Plugin.Family,
-		Plugin: ent.Plugin,
-		Body:   ent.Body,
+		Name:        name,
+		Family:      ent.Plugin.Family,
+		Plugin:      ent.Plugin,
+		Body:        ent.Body,
+		Description: ent.Framework.Str("description"),
 	}
 	// Hosts live on the plugin's typed body. We cross-cut via a small
 	// interface so the compile pass doesn't have to know every

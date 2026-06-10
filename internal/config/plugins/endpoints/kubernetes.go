@@ -34,8 +34,6 @@ type KubernetesEndpoint struct {
 	// CACert is the PEM-encoded cluster CA, often loaded with
 	// `<<file:cluster-ca.pem>>`.
 	CACert string `hcl:"ca_cert,optional"`
-	// Description is operator-facing text for dashboard display.
-	Description string `hcl:"description,optional"`
 	// ClusterName is the EKS cluster name used by aws_credential.
 	ClusterName string `hcl:"cluster_name,optional"`
 	// Region is the AWS region used by aws_credential for EKS auth.
@@ -120,9 +118,6 @@ func init() {
 			}
 			if e.CACert != "" {
 				b.SetAttributeValue("ca_cert", cty.StringVal(e.CACert))
-			}
-			if e.Description != "" {
-				b.SetAttributeValue("description", cty.StringVal(e.Description))
 			}
 			if e.ClusterName != "" {
 				b.SetAttributeValue("cluster_name", cty.StringVal(e.ClusterName))
