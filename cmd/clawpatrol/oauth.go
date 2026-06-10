@@ -56,11 +56,12 @@ type oauthState struct {
 	displayName string // human-readable name (e.g. github login)
 	avatarURL   string // dashboard pfp
 	// clientID is the dynamically-registered OAuth client_id for flows
-	// that use RFC 7591 (notion_mcp). Static-ClientID flows (github,
-	// anthropic, codex) leave this empty and use cfg.ClientID. Persisted
-	// in the credentials table alongside the tokens so refresh works
-	// across gateway restarts.
+	// that use RFC 7591 (notion_mcp/dynamic_mcp). Static-ClientID flows
+	// (github, anthropic, codex) leave this empty and use cfg.ClientID.
+	// Persisted in the credentials table alongside the tokens so refresh
+	// works across gateway restarts.
 	clientID string
+	flow     string
 	db       *sql.DB
 	mu       sync.Mutex
 }
@@ -218,7 +219,7 @@ func (r *OAuthRegistry) Set(ctx context.Context, id string, tok *oauth2.Token) e
 
 // SetWithClient is Set + a dynamically registered client_id. Pass empty
 // clientID for static-ClientID flows; pass the per-credential client_id
-// for RFC 7591 dynamic registration flows (notion_mcp). The clientID is
+// for RFC 7591 dynamic registration flows (notion_mcp/dynamic_mcp). The clientID is
 // stamped onto the in-memory state and persisted alongside the tokens so
 // refresh continues to work after restart.
 //
@@ -335,6 +336,7 @@ func newState(it *OAuthIntegration, db *sql.DB) *oauthState {
 		header: header,
 		prefix: prefix,
 		id:     it.ID,
+		flow:   it.Flow,
 		db:     db,
 	}
 }
@@ -347,11 +349,13 @@ func (s *oauthState) setToken(tok *oauth2.Token) {
 		// (returns "Invalid request format" otherwise). Stdlib oauth2
 		// only sends form-urlencoded.
 		base = &anthropicRefreshSource{cfg: s.cfg, current: tok}
-	case isNotionMCPTokenURL(s.cfg.Endpoint.TokenURL):
-		// Notion's MCP token endpoint refreshes via form-urlencoded body
-		// and expects the dynamically registered client_id (no static
-		// ClientSecret — PKCE-only public client).
-		base = &notionMCPRefreshSource{cfg: s.cfg, current: tok}
+	case s.flow == "dynamic_mcp" || s.flow == "notion_mcp":
+		// Hosted MCP token endpoints refresh via form-urlencoded body and
+		// expect the dynamically registered client_id (no static
+		// ClientSecret — PKCE-only public client). The flow, not the
+		// provider hostname, selects this behavior so external credential
+		// plugins can supply their own MCP OAuth endpoints.
+		base = &dynamicMCPRefreshSource{cfg: s.cfg, current: tok}
 	default:
 		base = s.cfg.TokenSource(context.Background(), tok)
 	}
@@ -535,7 +539,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 		}
 		s := newState(it, r.db)
 		// Restore the dynamically-registered client_id BEFORE setToken
-		// so the refresh source (notion_mcp) picks it up via s.cfg.
+		// so the refresh source (notion_mcp/dynamic_mcp) picks it up via s.cfg.
 		if clientID.Valid && clientID.String != "" {
 			s.clientID = clientID.String
 			s.cfg.ClientID = clientID.String
@@ -566,7 +570,7 @@ type oauthSession struct {
 	id       string
 	created  time.Time
 	// dynClientID is the RFC 7591 client_id this session registered at
-	// start time (notion_mcp). Empty for static-ClientID flows. Stamped
+	// start time (notion_mcp/dynamic_mcp). Empty for static-ClientID flows. Stamped
 	// onto the credential row at exchange time so refresh can replay it.
 	dynClientID string
 }
@@ -646,8 +650,8 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		w.startOpenAIDeviceFlow(rw, r, id, flow)
 		return
 	}
-	if flow.Flow == "notion_mcp" {
-		w.startNotionMCPFlow(rw, r, id, flow)
+	if flow.Flow == "notion_mcp" || flow.Flow == "dynamic_mcp" {
+		w.startDynamicMCPFlow(rw, r, id, flow)
 		return
 	}
 
@@ -677,14 +681,18 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]string{"auth_url": authURL, "state": state})
 }
 
-// startNotionMCPFlow drives the mcp.notion.com auth-code flow with RFC
-// 7591 dynamic client registration. Notion accepts arbitrary redirect
-// URIs at registration, so we register the dashboard's own
-// /oauth/callback page — the page auto-exchanges via /api/oauth/exchange
-// when it loads, with copy-paste from the URL bar as a fallback.
-func (w *webMux) startNotionMCPFlow(rw http.ResponseWriter, r *http.Request, id string, flow *OAuthIntegration) {
-	redirectURI := w.dashboardRedirectURI(r, "/oauth/callback")
-	clientID, err := registerOAuthClient(r.Context(), flow.OAuth.RegisterURL, redirectURI)
+// startDynamicMCPFlow drives auth-code OAuth flows with RFC 7591
+// dynamic client registration. Plugins may pin a provider-accepted
+// redirect URI (Amplitude uses a localhost loopback URI); otherwise we
+// register the dashboard's own /oauth/callback page, which
+// auto-exchanges via /api/oauth/exchange when it loads, with copy-paste
+// from the URL bar as a fallback.
+func (w *webMux) startDynamicMCPFlow(rw http.ResponseWriter, r *http.Request, id string, flow *OAuthIntegration) {
+	redirectURI := strings.TrimSpace(flow.OAuth.RedirectURI)
+	if redirectURI == "" {
+		redirectURI = w.dashboardRedirectURI(r, "/oauth/callback")
+	}
+	clientID, err := registerOAuthClient(r.Context(), flow.OAuth.RegisterURL, redirectURI, flow.OAuth.Scopes)
 	if err != nil {
 		http.Error(rw, "dynamic client registration: "+err.Error(), http.StatusBadGateway)
 		return
@@ -740,14 +748,18 @@ func (w *webMux) dashboardRedirectURI(r *http.Request, path string) string {
 // registerOAuthClient performs RFC 7591 dynamic client registration
 // against `registerURL`, asking for a public PKCE client bound to the
 // given redirect URI. Returns the issued client_id.
-func registerOAuthClient(ctx context.Context, registerURL, redirectURI string) (string, error) {
-	body, _ := json.Marshal(map[string]any{
+func registerOAuthClient(ctx context.Context, registerURL, redirectURI string, scopes []string) (string, error) {
+	bodyMap := map[string]any{
 		"client_name":                "clawpatrol",
 		"redirect_uris":              []string{redirectURI},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "none",
-	})
+	}
+	if len(scopes) > 0 {
+		bodyMap["scope"] = strings.Join(scopes, " ")
+	}
+	body, _ := json.Marshal(bodyMap)
 	req, err := http.NewRequestWithContext(ctx, "POST", registerURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -1155,32 +1167,28 @@ func isAnthropicTokenURL(u string) bool {
 	return strings.Contains(u, "anthropic.com/")
 }
 
-func isNotionMCPTokenURL(u string) bool {
-	return strings.Contains(u, "mcp.notion.com/")
-}
-
-// notionMCPRefreshSource refreshes Notion MCP OAuth tokens via the
+// dynamicMCPRefreshSource refreshes hosted MCP OAuth tokens via the
 // form-urlencoded body the spec mandates. The client_id is read from
 // cfg.ClientID, which the registry restores from the persisted
 // credentials.client_id column on boot. Stateful: holds the current
 // token (with refresh_token) and rotates it on each refresh.
-type notionMCPRefreshSource struct {
+type dynamicMCPRefreshSource struct {
 	mu      sync.Mutex
 	cfg     *oauth2.Config
 	current *oauth2.Token
 }
 
-func (n *notionMCPRefreshSource) Token() (*oauth2.Token, error) {
+func (n *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.current.Valid() {
 		return n.current, nil
 	}
 	if n.current.RefreshToken == "" {
-		return nil, fmt.Errorf("notion_mcp refresh: no refresh_token")
+		return nil, fmt.Errorf("dynamic_mcp refresh: no refresh_token")
 	}
 	if n.cfg.ClientID == "" {
-		return nil, fmt.Errorf("notion_mcp refresh: no client_id (dynamic registration was never persisted)")
+		return nil, fmt.Errorf("dynamic_mcp refresh: no client_id (dynamic registration was never persisted)")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -1193,18 +1201,18 @@ func (n *notionMCPRefreshSource) Token() (*oauth2.Token, error) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", n.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("notion_mcp refresh: build request: %w", err)
+		return nil, fmt.Errorf("dynamic_mcp refresh: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("notion_mcp refresh: %w", err)
+		return nil, fmt.Errorf("dynamic_mcp refresh: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("notion_mcp refresh %d: %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("dynamic_mcp refresh %d: %s", resp.StatusCode, string(respBytes))
 	}
 	var tr struct {
 		AccessToken  string `json:"access_token"`
@@ -1319,7 +1327,7 @@ func (w *webMux) apiOAuthRevoke(rw http.ResponseWriter, r *http.Request) {
 
 // oauthCallbackHTML is served at GET /oauth/callback for
 // dynamic-registration flows that redirect back to the dashboard
-// (notion_mcp). The inline JS extracts ?code & ?state, POSTs them to
+// (notion_mcp/dynamic_mcp). The inline JS extracts ?code & ?state, POSTs them to
 // /api/oauth/exchange so the original ConnectModal sees the credential
 // connect itself, and shows the code prominently as a copy-paste
 // fallback if the auto-exchange fails (e.g. dashboard secret expired,
