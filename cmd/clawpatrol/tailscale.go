@@ -13,7 +13,8 @@
 // through the WG netstack's promiscuous forwarder; main.go's
 // tcpDispatch routes dst port 443 to g.handle. Alongside the
 // netstack we also open a loopback TCP listener on 127.0.0.1:8443
-// for host-local clients — single-host deployments (the gateway
+// (configurable via wireguard.host_loopback_port) for host-local
+// clients — single-host deployments (the gateway
 // running under one user account, clawpatrol-run invoked from
 // another on the same machine, loopback WG between them) are a
 // first-class pattern, not a debug mode.
@@ -64,12 +65,28 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 	return dir, nil
 }
 
+// defaultHostLoopbackPort is the TCP port the gateway binds on
+// 127.0.0.1 for host-local clients when wireguard.host_loopback_port
+// is unset.
+const defaultHostLoopbackPort = 8443
+
+// hostLoopbackPort resolves the loopback TCP port the gateway binds
+// for host-local clients, honoring wireguard.host_loopback_port and
+// falling back to defaultHostLoopbackPort when unset (0).
+func hostLoopbackPort(port int) int {
+	if port != 0 {
+		return port
+	}
+	return defaultHostLoopbackPort
+}
+
 // openListener brings up the gateway's transport listeners. Either
 // or both of the returned values may be non-nil depending on which
 // transport blocks the operator declared:
 //
 //   - WireGuard enabled → returns a loopback TCP listener on
-//     127.0.0.1:8443. Host-local agents (e.g. clawpatrol-run from a
+//     127.0.0.1:<host_loopback_port> (default 8443). Host-local
+//     agents (e.g. clawpatrol-run from a
 //     different UID on the same box) connect directly. Off-host
 //     agents reach g.handle via the WG netstack's promiscuous
 //     forwarder; that path doesn't touch this socket.
@@ -84,7 +101,8 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 	var ln net.Listener
 	if cfg.IsWireGuardEnabled() {
 		var err error
-		ln, err = net.Listen("tcp", "127.0.0.1:8443")
+		addr := fmt.Sprintf("127.0.0.1:%d", hostLoopbackPort(cfg.Settings.WireGuard.HostLoopbackPort))
+		ln, err = net.Listen("tcp", addr)
 		if err != nil {
 			return nil, nil, err
 		}

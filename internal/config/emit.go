@@ -229,6 +229,9 @@ func emitWireGuardBlock(parent *hclwrite.Body, w *WireGuardBlock) {
 	if w.ListenPort != 0 {
 		b.SetAttributeValue("listen_port", cty.NumberIntVal(int64(w.ListenPort)))
 	}
+	if w.HostLoopbackPort != 0 {
+		b.SetAttributeValue("host_loopback_port", cty.NumberIntVal(int64(w.HostLoopbackPort)))
+	}
 	if w.Endpoint != "" {
 		b.SetAttributeValue("endpoint", cty.StringVal(w.Endpoint))
 	}
