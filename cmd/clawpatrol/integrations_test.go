@@ -114,8 +114,13 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 // flat list.
 func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	prev := envPushdownGatewayFetcher
+	prevDaemon := envPushdownDaemonFetcher
 	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
-	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+	envPushdownDaemonFetcher = nil
+	t.Cleanup(func() {
+		envPushdownGatewayFetcher = prev
+		envPushdownDaemonFetcher = prevDaemon
+	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -162,8 +167,13 @@ func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
 	// the host's running NE happens to have to say, instead of the
 	// gateway-URL-missing error this test exercises.
 	prev := envPushdownGatewayFetcher
+	prevDaemon := envPushdownDaemonFetcher
 	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
-	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+	envPushdownDaemonFetcher = nil
+	t.Cleanup(func() {
+		envPushdownGatewayFetcher = prev
+		envPushdownDaemonFetcher = prevDaemon
+	})
 
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
