@@ -101,6 +101,19 @@ type DiscoveryManifest struct {
 	// Notes carries profile-level caveats — e.g. the profile resolved
 	// to a name with no policy entry, so the manifest is empty.
 	Notes []string `json:"notes,omitempty"`
+	// Dashboard is the gateway's public URL (gateway.public_url), where a
+	// human operator configures this device's profile. Surfaced so an
+	// agent whose profile grants nothing can tell its human where to go.
+	// Empty when public_url is unset.
+	Dashboard string `json:"dashboard,omitempty"`
+}
+
+// isEmpty reports whether the profile grants nothing — no endpoints and
+// no credentials. This is the state the empty-profile guidance speaks
+// to: a manifest that lists nothing actionable is useless to an agent
+// unless it explains why and how to fix it.
+func (m *DiscoveryManifest) isEmpty() bool {
+	return len(m.Endpoints) == 0 && len(m.Credentials) == 0
 }
 
 // DiscoveryEndpoint is one reachable endpoint plus the full how-to for
@@ -165,6 +178,7 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 	prof := policy.Profiles[profileName]
 	if prof == nil {
 		m.Notes = append(m.Notes, fmt.Sprintf("profile %q grants no endpoints or credentials", profileName))
+		m.Dashboard = policy.DashboardURL
 		return m
 	}
 
@@ -215,6 +229,14 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 		m.Credentials = append(m.Credentials, dc)
 	}
 	sort.Slice(m.Credentials, func(i, j int) bool { return m.Credentials[i].Name < m.Credentials[j].Name })
+
+	// A profile that grants nothing leaves the agent with nothing to act
+	// on; surface the dashboard URL so it can point its human at where the
+	// device's profile gets configured. Non-empty manifests already carry
+	// everything actionable, so the pointer would just be noise there.
+	if m.isEmpty() {
+		m.Dashboard = policy.DashboardURL
+	}
 	return m
 }
 
@@ -437,6 +459,10 @@ func (m *DiscoveryManifest) Markdown() string {
 		fmt.Fprintf(&b, "> Note: %s\n\n", n)
 	}
 
+	if m.isEmpty() {
+		b.WriteString(m.emptyGuidance())
+	}
+
 	fmt.Fprintf(&b, "## Endpoints (%d)\n\n", len(m.Endpoints))
 	if len(m.Endpoints) == 0 {
 		b.WriteString("_None reachable for this profile._\n\n")
@@ -477,6 +503,35 @@ func (m *DiscoveryManifest) Markdown() string {
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+// emptyGuidance is the block rendered when a profile grants nothing. A
+// bare "none reachable / none granted" manifest is dead-on-arrival for
+// an agent: it can't tell whether the gateway is broken, whether it's
+// the wrong device, or what to do next. This explains that the empty
+// result is a configuration state, what unlocks Claw Patrol's value, and
+// where the operator changes this device's profile.
+func (m *DiscoveryManifest) emptyGuidance() string {
+	var b strings.Builder
+	b.WriteString("## This profile is empty\n\n")
+	fmt.Fprintf(&b, "Your device is mapped to the `%s` profile, which currently grants no\n", m.Profile)
+	b.WriteString("endpoints and no credentials. That's why there's nothing actionable\n")
+	b.WriteString("below. This is a configuration state, not an error — the gateway is\n")
+	b.WriteString("reachable, your device just hasn't been granted anything yet.\n\n")
+	b.WriteString("To get value from Claw Patrol, this profile needs endpoints and the\n")
+	b.WriteString("credentials to reach them bound to it. An operator does that in the\n")
+	b.WriteString("dashboard by either assigning this device a profile that already grants\n")
+	b.WriteString("what you need, or adding endpoints and credentials to this one.\n\n")
+	if m.Dashboard != "" {
+		fmt.Fprintf(&b, "Ask the person who runs this gateway to open the dashboard at %s\n", m.Dashboard)
+		b.WriteString("and update this device's profile.\n\n")
+	} else {
+		b.WriteString("Ask the person who runs this gateway to open the Claw Patrol dashboard\n")
+		b.WriteString("and update this device's profile.\n\n")
+	}
+	b.WriteString("Once the profile is configured, re-fetch this manifest (GET\n")
+	b.WriteString("https://clawpatrol/) and the endpoints and credentials will appear below.\n\n")
 	return b.String()
 }
 

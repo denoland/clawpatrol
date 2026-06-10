@@ -1,5 +1,6 @@
 {
   "profile": "empty",
   "endpoints": [],
-  "credentials": []
+  "credentials": [],
+  "dashboard": "https://gw.example.test"
 }

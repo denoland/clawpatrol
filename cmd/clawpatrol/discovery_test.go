@@ -267,6 +267,80 @@ func TestDiscoveryUnknownProfile(t *testing.T) {
 	}
 }
 
+// TestDiscoveryEmptyProfileGuidance: a profile that grants nothing must
+// not hand the agent a bare "none/none" manifest. It explains the empty
+// state and points at the dashboard (gateway.public_url) where the
+// device's profile gets configured. A non-empty profile carries no such
+// pointer — it already has everything actionable.
+func TestDiscoveryEmptyProfileGuidance(t *testing.T) {
+	policy := compileDiscoveryFixture(t)
+
+	// "does-not-exist" resolves to no policy entry → empty manifest.
+	empty := buildDiscoveryManifest(policy, "does-not-exist")
+	if !empty.isEmpty() {
+		t.Fatalf("expected empty manifest, got %+v", empty)
+	}
+	if empty.Dashboard != "https://gw.example.test" {
+		t.Errorf("empty manifest dashboard = %q, want gateway public_url", empty.Dashboard)
+	}
+	md := empty.Markdown()
+	for _, want := range []string{"This profile is empty", "https://gw.example.test", "re-fetch this manifest"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("empty manifest markdown missing %q:\n%s", want, md)
+		}
+	}
+
+	// A populated profile gets neither the dashboard pointer nor the
+	// empty-state guidance.
+	ops := buildDiscoveryManifest(policy, "ops")
+	if ops.Dashboard != "" {
+		t.Errorf("non-empty manifest should not surface dashboard, got %q", ops.Dashboard)
+	}
+	if strings.Contains(ops.Markdown(), "This profile is empty") {
+		t.Errorf("non-empty manifest leaked empty-profile guidance")
+	}
+}
+
+// TestDiscoveryEmptyProfileNoPublicURL: when public_url is unset, the
+// empty-state guidance still renders — minus the URL — rather than
+// printing a dangling "open the dashboard at " line.
+func TestDiscoveryEmptyProfileNoPublicURL(t *testing.T) {
+	const noURL = `gateway {
+  state_dir = "/opt/clawpatrol"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "127.0.0.1:51820"
+  }
+}
+
+endpoint "https" "github" { hosts = ["api.github.com"] }
+credential "bearer_token" "gh" {
+  endpoint    = https.github
+  placeholder = "PH_GH"
+}
+profile "empty" { credentials = [] }
+`
+	gw, diags := config.LoadBytes([]byte(noURL), "nourl.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	m := buildDiscoveryManifest(policy, "empty")
+	if m.Dashboard != "" {
+		t.Errorf("dashboard should be empty when public_url unset, got %q", m.Dashboard)
+	}
+	md := m.Markdown()
+	if !strings.Contains(md, "This profile is empty") {
+		t.Errorf("guidance missing:\n%s", md)
+	}
+	if strings.Contains(md, "open the dashboard at\n") || strings.Contains(md, "dashboard at ") {
+		t.Errorf("dangling dashboard URL line rendered:\n%s", md)
+	}
+}
+
 func TestIsDiscoveryHost(t *testing.T) {
 	cases := map[string]bool{
 		"clawpatrol":      true,

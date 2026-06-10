@@ -25,6 +25,13 @@ type CompiledPolicy struct {
 	HumanTimeout   int
 	HumanOnTimeout string
 
+	// DashboardURL mirrors gateway.public_url — the canonical URL where
+	// an operator reaches the dashboard to configure device profiles.
+	// Surfaced here so the discovery manifest can point an agent (or its
+	// human) at the dashboard when its profile grants nothing. Empty when
+	// public_url is unset.
+	DashboardURL string
+
 	// Profiles indexed by name. Each holds a per-endpoint rule list,
 	// already family-tagged and priority-sorted.
 	Profiles map[string]*CompiledProfile
@@ -270,6 +277,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		LLMCacheTTL:    d.LLMCacheTTL,
 		HumanTimeout:   d.HumanTimeout,
 		HumanOnTimeout: d.HumanOnTimeout,
+		DashboardURL:   gw.PublicURL(),
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
