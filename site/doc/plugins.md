@@ -145,11 +145,32 @@ before calling `InjectHTTP`. `InjectHTTP` is intentionally
 header-only; external credentials cannot rewrite the destination URL
 or request body through this hook.
 
+At runtime the built-in HTTPS endpoint keeps the privilege split:
+
+1. The wrapped process sees only metadata and placeholders from
+   `EnvVars` (for example `EXAMPLE_TOKEN=PH_example`).
+2. The gateway resolves the matched credential and fetches its
+   gateway-held secret.
+3. The gateway calls the external plugin's `InjectHTTP` callback
+   with request metadata and that secret.
+4. The plugin returns header mutations and any derived strings that
+   should be redacted from audit samples.
+
 OAuth credentials can set `CredentialMetadata.OAuth` instead of
 secret slots. The gateway owns the OAuth lifecycle and stores or
 refreshes tokens under the credential instance name; the external
 credential receives the current access token as `CredentialSecret`
-when HTTPS injection runs.
+when HTTPS injection runs. Dynamic MCP OAuth providers should set
+`Flow: "dynamic_mcp"`; the gateway will use public-client PKCE
+exchange and refresh behavior selected by that flow, not by a
+hardcoded provider hostname.
+
+External credentials that need provider-specific exchange logic (for
+example exchanging a durable service-account token for a short-lived
+JWT) should do that inside `InjectHTTP`. Validate any provider base
+URLs before sending long-lived secrets: plugin HCL is operator
+configuration, but the plugin process is still the component that
+knows which upstream hosts are allowed to receive its secret material.
 
 ### Endpoints own the connection
 
