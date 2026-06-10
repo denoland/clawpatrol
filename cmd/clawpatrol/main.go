@@ -1419,11 +1419,11 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 		// by IP and never sends SNI).
 		if dstIP != "" {
 			c := wrapPeek(raw, prefix)
-			if g.isDiscoveryVIP(dstIP) {
-				// Fixed-IP fallback for `curl https://<discovery-vip>/`
+			if g.isInternalVIP(dstIP) {
+				// Fixed-IP fallback for `curl https://<internal-vip>/`
 				// when DNS interception isn't active — no SNI on an IP
 				// literal, so the dst VIP is the only signal.
-				g.serveDiscovery(c, dstIP)
+				g.serveInternal(c, dstIP)
 				return
 			}
 			pip := peerIP(c)
@@ -1440,10 +1440,10 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	}
 	c := wrapPeek(raw, prefix)
 	log.Printf("sni-peek: %s", host)
-	if isDiscoveryHost(host) {
-		// Reserved discovery name: serve the caller's profile manifest
-		// locally and never proxy upstream.
-		g.serveDiscovery(c, discoveryHostname)
+	if isInternalHost(host) {
+		// Reserved internal API name: serve the caller's profile
+		// manifest (and CA/info) locally and never proxy upstream.
+		g.serveInternal(c, internalHostname)
 		return
 	}
 	pip := peerIP(c)

@@ -232,49 +232,49 @@ func TestDNSARecordRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDiscoveryNameServedLocally asserts the reserved discovery name
+// TestInternalNameServedLocally asserts the reserved internal API name
 // resolves to its fixed VIP and is answered authoritatively from the
 // allocator — never forwarded upstream — even with no endpoint policy
 // loaded. The fixed slot also must never collide with a real
 // allocation.
-func TestDiscoveryNameServedLocally(t *testing.T) {
+func TestInternalNameServedLocally(t *testing.T) {
 	db := testDB(t)
 	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// No RebuildFromPolicy: the discovery name is a built-in, not a
+	// No RebuildFromPolicy: the internal API name is a built-in, not a
 	// policy-declared host.
 
-	v4, v6 := a.DiscoveryVIPs()
+	v4, v6 := a.InternalVIPs()
 	if !v4.IsValid() || !v6.IsValid() {
-		t.Fatalf("discovery VIPs invalid: v4=%v v6=%v", v4, v6)
+		t.Fatalf("internal VIPs invalid: v4=%v v6=%v", v4, v6)
 	}
 	if !DefaultCIDR4.Contains(v4) || !DefaultCIDR6.Contains(v6) {
-		t.Fatalf("discovery VIPs outside CIDRs: v4=%v v6=%v", v4, v6)
+		t.Fatalf("internal VIPs outside CIDRs: v4=%v v6=%v", v4, v6)
 	}
 
-	if !a.intercepts(DiscoveryHostname) {
-		t.Fatalf("discovery name should be intercepted")
+	if !a.intercepts(InternalHostname) {
+		t.Fatalf("internal API name should be intercepted")
 	}
 
 	q := new(dns.Msg)
-	q.SetQuestion(DiscoveryHostname+".", dns.TypeA)
+	q.SetQuestion(InternalHostname+".", dns.TypeA)
 	resp := a.handleQuery(q, "")
 	if resp == nil || !resp.Authoritative || len(resp.Answer) != 1 {
-		t.Fatalf("discovery A: want 1 authoritative answer, got %v", resp)
+		t.Fatalf("internal A: want 1 authoritative answer, got %v", resp)
 	}
 	if got := resp.Answer[0].(*dns.A).A; !net.IP(v4.AsSlice()).Equal(got) {
-		t.Fatalf("discovery A = %v, want %v", got, v4)
+		t.Fatalf("internal A = %v, want %v", got, v4)
 	}
 
-	q.SetQuestion(DiscoveryHostname+".", dns.TypeAAAA)
+	q.SetQuestion(InternalHostname+".", dns.TypeAAAA)
 	resp = a.handleQuery(q, "")
 	if resp == nil || len(resp.Answer) != 1 {
-		t.Fatalf("discovery AAAA: want 1 answer, got %v", resp)
+		t.Fatalf("internal AAAA: want 1 answer, got %v", resp)
 	}
 	if got := resp.Answer[0].(*dns.AAAA).AAAA; !net.IP(v6.AsSlice()).Equal(got) {
-		t.Fatalf("discovery AAAA = %v, want %v", got, v6)
+		t.Fatalf("internal AAAA = %v, want %v", got, v6)
 	}
 
 	// The reserved slot must not be handed to a real allocation.
@@ -283,7 +283,7 @@ func TestDiscoveryNameServedLocally(t *testing.T) {
 	}
 	rv4, _ := a.VIPsFor("real.example.com")
 	if rv4 == v4 {
-		t.Fatalf("real allocation collided with reserved discovery VIP %v", v4)
+		t.Fatalf("real allocation collided with reserved internal VIP %v", v4)
 	}
 }
 

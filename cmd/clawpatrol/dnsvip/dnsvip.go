@@ -85,34 +85,33 @@ var (
 // pathological reload loops.
 const MaxID uint32 = 0xFFFE
 
-// DiscoveryHostname is the reserved name the gateway answers locally —
+// InternalHostname is the reserved name the gateway answers locally —
 // the canonical entrypoint a device uses to reach the clawpatrol API
-// from inside the tunnel (see cmd/clawpatrol's discovery endpoint). The
-// allocator hands back a fixed VIP for it so `curl
+// from inside the tunnel (see cmd/clawpatrol's internal API endpoint).
+// The allocator hands back a fixed VIP for it so `curl
 // https://clawpatrol.internal/manifest` resolves inside the tunnel; the
-// WG forwarder then routes the :443 SYN to the local discovery handler
-// rather than any upstream. It is a fully-qualified name under the
-// `.internal` private-use TLD rather than a bare single label, so
+// WG forwarder then routes the :443 SYN to the local internal API
+// handler rather than any upstream. It is a fully-qualified name under
+// the `.internal` private-use TLD rather than a bare single label, so
 // resolvers don't append search domains or treat it as a dotless name.
-const DiscoveryHostname = "clawpatrol.internal"
+const InternalHostname = "clawpatrol.internal"
 
-// discoveryID is the VIP slot reserved for the discovery name. It sits
-// one past MaxID so allocateLocked never hands it to a real hostname,
-// giving the discovery name a stable address (x.x.255.255 v4,
-// ::ffff v6 within the configured CIDRs) without consuming a normal
-// allocation.
-const discoveryID uint32 = MaxID + 1
+// internalID is the VIP slot reserved for the internal API name. It
+// sits one past MaxID so allocateLocked never hands it to a real
+// hostname, giving the name a stable address (x.x.255.255 v4, ::ffff v6
+// within the configured CIDRs) without consuming a normal allocation.
+const internalID uint32 = MaxID + 1
 
-// isDiscoveryName reports whether hostname is the reserved discovery
+// isInternalName reports whether hostname is the reserved internal API
 // name (case-insensitive; caller has already trimmed the trailing dot).
-func isDiscoveryName(hostname string) bool {
-	return strings.EqualFold(hostname, DiscoveryHostname)
+func isInternalName(hostname string) bool {
+	return strings.EqualFold(hostname, InternalHostname)
 }
 
-// DiscoveryVIPs returns the fixed (v4, v6) addresses the discovery
+// InternalVIPs returns the fixed (v4, v6) addresses the internal API
 // name resolves to under this allocator's configured CIDRs.
-func (a *Allocator) DiscoveryVIPs() (netip.Addr, netip.Addr) {
-	return a.vipForID(discoveryID)
+func (a *Allocator) InternalVIPs() (netip.Addr, netip.Addr) {
+	return a.vipForID(internalID)
 }
 
 type entry struct {
@@ -654,8 +653,8 @@ func (a *Allocator) handleQuery(q *dns.Msg, dstIP string) *dns.Msg {
 	for _, qq := range q.Question {
 		host := strings.TrimSuffix(qq.Name, ".")
 		v4, v6 := a.VIPsFor(host)
-		if isDiscoveryName(host) {
-			v4, v6 = a.DiscoveryVIPs()
+		if isInternalName(host) {
+			v4, v6 = a.InternalVIPs()
 		}
 		switch qq.Qtype {
 		case dns.TypeA:
@@ -691,7 +690,7 @@ func (a *Allocator) handleQuery(q *dns.Msg, dstIP string) *dns.Msg {
 // policy).
 func (a *Allocator) intercepts(hostname string) bool {
 	hostname = strings.ToLower(hostname)
-	if isDiscoveryName(hostname) {
+	if isInternalName(hostname) {
 		// Reserved name: answered locally from a fixed VIP, never
 		// forwarded upstream (the name doesn't exist in public DNS).
 		return true

@@ -476,7 +476,7 @@ profile "empty" { credentials = [] }
 	}
 }
 
-func TestIsDiscoveryHost(t *testing.T) {
+func TestIsInternalHost(t *testing.T) {
 	cases := map[string]bool{
 		"clawpatrol.internal":      true,
 		"ClawPatrol.Internal":      true,
@@ -488,8 +488,8 @@ func TestIsDiscoveryHost(t *testing.T) {
 		"clawpatrol.internal.evil": false,
 	}
 	for host, want := range cases {
-		if got := isDiscoveryHost(host); got != want {
-			t.Errorf("isDiscoveryHost(%q) = %v, want %v", host, got, want)
+		if got := isInternalHost(host); got != want {
+			t.Errorf("isInternalHost(%q) = %v, want %v", host, got, want)
 		}
 	}
 }

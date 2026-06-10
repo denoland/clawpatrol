@@ -16,22 +16,22 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 )
 
-// discoveryHostname is the reserved name an agent inside the tunnel
+// internalHostname is the reserved name an agent inside the tunnel
 // hits to reach the clawpatrol API — the canonical entrypoint for a
 // device. The gateway intercepts a TLS connection whose SNI is this
 // name and answers locally — the request never leaves the box. DNS for
 // the name resolves to the reserved VIP pair the dnsvip allocator hands
-// back (see dnsvip's DiscoveryV4/DiscoveryV6), but because the WG
-// forwarder routes every :443 SYN through g.handle regardless of dst
-// IP, any IP the agent was handed lands here as long as the SNI
-// matches. Keep this in sync with dnsvip.DiscoveryHostname.
-const discoveryHostname = "clawpatrol.internal"
+// back (see dnsvip's InternalVIPs), but because the WG forwarder routes
+// every :443 SYN through g.handle regardless of dst IP, any IP the
+// agent was handed lands here as long as the SNI matches. Keep this in
+// sync with dnsvip.InternalHostname.
+const internalHostname = "clawpatrol.internal"
 
-// isDiscoveryHost reports whether host names the reserved discovery
+// isInternalHost reports whether host names the reserved internal API
 // endpoint. The match is case-insensitive (DNS is) and tolerates a
 // trailing dot and an explicit :443 suffix, both of which clients may
 // attach to the authority.
-func isDiscoveryHost(host string) bool {
+func isInternalHost(host string) bool {
 	if host == "" {
 		return false
 	}
@@ -39,23 +39,24 @@ func isDiscoveryHost(host string) bool {
 		host = h
 	}
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	return host == discoveryHostname
+	return host == internalHostname
 }
 
-// serveDiscovery terminates TLS for a reserved-name connection and
-// answers it with the caller's profile manifest. The profile is
-// resolved from the connection's peer IP (the same connection-derived
-// identity the request handler uses) — never from a token — so the
-// manifest reflects exactly this device's grants. certHost is the SNI
-// (or the dst VIP on the IP-literal fallback path); we mint a leaf for
-// it so the agent's CA-trusting client accepts the handshake.
-func (g *Gateway) serveDiscovery(c net.Conn, certHost string) {
+// serveInternal terminates TLS for a reserved-name connection and
+// answers it from the internal API surface (manifest, CA, info). The
+// profile is resolved from the connection's peer IP (the same
+// connection-derived identity the request handler uses) — never from a
+// token — so the manifest reflects exactly this device's grants.
+// certHost is the SNI (or the dst VIP on the IP-literal fallback path);
+// we mint a leaf for it so the agent's CA-trusting client accepts the
+// handshake.
+func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 	defer func() { _ = c.Close() }()
-	defer otelTrackConn("discovery")()
+	defer otelTrackConn("internal")()
 	profile := g.profileFor(peerIP(c))
 	cert, err := g.certs.mint(certHost)
 	if err != nil {
-		log.Printf("discovery: mint %s: %v", certHost, err)
+		log.Printf("internal: mint %s: %v", certHost, err)
 		return
 	}
 	tc := tls.Server(c, &tls.Config{
@@ -63,18 +64,18 @@ func (g *Gateway) serveDiscovery(c net.Conn, certHost string) {
 		NextProtos:   []string{"http/1.1"},
 	})
 	if err := tc.Handshake(); err != nil {
-		log.Printf("discovery: tls %s: %v", certHost, err)
+		log.Printf("internal: tls %s: %v", certHost, err)
 		return
 	}
 	defer func() { _ = tc.Close() }()
 	policy := g.Policy()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.routeDiscovery(w, r, policy, profile)
+		g.routeInternal(w, r, policy, profile)
 	})
 	_ = http.Serve(&oneShotListener{c: tc}, h)
 }
 
-// routeDiscovery dispatches a request to the in-tunnel discovery
+// routeInternal dispatches a request to the in-tunnel internal API
 // entrypoint by path. clawpatrol.internal is the canonical device-facing
 // API surface, so it exposes the profile manifest at / and /manifest,
 // the gateway CA at /ca.crt, and a liveness + CA-fingerprint blob at
@@ -82,25 +83,25 @@ func (g *Gateway) serveDiscovery(c net.Conn, certHost string) {
 // serves, mirrored here so a device with only tunnel reachability can
 // fetch them by name. Unknown paths 404 rather than falling through to
 // the manifest, so the canonical paths stay unambiguous.
-func (g *Gateway) routeDiscovery(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile string) {
+func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile string) {
 	switch r.URL.Path {
 	case "/", "/manifest":
 		writeDiscoveryResponse(w, r, policy, profile)
 	case "/ca.crt":
-		g.serveDiscoveryCA(w)
+		g.serveInternalCA(w)
 	case "/info":
-		g.serveDiscoveryInfo(w)
+		g.serveInternalInfo(w)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-// serveDiscoveryCA returns the gateway CA in PEM form at
+// serveInternalCA returns the gateway CA in PEM form at
 // clawpatrol.internal/ca.crt. A client that trusts neither the system
 // store nor the pushed-down CA env vars can fetch the CA here and pin it
 // explicitly — the manifest text points at this path. Mirrors the
 // gateway web server's public /ca.crt (web.go serveCA).
-func (g *Gateway) serveDiscoveryCA(w http.ResponseWriter) {
+func (g *Gateway) serveInternalCA(w http.ResponseWriter) {
 	pemBytes := g.certs.CertPEM()
 	if len(pemBytes) == 0 {
 		http.Error(w, "ca not initialized", http.StatusServiceUnavailable)
@@ -111,11 +112,11 @@ func (g *Gateway) serveDiscoveryCA(w http.ResponseWriter) {
 	_, _ = w.Write(pemBytes)
 }
 
-// serveDiscoveryInfo answers clawpatrol.internal/info with a small
+// serveInternalInfo answers clawpatrol.internal/info with a small
 // liveness + identity blob carrying the CA fingerprint, so a client can
 // verify the CA it fetched from /ca.crt against an out-of-band value.
 // Mirrors the gateway web server's public /info (web.go serveInfo).
-func (g *Gateway) serveDiscoveryInfo(w http.ResponseWriter) {
+func (g *Gateway) serveInternalInfo(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	fp := ""
 	if pem := g.certs.CertPEM(); len(pem) > 0 {
@@ -130,10 +131,10 @@ func (g *Gateway) serveDiscoveryInfo(w http.ResponseWriter) {
 	})
 }
 
-// isDiscoveryVIP reports whether dstIP is the fixed VIP the dnsvip
-// allocator reserves for the discovery name — the signal the IP-literal
-// fallback path keys on when there's no SNI.
-func (g *Gateway) isDiscoveryVIP(dstIP string) bool {
+// isInternalVIP reports whether dstIP is the fixed VIP the dnsvip
+// allocator reserves for the internal API name — the signal the
+// IP-literal fallback path keys on when there's no SNI.
+func (g *Gateway) isInternalVIP(dstIP string) bool {
 	if g.dnsvip == nil {
 		return false
 	}
@@ -141,7 +142,7 @@ func (g *Gateway) isDiscoveryVIP(dstIP string) bool {
 	if err != nil {
 		return false
 	}
-	v4, v6 := g.dnsvip.DiscoveryVIPs()
+	v4, v6 := g.dnsvip.InternalVIPs()
 	return addr == v4 || addr == v6
 }
 
