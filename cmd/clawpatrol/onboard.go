@@ -852,6 +852,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	s.owner = owner
 	s.profile = profile
 	hostname := s.hostname
+	wholeMachine := s.wholeMachine
 	w.onboard.mu.Unlock()
 
 	// Recycle the wg /32 already bound to (owner, hostname) so a rejoin
@@ -862,7 +863,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP, s.wholeMachine)
+		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP, wholeMachine)
 		w.onboard.mu.Lock()
 		if err != nil {
 			s.err = err.Error()
@@ -899,7 +900,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			} else {
 				log.Printf("api-token mint for %s: %v", peerIP, perr)
 			}
-		} else if loginServer == "" && !s.wholeMachine {
+		} else if loginServer == "" && !wholeMachine {
 			// Tsnet daemon mode: no devices row yet — the tailnet IP
 			// only exists once the per-host daemon joins, which happens
 			// later when the operator runs `clawpatrol run`. Hold the
@@ -914,20 +915,24 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 				parentID = tsnetPlaceholderPrefix + hostname
 			}
 			w.onboard.seedPlaceholder(parentID, hostname, owner, profile)
+			// Seed the agents registry under the placeholder so the
+			// dashboard shows the just-approved device (and lets the
+			// operator re-assign its profile) before the daemon's
+			// first register call. The register promotion deletes this
+			// entry and re-seeds under the real tailnet IP. Seed BEFORE
+			// minting the token: /api/peer/tsnet/register authenticates
+			// with that token, so doing it first guarantees a register
+			// can't slip in and promote between mint and Seed, which
+			// would leave the re-seeded placeholder as an orphan ghost.
+			if w.g.agents != nil {
+				w.g.agents.Seed(parentID)
+			}
 			if token, perr := mintAndPersistPeerAPIToken(w.g.db, parentID); perr == nil {
 				w.onboard.mu.Lock()
 				s.apiToken = token
 				w.onboard.mu.Unlock()
 			} else {
 				log.Printf("api-token mint for %s: %v", parentID, perr)
-			}
-			// Seed the agents registry under the placeholder so the
-			// dashboard shows the just-approved device (and lets the
-			// operator re-assign its profile) before the daemon's
-			// first register call. The register promotion deletes
-			// this entry and re-seeds under the real tailnet IP.
-			if w.g.agents != nil {
-				w.g.agents.Seed(parentID)
 			}
 		}
 	}()
