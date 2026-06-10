@@ -166,6 +166,40 @@ func TestOnboardClaimSeedsAgentsRegistry(t *testing.T) {
 	t.Fatalf("agents registry has no entry for 10.55.0.9 after claim")
 }
 
+// The claim path (whole-machine Tailscale, where the device's tailnet
+// IP is only known post-`tailscale up`) must carry the operator-picked
+// profile onto the claimed IP — it never goes through approve's
+// AssignProfile or the register-promotion that the other modes use.
+func TestOnboardClaimAssignsProfile(t *testing.T) {
+	w := newOnboardAuthTestWebMux(t)
+	w.g.cfg.Load().Policy = onboardProfileTestPolicy()
+	w.g.agents = NewAgentRegistry()
+	w.g.agents.onboard = w.g.onboard
+	h := w.handler()
+	code := startOnboardSession(t, h, "?hostname=dev1&profile=prod")
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code="+url.QueryEscape(code), nil)
+	approveReq.AddCookie(authTestSessionCookie(t, w))
+	approveRR := httptest.NewRecorder()
+	h.ServeHTTP(approveRR, approveReq)
+	if approveRR.Code != http.StatusOK {
+		t.Fatalf("approve status = %d; body = %q", approveRR.Code, approveRR.Body.String())
+	}
+
+	dc := w.onboard.byUserCode(code).deviceCode
+	claimReq := httptest.NewRequest(http.MethodPost,
+		"/api/onboard/claim?device_code="+url.QueryEscape(dc)+"&ip=100.64.0.9&hostname=dev1", nil)
+	claimRR := httptest.NewRecorder()
+	h.ServeHTTP(claimRR, claimReq)
+	if claimRR.Code != http.StatusOK {
+		t.Fatalf("claim status = %d; body = %q", claimRR.Code, claimRR.Body.String())
+	}
+
+	if got := w.g.onboard.ProfileForIP("100.64.0.9"); got != "prod" {
+		t.Fatalf("ProfileForIP(100.64.0.9) = %q, want prod (claim must carry --profile)", got)
+	}
+}
+
 // The tsnet placeholder seeded at approve time must be promoted to
 // the real tailnet IP on the daemon's first register call: agents
 // entry replaced, profile and hostname carried over, devices row

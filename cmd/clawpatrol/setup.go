@@ -214,6 +214,9 @@ func runJoin(args []string) {
 		if err := applyWholeMachineExitNode(exitNode); err != nil {
 			fail("%v", err)
 		}
+		// Closing message printed here (not in onboardViaDeviceFlow) so
+		// it lands after the exit-node setup and the "DNS pinned…" line.
+		printWholeMachineDone("tailscale exit-node")
 	}
 }
 
@@ -810,6 +813,22 @@ func printChecklist(items []string) {
 	}
 }
 
+// printWholeMachineDone prints the closing message for a --whole-machine
+// join. Unlike per-process mode there's no `clawpatrol run` — all host
+// traffic already routes through the gateway, so tools run directly.
+// But the credential env (placeholders + SSL_CERT_FILE) only landed in
+// the shell rc, which the current shell hasn't sourced yet, so point
+// the operator at `clawpatrol env` / a fresh shell. via names the
+// routing mechanism (interface, "system extension", "exit-node").
+func printWholeMachineDone(via string) {
+	fmt.Println()
+	fmt.Printf("Installed! All host traffic now routes through the gateway (%s).\n", via)
+	fmt.Println("Run your tools directly — no `clawpatrol run` needed. This shell hasn't")
+	fmt.Println("loaded the injected credentials yet; start a new shell or run:")
+	fmt.Println()
+	fmt.Println(`    eval "$(clawpatrol env)"`)
+}
+
 // setupSummaryItems lowers a joinSetup into the human-facing one-liners
 // the join / login output blocks render. CA-trust failures and skipped
 // shell-rc updates surface as their own items so the operator sees what
@@ -1170,16 +1189,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
 		printChecklist(items)
-		fmt.Println()
 		if !wholeMachine {
+			fmt.Println()
 			fmt.Println("Installed! Try: clawpatrol run claude")
 		} else if runtime.GOOS == "darwin" {
-			fmt.Println("Installed! All host traffic routes via the system extension.")
+			printWholeMachineDone("system extension")
 		} else {
 			if err := wgQuickUp(iface, authKey); err != nil {
 				return true, fmt.Errorf("wg-quick up: %w", err)
 			}
-			fmt.Printf("Installed! All host traffic routes via the gateway (%s).\n", iface)
+			printWholeMachineDone(iface)
 		}
 		if persistErr != nil {
 			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", persistErr)
@@ -1269,8 +1288,15 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
 		printChecklist(items)
-		fmt.Println()
-		fmt.Println("Installed! Try: clawpatrol run claude")
+		if wholeMachine {
+			// Reached here only on darwin — Linux whole-machine falls
+			// through to the system-tailscale path below. The NE routes
+			// all host traffic, so the command runs directly.
+			printWholeMachineDone("system extension")
+		} else {
+			fmt.Println()
+			fmt.Println("Installed! Try: clawpatrol run claude")
+		}
 		return false, nil
 	}
 
@@ -1403,9 +1429,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	items := setupSummaryItems(*setup)
 	items = append(items, "✓ joined gateway")
 	printChecklist(items)
-	fmt.Println()
-	fmt.Println("Installed! Try: clawpatrol run claude")
-
+	// The closing message is printed by runJoin, after it sets the
+	// exit-node and pins DNS — otherwise "DNS pinned…" would land after
+	// "Installed!". (Linux whole-machine Tailscale only.)
 	return false, nil
 }
 

@@ -348,6 +348,14 @@ func (r *onboardRegistry) ClaimIP(deviceCode, ip, hostnameOverride string) (stri
 	} else if s.hostname != "" {
 		r.hostnameByIP[ip] = s.hostname
 	}
+	// Carry the operator-picked profile onto the claimed IP. The
+	// whole-machine Tailscale path reaches the gateway only via claim
+	// (its tailnet IP isn't known at approve time, and unlike the
+	// per-host daemon it never hits /api/peer/tsnet/register), so
+	// without this the device lands in no profile despite --profile.
+	if s.profile != "" {
+		r.profileByIP[ip] = s.profile
+	}
 	r.upsertLocked(ip)
 	return s.owner, true
 }
