@@ -220,10 +220,20 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	defer cancel()
 
 	var finish func(string)
+	lastState := "unknown"
+	// settle resolves the pending step (if shown) with line, else prints
+	// line on its own.
+	settle := func(line string) {
+		if finish != nil {
+			finish(line)
+		} else {
+			fmt.Println(line)
+		}
+	}
 	for {
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("tailnet bootstrap: timed out waiting for login")
+			return fmt.Errorf("tailnet bootstrap: timed out waiting for login (last state: %s)", lastState)
 		default:
 		}
 		st, err := lc.StatusWithoutPeers(deadline)
@@ -233,6 +243,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
+		lastState = st.BackendState
 		if finish == nil && st.AuthURL != "" {
 			// The box running `clawpatrol join` is usually headless
 			// (SSH session, no browser). Show the login URL + a QR so
@@ -242,14 +253,16 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			finish = beginStep("Log in to the tailnet to reach the gateway", linkDetail(st.AuthURL, true), true)
 			tryOpen(st.AuthURL) // best-effort local browser if one exists
 		}
-		if st.BackendState == "Running" {
-			if finish != nil {
-				finish("✓ logged in to the tailnet")
-			} else {
-				// Cached login — Running before any AuthURL appeared.
-				fmt.Println("✓ logged in to the tailnet")
-			}
+		switch st.BackendState {
+		case "Running":
+			settle("✓ logged in to the tailnet")
 			return nil
+		case "NeedsMachineAuth":
+			// Authenticated but the tailnet gates new devices on admin
+			// approval — it'll never reach Running on its own. Fail with
+			// a reason instead of waiting out the 10-minute deadline.
+			settle("! tailnet requires admin approval for this device")
+			return fmt.Errorf("tailnet bootstrap: device needs admin approval — approve it in the Tailscale admin console (Machines), then re-run")
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
