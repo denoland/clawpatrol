@@ -40,6 +40,11 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
+	// Middlewares contains every declared middleware, keyed by name.
+	// Endpoints store ordered *CompiledMiddleware pointers in their
+	// Middleware field — the same instances as the entries here.
+	Middlewares map[string]*CompiledMiddleware
+
 	// Approvers / Credentials surface the same entities from the
 	// Policy struct under a runtime-friendly typed alias — they're
 	// pointers into the same Entity records, no copies.
@@ -126,6 +131,13 @@ type CompiledEndpoint struct {
 	// Populated from the endpoint plugin's optional EndpointTunnel()
 	// accessor.
 	Tunnel *CompiledTunnel
+
+	// Middleware is the resolved, ordered request-side hook chain this
+	// endpoint runs after credential injection and before the upstream
+	// forward. Empty for endpoints with no `middleware = [...]` attr.
+	// The dispatcher walks it in order; each entry's Body is type-
+	// asserted to runtime.HTTPMiddleware at request time.
+	Middleware []*CompiledMiddleware
 }
 
 // RequiresVIP reports whether DNS-VIP allocation should claim this
@@ -202,6 +214,20 @@ type CompiledTunnel struct {
 // log it.
 const KeepaliveAlwaysSentinel = time.Duration(-1)
 
+// CompiledMiddleware is the runtime-friendly view of one middleware
+// block. Endpoints hold an ordered slice of these via
+// CompiledEndpoint.Middleware; the dispatcher type-asserts Body to
+// runtime.HTTPMiddleware and calls RewriteHTTPRequest per request.
+type CompiledMiddleware struct {
+	Name   string
+	Plugin *Plugin
+	// Body is whatever the middleware plugin's Build returned — the
+	// decoded config instance (e.g. *middlewares.AnthropicSystemPrompt)
+	// carrying the runtime methods. Runtime callers type-assert it to
+	// runtime.HTTPMiddleware.
+	Body any
+}
+
 // CompiledCredential expands a credential's `endpoint = X` /
 // `endpoints = [...]` binding into a per-endpoint entry. The
 // Disambiguators map carries the merged dispatch discriminators
@@ -273,6 +299,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
+		Middlewares:    map[string]*CompiledMiddleware{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
 	}
@@ -282,6 +309,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if err := compileTunnels(cp, p); err != nil {
 		return nil, err
 	}
+
+	// Compile middlewares before endpoints so endpoint compilation can
+	// resolve `middleware = [...]` refs to *CompiledMiddleware pointers.
+	compileMiddlewares(cp, p)
 
 	// Compile every endpoint once into a CompiledEndpoint with the
 	// (placeholder) rule list. Credentials attach in the next pass —
@@ -536,6 +567,16 @@ func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEnd
 			return nil, fmt.Errorf("tunnel %q routes endpoint %q but it has no hostnames in `hosts` (only IP literals); tunneled endpoints rely on DNS-VIP interception, which needs a name to intercept", tn, name)
 		}
 	}
+	// Resolve the ordered `middleware = [...]` reflist into shared
+	// *CompiledMiddleware pointers. Declaration order is preserved —
+	// the dispatcher runs them in list order.
+	for _, mwName := range ent.Framework.RefList("middleware") {
+		cm, ok := cp.Middlewares[mwName]
+		if !ok {
+			return nil, fmt.Errorf("middleware %q not declared", mwName)
+		}
+		ce.Middleware = append(ce.Middleware, cm)
+	}
 	return ce, nil
 }
 
@@ -650,6 +691,21 @@ type TunnelCommon struct {
 // the concrete plugin type.
 type TunnelCommonRead interface {
 	TunnelCommon() TunnelCommon
+}
+
+// compileMiddlewares lowers every middleware block into a
+// *CompiledMiddleware keyed by name. Middlewares carry no cross-refs
+// (no via chain, no credential binding in v1), so this is a flat
+// pass; endpoint compilation links them in via the `middleware = [...]`
+// reflist.
+func compileMiddlewares(cp *CompiledPolicy, p *Policy) {
+	for name, ent := range p.Middlewares {
+		cp.Middlewares[name] = &CompiledMiddleware{
+			Name:   name,
+			Plugin: ent.Plugin,
+			Body:   ent.Body,
+		}
+	}
 }
 
 // compileTunnels lowers every tunnel block into a *CompiledTunnel,

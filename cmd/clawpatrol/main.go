@@ -2004,6 +2004,49 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []by
 	return b, false
 }
 
+// applyRequestMiddleware runs the endpoint's ordered request-side
+// middleware chain against req. It reads the full request body (the
+// match path re-attached the stream, so a fresh read here yields the
+// complete body), hands it to each middleware's RewriteHTTPRequest in
+// declared order, and re-attaches the result with a corrected
+// Content-Length. Any middleware error aborts the chain and is
+// returned; the caller fails the request closed with a 502.
+//
+// CEL rule predicates matched against the pre-middleware body — this
+// runs after matching, so a middleware-injected system prompt is the
+// body the upstream receives, not the body the policy evaluated. The
+// caller gates on len(ep.Middleware) > 0 so endpoints without a
+// middleware never pay this full-body read.
+func (g *Gateway) applyRequestMiddleware(req *http.Request, ep *config.CompiledEndpoint) error {
+	var body []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return fmt.Errorf("reading request body: %w", err)
+		}
+		body = b
+	}
+	for _, mw := range ep.Middleware {
+		r, ok := mw.Body.(runtime.HTTPMiddleware)
+		if !ok {
+			// The registry checker rejects middleware plugins whose
+			// Body doesn't satisfy HTTPMiddleware at init time, so this
+			// is defensive — skip rather than fail a live request.
+			continue
+		}
+		out, err := r.RewriteHTTPRequest(req.Context(), req, body)
+		if err != nil {
+			return fmt.Errorf("middleware %q: %w", mw.Name, err)
+		}
+		body = out
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	return nil
+}
+
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
@@ -2457,6 +2500,37 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
 			return
+		}
+
+		// Request-side middleware chain. Runs after credential
+		// injection (so a middleware sees the real auth headers) and
+		// after the WS early-return (middlewares are HTTP-body
+		// transforms; WS frames have their own credential rewrite
+		// path). Each middleware in the endpoint's ordered list may
+		// mutate the body; an error fails the request closed with a
+		// 502 and no upstream call. Endpoints with no middleware skip
+		// the body read entirely.
+		if len(ep.Middleware) > 0 {
+			if err := g.applyRequestMiddleware(req, ep); err != nil {
+				log.Printf("middleware %s %s %s: %v", host, req.Method, req.URL.Path, err)
+				if hitlRetryConsumedOperation != nil {
+					if transitionErr := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamFailed, err.Error()); transitionErr != nil {
+						log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamFailed, transitionErr)
+					}
+				}
+				if asyncOp.ID != "" {
+					if _, trErr := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateUpstreamFailed, err.Error()); trErr != nil {
+						log.Printf("hitl async operation upstream failed %s: %v", asyncOp.ID, trErr)
+					}
+				}
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+				ev.Status = 502
+				ev.Action = "error"
+				ev.Reason = err.Error()
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				return
+			}
 		}
 
 		trackKind := trackKindFor(host)

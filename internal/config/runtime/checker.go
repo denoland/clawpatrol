@@ -69,6 +69,10 @@ func checkRuntime(p *config.Plugin) []string {
 		if _, ok := p.Runtime.(TunnelRuntime); !ok {
 			return []string{fmt.Sprintf("Runtime %T does not satisfy TunnelRuntime", p.Runtime)}
 		}
+	case config.KindMiddleware:
+		if _, ok := p.Runtime.(HTTPMiddleware); !ok {
+			return []string{fmt.Sprintf("Runtime %T does not satisfy HTTPMiddleware", p.Runtime)}
+		}
 	}
 	return nil
 }

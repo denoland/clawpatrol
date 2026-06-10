@@ -4,9 +4,9 @@
 // state_dir / tailscale {} / ...) live at the top of the file and
 // decode via
 // gohcl into the Gateway struct. Policy blocks (defaults / approver /
-// credential / endpoint / rule / profile) are dispatched to
-// plugins by their first label; each plugin owns its body schema, the
-// in-memory record it builds, and (later) the runtime that handles
+// credential / endpoint / middleware / rule / profile) are dispatched
+// to plugins by their first label; each plugin owns its body schema,
+// the in-memory record it builds, and (later) the runtime that handles
 // requests for it.
 package config
 
@@ -34,13 +34,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindMiddleware Kind = "middleware"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindMiddleware:
 		return 2 // first = type, second = name
 	case KindRule, KindProfile:
 		return 1 // name
@@ -109,6 +110,7 @@ type Plugin struct {
 	//   KindApprover   → runtime.ApproverRuntime
 	//   KindRule       → runtime.RuleMatcherFactory
 	//   KindTunnel     → runtime.TunnelRuntime
+	//   KindMiddleware → runtime.HTTPMiddleware
 	// nil means "schema-only; runtime not implemented" — request-time
 	// dispatch reports a clear diagnostic when it tries to use one.
 	Runtime any
@@ -181,6 +183,12 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+		// `middleware = [type.name, ...]` is an ordered list of
+		// request-side hooks the dispatcher runs after credential
+		// injection. List shape (vs tunnel's singular) because
+		// same-stage composition is the point — every middleware in
+		// the list runs in declared order.
+		{Name: "middleware", Kind: KindMiddleware, Optional: true, List: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them

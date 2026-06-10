@@ -685,3 +685,24 @@ Configures the tunnel runtime.
 tunnel "tailscale" "example" {}
 ```
 
+## `middleware` blocks
+
+Block syntax: `middleware "<type>" "<name>" { ... }`
+
+Registered types: [`anthropic_system_prompt`](#middleware-anthropicsystemprompt).
+
+### `middleware "anthropic_system_prompt" "<name>"`
+
+A request middleware that appends Text to
+the `system` field of Anthropic `/v1/messages` requests.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `text` | `string` | yes | The literal block appended to the request's system prompt. Supports `<<file:NAME>>` inlining so operators can keep large discovery prompts in a sidecar file. |
+
+```hcl
+middleware "anthropic_system_prompt" "example" {
+  text = "example"
+}
+```
+

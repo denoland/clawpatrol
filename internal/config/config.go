@@ -454,6 +454,7 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
+	Middlewares map[string]*Entity
 
 	Profiles map[string]*Profile
 
@@ -813,6 +814,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
+		Middlewares: make(map[string]*Entity),
 		Profiles:    make(map[string]*Profile),
 	}
 
@@ -1056,6 +1058,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
+			{Type: "middleware", LabelNames: []string{"type", "name"}},
 		},
 	}
 	content, diags := body.Content(schema)
@@ -1130,15 +1133,16 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		p.Order = append(p.Order, sym.Name)
 	}
 
-	// Decode order: credentials and tunnels first (no cross-deps on
-	// other kinds), then endpoints (which reference both), then rules
-	// (which reference endpoints), then approvers (referenced by
-	// rules but with no body-level dep on them at decode time).
+	// Decode order: credentials, tunnels and middlewares first (no
+	// cross-deps on other kinds), then endpoints (which reference
+	// them), then rules (which reference endpoints), then approvers
+	// (referenced by rules but with no body-level dep on them at
+	// decode time).
 	// Symbol-table-backed ref resolution doesn't actually require this
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindMiddleware, KindEndpoint, KindRule} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -1190,6 +1194,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Credentials[sym.Name] = ent
 			case KindTunnel:
 				p.Tunnels[sym.Name] = ent
+			case KindMiddleware:
+				p.Middlewares[sym.Name] = ent
 			case KindEndpoint:
 				p.Endpoints[sym.Name] = ent
 			case KindRule:
@@ -1201,6 +1207,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 
 	diags = append(diags, validateCredentialBindings(p)...)
 	diags = append(diags, validateProfileDisambiguators(p, table)...)
+	diags = append(diags, validateMiddlewareEndpointCompat(p)...)
 
 	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
@@ -1224,6 +1231,55 @@ func validateCredentialBindings(p *Policy) hcl.Diagnostics {
 				Detail:   "Use exactly one of `endpoint = X` (singular) or `endpoints = [X, Y, ...]` (list).",
 				Subject:  &ent.Symbol.Block.DefRange,
 			})
+		}
+	}
+	return diags
+}
+
+// MiddlewareEndpointCompat is the optional interface a middleware
+// plugin's body implements to assert it is compatible with the hosts
+// of an endpoint it's attached to. The loader calls CheckEndpointHosts
+// once per (endpoint, middleware) binding; a non-nil error becomes an
+// hcl.Diagnostic pinned to the endpoint block. `anthropic_system_prompt`
+// uses it to reject attachment to endpoints that don't intercept
+// api.anthropic.com — same compatibility-check shape as the rest of
+// the loader's validation.
+type MiddlewareEndpointCompat interface {
+	CheckEndpointHosts(hosts []string) error
+}
+
+// validateMiddlewareEndpointCompat walks every endpoint's resolved
+// `middleware = [...]` list and runs each middleware's optional
+// host-family compatibility check against the endpoint's hosts. A
+// middleware type that doesn't implement MiddlewareEndpointCompat is
+// compatible with any endpoint.
+func validateMiddlewareEndpointCompat(p *Policy) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for epName, ep := range p.Endpoints {
+		mws := ep.Framework.RefList("middleware")
+		if len(mws) == 0 {
+			continue
+		}
+		hosts := extractHosts(ep.Body)
+		for _, mwName := range mws {
+			mwEnt, ok := p.Middlewares[mwName]
+			if !ok {
+				// Unresolved reference is already reported by the
+				// framework ref resolver; skip.
+				continue
+			}
+			compat, ok := mwEnt.Body.(MiddlewareEndpointCompat)
+			if !ok {
+				continue
+			}
+			if err := compat.CheckEndpointHosts(hosts); err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Middleware %q incompatible with endpoint %q", mwName, epName),
+					Detail:   err.Error(),
+					Subject:  &ep.Symbol.Block.DefRange,
+				})
+			}
 		}
 	}
 	return diags

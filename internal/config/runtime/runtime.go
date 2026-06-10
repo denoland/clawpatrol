@@ -51,6 +51,28 @@ type HTTPRequestSigner interface {
 	SignHTTPRequest(ctx context.Context, req *http.Request, sec Secret, endpoint any) error
 }
 
+// HTTPMiddleware is the middleware-plugin contract for request-side
+// body rewriting. The dispatcher calls RewriteHTTPRequest after
+// credential injection and before the upstream forward, once per
+// middleware in an endpoint's ordered `middleware = [...]` list. The
+// hook sees the full request body (read and buffered by the host) and
+// returns the body to forward; it may inspect req to gate on method /
+// path / headers and pass the body through unchanged when the request
+// isn't one it transforms.
+//
+// Returning (nil, err) fails the request closed: the dispatcher emits
+// a 502 + error event and does NOT forward upstream. This is the
+// see-the-request, optionally-mutate, optionally-short-circuit seam —
+// mirrors HTTPCredentialRuntime, but for body transforms rather than
+// auth injection. Middlewares are endpoint-attached (not rule- or
+// credential-attached) so the transform binds to the protocol surface.
+//
+// Implementations live next to their config plugin
+// (config/plugins/middlewares) so schema and runtime stay co-located.
+type HTTPMiddleware interface {
+	RewriteHTTPRequest(ctx context.Context, req *http.Request, body []byte) ([]byte, error)
+}
+
 // WebSocketCredentialRuntime is the credential-plugin contract for
 // server-bound WebSocket text payloads that carry token placeholders.
 // The gateway calls this after decoding/unmasking a complete text frame
