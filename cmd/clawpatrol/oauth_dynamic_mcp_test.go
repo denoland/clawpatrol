@@ -11,18 +11,49 @@ import (
 	"golang.org/x/oauth2"
 )
 
+func failOAuthTestHandler(t *testing.T, w http.ResponseWriter, format string, args ...any) {
+	t.Helper()
+	t.Errorf(format, args...)
+	http.Error(w, "test handler assertion failed", http.StatusInternalServerError)
+}
+
+func TestNormalizeOAuthExchangeInput(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "raw code", in: "abc123", want: "abc123"},
+		{name: "raw code with suffix", in: "abc123?ignored=1", want: "abc123"},
+		{name: "https callback url", in: "https://gateway.example/oauth/callback?code=url-code&state=s", want: "url-code"},
+		{name: "localhost callback without scheme", in: "localhost:8900/callback?code=loopback-code&state=s", want: "loopback-code"},
+		{name: "absolute path callback", in: "/callback?code=path-code&state=s", want: "path-code"},
+		{name: "raw query", in: "code=query-code&state=s", want: "query-code"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeOAuthExchangeInput(tt.in); got != tt.want {
+				t.Fatalf("normalizeOAuthExchangeInput(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDynamicMCPRefreshSelectedByFlowForAnyTokenURL(t *testing.T) {
 	var sawRefresh bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawRefresh = true
 		if got := r.Header.Get("Authorization"); got != "" {
-			t.Fatalf("Authorization = %q, want no client-auth header", got)
+			failOAuthTestHandler(t, w, "Authorization = %q, want no client-auth header", got)
+			return
 		}
 		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
+			failOAuthTestHandler(t, w, "parse form: %v", err)
+			return
 		}
 		if got := r.Form.Get("client_id"); got != "external-dynamic-client" {
-			t.Fatalf("client_id = %q, want external-dynamic-client", got)
+			failOAuthTestHandler(t, w, "client_id = %q, want external-dynamic-client", got)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":3600}`))
@@ -59,19 +90,24 @@ func TestDynamicMCPRefreshSelectedByFlowForAnyTokenURL(t *testing.T) {
 func TestDynamicMCPRefreshSourceSendsClientID(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
+			failOAuthTestHandler(t, w, "method = %s, want POST", r.Method)
+			return
 		}
 		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
+			failOAuthTestHandler(t, w, "parse form: %v", err)
+			return
 		}
 		if got := r.Form.Get("grant_type"); got != "refresh_token" {
-			t.Fatalf("grant_type = %q, want refresh_token", got)
+			failOAuthTestHandler(t, w, "grant_type = %q, want refresh_token", got)
+			return
 		}
 		if got := r.Form.Get("client_id"); got != "dyn-client" {
-			t.Fatalf("client_id = %q, want dyn-client", got)
+			failOAuthTestHandler(t, w, "client_id = %q, want dyn-client", got)
+			return
 		}
 		if got := r.Form.Get("refresh_token"); got != "old-refresh" {
-			t.Fatalf("refresh_token = %q, want old-refresh", got)
+			failOAuthTestHandler(t, w, "refresh_token = %q, want old-refresh", got)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":3600}`))
@@ -106,10 +142,12 @@ func TestStartDynamicMCPFlowUsesConfiguredRedirectURI(t *testing.T) {
 			RedirectURIs []string `json:"redirect_uris"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode register body: %v", err)
+			failOAuthTestHandler(t, w, "decode register body: %v", err)
+			return
 		}
 		if len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "http://localhost:8900/callback" {
-			t.Fatalf("redirect_uris = %#v, want localhost callback", got.RedirectURIs)
+			failOAuthTestHandler(t, w, "redirect_uris = %#v, want localhost callback", got.RedirectURIs)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"client_id":"client-loopback"}`))
@@ -155,10 +193,12 @@ func TestRegisterOAuthClientIncludesScopes(t *testing.T) {
 	var got map[string]any
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
+			failOAuthTestHandler(t, w, "method = %s, want POST", r.Method)
+			return
 		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode body: %v", err)
+			failOAuthTestHandler(t, w, "decode body: %v", err)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"client_id":"client-123"}`))

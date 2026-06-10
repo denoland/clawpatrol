@@ -219,8 +219,8 @@ func (r *OAuthRegistry) Set(ctx context.Context, id string, tok *oauth2.Token) e
 
 // SetWithClient is Set + a dynamically registered client_id. Pass empty
 // clientID for static-ClientID flows; pass the per-credential client_id
-// for RFC 7591 dynamic registration flows (notion_mcp/dynamic_mcp). The clientID is
-// stamped onto the in-memory state and persisted alongside the tokens so
+// for RFC 7591 dynamic registration flows (notion_mcp/dynamic_mcp). The
+// clientID is stamped onto the in-memory state and persisted alongside the tokens so
 // refresh continues to work after restart.
 //
 // The userinfo fetch (fetchOAuthProfile) runs OUTSIDE the registry lock
@@ -539,7 +539,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 		}
 		s := newState(it, r.db)
 		// Restore the dynamically-registered client_id BEFORE setToken
-		// so the refresh source (notion_mcp/dynamic_mcp) picks it up via s.cfg.
+		// so dynamic MCP refresh sources pick it up via s.cfg.
 		if clientID.Valid && clientID.String != "" {
 			s.clientID = clientID.String
 			s.cfg.ClientID = clientID.String
@@ -570,8 +570,9 @@ type oauthSession struct {
 	id       string
 	created  time.Time
 	// dynClientID is the RFC 7591 client_id this session registered at
-	// start time (notion_mcp/dynamic_mcp). Empty for static-ClientID flows. Stamped
-	// onto the credential row at exchange time so refresh can replay it.
+	// start time (dynamic MCP flows). Empty for static-ClientID flows.
+	// Stamped onto the credential row at exchange time so refresh can
+	// replay it.
 	dynClientID string
 }
 
@@ -787,6 +788,40 @@ func registerOAuthClient(ctx context.Context, registerURL, redirectURI string, s
 	return rr.ClientID, nil
 }
 
+func normalizeOAuthExchangeInput(input string) string {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return ""
+	}
+
+	// Operators often paste the callback URL after providers redirect to a
+	// loopback URI (for example localhost:8900/callback?code=...&state=...).
+	// Treat anything carrying a code query parameter as URL/query-shaped even
+	// when the browser omitted the scheme in the copied text.
+	if strings.Contains(s, "?code=") || strings.Contains(s, "&code=") {
+		candidate := s
+		if !strings.Contains(candidate, "://") && !strings.HasPrefix(candidate, "/") {
+			candidate = "http://" + candidate
+		}
+		if u, err := url.Parse(candidate); err == nil {
+			if code := strings.TrimSpace(u.Query().Get("code")); code != "" {
+				return code
+			}
+		}
+	}
+	if strings.HasPrefix(s, "code=") || strings.HasPrefix(s, "?code=") {
+		if vals, err := url.ParseQuery(strings.TrimPrefix(s, "?")); err == nil {
+			if code := strings.TrimSpace(vals.Get("code")); code != "" {
+				return code
+			}
+		}
+	}
+	if i := strings.IndexAny(s, "#&?"); i > 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -800,13 +835,10 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	body.Code = strings.TrimSpace(body.Code)
+	body.Code = normalizeOAuthExchangeInput(body.Code)
 	if body.Code == "" || body.State == "" {
 		http.Error(rw, "missing code/state", 400)
 		return
-	}
-	if i := strings.IndexAny(body.Code, "#&?"); i > 0 {
-		body.Code = body.Code[:i]
 	}
 
 	w.mu.Lock()
@@ -1196,7 +1228,7 @@ func (n *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	form.Set("client_id", n.cfg.ClientID)
 	// See anthropicRefreshSource.Token: oauth2 has no ctx on Token(),
 	// so we bound the upstream round-trip here so n.mu stays available
-	// even if Notion's token endpoint hangs.
+	// even if the MCP token endpoint hangs.
 	ctx, cancel := context.WithTimeout(context.Background(), oauthUpstreamTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", n.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
