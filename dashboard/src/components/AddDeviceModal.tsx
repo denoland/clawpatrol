@@ -20,6 +20,10 @@ export function AddDeviceModal({
   const url = whoami?.public_url || window.location.origin;
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profile, setProfile] = useState("");
+  // Per-process `clawpatrol run` is the default; --whole-machine
+  // installs system Tailscale and pins the gateway as the host-wide
+  // exit node.
+  const [mode, setMode] = useState<"run" | "whole-machine">("run");
 
   useEffect(() => {
     listProfiles()
@@ -43,34 +47,48 @@ export function AddDeviceModal({
     "clawpatrol",
     "join",
     ...(login ? ["--login"] : []),
+    ...(mode === "whole-machine" ? ["--whole-machine"] : []),
     ...(profile ? ["--profile", shellArg(profile)] : []),
     url,
   ].join(" ");
 
   return (
     <Modal title="Add device" onClose={onClose}>
-      <div className="p-4 space-y-6">
+      <div className="p-4 space-y-5">
         <h3 className="text-sm leading-none tracking-tight text-text font-mono">
           Run the following on the new device:
         </h3>
-        {profiles.length > 1 && (
-          <div className="space-y-1">
-            <label className="text-sm text-text-muted font-sans block">
-              Profile for the new device
+
+        <div className="space-y-3">
+          {profiles.length > 1 && (
+            <label className="block space-y-1">
+              <span className="text-xs text-text-muted font-sans">Profile</span>
+              <select
+                value={profile}
+                onChange={(e) => setProfile(e.target.value)}
+                className="w-full font-mono text-xs text-text bg-canvas border-1.5 border-navy px-2 py-1.5"
+              >
+                {profiles.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
             </label>
+          )}
+          <label className="block space-y-1">
+            <span className="text-xs text-text-muted font-sans">Mode</span>
             <select
-              value={profile}
-              onChange={(e) => setProfile(e.target.value)}
+              value={mode}
+              onChange={(e) => setMode(e.target.value as "run" | "whole-machine")}
               className="w-full font-mono text-xs text-text bg-canvas border-1.5 border-navy px-2 py-1.5"
             >
-              {profiles.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
+              <option value="run">clawpatrol run (per-process, default)</option>
+              <option value="whole-machine">--whole-machine (host-wide exit node)</option>
             </select>
-          </div>
-        )}
+          </label>
+        </div>
+
         <Step n={1} label="Install" cmd={installCmd} />
         <Step
           n={2}
@@ -111,20 +129,20 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   }
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        <span className="w-6 h-6 squircle-md bg-navy-100 text-xs font-semibold font-mono flex items-center justify-center shrink-0">
-          {n}
-        </span>
-        <span className="text-sm text-text-muted font-sans">{label}</span>
-      </div>
-      <div className="relative">
-        <pre className="bg-navy rounded px-4 py-4 text-xs font-mono text-canvas overflow-x-auto whitespace-pre">
-          {cmd}
-        </pre>
-        <Button variant="outline" onClick={copy} className="absolute top-2.5 right-1">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 squircle-md bg-navy-100 text-xs font-semibold font-mono flex items-center justify-center shrink-0">
+            {n}
+          </span>
+          <span className="text-sm text-text-muted font-sans truncate">{label}</span>
+        </div>
+        <Button variant="outline" onClick={copy} className="shrink-0">
           {copied ? "copied" : "copy"}
         </Button>
       </div>
+      <pre className="bg-navy rounded px-4 py-4 text-xs font-mono text-canvas overflow-x-auto whitespace-pre">
+        {cmd}
+      </pre>
     </div>
   );
 }

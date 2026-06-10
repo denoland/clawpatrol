@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -299,6 +300,14 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 		return
 	}
 	if who.Node != nil {
+		// An ephemeral `--login` join-bootstrap node is not a managed
+		// device — its API calls during onboarding get tracked like
+		// any tailnet peer, but it's discarded the instant join
+		// completes. Drop it once whois reveals what it is.
+		if strings.HasPrefix(who.Node.Hostinfo.Hostname(), bootstrapHostnamePrefix) {
+			delete(r.agents, ip)
+			return
+		}
 		// Onboard-supplied hostname (via /api/onboard/claim or
 		// /api/peer/tsnet/register) takes priority. The whois response
 		// reflects whatever the tsnet node registered with (the daemon's
@@ -945,6 +954,12 @@ func (w *webMux) agentsList() []*Agent {
 	if w.g.agents != nil {
 		snap = w.g.agents.snapshot()
 	}
+	// Hide ephemeral `--login` join-bootstrap nodes — fillIdentity drops
+	// them once whois resolves, but filter here too so they never flash
+	// into the list in the window before that lands.
+	snap = slices.DeleteFunc(snap, func(a *Agent) bool {
+		return strings.HasPrefix(a.Hostname, bootstrapHostnamePrefix)
+	})
 	// External IPs: the underlay v4/v6 each WG peer is dialing in from.
 	// Show these in place of the server-side /32 (routing artefact).
 	// Live endpoint observed via wg-go IpcGet — persist into the devices

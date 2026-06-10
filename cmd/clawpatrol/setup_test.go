@@ -34,3 +34,29 @@ func TestIsTailnetOnlyURL(t *testing.T) {
 		})
 	}
 }
+
+// approveBaseFromVerifyURL must return the dashboard origin of the
+// verify URL so auto-approve POSTs to the operator-gated API (where
+// the bootstrap node's whois identity is checked), not the public
+// Funnel join URL whose allowlist 404s /api/onboard/approve.
+func TestApproveBaseFromVerifyURL(t *testing.T) {
+	const fallback = "https://clawpatrol-gateway.tail9a48e.ts.net"
+	cases := []struct {
+		name      string
+		verifyURL string
+		want      string
+	}{
+		{"tailnet dashboard url", "http://100.79.206.14:8080/#/onboard/NDVL-4343", "http://100.79.206.14:8080"},
+		{"public dashboard url", "https://gw.example.com/#/onboard/X", "https://gw.example.com"},
+		{"empty falls back", "", fallback},
+		{"garbage falls back", "::not-a-url::", fallback},
+		{"missing host falls back", "http:///#/onboard/X", fallback},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := approveBaseFromVerifyURL(c.verifyURL, fallback); got != c.want {
+				t.Errorf("approveBaseFromVerifyURL(%q) = %q; want %q", c.verifyURL, got, c.want)
+			}
+		})
+	}
+}

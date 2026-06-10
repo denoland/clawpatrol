@@ -73,6 +73,13 @@ func (s *ramStateStore) WriteState(k ipn.StateKey, v []byte) error {
 
 // tailnetBootstrap is a transient tsnet.Server that exists only for
 // the duration of `clawpatrol join`. Use Client() to talk to the
+// bootstrapHostnamePrefix names the ephemeral tsnet node a `--login`
+// join spins up to reach the gateway over the tailnet. The gateway
+// filters agents whose whois hostname carries this prefix out of the
+// device list — the node is discarded the instant join completes and
+// is never a managed device.
+const bootstrapHostnamePrefix = "clawpatrol-bootstrap-"
+
 // gateway over the tailnet, then call Close to log the node out and
 // reclaim the log dir.
 type tailnetBootstrap struct {
@@ -151,7 +158,7 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 		cleanup()
 		return nil, fmt.Errorf("tailnet bootstrap: random: %w", err)
 	}
-	hostname := "clawpatrol-bootstrap-" + hex.EncodeToString(suffix)
+	hostname := bootstrapHostnamePrefix + hex.EncodeToString(suffix)
 
 	s := &tsnet.Server{
 		// Dir still hosts tsnet's log buffer (tailscaled.log.conf
@@ -236,6 +243,11 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			fmt.Println()
 			fmt.Printf("    %s\n", st.AuthURL)
 			fmt.Println()
+			// The box running `clawpatrol join` often has no browser
+			// (headless VM, SSH session). Print a QR alongside so the
+			// operator can scan it from a phone — this is a public
+			// login.tailscale.com URL, reachable from any device.
+			printLoginQR(st.AuthURL)
 			tryOpen(st.AuthURL)
 			printed = true
 		}

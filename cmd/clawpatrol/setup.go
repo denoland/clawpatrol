@@ -975,7 +975,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if profile != "" {
 			aq.Set("profile", profile)
 		}
-		approveURL := gateway + "/api/onboard/approve?" + aq.Encode()
+		// Approve must hit the same origin the dashboard's Approve
+		// button POSTs from — the operator-gated dashboard/API, where
+		// the bootstrap node's tailnet whois identity is checked. The
+		// `gateway` arg is the join URL, which for a funnel-enabled
+		// gateway is the public :443 Funnel whose allowlist excludes
+		// /api/onboard/approve (it would 404). verify_url already
+		// points at that dashboard origin (the tailnet :8080 API in
+		// tsnet mode), so derive the approve base from it.
+		approveBase := approveBaseFromVerifyURL(start.VerifyURL, gateway)
+		approveURL := approveBase + "/api/onboard/approve?" + aq.Encode()
 		if ar, aerr := cli.Post(approveURL, "application/json", nil); aerr == nil {
 			body, _ := io.ReadAll(io.LimitReader(ar.Body, 1024))
 			_ = ar.Body.Close()
@@ -1462,8 +1471,34 @@ var tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 // ▀ / ▄ / █ / space unicode chars. Half the vertical space of the
 // ANSI-colored block-per-cell variant, and renders cleanly when the
 // operator pipes the join output to a file or pastes it into chat.
+// approveBaseFromVerifyURL returns the scheme://host origin of the
+// onboard verify URL — the dashboard origin whose /api/onboard/approve
+// is the same handler the dashboard Approve button POSTs to. Falls back
+// to the join URL when verify_url is absent or unparseable.
+func approveBaseFromVerifyURL(verifyURL, fallback string) string {
+	if verifyURL == "" {
+		return fallback
+	}
+	u, err := neturl.Parse(verifyURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fallback
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func printVerifyQR(url string) {
 	fmt.Println("Tailnet-only URL — scan from a device with tailnet access:")
+	fmt.Println()
+	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
+	fmt.Println()
+}
+
+// printLoginQR renders a QR for the interactive tailnet login URL. The
+// box running `clawpatrol join` is frequently headless, so scanning
+// from a phone is the path of least resistance. Unlike the verify URL
+// this is a public login.tailscale.com link, reachable anywhere.
+func printLoginQR(url string) {
+	fmt.Println("No browser? Scan to log in from another device:")
 	fmt.Println()
 	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
 	fmt.Println()
