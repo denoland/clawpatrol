@@ -18,7 +18,3 @@ device profile; it lists only what this profile grants.
 - Credential: postgres_credential `pg-rw` — connect with database=app user=writer
 - Example: `psql "host=pg.example port=5432 user=reader dbname=app sslmode=require"`
 
-## Credentials (2)
-
-- postgres_credential `pg-ro` → endpoints: pg
-- postgres_credential `pg-rw` → endpoints: pg

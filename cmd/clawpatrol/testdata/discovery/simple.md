@@ -15,6 +15,3 @@ device profile; it lists only what this profile grants.
 - Credential: bearer_token `gh` — send placeholder `PH_GH`
 - Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
 
-## Credentials (1)
-
-- bearer_token `gh` → placeholder `PH_GH` → endpoints: github

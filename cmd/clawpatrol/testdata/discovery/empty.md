@@ -11,6 +11,3 @@ device profile; it lists only what this profile grants.
 
 _None reachable for this profile._
 
-## Credentials (0)
-
-_None granted to this profile._

@@ -477,22 +477,6 @@ func (m *DiscoveryManifest) Markdown() string {
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "## Credentials (%d)\n\n", len(m.Credentials))
-	if len(m.Credentials) == 0 {
-		b.WriteString("_None granted to this profile._\n")
-	}
-	for _, c := range m.Credentials {
-		line := fmt.Sprintf("- %s `%s`", c.Type, c.Name)
-		if c.Placeholder != "" {
-			line += fmt.Sprintf(" → placeholder `%s`", c.Placeholder)
-		}
-		if len(c.Endpoints) > 0 {
-			line += " → endpoints: " + strings.Join(c.Endpoints, ", ")
-		} else {
-			line += " → (no reachable endpoint in this profile)"
-		}
-		b.WriteString(line + "\n")
-	}
 	return b.String()
 }
 

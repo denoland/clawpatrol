@@ -46,10 +46,3 @@ device profile; it lists only what this profile grants.
 - Credential: postgres_credential `rds-rw` — connect with database=prod user=app
 - Example: `psql "host=rds.example port=5432 user=app dbname=prod sslmode=require"`
 
-## Credentials (5)
-
-- clickhouse_credential `ch-ro` → endpoints: metrics
-- bearer_token `gh` → placeholder `PH_GH` → endpoints: github
-- postgres_credential `k8s-rw` → endpoints: k8s-pg
-- postgres_credential `pg-rw` → endpoints: prod-pg
-- postgres_credential `rds-rw` → endpoints: rds-pg
