@@ -239,12 +239,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			// the operator can scan from a phone — it's a public
 			// login.tailscale.com link, reachable from any device. The
 			// whole block collapses to "✓ logged in" once auth lands.
-			detail := []string{
-				"  log in once; these credentials are discarded when join completes",
-				"",
-			}
-			detail = append(detail, linkDetail(st.AuthURL, true)...)
-			finish = beginStep("Log in to the tailnet to reach the gateway", detail, true)
+			finish = beginStep("Log in to the tailnet to reach the gateway", linkDetail(st.AuthURL, true), true)
 			tryOpen(st.AuthURL) // best-effort local browser if one exists
 		}
 		if st.BackendState == "Running" {
