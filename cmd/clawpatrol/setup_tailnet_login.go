@@ -244,7 +244,6 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 				"",
 			}
 			detail = append(detail, linkDetail(st.AuthURL, true)...)
-			fmt.Println()
 			finish = beginStep("Log in to the tailnet to reach the gateway", detail, true)
 			tryOpen(st.AuthURL) // best-effort local browser if one exists
 		}

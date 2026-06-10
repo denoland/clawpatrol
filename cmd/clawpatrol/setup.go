@@ -966,13 +966,25 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// tsnet mode), so derive the approve base from it.
 		approveBase := approveBaseFromVerifyURL(start.VerifyURL, gateway)
 		approveURL := approveBase + "/api/onboard/approve?" + aq.Encode()
-		fmt.Println()
 		finish := beginStep("Approving as tailnet operator", nil, true)
-		ar, aerr := cli.Post(approveURL, "application/json", nil)
+		// Bound the self-approve POST. It dials the gateway's tailnet IP,
+		// which hangs indefinitely if this machine logged into a tailnet
+		// that doesn't include the gateway (e.g. the wrong account at the
+		// Tailscale login prompt). On timeout / error, fall back to
+		// dashboard approval rather than wedging the whole join.
+		actx, acancel := context.WithTimeout(context.Background(), 15*time.Second)
+		var ar *http.Response
+		areq, aerr := http.NewRequestWithContext(actx, http.MethodPost, approveURL, nil)
+		if aerr == nil {
+			ar, aerr = cli.Do(areq)
+		}
 		switch {
 		case aerr != nil:
 			finish("")
-			fmt.Fprintf(os.Stderr, "⚠ auto-approve request failed: %v — approve on the dashboard instead.\n", aerr)
+			fmt.Fprintf(os.Stderr,
+				"⚠ couldn't reach the gateway over the tailnet to self-approve\n"+
+					"  (is this machine logged into the tailnet that has %s?)\n"+
+					"  — approve on the dashboard instead.\n", gateway)
 		case ar.StatusCode == 200:
 			_ = ar.Body.Close()
 			autoApproved = true
@@ -990,6 +1002,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				"⚠ auto-approve unexpected status %d: %s — approve on the dashboard instead.\n",
 				ar.StatusCode, strings.TrimSpace(string(body)))
 		}
+		acancel()
 	}
 
 	// 2. poll
@@ -1035,7 +1048,6 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				"  before approving, confirm this CA fingerprint matches the dashboard:",
 				"  "+setup.caFingerprint)
 		}
-		fmt.Println()
 		finishApprove = beginStep("Approve this device on the dashboard — code "+start.UserCode, detail, true)
 	}
 
