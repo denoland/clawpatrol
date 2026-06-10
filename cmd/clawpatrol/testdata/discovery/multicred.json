@@ -17,7 +17,8 @@
           "disambiguators": {
             "database": "app",
             "user": "reader"
-          }
+          },
+          "description": "read-only: reporting and ad-hoc queries"
         },
         {
           "name": "pg-rw",
@@ -25,7 +26,8 @@
           "disambiguators": {
             "database": "app",
             "user": "writer"
-          }
+          },
+          "description": "read-write: schema migrations and data fixes"
         }
       ],
       "hint": "psql \"host=pg.example port=5432 user=reader dbname=app sslmode=require\""
@@ -37,14 +39,16 @@
       "type": "postgres_credential",
       "endpoints": [
         "pg"
-      ]
+      ],
+      "description": "read-only: reporting and ad-hoc queries"
     },
     {
       "name": "pg-rw",
       "type": "postgres_credential",
       "endpoints": [
         "pg"
-      ]
+      ],
+      "description": "read-write: schema migrations and data fixes"
     }
   ],
   "env_vars": []

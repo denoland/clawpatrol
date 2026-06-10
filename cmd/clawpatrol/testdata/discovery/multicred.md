@@ -35,8 +35,8 @@ still verify it against the public web PKI as usual.
 - Host(s): pg.example
 - Port: 5432
 - SSL mode: require
-- Credential: postgres_credential `pg-ro` — connect with database=app user=reader
-- Credential: postgres_credential `pg-rw` — connect with database=app user=writer
+- Credential: postgres_credential `pg-ro` — read-only: reporting and ad-hoc queries — connect with database=app user=reader
+- Credential: postgres_credential `pg-rw` — read-write: schema migrations and data fixes — connect with database=app user=writer
 - Example: `psql "host=pg.example port=5432 user=reader dbname=app sslmode=require"`
 
 ## Environment variables (0)

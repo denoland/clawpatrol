@@ -17,14 +17,16 @@ endpoint "postgres" "pg" {
 }
 
 credential "postgres_credential" "pg-rw" {
-  endpoint = postgres.pg
-  user     = "writer"
-  database = "app"
+  endpoint    = postgres.pg
+  user        = "writer"
+  database    = "app"
+  description = "read-write: schema migrations and data fixes"
 }
 credential "postgres_credential" "pg-ro" {
-  endpoint = postgres.pg
-  user     = "reader"
-  database = "app"
+  endpoint    = postgres.pg
+  user        = "reader"
+  database    = "app"
+  description = "read-only: reporting and ad-hoc queries"
 }
 
 profile "dba" { credentials = [postgres_credential.pg-rw, postgres_credential.pg-ro] }
