@@ -127,6 +127,7 @@ func caPathPushdownVars(caPath string) []pushdownEnvVar {
 		"GIT_SSL_CAINFO",
 		"DENO_CERT",
 		"PIP_CERT",
+		"AWS_CA_BUNDLE",
 	}
 	out := make([]pushdownEnvVar, 0, len(keys))
 	for _, k := range keys {
