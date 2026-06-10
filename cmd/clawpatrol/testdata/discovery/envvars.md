@@ -20,8 +20,9 @@ and similar) that `clawpatrol run` sets for the processes it wraps. So
 most clients validate these connections out of the box, and a
 certificate-authority mismatch against the public web PKI is expected
 for these hosts, not an attack. If a client ignores both the system
-store and those env vars, fetch the CA from https://clawpatrol/ca.crt,
-verify its fingerprint against https://clawpatrol/info, and point that
+store and those env vars, fetch the CA from
+https://clawpatrol.internal/ca.crt, verify its fingerprint against
+https://clawpatrol.internal/info, and point that
 client at it explicitly.
 
 Every other host is passed through untouched: the gateway does not

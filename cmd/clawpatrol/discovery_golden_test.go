@@ -60,7 +60,7 @@ func compileDiscoveryFile(t *testing.T, file string) *config.CompiledPolicy {
 func renderJSON(t *testing.T, policy *config.CompiledPolicy, profile string) []byte {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "https://clawpatrol/?format=json", nil)
+	req := httptest.NewRequest("GET", "https://clawpatrol.internal/?format=json", nil)
 	writeDiscoveryResponse(rec, req, policy, profile)
 	return rec.Body.Bytes()
 }

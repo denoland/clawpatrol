@@ -17,14 +17,15 @@ import (
 )
 
 // discoveryHostname is the reserved name an agent inside the tunnel
-// hits to learn what its profile can reach. The gateway intercepts a
-// TLS connection whose SNI is this name and answers locally — the
-// request never leaves the box. DNS for the name resolves to the
-// reserved VIP pair the dnsvip allocator hands back (see dnsvip's
-// DiscoveryV4/DiscoveryV6), but because the WG forwarder routes every
-// :443 SYN through g.handle regardless of dst IP, any IP the agent was
-// handed lands here as long as the SNI matches.
-const discoveryHostname = "clawpatrol"
+// hits to reach the clawpatrol API — the canonical entrypoint for a
+// device. The gateway intercepts a TLS connection whose SNI is this
+// name and answers locally — the request never leaves the box. DNS for
+// the name resolves to the reserved VIP pair the dnsvip allocator hands
+// back (see dnsvip's DiscoveryV4/DiscoveryV6), but because the WG
+// forwarder routes every :443 SYN through g.handle regardless of dst
+// IP, any IP the agent was handed lands here as long as the SNI
+// matches. Keep this in sync with dnsvip.DiscoveryHostname.
+const discoveryHostname = "clawpatrol.internal"
 
 // isDiscoveryHost reports whether host names the reserved discovery
 // endpoint. The match is case-insensitive (DNS is) and tolerates a
@@ -68,9 +69,65 @@ func (g *Gateway) serveDiscovery(c net.Conn, certHost string) {
 	defer func() { _ = tc.Close() }()
 	policy := g.Policy()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeDiscoveryResponse(w, r, policy, profile)
+		g.routeDiscovery(w, r, policy, profile)
 	})
 	_ = http.Serve(&oneShotListener{c: tc}, h)
+}
+
+// routeDiscovery dispatches a request to the in-tunnel discovery
+// entrypoint by path. clawpatrol.internal is the canonical device-facing
+// API surface, so it exposes the profile manifest at / and /manifest,
+// the gateway CA at /ca.crt, and a liveness + CA-fingerprint blob at
+// /info — the same public endpoints the gateway's tailnet web server
+// serves, mirrored here so a device with only tunnel reachability can
+// fetch them by name. Unknown paths 404 rather than falling through to
+// the manifest, so the canonical paths stay unambiguous.
+func (g *Gateway) routeDiscovery(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile string) {
+	switch r.URL.Path {
+	case "/", "/manifest":
+		writeDiscoveryResponse(w, r, policy, profile)
+	case "/ca.crt":
+		g.serveDiscoveryCA(w)
+	case "/info":
+		g.serveDiscoveryInfo(w)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveDiscoveryCA returns the gateway CA in PEM form at
+// clawpatrol.internal/ca.crt. A client that trusts neither the system
+// store nor the pushed-down CA env vars can fetch the CA here and pin it
+// explicitly — the manifest text points at this path. Mirrors the
+// gateway web server's public /ca.crt (web.go serveCA).
+func (g *Gateway) serveDiscoveryCA(w http.ResponseWriter) {
+	pemBytes := g.certs.CertPEM()
+	if len(pemBytes) == 0 {
+		http.Error(w, "ca not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Length", strconv.Itoa(len(pemBytes)))
+	_, _ = w.Write(pemBytes)
+}
+
+// serveDiscoveryInfo answers clawpatrol.internal/info with a small
+// liveness + identity blob carrying the CA fingerprint, so a client can
+// verify the CA it fetched from /ca.crt against an out-of-band value.
+// Mirrors the gateway web server's public /info (web.go serveInfo).
+func (g *Gateway) serveDiscoveryInfo(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	fp := ""
+	if pem := g.certs.CertPEM(); len(pem) > 0 {
+		if f, err := caFingerprintFromPEM(pem); err == nil {
+			fp = f
+		}
+	}
+	writeJSON(w, map[string]any{
+		"clawpatrol":     true,
+		"version":        "0.1",
+		"ca_fingerprint": fp,
+	})
 }
 
 // isDiscoveryVIP reports whether dstIP is the fixed VIP the dnsvip
@@ -576,8 +633,9 @@ func (m *DiscoveryManifest) Markdown() string {
 	b.WriteString("most clients validate these connections out of the box, and a\n")
 	b.WriteString("certificate-authority mismatch against the public web PKI is expected\n")
 	b.WriteString("for these hosts, not an attack. If a client ignores both the system\n")
-	b.WriteString("store and those env vars, fetch the CA from https://clawpatrol/ca.crt,\n")
-	b.WriteString("verify its fingerprint against https://clawpatrol/info, and point that\n")
+	b.WriteString("store and those env vars, fetch the CA from\n")
+	b.WriteString("https://clawpatrol.internal/ca.crt, verify its fingerprint against\n")
+	b.WriteString("https://clawpatrol.internal/info, and point that\n")
 	b.WriteString("client at it explicitly.\n\n")
 
 	b.WriteString("Every other host is passed through untouched: the gateway does not\n")
@@ -689,7 +747,8 @@ func (m *DiscoveryManifest) emptyGuidance() string {
 		b.WriteString("and update this device's profile.\n\n")
 	}
 	b.WriteString("Once the profile is configured, re-fetch this manifest (GET\n")
-	b.WriteString("https://clawpatrol/) and the endpoints and credentials will appear below.\n\n")
+	b.WriteString("https://clawpatrol.internal/manifest) and the endpoints and credentials\n")
+	b.WriteString("will appear below.\n\n")
 	return b.String()
 }
 

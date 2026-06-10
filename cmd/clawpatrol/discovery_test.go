@@ -359,7 +359,7 @@ func TestDiscoveryRendersBothFormats(t *testing.T) {
 
 	// JSON via ?format=json.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "https://clawpatrol/?format=json", nil)
+	req := httptest.NewRequest("GET", "https://clawpatrol.internal/?format=json", nil)
 	writeDiscoveryResponse(rec, req, policy, "ops")
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("json content-type = %q", ct)
@@ -374,7 +374,7 @@ func TestDiscoveryRendersBothFormats(t *testing.T) {
 
 	// Markdown default (no query, no Accept).
 	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest("GET", "https://clawpatrol/", nil)
+	req2 := httptest.NewRequest("GET", "https://clawpatrol.internal/", nil)
 	writeDiscoveryResponse(rec2, req2, policy, "ops")
 	if ct := rec2.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
 		t.Errorf("markdown content-type = %q", ct)
@@ -478,13 +478,14 @@ profile "empty" { credentials = [] }
 
 func TestIsDiscoveryHost(t *testing.T) {
 	cases := map[string]bool{
-		"clawpatrol":      true,
-		"ClawPatrol":      true,
-		"clawpatrol.":     true,
-		"clawpatrol:443":  true,
-		"api.github.com":  false,
-		"":                false,
-		"clawpatrol.evil": false,
+		"clawpatrol.internal":      true,
+		"ClawPatrol.Internal":      true,
+		"clawpatrol.internal.":     true,
+		"clawpatrol.internal:443":  true,
+		"clawpatrol":               false,
+		"api.github.com":           false,
+		"":                         false,
+		"clawpatrol.internal.evil": false,
 	}
 	for host, want := range cases {
 		if got := isDiscoveryHost(host); got != want {
