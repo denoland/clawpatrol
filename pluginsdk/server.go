@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"sync/atomic"
 
@@ -47,6 +48,7 @@ type grpcServer struct {
 
 func (g *grpcServer) GRPCServer(_ *plugin.GRPCBroker, s *grpc.Server) error {
 	pb.RegisterPluginServer(s, g.srv)
+	pb.RegisterCredentialServer(s, g.srv)
 	pb.RegisterEndpointServer(s, g.srv)
 	pb.RegisterTunnelServer(s, g.srv)
 	return nil
@@ -60,6 +62,7 @@ func (g *grpcServer) GRPCClient(_ context.Context, _ *plugin.GRPCBroker, _ *grpc
 // server is the in-process dispatcher behind the three gRPC services.
 type server struct {
 	pb.UnimplementedPluginServer
+	pb.UnimplementedCredentialServer
 	pb.UnimplementedEndpointServer
 	pb.UnimplementedTunnelServer
 
@@ -100,8 +103,10 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 	}
 	for _, c := range s.plug.Credentials {
 		resp.Credentials = append(resp.Credentials, &pb.CredentialDecl{
-			TypeName: c.TypeName,
-			Schema:   schemaToProto(c.Schema),
+			TypeName:       c.TypeName,
+			Schema:         schemaToProto(c.Schema),
+			Disambiguators: append([]string(nil), c.Disambiguators...),
+			HttpInject:     c.HTTPInject,
 		})
 	}
 	for _, t := range s.plug.Tunnels {
@@ -201,8 +206,22 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		return resp, nil //nolint:nilerr // Build errors are returned as diagnostics in the successful gRPC response.
 	}
 
-	if built != nil {
-		j, jerr := json.Marshal(built)
+	canonical := built
+	if req.Kind == "credential" {
+		switch r := built.(type) {
+		case CredentialBuildResult:
+			canonical = r.Canonical
+			resp.CredentialMetadata = credentialMetadataToProto(r.Metadata)
+		case *CredentialBuildResult:
+			if r != nil {
+				canonical = r.Canonical
+				resp.CredentialMetadata = credentialMetadataToProto(r.Metadata)
+			}
+		}
+	}
+
+	if canonical != nil {
+		j, jerr := json.Marshal(canonical)
 		if jerr != nil {
 			resp.Diagnostics = []*pb.Diagnostic{{
 				Severity: pb.Diagnostic_ERROR,
@@ -218,6 +237,124 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		resp.CanonicalJson = req.ConfigJson
 	}
 	return resp, nil
+}
+
+func credentialMetadataToProto(m CredentialMetadata) *pb.CredentialMetadata {
+	out := &pb.CredentialMetadata{
+		Disambiguators: append([]string(nil), m.Disambiguators...),
+		HttpInject:     m.HTTPInject,
+	}
+	for _, s := range m.SecretSlots {
+		out.SecretSlots = append(out.SecretSlots, &pb.SecretSlotDecl{
+			Name:        s.Name,
+			Label:       s.Label,
+			Multiline:   s.Multiline,
+			Description: s.Description,
+		})
+	}
+	for _, ev := range m.EnvVars {
+		out.EnvVars = append(out.EnvVars, &pb.EnvVarDecl{
+			Name:        ev.Name,
+			Value:       ev.Value,
+			Description: ev.Description,
+		})
+	}
+	if m.OAuth != nil {
+		out.Oauth = oauthIntegrationToProto(*m.OAuth)
+	}
+	return out
+}
+
+func oauthIntegrationToProto(in OAuthIntegration) *pb.OAuthIntegrationDecl {
+	out := &pb.OAuthIntegrationDecl{
+		Type:   in.Type,
+		Header: in.Header,
+		Prefix: in.Prefix,
+		Flow:   in.Flow,
+		Oauth: &pb.OAuthConfigDecl{
+			ClientId:     in.OAuth.ClientID,
+			ClientSecret: in.OAuth.ClientSecret,
+			AuthUrl:      in.OAuth.AuthURL,
+			TokenUrl:     in.OAuth.TokenURL,
+			DeviceUrl:    in.OAuth.DeviceURL,
+			RegisterUrl:  in.OAuth.RegisterURL,
+			RedirectUri:  in.OAuth.RedirectURI,
+			Scopes:       append([]string(nil), in.OAuth.Scopes...),
+			RefreshToken: in.OAuth.RefreshToken,
+		},
+	}
+	for _, g := range in.OptionalScopes {
+		pg := &pb.OptionalScopeGroupDecl{Title: g.Title}
+		for _, s := range g.Scopes {
+			pg.Scopes = append(pg.Scopes, &pb.OptionalScopeDecl{Id: s.ID, Label: s.Label})
+		}
+		out.OptionalScopes = append(out.OptionalScopes, pg)
+	}
+	return out
+}
+
+// InjectHTTP dispatches a built-in HTTPS credential injection call to
+// the credential definition's callback.
+func (s *server) InjectHTTP(ctx context.Context, req *pb.InjectHTTPRequest) (*pb.InjectHTTPResponse, error) {
+	def, ok := s.credentials[req.CredentialTypeName]
+	if !ok {
+		return nil, fmt.Errorf("%w: credential %q", ErrNoSuchType, req.CredentialTypeName)
+	}
+	if def.InjectHTTP == nil {
+		return nil, fmt.Errorf("pluginsdk: credential %q has no InjectHTTP callback", req.CredentialTypeName)
+	}
+	in := HTTPInjectRequest{
+		CredentialTypeName:        req.CredentialTypeName,
+		CredentialInstance:        req.CredentialInstance,
+		CredentialCanonicalConfig: req.CredentialCanonicalJson,
+		CredentialSecret:          req.CredentialSecret,
+		CredentialExtras:          req.CredentialExtras,
+		Method:                    req.Method,
+		URL:                       req.Url,
+		Host:                      req.Host,
+		Headers:                   headersFromProto(req.Headers),
+		BodyPrefix:                req.BodyPrefix,
+		BodyTruncated:             req.BodyTruncated,
+	}
+	out, err := def.InjectHTTP(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	return httpInjectResponseToProto(out), nil
+}
+
+func headersFromProto(in map[string]*pb.HTTPHeaderValues) http.Header {
+	out := http.Header{}
+	for k, v := range in {
+		if v == nil {
+			continue
+		}
+		out[k] = append([]string(nil), v.Values...)
+	}
+	return out
+}
+
+func httpInjectResponseToProto(in *HTTPInjectResponse) *pb.InjectHTTPResponse {
+	out := &pb.InjectHTTPResponse{}
+	if in == nil {
+		return out
+	}
+	for _, h := range in.Headers {
+		op := pb.HeaderMutation_SET
+		switch h.Op {
+		case HeaderAdd:
+			op = pb.HeaderMutation_ADD
+		case HeaderDel:
+			op = pb.HeaderMutation_DEL
+		}
+		out.Headers = append(out.Headers, &pb.HeaderMutation{
+			Op:     op,
+			Name:   h.Name,
+			Values: append([]string(nil), h.Values...),
+		})
+	}
+	out.Redactions = append([]string(nil), in.Redactions...)
+	return out
 }
 
 // HandleConn pumps the gateway-provided agent connection to the

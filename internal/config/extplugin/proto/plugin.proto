@@ -97,9 +97,68 @@ message SchemaField {
   bool required = 3;
 }
 
+message SecretSlotDecl {
+  string name = 1;
+  string label = 2;
+  bool multiline = 3;
+  string description = 4;
+}
+
+message EnvVarDecl {
+  string name = 1;
+  string value = 2;
+  string description = 3;
+}
+
+message OptionalScopeDecl {
+  string id = 1;
+  string label = 2;
+}
+
+message OptionalScopeGroupDecl {
+  string title = 1;
+  repeated OptionalScopeDecl scopes = 2;
+}
+
+message OAuthConfigDecl {
+  string client_id = 1;
+  string client_secret = 2;
+  string auth_url = 3;
+  string token_url = 4;
+  string device_url = 5;
+  string register_url = 6;
+  string redirect_uri = 7;
+  repeated string scopes = 8;
+  string refresh_token = 9;
+}
+
+message OAuthIntegrationDecl {
+  string type = 1;
+  string header = 2;
+  string prefix = 3;
+  string flow = 4;
+  OAuthConfigDecl oauth = 5;
+  repeated OptionalScopeGroupDecl optional_scopes = 6;
+}
+
+message CredentialMetadata {
+  repeated string disambiguators = 1;
+  repeated SecretSlotDecl secret_slots = 2;
+  repeated EnvVarDecl env_vars = 3;
+  OAuthIntegrationDecl oauth = 4;
+  bool http_inject = 5;
+}
+
 message CredentialDecl {
   string type_name = 1;
   Schema schema = 2;
+
+  // Declares static capabilities for registration/validation.
+  // BuildResponse.credential_metadata may refine instance-specific
+  // env vars, slots, and OAuth URLs, but registration-time
+  // disambiguators are authoritative for validation.
+  repeated string disambiguators = 3;
+  bool http_inject = 4;
 }
 
 message TunnelDecl {
@@ -143,6 +202,10 @@ message BuildResponse {
   // ConnInit / OpenTunnelRequest.
   bytes canonical_json = 1;
   repeated Diagnostic diagnostics = 2;
+
+  // Used when kind == "credential". Instance-specific metadata
+  // derived from config, e.g. region-specific env vars/OAuth URLs.
+  CredentialMetadata credential_metadata = 3;
 }
 
 message Diagnostic {
@@ -153,6 +216,59 @@ message Diagnostic {
   Severity severity = 1;
   string summary = 2;
   string detail = 3;
+}
+
+// =====================================================================
+// Credential runtime
+// =====================================================================
+
+service Credential {
+  // InjectHTTP lets an external credential type participate in the
+  // built-in HTTPS endpoint's request-time credential injection path.
+  rpc InjectHTTP(InjectHTTPRequest) returns (InjectHTTPResponse);
+}
+
+message HTTPHeaderValues {
+  repeated string values = 1;
+}
+
+message InjectHTTPRequest {
+  string credential_type_name = 1;
+  string credential_instance = 2;
+  bytes credential_canonical_json = 3;
+
+  bytes credential_secret = 4;
+  map<string, string> credential_extras = 5;
+
+  string method = 6;
+  string url = 7;
+  string host = 8;
+  map<string, HTTPHeaderValues> headers = 9;
+
+  // Optional, capped by gateway. Not required by current external
+  // credentials but reserved for future read-only inspection.
+  bytes body_prefix = 10;
+  bool body_truncated = 11;
+}
+
+message HeaderMutation {
+  enum Op {
+    SET = 0;
+    ADD = 1;
+    DEL = 2;
+  }
+  Op op = 1;
+  string name = 2;
+  repeated string values = 3;
+}
+
+message InjectHTTPResponse {
+  repeated HeaderMutation headers = 1;
+
+  // Extra runtime-derived sensitive values, such as a gateway-minted
+  // short-lived bearer token, that should be redacted from logs if
+  // encountered.
+  repeated string redactions = 2;
 }
 
 // =====================================================================
