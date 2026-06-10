@@ -992,7 +992,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			case 200:
 				autoApproved = true
 				fmt.Println()
-				fmt.Println("Auto-approved via tailnet operator identity.")
+				fmt.Println("✓ auto-approved as tailnet operator")
 			case 403:
 				// Not an operator — quietly fall through to the
 				// browser-approval path. No warning: this is the
@@ -1009,33 +1009,29 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	if !autoApproved {
 		fmt.Println()
-		fmt.Println("Verify code in browser:")
+		fmt.Printf("  Approve this device on the dashboard. Code: %s\n", start.UserCode)
 		fmt.Println()
-		fmt.Printf("    %s\n", start.UserCode)
-		fmt.Println()
-		fmt.Println(start.VerifyURL)
-		// One-line CA fingerprint after the verify URL. The
-		// dashboard's approval page shows the same value next to
-		// the user_code — operator visually confirms they match
-		// before clicking approve, blocking an on-path swap of the
-		// CA the CLI just fetched over plain HTTP.
-		if setup != nil && setup.caFingerprint != "" {
-			fmt.Println()
-			fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
-		}
+		fmt.Printf("    %s\n", start.VerifyURL)
 		fmt.Println()
 		// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net
 		// host) are unreachable from the machine running
 		// `clawpatrol join` until approval lands — that's the whole
-		// point of needing approval. Print a QR code so the operator
-		// can scan from a phone or another already-tailnet-connected
-		// device. Skip tryOpen on that path: a local browser can't
-		// reach the URL anyway, and the spawned xdg-open / open
-		// process just produces a meaningless tab.
+		// point of needing approval. Print a QR so the operator can
+		// scan from a phone or another tailnet-connected device. Skip
+		// tryOpen there: a local browser can't reach the URL anyway.
 		if isTailnetOnlyURL(start.VerifyURL) {
-			printVerifyQR(start.VerifyURL)
+			printQR(start.VerifyURL)
 		} else {
 			tryOpen(start.VerifyURL)
+		}
+		// CA fingerprint last, so it sits right next to the approve
+		// action. The dashboard's approval page shows the same value
+		// beside the user_code — the operator visually confirms they
+		// match before clicking approve, blocking an on-path swap of
+		// the CA the CLI just fetched over plain HTTP.
+		if setup != nil && setup.caFingerprint != "" {
+			fmt.Printf("  CA fingerprint (must match the dashboard): %s\n", setup.caFingerprint)
+			fmt.Println()
 		}
 	}
 
@@ -1103,7 +1099,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
-	fmt.Println("Approved.")
+	// On the auto-approve path we already printed the operator
+	// confirmation; don't repeat it here.
+	if !autoApproved {
+		fmt.Println("✓ approved")
+	}
 	// Approval click ⇒ operator visually confirmed the CA
 	// fingerprint on the dashboard matched what the CLI
 	// printed. Only now is it safe to push the fetched CA
@@ -1462,15 +1462,6 @@ func isTailnetOnlyURL(u string) bool {
 // inside it is unreachable except from a tailnet member.
 var tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 
-// printVerifyQR writes a terminal QR code encoding url to stdout.
-// Used when the verify URL is tailnet-only — the operator scans with a
-// phone or another already-onboarded device that can actually reach
-// the gateway.
-//
-// GenerateHalfBlock packs two QR rows per terminal line via the
-// ▀ / ▄ / █ / space unicode chars. Half the vertical space of the
-// ANSI-colored block-per-cell variant, and renders cleanly when the
-// operator pipes the join output to a file or pastes it into chat.
 // approveBaseFromVerifyURL returns the scheme://host origin of the
 // onboard verify URL — the dashboard origin whose /api/onboard/approve
 // is the same handler the dashboard Approve button POSTs to. Falls back
@@ -1486,20 +1477,12 @@ func approveBaseFromVerifyURL(verifyURL, fallback string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-func printVerifyQR(url string) {
-	fmt.Println("Tailnet-only URL — scan from a device with tailnet access:")
-	fmt.Println()
-	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
-	fmt.Println()
-}
-
-// printLoginQR renders a QR for the interactive tailnet login URL. The
-// box running `clawpatrol join` is frequently headless, so scanning
-// from a phone is the path of least resistance. Unlike the verify URL
-// this is a public login.tailscale.com link, reachable anywhere.
-func printLoginQR(url string) {
-	fmt.Println("No browser? Scan to log in from another device:")
-	fmt.Println()
+// printQR renders url as a scannable terminal QR, no caption — the URL
+// is always printed directly above the call site and a QR is plainly a
+// QR. GenerateHalfBlock packs two QR rows per line via ▀/▄/█/space,
+// half the height of the block-per-cell variant, and renders cleanly
+// when the join output is piped to a file or pasted into chat.
+func printQR(url string) {
 	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
 	fmt.Println()
 }

@@ -220,10 +220,9 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	defer cancel()
 
 	fmt.Println()
-	fmt.Println("Reaching the gateway requires Tailscale tailnet access.")
-	fmt.Println("Opening browser for one-time interactive login.")
-	fmt.Println("(These credentials are discarded as soon as join completes —")
-	fmt.Println(" the agent's persistent identity is the gateway-minted tag.)")
+	fmt.Println("  Tailnet access is needed to reach the gateway. Log in once below.")
+	fmt.Println("  These credentials are discarded when join completes — the agent's")
+	fmt.Println("  identity is the gateway-minted tag.")
 
 	printed := false
 	for {
@@ -243,16 +242,17 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			fmt.Println()
 			fmt.Printf("    %s\n", st.AuthURL)
 			fmt.Println()
-			// The box running `clawpatrol join` often has no browser
-			// (headless VM, SSH session). Print a QR alongside so the
-			// operator can scan it from a phone — this is a public
-			// login.tailscale.com URL, reachable from any device.
-			printLoginQR(st.AuthURL)
+			// The box running `clawpatrol join` is usually headless
+			// (SSH session, no browser). Show a QR right under the URL
+			// so the operator can scan from a phone — it's a public
+			// login.tailscale.com link, reachable from any device. Also
+			// best-effort open a local browser if one exists.
+			printQR(st.AuthURL)
 			tryOpen(st.AuthURL)
 			printed = true
 		}
 		if st.BackendState == "Running" {
-			fmt.Println("Tailnet login complete.")
+			fmt.Println("✓ tailnet login complete")
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
