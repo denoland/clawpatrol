@@ -482,7 +482,6 @@ Family: `k8s`.
 | `hosts` | `[]string` | no | An optional list of Kubernetes API hostnames or host:port pairs to intercept. |
 | `server` | `string` | no | The Kubernetes API server URL or host:port used when hosts is not set. |
 | `ca_cert` | `string` | no | The PEM-encoded cluster CA, often loaded with `<<file:cluster-ca.pem>>`. |
-| `description` | `string` | no | Operator-facing text for dashboard display. |
 | `cluster_name` | `string` | no | The EKS cluster name used by aws_credential. |
 | `region` | `string` | no | The AWS region used by aws_credential for EKS auth. |
 
