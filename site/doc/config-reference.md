@@ -2,7 +2,7 @@
 
 A clawpatrol gateway config mixes **operational** settings in the
 required top-level `gateway { ... }` block with **policy** blocks.
-Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`, `middleware`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -19,7 +19,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`, `middleware`)
 list one subsection per registered type.
 
 ## Top-level blocks
@@ -683,5 +683,23 @@ Configures the tunnel runtime.
 
 ```hcl
 tunnel "tailscale" "example" {}
+```
+
+## `middleware` blocks
+
+Block syntax: `middleware "<type>" "<name>" { ... }`
+
+Registered types: [`anthropic_system_prompt`](#middleware-anthropicsystemprompt).
+
+### `middleware "anthropic_system_prompt" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `text` | `string` | yes | The block appended to the request's Anthropic system prompt. May use a `<<file:NAME>>` marker to inline a file's contents. |
+
+```hcl
+middleware "anthropic_system_prompt" "example" {
+  text = "example"
+}
 ```
 

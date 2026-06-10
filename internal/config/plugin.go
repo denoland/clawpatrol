@@ -16,9 +16,9 @@ import (
 )
 
 // Kind names a class of policy block. The plugin-dispatched two-label
-// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
-// read their type from the block's first label (e.g. `endpoint "https"
-// "github-dev"` → Type="https").
+// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel,
+// KindMiddleware — read their type from the block's first label (e.g.
+// `endpoint "https" "github-dev"` → Type="https").
 //
 // KindRule and KindProfile are one-label blocks. KindRule has a single
 // registered plugin (Type="") and infers its protocol family from the
@@ -34,13 +34,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindMiddleware Kind = "middleware"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindMiddleware:
 		return 2 // first = type, second = name
 	case KindRule, KindProfile:
 		return 1 // name
@@ -109,6 +110,7 @@ type Plugin struct {
 	//   KindApprover   → runtime.ApproverRuntime
 	//   KindRule       → runtime.RuleMatcherFactory
 	//   KindTunnel     → runtime.TunnelRuntime
+	//   KindMiddleware → runtime.HTTPMiddleware
 	// nil means "schema-only; runtime not implemented" — request-time
 	// dispatch reports a clear diagnostic when it tries to use one.
 	Runtime any
@@ -181,6 +183,11 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+		// middleware is an ordered list of bare-name references to
+		// `middleware "<type>" "<name>"` blocks. The chain runs request-
+		// side after credential injection — see runtime.HTTPMiddleware
+		// and the dispatcher loop in cmd/clawpatrol.
+		{Name: "middleware", Kind: KindMiddleware, Optional: true, List: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them

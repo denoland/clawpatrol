@@ -255,6 +255,63 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
   plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
 ```
 
+## HTTP middleware
+
+A **middleware** is an endpoint-attached hook that sees each HTTP
+request *after* credential injection and *before* the upstream
+forward, and may rewrite the request body. It’s a fourth
+plugin-dispatched block kind alongside `endpoint`, `credential`, and
+`tunnel`:
+
+```hcl
+middleware "anthropic_system_prompt" "tool_discovery" {
+  text = "<<file:discovery.md>>"
+}
+
+endpoint "https" "anthropic_api" {
+  hosts      = ["api.anthropic.com"]
+  credential = anthropic_manual_key.prod
+  middleware = [anthropic_system_prompt.tool_discovery]
+}
+```
+
+- The first label (`anthropic_system_prompt`) is the **type**; the
+  second (`tool_discovery`) is the **instance** name.
+- `endpoint.middleware` is an **ordered list**. Every middleware in
+  the list runs, in declared order — this is same-stage composition,
+  not the “first non-error wins” short-circuit the credential and
+  approver chains use. A two-entry list applies the first
+  middleware’s output as the second’s input.
+- A middleware that returns an error **fails the request closed**:
+  the gateway responds `502` and never calls upstream.
+- CEL rule conditions match the request body as it arrived from the
+  agent — middleware runs after rule evaluation, so a rewrite never
+  changes which rule fired.
+
+Middleware text fields support `<<file:NAME>>` markers (resolved
+relative to the config directory at load); `file(...)` is **not** an
+HCL function here.
+
+### `anthropic_system_prompt`
+
+Appends a configured `text` block to the `system` field of Anthropic
+`/v1/messages` requests, handling all three legal shapes:
+
+- **absent** → sets `system` to the injected text.
+- **string** → `system = original + "\n\n" + injected`.
+- **content-block array** → appends a
+  `{ "type": "text", "text": injected }` block.
+
+Requests that aren’t a `POST` to `/v1/messages` pass through
+unchanged. The type only makes sense on an endpoint that serves
+`api.anthropic.com`; attaching it elsewhere is a load-time
+diagnostic.
+
+The request-side middleware contract is `runtime.HTTPMiddleware`;
+v1 ships built-in types only (no external-plugin middleware yet) and
+the request side only (no response rewrite). See
+[`config/runtime/runtime.go`](https://github.com/denoland/clawpatrol/tree/main/internal/config/runtime/runtime.go).
+
 ## See also
 
 - [`pluginsdk/example/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk/example)

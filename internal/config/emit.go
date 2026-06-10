@@ -20,6 +20,7 @@ type RefIndex struct {
 	approverTyp map[string]string
 	tunnelType  map[string]string
 	endpointTyp map[string]string
+	mwType      map[string]string
 }
 
 func newRefIndex(p *Policy) *RefIndex {
@@ -28,9 +29,15 @@ func newRefIndex(p *Policy) *RefIndex {
 		approverTyp: map[string]string{},
 		tunnelType:  map[string]string{},
 		endpointTyp: map[string]string{},
+		mwType:      map[string]string{},
 	}
 	if p == nil {
 		return r
+	}
+	for n, e := range p.Middlewares {
+		if e != nil && e.Plugin != nil {
+			r.mwType[n] = e.Plugin.Type
+		}
 	}
 	for n, e := range p.Credentials {
 		if e != nil && e.Plugin != nil {
@@ -83,6 +90,10 @@ func (r *RefIndex) Ref(kind Kind, name string) string {
 		}
 	case KindEndpoint:
 		if t := r.endpointTyp[name]; t != "" {
+			return t + "." + name
+		}
+	case KindMiddleware:
+		if t := r.mwType[name]; t != "" {
 			return t + "." + name
 		}
 	case KindRule, KindProfile:
@@ -159,13 +170,14 @@ func Emit(gw *Gateway) ([]byte, error) {
 	defer func() { emitRI = nil }()
 
 	// Per-kind groups in a deterministic order: approvers → credentials
-	// → tunnels → endpoints → rules → profiles. Within a group, walk
+	// → tunnels → middlewares → endpoints → rules → profiles. Within a group, walk
 	// p.Order (source order) and filter to that kind, falling back to
 	// alphabetical for entries Order doesn't cover (defensive — every
 	// loaded entry is in Order in practice).
 	emitGroup(body, p, KindApprover)
 	emitGroup(body, p, KindCredential)
 	emitGroup(body, p, KindTunnel)
+	emitGroup(body, p, KindMiddleware)
 	emitGroup(body, p, KindEndpoint)
 	emitGroup(body, p, KindRule)
 	emitGroup(body, p, KindProfile)
@@ -346,6 +358,12 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 				out = append(out, n)
 			}
 		}
+	case KindMiddleware:
+		for n := range p.Middlewares {
+			if !emitted[n] {
+				out = append(out, n)
+			}
+		}
 	case KindProfile:
 		for n := range p.Profiles {
 			if !emitted[n] {
@@ -389,6 +407,12 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 			return false
 		}
 		emitEntityBlock(body, "tunnel", ent, name)
+	case KindMiddleware:
+		ent, ok := p.Middlewares[name]
+		if !ok {
+			return false
+		}
+		emitEntityBlock(body, "middleware", ent, name)
 	case KindProfile:
 		pr, ok := p.Profiles[name]
 		if !ok {

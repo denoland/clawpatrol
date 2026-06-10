@@ -40,6 +40,11 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
+	// Middlewares contains every declared middleware, keyed by name.
+	// Endpoints store the *CompiledMiddleware pointers they reference
+	// in their Middleware field — same instances as the entries here.
+	Middlewares map[string]*CompiledMiddleware
+
 	// Approvers / Credentials surface the same entities from the
 	// Policy struct under a runtime-friendly typed alias — they're
 	// pointers into the same Entity records, no copies.
@@ -126,6 +131,25 @@ type CompiledEndpoint struct {
 	// Populated from the endpoint plugin's optional EndpointTunnel()
 	// accessor.
 	Tunnel *CompiledTunnel
+
+	// Middleware is the ordered request-side middleware chain attached
+	// via the endpoint's `middleware = [...]` framework attr. The
+	// dispatcher runs each entry's runtime.HTTPMiddleware after
+	// credential injection, in this slice's order. Empty for endpoints
+	// with no middleware declared.
+	Middleware []*CompiledMiddleware
+}
+
+// CompiledMiddleware is the runtime-friendly view of one middleware
+// block. Endpoints hold pointers into CompiledPolicy.Middlewares via
+// their Middleware slice; the dispatcher type-asserts Body to
+// runtime.HTTPMiddleware to run the request-side rewrite.
+type CompiledMiddleware struct {
+	Name   string
+	Plugin *Plugin
+	// Body is whatever the middleware plugin's Build returned — the
+	// decoded instance the dispatcher invokes RewriteHTTPRequest on.
+	Body any
 }
 
 // RequiresVIP reports whether DNS-VIP allocation should claim this
@@ -273,15 +297,18 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
+		Middlewares:    map[string]*CompiledMiddleware{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
 	}
 
-	// Compile tunnels first so endpoint compilation can resolve
-	// `tunnel = X` refs to a *CompiledTunnel.
+	// Compile tunnels and middlewares first so endpoint compilation can
+	// resolve `tunnel = X` / `middleware = [...]` refs to compiled
+	// pointers.
 	if err := compileTunnels(cp, p); err != nil {
 		return nil, err
 	}
+	compileMiddlewares(cp, p)
 
 	// Compile every endpoint once into a CompiledEndpoint with the
 	// (placeholder) rule list. Credentials attach in the next pass —
@@ -518,10 +545,17 @@ func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEnd
 	// endpoint type — plugins that satisfy this interface contribute
 	// their hosts. Credential bindings come from the inverted walk
 	// (attachCredentials), not from the endpoint body anymore.
-	if hp, ok := ent.Body.(interface{ HostList() []string }); ok {
-		ce.Hosts = hp.HostList()
-	} else {
-		ce.Hosts = extractHosts(ent.Body)
+	ce.Hosts = entityHosts(ent)
+	// Resolve the `middleware = [...]` ordered list to compiled
+	// pointers. Names already resolved against the symbol table at load
+	// time, and compileMiddlewares ran before this loop, so a miss is a
+	// compile-time invariant violation.
+	for _, mwName := range ent.Framework.RefList("middleware") {
+		cm, ok := cp.Middlewares[mwName]
+		if !ok {
+			return nil, fmt.Errorf("middleware %q not declared", mwName)
+		}
+		ce.Middleware = append(ce.Middleware, cm)
 	}
 	if tn := ent.Framework.Ref("tunnel"); tn != "" {
 		ct, ok := cp.Tunnels[tn]
@@ -626,6 +660,35 @@ func extractHosts(body any) []string {
 		return h.EndpointHosts()
 	}
 	return nil
+}
+
+// entityHosts returns an endpoint entity's declared hosts. Endpoint
+// plugin bodies expose them via either HostList() (the canonical
+// accessor) or the older EndpointHosts() shape; this prefers the
+// former. Shared by compileEndpoint and the loader-time middleware
+// host-compatibility check.
+func entityHosts(ent *Entity) []string {
+	if ent == nil || ent.Body == nil {
+		return nil
+	}
+	if hp, ok := ent.Body.(interface{ HostList() []string }); ok {
+		return hp.HostList()
+	}
+	return extractHosts(ent.Body)
+}
+
+// compileMiddlewares lowers every middleware block into a
+// *CompiledMiddleware keyed by name. Runs before the endpoint loop so
+// compileEndpoint can resolve `middleware = [...]` references to these
+// pointers.
+func compileMiddlewares(cp *CompiledPolicy, p *Policy) {
+	for name, ent := range p.Middlewares {
+		cp.Middlewares[name] = &CompiledMiddleware{
+			Name:   name,
+			Plugin: ent.Plugin,
+			Body:   ent.Body,
+		}
+	}
 }
 
 // TunnelCommon is the framework-level slice every tunnel plugin's

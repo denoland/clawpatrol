@@ -49,6 +49,7 @@ func (r *renderer) run() (string, error) {
 		config.KindEndpoint,
 		config.KindRule,
 		config.KindTunnel,
+		config.KindMiddleware,
 	} {
 		r.writeKind(kind)
 	}
@@ -60,7 +61,7 @@ func (r *renderer) writeHeader() {
 
 A clawpatrol gateway config mixes **operational** settings in the
 required top-level ` + "`gateway { ... }`" + ` block with **policy** blocks.
-Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`, `middleware`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -77,7 +78,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`, `middleware`" + `)
 list one subsection per registered type.
 
 `)
@@ -373,7 +374,7 @@ func skipPublicConfigReferenceField(pkgName, typeName, fieldName string) bool {
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule, config.KindMiddleware,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)

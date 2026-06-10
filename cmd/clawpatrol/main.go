@@ -2004,6 +2004,57 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []by
 	return b, false
 }
 
+// applyRequestMiddleware runs an endpoint's request-side middleware
+// chain over the HTTP request body in declared order. It reads the full
+// body once, threads it through each middleware's RewriteHTTPRequest,
+// and re-attaches the (possibly mutated) bytes with a corrected
+// Content-Length so the upstream forward stays consistent. A middleware
+// returning an error fails closed — the caller responds 502 and does
+// not forward upstream.
+func applyRequestMiddleware(ctx context.Context, req *http.Request, mws []*config.CompiledMiddleware) error {
+	if len(mws) == 0 {
+		return nil
+	}
+	var body []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read request body: %w", err)
+		}
+		body = b
+	}
+	for _, mw := range mws {
+		r, ok := mw.Body.(runtime.HTTPMiddleware)
+		if !ok {
+			// Schema-only middleware (no runtime) — nothing to apply.
+			continue
+		}
+		out, err := r.RewriteHTTPRequest(ctx, req, body)
+		if err != nil {
+			return fmt.Errorf("middleware %q: %w", mw.Name, err)
+		}
+		if out != nil {
+			body = out
+		}
+	}
+	// Re-attach: we consumed the original reader, so even an unchanged
+	// body needs a fresh one, and Content-Length must reflect the bytes
+	// we'll actually forward. An empty body becomes http.NoBody so we
+	// don't stamp `Content-Length: 0` onto a request that arrived
+	// without a body (e.g. a GET to a middleware-bearing endpoint).
+	if len(body) == 0 {
+		req.Body = http.NoBody
+		req.ContentLength = 0
+		req.Header.Del("Content-Length")
+		return nil
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	return nil
+}
+
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
@@ -2457,6 +2508,25 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
 			return
+		}
+
+		// Request-side middleware chain. Runs after credential
+		// injection (so a middleware sees the same request the upstream
+		// will) and after the WS early-return (middleware is HTTP-body
+		// shaped; WS frames have their own rewrite hook). Each
+		// middleware may rewrite the body; an error fails the request
+		// closed with a 502 and no upstream call.
+		if len(ep.Middleware) > 0 {
+			if err := applyRequestMiddleware(req.Context(), req, ep.Middleware); err != nil {
+				log.Printf("middleware %s %s: %v", host, req.URL.Path, err)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+				ev.Status = 502
+				ev.Action = "error"
+				ev.Reason = err.Error()
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				return
+			}
 		}
 
 		trackKind := trackKindFor(host)
