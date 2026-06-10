@@ -17,10 +17,14 @@ package credentials
 // Either way the agent never sees real credentials.
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -39,9 +43,14 @@ import (
 )
 
 // emptyPayloadHash is the SHA-256 of the empty string — the SigV4
-// payload hash the signer requires when an incoming request carried no
-// X-Amz-Content-Sha256 header to reuse.
+// payload hash for a request with no body.
 const emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// unsignedPayload is the SigV4 sentinel that omits the body from the
+// canonical request's payload hash. S3 emits it as a literal
+// X-Amz-Content-Sha256 header for streaming / chunked uploads; we also
+// fall back to it for non-S3 bodies too large to buffer for hashing.
+const unsignedPayload = "UNSIGNED-PAYLOAD"
 
 // AWSCredential is part of the clawpatrol plugin API.
 //
@@ -111,11 +120,24 @@ func (c *AWSCredential) reSignProxiedRequest(ctx context.Context, req *http.Requ
 		return fmt.Errorf("aws_credential: cannot derive service/region for %q (no SigV4 credential scope and unrecognized host)", req.URL.Host)
 	}
 
-	// Reuse the hash the agent already computed and signed over rather
-	// than recomputing from the (possibly already-consumed) body.
+	// Determine the SigV4 payload hash the agent signed over.
+	//
+	// botocore only puts X-Amz-Content-Sha256 on the wire for S3
+	// (S3SigV4Auth); every other service still signs over SHA256(body)
+	// in its canonical request but sends no such header. So:
+	//   header present → reuse it verbatim. It's the value the client
+	//     signed over and may be one we cannot recompute from the body
+	//     (S3 UNSIGNED-PAYLOAD, a streaming-chunked literal, …).
+	//   header absent  → the client signed over SHA256(body); recompute
+	//     it from the actual body so the canonical requests agree. The
+	//     old empty-string fallback broke every non-S3 service with a
+	//     body (STS, IAM, DynamoDB, …) with SignatureDoesNotMatch.
 	payloadHash := req.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
-		payloadHash = emptyPayloadHash
+		payloadHash, err = hashRequestBody(req)
+		if err != nil {
+			return fmt.Errorf("aws_credential: hash %s request body: %w", service, err)
+		}
 	}
 
 	// Drop the agent's placeholder signature + any session token it
@@ -129,6 +151,42 @@ func (c *AWSCredential) reSignProxiedRequest(ctx context.Context, req *http.Requ
 		return fmt.Errorf("aws_credential: re-sign %s request: %w", service, err)
 	}
 	return nil
+}
+
+// hashRequestBody computes the SigV4 payload hash over req.Body — what
+// botocore's base SigV4Auth signs over for non-S3 services — and
+// restores the body so the upstream send is unchanged. A nil/empty body
+// hashes to SHA256(""). Bodies over the buffer cap return
+// UNSIGNED-PAYLOAD rather than buffering unbounded memory; the gateway
+// terminates TLS, so transport integrity still covers the streamed body.
+func hashRequestBody(req *http.Request) (string, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return emptyPayloadHash, nil
+	}
+	// The gateway already buffers POST/PUT/PATCH bodies up to this cap
+	// for the rules engine before we sign, so for the path that needs a
+	// recomputed hash (non-S3 bodies) the bytes are typically in memory
+	// already — reading here is cheap.
+	const limit = config.DefaultBodyBufferLimit
+	orig := req.Body
+	buf, err := io.ReadAll(io.LimitReader(orig, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(buf)) > limit {
+		// Over the cap: don't buffer the rest. Stitch the bytes we
+		// peeked back ahead of the untouched remainder and sign
+		// UNSIGNED-PAYLOAD.
+		req.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(buf), orig), orig}
+		return unsignedPayload, nil
+	}
+	sum := sha256.Sum256(buf)
+	req.Body = io.NopCloser(bytes.NewReader(buf))
+	req.ContentLength = int64(len(buf))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // awsServiceRegion derives the SigV4 service + region for re-signing. It

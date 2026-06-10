@@ -2,12 +2,16 @@ package credentials
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -124,6 +128,111 @@ func TestAWSCredentialReSignsNonEKSRequest(t *testing.T) {
 	if got := req.Header.Get("X-Amz-Content-Sha256"); got != contentHash {
 		t.Errorf("X-Amz-Content-Sha256 = %q, want reused %q", got, contentHash)
 	}
+}
+
+// TestAWSCredentialReSignsNonEKSRequestNoContentHashHeader mirrors the
+// reviewer's repro: a non-S3 POST (sts get-caller-identity) whose client
+// (botocore's base SigV4Auth) signs over SHA256(body) but sends no
+// X-Amz-Content-Sha256 header. The gateway must recompute the hash from
+// the body, not fall back to SHA256(""), or AWS rejects with
+// SignatureDoesNotMatch. The body must also survive for the upstream send.
+func TestAWSCredentialReSignsNonEKSRequestNoContentHashHeader(t *testing.T) {
+	cred := &AWSCredential{}
+	const body = "Action=GetCallerIdentity&Version=2011-06-15"
+	req, err := http.NewRequest("POST", "https://sts.amazonaws.com/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	// Scope present, but deliberately NO X-Amz-Content-Sha256 header.
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIACLAWPATROLPLACE0/20260609/us-east-1/sts/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef")
+
+	sec := runtime.Secret{Extras: map[string]string{
+		"access_key_id":     "AKIDEXAMPLE",
+		"secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+	}}
+	if err := cred.SignHTTPRequest(context.Background(), req, sec, struct{}{}); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 ") || strings.Contains(auth, "deadbeef") {
+		t.Fatalf("Authorization = %q, want a fresh SigV4 signature", auth)
+	}
+	rest, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(rest) != body {
+		t.Errorf("restored body = %q, want %q", rest, body)
+	}
+}
+
+// TestHashRequestBody covers the no-header payload-hash path directly:
+// a non-empty body hashes to SHA256(body) (the bug used SHA256("")), an
+// empty/absent body hashes to the empty-payload constant, and an
+// over-cap body falls back to UNSIGNED-PAYLOAD with the full body
+// preserved. Every case must leave req.Body readable for the send.
+func TestHashRequestBody(t *testing.T) {
+	t.Run("non-empty body hashes the body", func(t *testing.T) {
+		const body = "Action=GetCallerIdentity&Version=2011-06-15"
+		req, err := http.NewRequest("POST", "https://sts.amazonaws.com/", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		got, err := hashRequestBody(req)
+		if err != nil {
+			t.Fatalf("hashRequestBody: %v", err)
+		}
+		sum := sha256.Sum256([]byte(body))
+		if want := hex.EncodeToString(sum[:]); got != want {
+			t.Errorf("hash = %q, want SHA256(body) %q", got, want)
+		}
+		if got == emptyPayloadHash {
+			t.Error("fell back to the empty-payload hash for a non-empty body")
+		}
+		rest, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read restored body: %v", err)
+		}
+		if string(rest) != body {
+			t.Errorf("restored body = %q, want %q", rest, body)
+		}
+	})
+
+	t.Run("nil body hashes empty", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "https://sts.amazonaws.com/", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		got, err := hashRequestBody(req)
+		if err != nil {
+			t.Fatalf("hashRequestBody: %v", err)
+		}
+		if got != emptyPayloadHash {
+			t.Errorf("hash = %q, want empty-payload hash %q", got, emptyPayloadHash)
+		}
+	})
+
+	t.Run("over-cap body is UNSIGNED-PAYLOAD with body preserved", func(t *testing.T) {
+		big := strings.Repeat("a", int(config.DefaultBodyBufferLimit)+512)
+		req, err := http.NewRequest("PUT", "https://example.amazonaws.com/", strings.NewReader(big))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		got, err := hashRequestBody(req)
+		if err != nil {
+			t.Fatalf("hashRequestBody: %v", err)
+		}
+		if got != unsignedPayload {
+			t.Errorf("hash = %q, want %q for an over-cap body", got, unsignedPayload)
+		}
+		rest, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read restored body: %v", err)
+		}
+		if len(rest) != len(big) {
+			t.Errorf("restored body length = %d, want %d (full body must survive)", len(rest), len(big))
+		}
+	})
 }
 
 // TestAWSCredentialReSignFallsBackToHost covers the path where the
