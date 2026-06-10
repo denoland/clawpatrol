@@ -49,6 +49,7 @@ func (r *renderer) run() (string, error) {
 		config.KindEndpoint,
 		config.KindRule,
 		config.KindTunnel,
+		config.KindMiddleware,
 	} {
 		r.writeKind(kind)
 	}
@@ -373,7 +374,7 @@ func skipPublicConfigReferenceField(pkgName, typeName, fieldName string) bool {
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule, config.KindMiddleware,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)

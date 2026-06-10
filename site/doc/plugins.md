@@ -222,6 +222,64 @@ Rules attached to this endpoint are written exactly the way they
 would be against any in-process HTTPS endpoint:
 `http.method == "POST"`, `http.body.contains("…")`, etc.
 
+## Request middleware
+
+A **middleware** is a request-side hook attached to an endpoint that
+can rewrite the request body after credential injection and before the
+upstream forward. Where a credential plugin *injects auth* and a rule
+*decides allow/deny*, a middleware *transforms the request* — the
+see-the-request, optionally-mutate seam.
+
+Declare a `middleware "<type>" "<name>" { … }` block and attach it to
+an endpoint with the ordered `middleware = [...]` attribute:
+
+```hcl
+middleware "anthropic_system_prompt" "tool_discovery" {
+  text = "You can reach these gateway-mediated tools: …"
+}
+
+endpoint "https" "anthropic_api" {
+  hosts      = ["api.anthropic.com"]
+  credential = bearer_token.prod
+  middleware = [anthropic_system_prompt.tool_discovery]
+}
+```
+
+- The first label (`anthropic_system_prompt`) is the **type**; the
+  second (`tool_discovery`) is the **instance** name. References use
+  the `type.name` form, the same as credentials and tunnels.
+- `endpoint.middleware` is an **ordered list**. Unlike the credential
+  binding ("first non-error wins"), *every* middleware in the list
+  runs, in declared order — same-stage composition.
+- A middleware that returns an error **fails the request closed**: the
+  gateway returns `502` and a dashboard error event, and never calls
+  upstream.
+- CEL rule conditions match the **pre-middleware** body — the rule
+  decides on the request the agent sent; the middleware shapes the
+  request the upstream receives.
+
+### `anthropic_system_prompt`
+
+The one built-in middleware type. It appends `text` to the `system`
+field of Anthropic `/v1/messages` requests, handling all three legal
+shapes:
+
+- **absent** → `system` is set to the text.
+- **string** → the text is appended after a blank line.
+- **content-block array** → a `{"type":"text","text": …}` block is
+  appended.
+
+A `system` field in any other shape fails closed. `text` accepts a
+literal string or a [`<<file:NAME>>`](configure-gateway) include so a
+large prompt can live in a sidecar file. Attaching this type to an
+endpoint whose `hosts` don't include `api.anthropic.com` is a
+load-time error.
+
+> Middlewares are a **built-in** kind today (request side only).
+> Response-side rewriting, sibling types for other providers
+> (OpenAI `instructions`, Gemini `systemInstruction`), and an
+> external-plugin middleware surface are planned but not yet shipped.
+
 ## Validating a plugin config
 
 `clawpatrol validate` runs the same load path the daemon does, so
