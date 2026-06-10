@@ -71,3 +71,38 @@ func TestClaimAliasResolve(t *testing.T) {
 		t.Fatal("empty ip must not claim")
 	}
 }
+
+// AssignProfile must propagate across an IP's alias group. A Tailscale
+// peer's IPv6 ULA is aliased to its IPv4; reassigning the profile on
+// either address (e.g. from the dashboard) must update the whole group,
+// or traffic on the un-updated address resolves to the stale profile
+// while the dashboard shows the new one.
+func TestAssignProfilePropagatesAcrossAlias(t *testing.T) {
+	r := newOnboardRegistry()
+	const v4 = "100.106.145.49"
+	const v6 = "fd7a:115c:a1e0::1234"
+
+	// Initial assignment + alias (mirrors join: v4 gets a profile, the
+	// v6 ULA is linked and copies it).
+	r.AssignProfile(v4, "default")
+	r.RegisterIPAlias(v6, v4)
+	if got := r.ProfileForIP(v6); got != "default" {
+		t.Fatalf("after alias: ProfileForIP(v6) = %q, want default", got)
+	}
+
+	// Operator reassigns via the dashboard (apiAgentProfile → AssignProfile
+	// on the canonical v4). The v6 alias must follow.
+	r.AssignProfile(v4, "avocet2")
+	if got := r.ProfileForIP(v4); got != "avocet2" {
+		t.Fatalf("ProfileForIP(v4) = %q, want avocet2", got)
+	}
+	if got := r.ProfileForIP(v6); got != "avocet2" {
+		t.Fatalf("ProfileForIP(v6) = %q, want avocet2 (alias must follow reassignment)", got)
+	}
+
+	// Reassigning via the alias address must update the canonical too.
+	r.AssignProfile(v6, "default")
+	if got := r.ProfileForIP(v4); got != "default" {
+		t.Fatalf("ProfileForIP(v4) = %q, want default (canonical must follow alias reassignment)", got)
+	}
+}

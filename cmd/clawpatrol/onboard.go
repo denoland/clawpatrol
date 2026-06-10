@@ -189,13 +189,29 @@ func (r *onboardRegistry) RegisterIPAlias(alias, canonical string) {
 	r.canonicalByAlias[alias] = canonical
 }
 
-// AssignProfile records that a peer IP belongs to a named profile.
-// Persists to the devices row.
+// AssignProfile records that a peer IP belongs to a named profile, and
+// propagates it across the IP's whole alias group. A Tailscale peer
+// reaches the gateway on both its 100.x IPv4 and its fd7a: IPv6 ULA;
+// RegisterIPAlias links the two but only copies the profile once. So a
+// later reassignment (e.g. an operator changing the profile from the
+// dashboard) of one address must update the others, or profileFor
+// resolves traffic on the un-updated address to the stale (often
+// "default") profile while the dashboard shows the new one. Persists
+// the canonical devices row; aliases are in-memory only.
 func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.profileByIP[ip] = profile
-	r.upsertLocked(ip)
+	canonical := ip
+	if c := r.canonicalByAlias[ip]; c != "" {
+		canonical = c
+	}
+	r.profileByIP[canonical] = profile
+	for alias, c := range r.canonicalByAlias {
+		if c == canonical {
+			r.profileByIP[alias] = profile
+		}
+	}
+	r.upsertLocked(canonical)
 }
 
 // seedPlaceholder records hostname/owner/profile for a tsnet
