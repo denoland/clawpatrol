@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,23 @@ func (r *onboardRegistry) assignProfileMemOnly(ip, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.profileByIP[ip] = profile
+}
+
+// seedPlaceholder records hostname/owner for a tsnet placeholder ID,
+// in memory only (upsertLocked refuses placeholder IDs), so the
+// agents-registry Seed at approve time renders a recognizable device
+// row before the daemon's first register call promotes the
+// placeholder to a real devices row. ForgetIP at promotion clears
+// these entries.
+func (r *onboardRegistry) seedPlaceholder(id, hostname, owner string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hostname != "" {
+		r.hostnameByIP[id] = hostname
+	}
+	if owner != "" {
+		r.ownerByIP[id] = owner
+	}
 }
 
 // AgentIPFor returns the device IP that traffic from ip should be
@@ -716,11 +734,25 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "unknown or expired code", 404)
 		return
 	}
+	// Profile names + the preselection for the approval page's picker.
+	// The suggestion is the CLI's `join --profile` value when it names
+	// a real profile, else the same fallback apiOnboardApprove uses —
+	// so what the picker shows is exactly what an unmodified approve
+	// would assign. After approval s.profile holds the final choice,
+	// so the page can render the assignment.
+	policy := w.g.cfg.Load().Policy
+	profiles := orderedProfileNames(policy)
+	suggested := s.profile
+	if !slices.Contains(profiles, suggested) {
+		suggested = defaultProfileName(policy)
+	}
 	writeJSON(rw, map[string]any{
-		"user_code":      s.userCode,
-		"approved":       s.approved,
-		"created_at":     s.created.Unix(),
-		"ca_fingerprint": w.caFingerprint(),
+		"user_code":         s.userCode,
+		"approved":          s.approved,
+		"created_at":        s.created.Unix(),
+		"ca_fingerprint":    w.caFingerprint(),
+		"profiles":          profiles,
+		"suggested_profile": suggested,
 	})
 }
 
@@ -750,18 +782,37 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	}
 	// Operator picks which profile this device joins. Priority:
 	// dashboard query param → CLI suggestion stashed at /start time →
-	// profile named "default" → first profile in source order.
+	// profile named "default" → first profile in source order. An
+	// explicit query param naming a nonexistent profile is a hard
+	// error (a typo'd `join --profile` auto-approve should fall back
+	// to browser approval, not land the device in a ghost profile); a
+	// bogus stashed suggestion just degrades to the default.
+	policy := w.g.cfg.Load().Policy
+	profiles := orderedProfileNames(policy)
 	profile := r.URL.Query().Get("profile")
+	// A policy with zero profiles has nothing to validate against —
+	// keep accepting whatever the caller sent, as before.
+	if len(profiles) > 0 {
+		if profile != "" && !slices.Contains(profiles, profile) {
+			http.Error(rw, fmt.Sprintf("unknown profile %q", profile), http.StatusBadRequest)
+			return
+		}
+		if profile == "" && !slices.Contains(profiles, s.profile) {
+			// Bogus or absent CLI suggestion — degrade to the default
+			// instead of hard-failing the approval.
+			profile = defaultProfileName(policy)
+		}
+	}
 	if profile == "" {
 		profile = s.profile
 	}
 	if profile == "" {
-		profile = defaultProfileName(w.g.cfg.Load().Policy)
+		profile = defaultProfileName(policy)
 	}
 	w.onboard.mu.Lock()
 	if s.approved {
 		w.onboard.mu.Unlock()
-		writeJSON(rw, map[string]any{"already": true})
+		writeJSON(rw, map[string]any{"already": true, "profile": s.profile})
 		return
 	}
 	s.approved = true
@@ -824,9 +875,12 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			// /api/peer/tsnet/register on the daemon's first boot.
 			s2 := w.onboard.byDeviceCode(dc)
 			parentID := tsnetPlaceholderPrefix + dc
+			hostname := ""
 			if s2 != nil && s2.hostname != "" {
-				parentID = tsnetPlaceholderPrefix + s2.hostname
+				hostname = s2.hostname
+				parentID = tsnetPlaceholderPrefix + hostname
 			}
+			w.onboard.seedPlaceholder(parentID, hostname, owner)
 			if profile != "" {
 				w.onboard.assignProfileMemOnly(parentID, profile)
 			}
@@ -837,9 +891,17 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			} else {
 				log.Printf("api-token mint for %s: %v", parentID, perr)
 			}
+			// Seed the agents registry under the placeholder so the
+			// dashboard shows the just-approved device (and lets the
+			// operator re-assign its profile) before the daemon's
+			// first register call. The register promotion deletes
+			// this entry and re-seeds under the real tailnet IP.
+			if w.g.agents != nil {
+				w.g.agents.Seed(parentID)
+			}
 		}
 	}()
-	writeJSON(rw, map[string]any{"approved": true})
+	writeJSON(rw, map[string]any{"approved": true, "profile": profile})
 }
 
 // apiOnboardClaim is hit by the CLI right after `tailscale up`
@@ -876,6 +938,11 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
+	// Seed the agents registry so the dashboard shows the device as
+	// soon as the claim lands, before it sends any traffic.
+	if w.g.agents != nil {
+		w.g.agents.Seed(host)
+	}
 	// Mirror profile mapping onto the peer's IPv6 ULA — whole-machine
 	// tsnet traffic frequently arrives on fd7a:115c:a1e0::/48 not the
 	// 100.x IPv4 that claim() registered.

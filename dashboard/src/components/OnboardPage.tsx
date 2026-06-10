@@ -10,32 +10,46 @@ export function OnboardPage({ code }: { code: string }) {
     user_code?: string;
     approved?: boolean;
     ca_fingerprint?: string;
+    profiles?: string[];
+    suggested_profile?: string;
   } | null>(null);
+  const [profile, setProfile] = useState("");
+  const [assigned, setAssigned] = useState("");
 
   useEffect(() => {
     fetch("/api/onboard/lookup?code=" + encodeURIComponent(code))
       .then((r) => (r.ok ? r.json() : Promise.reject(r.statusText)))
-      .then((d) => setInfo(d))
+      .then((d) => {
+        setInfo(d);
+        setProfile(d.suggested_profile || "");
+        // For an already-approved code the suggestion IS the
+        // assignment (the gateway stores the final choice).
+        if (d.approved) setAssigned(d.suggested_profile || "");
+      })
       .catch((e) => setErr(String(e)));
   }, [code]);
 
   async function approve() {
     setStatus("approving");
     try {
-      const r = await fetch("/api/onboard/approve?code=" + encodeURIComponent(code), {
-        method: "POST",
-      });
+      let url = "/api/onboard/approve?code=" + encodeURIComponent(code);
+      if (profile) url += "&profile=" + encodeURIComponent(profile);
+      const r = await fetch(url, { method: "POST" });
       if (!r.ok) {
         setErr(await r.text());
         setStatus("error");
         return;
       }
+      const d = await r.json().catch(() => ({}));
+      setAssigned(d.profile || profile);
       setStatus("approved");
     } catch (e) {
       setErr(String(e));
       setStatus("error");
     }
   }
+
+  const profiles = info?.profiles ?? [];
 
   return (
     <Main centered>
@@ -61,6 +75,30 @@ export function OnboardPage({ code }: { code: string }) {
                 only approve if you typed this code on the new machine.
               </div>
 
+              {!info.approved && status !== "approved" && profiles.length > 0 && (
+                <div>
+                  <label className="font-mono text-2xs uppercase tracking-wider text-text-subtle block">
+                    profile
+                  </label>
+                  {profiles.length === 1 ? (
+                    <div className="font-mono text-sm text-text mt-1">{profiles[0]}</div>
+                  ) : (
+                    <select
+                      value={profile}
+                      onChange={(e) => setProfile(e.target.value)}
+                      disabled={status === "approving"}
+                      className="mt-1 w-full font-mono text-sm text-text bg-canvas border-1.5 border-navy px-2 py-1.5"
+                    >
+                      {profiles.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+
               {info.ca_fingerprint && (
                 <details className="text-[0.6875rem] text-[#737373]">
                   <summary className="cursor-pointer hover:text-[#171717]">
@@ -80,7 +118,14 @@ export function OnboardPage({ code }: { code: string }) {
               {status === "approving" && <div className="text-xs text-text-muted">approving…</div>}
               {(status === "approved" || info.approved) && (
                 <div className="text-xs text-success-600">
-                  ✓ approved — return to the CLI on the new device
+                  ✓ approved
+                  {assigned ? (
+                    <>
+                      {" — profile "}
+                      <span className="font-mono">{assigned}</span>
+                    </>
+                  ) : null}
+                  {" — return to the CLI on the new device"}
                 </div>
               )}
             </div>

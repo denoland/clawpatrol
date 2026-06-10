@@ -33,9 +33,7 @@ export function DevicesPage({
           <AgentsTable agents={agents} integrations={integrations} onSelect={onSelect} />
         </div>
       </section>
-      {showAdd && (
-        <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAdd(false)} />
-      )}
+      {showAdd && <AddDeviceModal whoami={whoami} onClose={() => setShowAdd(false)} />}
     </Main>
   );
 }

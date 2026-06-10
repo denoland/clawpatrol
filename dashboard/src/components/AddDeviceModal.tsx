@@ -1,17 +1,51 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listProfiles, type Whoami } from "../lib/api";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
+// shellArg quotes s for copy-paste into a POSIX shell when it
+// contains anything beyond plain word characters.
+function shellArg(s: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
+  return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
 export function AddDeviceModal({
-  publicURL,
+  whoami,
   onClose,
 }: {
-  publicURL?: string;
+  whoami?: Whoami | null;
   onClose: () => void;
 }) {
-  const url = publicURL || window.location.origin;
+  const url = whoami?.public_url || window.location.origin;
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profile, setProfile] = useState("");
+
+  useEffect(() => {
+    listProfiles()
+      .then((p) => {
+        setProfiles(p);
+        // Mirror the gateway's default-profile pick: "default" if it
+        // exists, else the first profile in source order.
+        setProfile(p.includes("default") ? "default" : (p[0] ?? ""));
+      })
+      .catch(() => setProfiles([]));
+  }, []);
+
+  // An operator authenticated over the tailnet can mint joins that
+  // auto-approve: --login joins with their identity and the gateway's
+  // operator gate accepts the self-approval. Password sessions can't
+  // promise that, so the plain browser-approval join is suggested.
+  const login = whoami?.auth_method === "tailscale";
+
   const installCmd = "curl -fsSL https://clawpatrol.dev/install.sh | sh";
-  const joinCmd = `clawpatrol join ${url}`;
+  const joinCmd = [
+    "clawpatrol",
+    "join",
+    ...(login ? ["--login"] : []),
+    ...(profile ? ["--profile", shellArg(profile)] : []),
+    url,
+  ].join(" ");
 
   return (
     <Modal title="Add device" onClose={onClose}>
@@ -19,8 +53,30 @@ export function AddDeviceModal({
         <h3 className="text-sm leading-none tracking-tight text-text font-mono">
           Run the following on the new device:
         </h3>
+        {profiles.length > 1 && (
+          <div className="space-y-1">
+            <label className="text-sm text-text-muted font-sans block">
+              Profile for the new device
+            </label>
+            <select
+              value={profile}
+              onChange={(e) => setProfile(e.target.value)}
+              className="w-full font-mono text-xs text-text bg-canvas border-1.5 border-navy px-2 py-1.5"
+            >
+              {profiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <Step n={1} label="Install" cmd={installCmd} />
-        <Step n={2} label="Join" cmd={joinCmd} />
+        <Step
+          n={2}
+          label={login ? "Join (auto-approves via your tailnet identity)" : "Join"}
+          cmd={joinCmd}
+        />
       </div>
     </Modal>
   );

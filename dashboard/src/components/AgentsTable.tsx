@@ -94,10 +94,13 @@ export function AgentsTable({
               <Td
                 className="text-xs text-text-muted tabular-nums truncate"
                 title={
-                  [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`
+                  [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") ||
+                  (a.ip.startsWith("tsnet-") ? "approved, waiting for first connect" : `wg ${a.ip}`)
                 }
               >
-                {a.external_ipv4 || a.external_ipv6 || a.ip}
+                {a.external_ipv4 ||
+                  a.external_ipv6 ||
+                  (a.ip.startsWith("tsnet-") ? "pending first connect" : a.ip)}
               </Td>
             </tr>
           );
