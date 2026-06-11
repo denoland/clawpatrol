@@ -24,6 +24,7 @@ package endpoints
 // CEL rules still fire on malformed input.
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
@@ -92,12 +93,47 @@ func analyseAll(sql string) []analysedStmt {
 // reads verb / tables / functions for this request.
 func analysePiece(sql string) analysedStmt {
 	text := strings.TrimSpace(sql)
-	if root, err := parser.Parse(text); err == nil && root != nil && len(root.Items) > 0 {
-		if stmt := root.Items[0]; stmt != nil {
+	if stmt := tryParseFirstStmt(text); stmt != nil {
+		return analyseStmt(stmt, text)
+	}
+	// pgplex (REL_17_STABLE port) still rejects a handful of shapes
+	// postgres itself accepts. Retry on a normalised copy that papers
+	// over the known gaps; the analysis runs on the rewritten text but
+	// we keep `text` as the Statement so forwarding / display / fixture
+	// capture see exactly what came off the wire. denoland/clawpatrol#658.
+	if norm := normalizeParserGaps(text); norm != text {
+		if stmt := tryParseFirstStmt(norm); stmt != nil {
 			return analyseStmt(stmt, text)
 		}
 	}
 	return analysedStmt{Outer: pgInfo{Statement: text}, Unparseable: true}
+}
+
+// tryParseFirstStmt parses text and returns the first top-level
+// statement node, or nil when the parser rejects the input or yields
+// no statements.
+func tryParseFirstStmt(text string) nodes.Node {
+	if root, err := parser.Parse(text); err == nil && root != nil && len(root.Items) > 0 {
+		return root.Items[0]
+	}
+	return nil
+}
+
+// collateDefaultRe matches a `COLLATE [schema.]default` clause where
+// `default` is written as a bare keyword. psql's `\d` family emits
+// `COLLATE pg_catalog.default` (and bare `COLLATE default`), which the
+// pgplex grammar refuses unless `default` is a quoted identifier. The
+// optional schema prefix is preserved; only the trailing `default`
+// keyword is requoted.
+var collateDefaultRe = regexp.MustCompile(`(?i)(\bCOLLATE\s+(?:"[^"]*"\.|[a-z_][a-z0-9_$]*\.)?)default\b`)
+
+// normalizeParserGaps rewrites SQL the wire emits but pgplex can't yet
+// parse into an equivalent form it accepts. The result is used only to
+// extract verb / tables / functions for rule matching — never sent to
+// postgres — so the rewrite only has to preserve those, not byte
+// fidelity.
+func normalizeParserGaps(sql string) string {
+	return collateDefaultRe.ReplaceAllString(sql, `$1"default"`)
 }
 
 // ── AST walk ──────────────────────────────────────────────────────────

@@ -163,6 +163,33 @@ func TestParseSQL(t *testing.T) {
 				Statement: "SELECT * FROM \"Sensitive Table\"",
 			},
 		},
+		{
+			// #658: psql's `\d` family orders catalog reads by a bare
+			// `COLLATE pg_catalog.default`, which the pgplex grammar
+			// refuses unless `default` is quoted. normalizeParserGaps
+			// requotes it on a retry copy so the statement parses; the
+			// Statement field still reflects the original wire text.
+			name: "psql \\d-style COLLATE pg_catalog.default parses",
+			sql:  "SELECT c.relname FROM pg_catalog.pg_class c ORDER BY c.relname COLLATE pg_catalog.default",
+			want: pgInfo{
+				Verb:      "select",
+				Tables:    []string{"pg_catalog.pg_class", "pg_class"},
+				Functions: nil,
+				Statement: "SELECT c.relname FROM pg_catalog.pg_class c ORDER BY c.relname COLLATE pg_catalog.default",
+			},
+		},
+		{
+			// Bare `COLLATE default` (no schema qualifier) is the same
+			// gap and takes the same retry path.
+			name: "bare COLLATE default parses",
+			sql:  "SELECT n FROM t ORDER BY n COLLATE default",
+			want: pgInfo{
+				Verb:      "select",
+				Tables:    []string{"t"},
+				Functions: nil,
+				Statement: "SELECT n FROM t ORDER BY n COLLATE default",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
