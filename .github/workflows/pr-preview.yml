@@ -10,6 +10,10 @@ concurrency:
 
 jobs:
   preview:
+    # Demo previews need DEMO_DEPLOY_TOKEN to read/write denoland/clawpatrol-demo.
+    # GitHub does not expose repository secrets to pull_request runs from forks,
+    # so skip this optional preview job there instead of failing fork PR CI.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
