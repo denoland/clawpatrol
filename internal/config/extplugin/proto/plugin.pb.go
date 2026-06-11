@@ -188,7 +188,56 @@ func (x Diagnostic_Severity) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Diagnostic_Severity.Descriptor instead.
 func (Diagnostic_Severity) EnumDescriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{11, 0}
+	return file_plugin_proto_rawDescGZIP(), []int{18, 0}
+}
+
+type HeaderMutation_Op int32
+
+const (
+	HeaderMutation_SET HeaderMutation_Op = 0
+	HeaderMutation_ADD HeaderMutation_Op = 1
+	HeaderMutation_DEL HeaderMutation_Op = 2
+)
+
+// Enum value maps for HeaderMutation_Op.
+var (
+	HeaderMutation_Op_name = map[int32]string{
+		0: "SET",
+		1: "ADD",
+		2: "DEL",
+	}
+	HeaderMutation_Op_value = map[string]int32{
+		"SET": 0,
+		"ADD": 1,
+		"DEL": 2,
+	}
+)
+
+func (x HeaderMutation_Op) Enum() *HeaderMutation_Op {
+	p := new(HeaderMutation_Op)
+	*p = x
+	return p
+}
+
+func (x HeaderMutation_Op) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HeaderMutation_Op) Descriptor() protoreflect.EnumDescriptor {
+	return file_plugin_proto_enumTypes[3].Descriptor()
+}
+
+func (HeaderMutation_Op) Type() protoreflect.EnumType {
+	return &file_plugin_proto_enumTypes[3]
+}
+
+func (x HeaderMutation_Op) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HeaderMutation_Op.Descriptor instead.
+func (HeaderMutation_Op) EnumDescriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{21, 0}
 }
 
 type ManifestRequest struct {
@@ -549,17 +598,523 @@ func (x *SchemaField) GetRequired() bool {
 	return false
 }
 
-type CredentialDecl struct {
+type SecretSlotDecl struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TypeName      string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"`
-	Schema        *Schema                `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	Multiline     bool                   `protobuf:"varint,3,opt,name=multiline,proto3" json:"multiline,omitempty"`
+	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *SecretSlotDecl) Reset() {
+	*x = SecretSlotDecl{}
+	mi := &file_plugin_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SecretSlotDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SecretSlotDecl) ProtoMessage() {}
+
+func (x *SecretSlotDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SecretSlotDecl.ProtoReflect.Descriptor instead.
+func (*SecretSlotDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SecretSlotDecl) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SecretSlotDecl) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *SecretSlotDecl) GetMultiline() bool {
+	if x != nil {
+		return x.Multiline
+	}
+	return false
+}
+
+func (x *SecretSlotDecl) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type EnvVarDecl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnvVarDecl) Reset() {
+	*x = EnvVarDecl{}
+	mi := &file_plugin_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnvVarDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnvVarDecl) ProtoMessage() {}
+
+func (x *EnvVarDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnvVarDecl.ProtoReflect.Descriptor instead.
+func (*EnvVarDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *EnvVarDecl) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *EnvVarDecl) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *EnvVarDecl) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type OptionalScopeDecl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OptionalScopeDecl) Reset() {
+	*x = OptionalScopeDecl{}
+	mi := &file_plugin_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptionalScopeDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptionalScopeDecl) ProtoMessage() {}
+
+func (x *OptionalScopeDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptionalScopeDecl.ProtoReflect.Descriptor instead.
+func (*OptionalScopeDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *OptionalScopeDecl) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *OptionalScopeDecl) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+type OptionalScopeGroupDecl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Title         string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	Scopes        []*OptionalScopeDecl   `protobuf:"bytes,2,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OptionalScopeGroupDecl) Reset() {
+	*x = OptionalScopeGroupDecl{}
+	mi := &file_plugin_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptionalScopeGroupDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptionalScopeGroupDecl) ProtoMessage() {}
+
+func (x *OptionalScopeGroupDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptionalScopeGroupDecl.ProtoReflect.Descriptor instead.
+func (*OptionalScopeGroupDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *OptionalScopeGroupDecl) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *OptionalScopeGroupDecl) GetScopes() []*OptionalScopeDecl {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+type OAuthConfigDecl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClientId      string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	ClientSecret  string                 `protobuf:"bytes,2,opt,name=client_secret,json=clientSecret,proto3" json:"client_secret,omitempty"`
+	AuthUrl       string                 `protobuf:"bytes,3,opt,name=auth_url,json=authUrl,proto3" json:"auth_url,omitempty"`
+	TokenUrl      string                 `protobuf:"bytes,4,opt,name=token_url,json=tokenUrl,proto3" json:"token_url,omitempty"`
+	DeviceUrl     string                 `protobuf:"bytes,5,opt,name=device_url,json=deviceUrl,proto3" json:"device_url,omitempty"`
+	RegisterUrl   string                 `protobuf:"bytes,6,opt,name=register_url,json=registerUrl,proto3" json:"register_url,omitempty"`
+	RedirectUri   string                 `protobuf:"bytes,7,opt,name=redirect_uri,json=redirectUri,proto3" json:"redirect_uri,omitempty"`
+	Scopes        []string               `protobuf:"bytes,8,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	RefreshToken  string                 `protobuf:"bytes,9,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OAuthConfigDecl) Reset() {
+	*x = OAuthConfigDecl{}
+	mi := &file_plugin_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OAuthConfigDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OAuthConfigDecl) ProtoMessage() {}
+
+func (x *OAuthConfigDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OAuthConfigDecl.ProtoReflect.Descriptor instead.
+func (*OAuthConfigDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *OAuthConfigDecl) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetClientSecret() string {
+	if x != nil {
+		return x.ClientSecret
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetAuthUrl() string {
+	if x != nil {
+		return x.AuthUrl
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetTokenUrl() string {
+	if x != nil {
+		return x.TokenUrl
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetDeviceUrl() string {
+	if x != nil {
+		return x.DeviceUrl
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetRegisterUrl() string {
+	if x != nil {
+		return x.RegisterUrl
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetRedirectUri() string {
+	if x != nil {
+		return x.RedirectUri
+	}
+	return ""
+}
+
+func (x *OAuthConfigDecl) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *OAuthConfigDecl) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+type OAuthIntegrationDecl struct {
+	state          protoimpl.MessageState    `protogen:"open.v1"`
+	Type           string                    `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Header         string                    `protobuf:"bytes,2,opt,name=header,proto3" json:"header,omitempty"`
+	Prefix         string                    `protobuf:"bytes,3,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	Flow           string                    `protobuf:"bytes,4,opt,name=flow,proto3" json:"flow,omitempty"`
+	Oauth          *OAuthConfigDecl          `protobuf:"bytes,5,opt,name=oauth,proto3" json:"oauth,omitempty"`
+	OptionalScopes []*OptionalScopeGroupDecl `protobuf:"bytes,6,rep,name=optional_scopes,json=optionalScopes,proto3" json:"optional_scopes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *OAuthIntegrationDecl) Reset() {
+	*x = OAuthIntegrationDecl{}
+	mi := &file_plugin_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OAuthIntegrationDecl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OAuthIntegrationDecl) ProtoMessage() {}
+
+func (x *OAuthIntegrationDecl) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OAuthIntegrationDecl.ProtoReflect.Descriptor instead.
+func (*OAuthIntegrationDecl) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *OAuthIntegrationDecl) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *OAuthIntegrationDecl) GetHeader() string {
+	if x != nil {
+		return x.Header
+	}
+	return ""
+}
+
+func (x *OAuthIntegrationDecl) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *OAuthIntegrationDecl) GetFlow() string {
+	if x != nil {
+		return x.Flow
+	}
+	return ""
+}
+
+func (x *OAuthIntegrationDecl) GetOauth() *OAuthConfigDecl {
+	if x != nil {
+		return x.Oauth
+	}
+	return nil
+}
+
+func (x *OAuthIntegrationDecl) GetOptionalScopes() []*OptionalScopeGroupDecl {
+	if x != nil {
+		return x.OptionalScopes
+	}
+	return nil
+}
+
+type CredentialMetadata struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Disambiguators []string               `protobuf:"bytes,1,rep,name=disambiguators,proto3" json:"disambiguators,omitempty"`
+	SecretSlots    []*SecretSlotDecl      `protobuf:"bytes,2,rep,name=secret_slots,json=secretSlots,proto3" json:"secret_slots,omitempty"`
+	EnvVars        []*EnvVarDecl          `protobuf:"bytes,3,rep,name=env_vars,json=envVars,proto3" json:"env_vars,omitempty"`
+	Oauth          *OAuthIntegrationDecl  `protobuf:"bytes,4,opt,name=oauth,proto3" json:"oauth,omitempty"`
+	HttpInject     bool                   `protobuf:"varint,5,opt,name=http_inject,json=httpInject,proto3" json:"http_inject,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CredentialMetadata) Reset() {
+	*x = CredentialMetadata{}
+	mi := &file_plugin_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CredentialMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CredentialMetadata) ProtoMessage() {}
+
+func (x *CredentialMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CredentialMetadata.ProtoReflect.Descriptor instead.
+func (*CredentialMetadata) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CredentialMetadata) GetDisambiguators() []string {
+	if x != nil {
+		return x.Disambiguators
+	}
+	return nil
+}
+
+func (x *CredentialMetadata) GetSecretSlots() []*SecretSlotDecl {
+	if x != nil {
+		return x.SecretSlots
+	}
+	return nil
+}
+
+func (x *CredentialMetadata) GetEnvVars() []*EnvVarDecl {
+	if x != nil {
+		return x.EnvVars
+	}
+	return nil
+}
+
+func (x *CredentialMetadata) GetOauth() *OAuthIntegrationDecl {
+	if x != nil {
+		return x.Oauth
+	}
+	return nil
+}
+
+func (x *CredentialMetadata) GetHttpInject() bool {
+	if x != nil {
+		return x.HttpInject
+	}
+	return false
+}
+
+type CredentialDecl struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	TypeName string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"`
+	Schema   *Schema                `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Declares static capabilities for registration/validation.
+	// BuildResponse.credential_metadata may refine instance-specific
+	// env vars, slots, and OAuth URLs, but registration-time
+	// disambiguators are authoritative for validation.
+	Disambiguators []string `protobuf:"bytes,3,rep,name=disambiguators,proto3" json:"disambiguators,omitempty"`
+	HttpInject     bool     `protobuf:"varint,4,opt,name=http_inject,json=httpInject,proto3" json:"http_inject,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
 func (x *CredentialDecl) Reset() {
 	*x = CredentialDecl{}
-	mi := &file_plugin_proto_msgTypes[6]
+	mi := &file_plugin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +1126,7 @@ func (x *CredentialDecl) String() string {
 func (*CredentialDecl) ProtoMessage() {}
 
 func (x *CredentialDecl) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[6]
+	mi := &file_plugin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +1139,7 @@ func (x *CredentialDecl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialDecl.ProtoReflect.Descriptor instead.
 func (*CredentialDecl) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{6}
+	return file_plugin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CredentialDecl) GetTypeName() string {
@@ -601,6 +1156,20 @@ func (x *CredentialDecl) GetSchema() *Schema {
 	return nil
 }
 
+func (x *CredentialDecl) GetDisambiguators() []string {
+	if x != nil {
+		return x.Disambiguators
+	}
+	return nil
+}
+
+func (x *CredentialDecl) GetHttpInject() bool {
+	if x != nil {
+		return x.HttpInject
+	}
+	return false
+}
+
 type TunnelDecl struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TypeName      string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"`
@@ -611,7 +1180,7 @@ type TunnelDecl struct {
 
 func (x *TunnelDecl) Reset() {
 	*x = TunnelDecl{}
-	mi := &file_plugin_proto_msgTypes[7]
+	mi := &file_plugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -623,7 +1192,7 @@ func (x *TunnelDecl) String() string {
 func (*TunnelDecl) ProtoMessage() {}
 
 func (x *TunnelDecl) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[7]
+	mi := &file_plugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +1205,7 @@ func (x *TunnelDecl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelDecl.ProtoReflect.Descriptor instead.
 func (*TunnelDecl) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{7}
+	return file_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TunnelDecl) GetTypeName() string {
@@ -669,7 +1238,7 @@ type EndpointDecl struct {
 
 func (x *EndpointDecl) Reset() {
 	*x = EndpointDecl{}
-	mi := &file_plugin_proto_msgTypes[8]
+	mi := &file_plugin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +1250,7 @@ func (x *EndpointDecl) String() string {
 func (*EndpointDecl) ProtoMessage() {}
 
 func (x *EndpointDecl) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[8]
+	mi := &file_plugin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +1263,7 @@ func (x *EndpointDecl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointDecl.ProtoReflect.Descriptor instead.
 func (*EndpointDecl) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{8}
+	return file_plugin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EndpointDecl) GetTypeName() string {
@@ -747,7 +1316,7 @@ type BuildRequest struct {
 
 func (x *BuildRequest) Reset() {
 	*x = BuildRequest{}
-	mi := &file_plugin_proto_msgTypes[9]
+	mi := &file_plugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +1328,7 @@ func (x *BuildRequest) String() string {
 func (*BuildRequest) ProtoMessage() {}
 
 func (x *BuildRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[9]
+	mi := &file_plugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +1341,7 @@ func (x *BuildRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildRequest.ProtoReflect.Descriptor instead.
 func (*BuildRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{9}
+	return file_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *BuildRequest) GetKind() string {
@@ -810,13 +1379,16 @@ type BuildResponse struct {
 	// ConnInit / OpenTunnelRequest.
 	CanonicalJson []byte        `protobuf:"bytes,1,opt,name=canonical_json,json=canonicalJson,proto3" json:"canonical_json,omitempty"`
 	Diagnostics   []*Diagnostic `protobuf:"bytes,2,rep,name=diagnostics,proto3" json:"diagnostics,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Used when kind == "credential". Instance-specific metadata
+	// derived from config, e.g. region-specific env vars/OAuth URLs.
+	CredentialMetadata *CredentialMetadata `protobuf:"bytes,3,opt,name=credential_metadata,json=credentialMetadata,proto3" json:"credential_metadata,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *BuildResponse) Reset() {
 	*x = BuildResponse{}
-	mi := &file_plugin_proto_msgTypes[10]
+	mi := &file_plugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -828,7 +1400,7 @@ func (x *BuildResponse) String() string {
 func (*BuildResponse) ProtoMessage() {}
 
 func (x *BuildResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[10]
+	mi := &file_plugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -841,7 +1413,7 @@ func (x *BuildResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildResponse.ProtoReflect.Descriptor instead.
 func (*BuildResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{10}
+	return file_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *BuildResponse) GetCanonicalJson() []byte {
@@ -858,6 +1430,13 @@ func (x *BuildResponse) GetDiagnostics() []*Diagnostic {
 	return nil
 }
 
+func (x *BuildResponse) GetCredentialMetadata() *CredentialMetadata {
+	if x != nil {
+		return x.CredentialMetadata
+	}
+	return nil
+}
+
 type Diagnostic struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Severity      Diagnostic_Severity    `protobuf:"varint,1,opt,name=severity,proto3,enum=clawpatrol.plugin.v1.Diagnostic_Severity" json:"severity,omitempty"`
@@ -869,7 +1448,7 @@ type Diagnostic struct {
 
 func (x *Diagnostic) Reset() {
 	*x = Diagnostic{}
-	mi := &file_plugin_proto_msgTypes[11]
+	mi := &file_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -881,7 +1460,7 @@ func (x *Diagnostic) String() string {
 func (*Diagnostic) ProtoMessage() {}
 
 func (x *Diagnostic) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[11]
+	mi := &file_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -894,7 +1473,7 @@ func (x *Diagnostic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Diagnostic.ProtoReflect.Descriptor instead.
 func (*Diagnostic) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{11}
+	return file_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Diagnostic) GetSeverity() Diagnostic_Severity {
@@ -918,6 +1497,291 @@ func (x *Diagnostic) GetDetail() string {
 	return ""
 }
 
+type HTTPHeaderValues struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Values        []string               `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HTTPHeaderValues) Reset() {
+	*x = HTTPHeaderValues{}
+	mi := &file_plugin_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HTTPHeaderValues) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HTTPHeaderValues) ProtoMessage() {}
+
+func (x *HTTPHeaderValues) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HTTPHeaderValues.ProtoReflect.Descriptor instead.
+func (*HTTPHeaderValues) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *HTTPHeaderValues) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+type InjectHTTPRequest struct {
+	state                   protoimpl.MessageState       `protogen:"open.v1"`
+	CredentialTypeName      string                       `protobuf:"bytes,1,opt,name=credential_type_name,json=credentialTypeName,proto3" json:"credential_type_name,omitempty"`
+	CredentialInstance      string                       `protobuf:"bytes,2,opt,name=credential_instance,json=credentialInstance,proto3" json:"credential_instance,omitempty"`
+	CredentialCanonicalJson []byte                       `protobuf:"bytes,3,opt,name=credential_canonical_json,json=credentialCanonicalJson,proto3" json:"credential_canonical_json,omitempty"`
+	CredentialSecret        []byte                       `protobuf:"bytes,4,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
+	CredentialExtras        map[string]string            `protobuf:"bytes,5,rep,name=credential_extras,json=credentialExtras,proto3" json:"credential_extras,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Method                  string                       `protobuf:"bytes,6,opt,name=method,proto3" json:"method,omitempty"`
+	Url                     string                       `protobuf:"bytes,7,opt,name=url,proto3" json:"url,omitempty"`
+	Host                    string                       `protobuf:"bytes,8,opt,name=host,proto3" json:"host,omitempty"`
+	Headers                 map[string]*HTTPHeaderValues `protobuf:"bytes,9,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional, capped by gateway. Not required by current external
+	// credentials but reserved for future read-only inspection.
+	BodyPrefix    []byte `protobuf:"bytes,10,opt,name=body_prefix,json=bodyPrefix,proto3" json:"body_prefix,omitempty"`
+	BodyTruncated bool   `protobuf:"varint,11,opt,name=body_truncated,json=bodyTruncated,proto3" json:"body_truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InjectHTTPRequest) Reset() {
+	*x = InjectHTTPRequest{}
+	mi := &file_plugin_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InjectHTTPRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InjectHTTPRequest) ProtoMessage() {}
+
+func (x *InjectHTTPRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InjectHTTPRequest.ProtoReflect.Descriptor instead.
+func (*InjectHTTPRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *InjectHTTPRequest) GetCredentialTypeName() string {
+	if x != nil {
+		return x.CredentialTypeName
+	}
+	return ""
+}
+
+func (x *InjectHTTPRequest) GetCredentialInstance() string {
+	if x != nil {
+		return x.CredentialInstance
+	}
+	return ""
+}
+
+func (x *InjectHTTPRequest) GetCredentialCanonicalJson() []byte {
+	if x != nil {
+		return x.CredentialCanonicalJson
+	}
+	return nil
+}
+
+func (x *InjectHTTPRequest) GetCredentialSecret() []byte {
+	if x != nil {
+		return x.CredentialSecret
+	}
+	return nil
+}
+
+func (x *InjectHTTPRequest) GetCredentialExtras() map[string]string {
+	if x != nil {
+		return x.CredentialExtras
+	}
+	return nil
+}
+
+func (x *InjectHTTPRequest) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *InjectHTTPRequest) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *InjectHTTPRequest) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *InjectHTTPRequest) GetHeaders() map[string]*HTTPHeaderValues {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *InjectHTTPRequest) GetBodyPrefix() []byte {
+	if x != nil {
+		return x.BodyPrefix
+	}
+	return nil
+}
+
+func (x *InjectHTTPRequest) GetBodyTruncated() bool {
+	if x != nil {
+		return x.BodyTruncated
+	}
+	return false
+}
+
+type HeaderMutation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Op            HeaderMutation_Op      `protobuf:"varint,1,opt,name=op,proto3,enum=clawpatrol.plugin.v1.HeaderMutation_Op" json:"op,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Values        []string               `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeaderMutation) Reset() {
+	*x = HeaderMutation{}
+	mi := &file_plugin_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeaderMutation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeaderMutation) ProtoMessage() {}
+
+func (x *HeaderMutation) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeaderMutation.ProtoReflect.Descriptor instead.
+func (*HeaderMutation) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *HeaderMutation) GetOp() HeaderMutation_Op {
+	if x != nil {
+		return x.Op
+	}
+	return HeaderMutation_SET
+}
+
+func (x *HeaderMutation) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *HeaderMutation) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+type InjectHTTPResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Headers []*HeaderMutation      `protobuf:"bytes,1,rep,name=headers,proto3" json:"headers,omitempty"`
+	// Extra runtime-derived sensitive values, such as a gateway-minted
+	// short-lived bearer token, that should be redacted from logs if
+	// encountered.
+	Redactions    []string `protobuf:"bytes,2,rep,name=redactions,proto3" json:"redactions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InjectHTTPResponse) Reset() {
+	*x = InjectHTTPResponse{}
+	mi := &file_plugin_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InjectHTTPResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InjectHTTPResponse) ProtoMessage() {}
+
+func (x *InjectHTTPResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InjectHTTPResponse.ProtoReflect.Descriptor instead.
+func (*InjectHTTPResponse) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *InjectHTTPResponse) GetHeaders() []*HeaderMutation {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *InjectHTTPResponse) GetRedactions() []string {
+	if x != nil {
+		return x.Redactions
+	}
+	return nil
+}
+
 type ConnMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:
@@ -938,7 +1802,7 @@ type ConnMessage struct {
 
 func (x *ConnMessage) Reset() {
 	*x = ConnMessage{}
-	mi := &file_plugin_proto_msgTypes[12]
+	mi := &file_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -950,7 +1814,7 @@ func (x *ConnMessage) String() string {
 func (*ConnMessage) ProtoMessage() {}
 
 func (x *ConnMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[12]
+	mi := &file_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -963,7 +1827,7 @@ func (x *ConnMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnMessage.ProtoReflect.Descriptor instead.
 func (*ConnMessage) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{12}
+	return file_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ConnMessage) GetKind() isConnMessage_Kind {
@@ -1124,7 +1988,7 @@ type StreamRead struct {
 
 func (x *StreamRead) Reset() {
 	*x = StreamRead{}
-	mi := &file_plugin_proto_msgTypes[13]
+	mi := &file_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1136,7 +2000,7 @@ func (x *StreamRead) String() string {
 func (*StreamRead) ProtoMessage() {}
 
 func (x *StreamRead) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[13]
+	mi := &file_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1149,7 +2013,7 @@ func (x *StreamRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamRead.ProtoReflect.Descriptor instead.
 func (*StreamRead) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{13}
+	return file_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *StreamRead) GetHandle() string {
@@ -1180,7 +2044,7 @@ type StreamChunk struct {
 
 func (x *StreamChunk) Reset() {
 	*x = StreamChunk{}
-	mi := &file_plugin_proto_msgTypes[14]
+	mi := &file_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +2056,7 @@ func (x *StreamChunk) String() string {
 func (*StreamChunk) ProtoMessage() {}
 
 func (x *StreamChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[14]
+	mi := &file_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +2069,7 @@ func (x *StreamChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamChunk.ProtoReflect.Descriptor instead.
 func (*StreamChunk) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{14}
+	return file_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *StreamChunk) GetHandle() string {
@@ -1241,7 +2105,7 @@ type StreamCancel struct {
 
 func (x *StreamCancel) Reset() {
 	*x = StreamCancel{}
-	mi := &file_plugin_proto_msgTypes[15]
+	mi := &file_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1253,7 +2117,7 @@ func (x *StreamCancel) String() string {
 func (*StreamCancel) ProtoMessage() {}
 
 func (x *StreamCancel) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[15]
+	mi := &file_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1266,7 +2130,7 @@ func (x *StreamCancel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamCancel.ProtoReflect.Descriptor instead.
 func (*StreamCancel) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{15}
+	return file_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *StreamCancel) GetHandle() string {
@@ -1310,7 +2174,7 @@ type EvaluateAction struct {
 
 func (x *EvaluateAction) Reset() {
 	*x = EvaluateAction{}
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1322,7 +2186,7 @@ func (x *EvaluateAction) String() string {
 func (*EvaluateAction) ProtoMessage() {}
 
 func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1335,7 +2199,7 @@ func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvaluateAction.ProtoReflect.Descriptor instead.
 func (*EvaluateAction) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{16}
+	return file_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *EvaluateAction) GetCallId() string {
@@ -1385,7 +2249,7 @@ type ActionVerdict struct {
 
 func (x *ActionVerdict) Reset() {
 	*x = ActionVerdict{}
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1397,7 +2261,7 @@ func (x *ActionVerdict) String() string {
 func (*ActionVerdict) ProtoMessage() {}
 
 func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1410,7 +2274,7 @@ func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionVerdict.ProtoReflect.Descriptor instead.
 func (*ActionVerdict) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{17}
+	return file_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ActionVerdict) GetCallId() string {
@@ -1473,7 +2337,7 @@ type ConnInit struct {
 
 func (x *ConnInit) Reset() {
 	*x = ConnInit{}
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1485,7 +2349,7 @@ func (x *ConnInit) String() string {
 func (*ConnInit) ProtoMessage() {}
 
 func (x *ConnInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1498,7 +2362,7 @@ func (x *ConnInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnInit.ProtoReflect.Descriptor instead.
 func (*ConnInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{18}
+	return file_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ConnInit) GetEndpointTypeName() string {
@@ -1608,7 +2472,7 @@ type ConnData struct {
 
 func (x *ConnData) Reset() {
 	*x = ConnData{}
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1620,7 +2484,7 @@ func (x *ConnData) String() string {
 func (*ConnData) ProtoMessage() {}
 
 func (x *ConnData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1633,7 +2497,7 @@ func (x *ConnData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnData.ProtoReflect.Descriptor instead.
 func (*ConnData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{19}
+	return file_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ConnData) GetPayload() []byte {
@@ -1653,7 +2517,7 @@ type ConnClose struct {
 
 func (x *ConnClose) Reset() {
 	*x = ConnClose{}
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1665,7 +2529,7 @@ func (x *ConnClose) String() string {
 func (*ConnClose) ProtoMessage() {}
 
 func (x *ConnClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1678,7 +2542,7 @@ func (x *ConnClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnClose.ProtoReflect.Descriptor instead.
 func (*ConnClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{20}
+	return file_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ConnClose) GetReason() string {
@@ -1709,7 +2573,7 @@ type ConnEvent struct {
 
 func (x *ConnEvent) Reset() {
 	*x = ConnEvent{}
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1721,7 +2585,7 @@ func (x *ConnEvent) String() string {
 func (*ConnEvent) ProtoMessage() {}
 
 func (x *ConnEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1734,7 +2598,7 @@ func (x *ConnEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnEvent.ProtoReflect.Descriptor instead.
 func (*ConnEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{21}
+	return file_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ConnEvent) GetAction() string {
@@ -1800,7 +2664,7 @@ type OpenTunnelRequest struct {
 
 func (x *OpenTunnelRequest) Reset() {
 	*x = OpenTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1812,7 +2676,7 @@ func (x *OpenTunnelRequest) String() string {
 func (*OpenTunnelRequest) ProtoMessage() {}
 
 func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1825,7 +2689,7 @@ func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelRequest.ProtoReflect.Descriptor instead.
 func (*OpenTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{22}
+	return file_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *OpenTunnelRequest) GetTunnelTypeName() string {
@@ -1872,7 +2736,7 @@ type OpenTunnelResponse struct {
 
 func (x *OpenTunnelResponse) Reset() {
 	*x = OpenTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1884,7 +2748,7 @@ func (x *OpenTunnelResponse) String() string {
 func (*OpenTunnelResponse) ProtoMessage() {}
 
 func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1897,7 +2761,7 @@ func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelResponse.ProtoReflect.Descriptor instead.
 func (*OpenTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{23}
+	return file_plugin_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *OpenTunnelResponse) GetHandle() string {
@@ -1916,7 +2780,7 @@ type CloseTunnelRequest struct {
 
 func (x *CloseTunnelRequest) Reset() {
 	*x = CloseTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1928,7 +2792,7 @@ func (x *CloseTunnelRequest) String() string {
 func (*CloseTunnelRequest) ProtoMessage() {}
 
 func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1941,7 +2805,7 @@ func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelRequest.ProtoReflect.Descriptor instead.
 func (*CloseTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{24}
+	return file_plugin_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *CloseTunnelRequest) GetHandle() string {
@@ -1959,7 +2823,7 @@ type CloseTunnelResponse struct {
 
 func (x *CloseTunnelResponse) Reset() {
 	*x = CloseTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1971,7 +2835,7 @@ func (x *CloseTunnelResponse) String() string {
 func (*CloseTunnelResponse) ProtoMessage() {}
 
 func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1984,7 +2848,7 @@ func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelResponse.ProtoReflect.Descriptor instead.
 func (*CloseTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{25}
+	return file_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 type DialMessage struct {
@@ -2001,7 +2865,7 @@ type DialMessage struct {
 
 func (x *DialMessage) Reset() {
 	*x = DialMessage{}
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2013,7 +2877,7 @@ func (x *DialMessage) String() string {
 func (*DialMessage) ProtoMessage() {}
 
 func (x *DialMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2026,7 +2890,7 @@ func (x *DialMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialMessage.ProtoReflect.Descriptor instead.
 func (*DialMessage) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{26}
+	return file_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *DialMessage) GetKind() isDialMessage_Kind {
@@ -2096,7 +2960,7 @@ type DialInit struct {
 
 func (x *DialInit) Reset() {
 	*x = DialInit{}
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2108,7 +2972,7 @@ func (x *DialInit) String() string {
 func (*DialInit) ProtoMessage() {}
 
 func (x *DialInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2121,7 +2985,7 @@ func (x *DialInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialInit.ProtoReflect.Descriptor instead.
 func (*DialInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{27}
+	return file_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DialInit) GetTunnelHandle() string {
@@ -2154,7 +3018,7 @@ type DialData struct {
 
 func (x *DialData) Reset() {
 	*x = DialData{}
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2166,7 +3030,7 @@ func (x *DialData) String() string {
 func (*DialData) ProtoMessage() {}
 
 func (x *DialData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2179,7 +3043,7 @@ func (x *DialData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialData.ProtoReflect.Descriptor instead.
 func (*DialData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{28}
+	return file_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DialData) GetPayload() []byte {
@@ -2198,7 +3062,7 @@ type DialClose struct {
 
 func (x *DialClose) Reset() {
 	*x = DialClose{}
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2210,7 +3074,7 @@ func (x *DialClose) String() string {
 func (*DialClose) ProtoMessage() {}
 
 func (x *DialClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2223,7 +3087,7 @@ func (x *DialClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialClose.ProtoReflect.Descriptor instead.
 func (*DialClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{29}
+	return file_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *DialClose) GetReason() string {
@@ -2260,10 +3124,54 @@ const file_plugin_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vtype_string\x18\x02 \x01(\tR\n" +
 	"typeString\x12\x1a\n" +
-	"\brequired\x18\x03 \x01(\bR\brequired\"c\n" +
+	"\brequired\x18\x03 \x01(\bR\brequired\"z\n" +
+	"\x0eSecretSlotDecl\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1c\n" +
+	"\tmultiline\x18\x03 \x01(\bR\tmultiline\x12 \n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\"X\n" +
+	"\n" +
+	"EnvVarDecl\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"9\n" +
+	"\x11OptionalScopeDecl\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\"o\n" +
+	"\x16OptionalScopeGroupDecl\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\x12?\n" +
+	"\x06scopes\x18\x02 \x03(\v2'.clawpatrol.plugin.v1.OptionalScopeDeclR\x06scopes\"\xad\x02\n" +
+	"\x0fOAuthConfigDecl\x12\x1b\n" +
+	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12#\n" +
+	"\rclient_secret\x18\x02 \x01(\tR\fclientSecret\x12\x19\n" +
+	"\bauth_url\x18\x03 \x01(\tR\aauthUrl\x12\x1b\n" +
+	"\ttoken_url\x18\x04 \x01(\tR\btokenUrl\x12\x1d\n" +
+	"\n" +
+	"device_url\x18\x05 \x01(\tR\tdeviceUrl\x12!\n" +
+	"\fregister_url\x18\x06 \x01(\tR\vregisterUrl\x12!\n" +
+	"\fredirect_uri\x18\a \x01(\tR\vredirectUri\x12\x16\n" +
+	"\x06scopes\x18\b \x03(\tR\x06scopes\x12#\n" +
+	"\rrefresh_token\x18\t \x01(\tR\frefreshToken\"\x82\x02\n" +
+	"\x14OAuthIntegrationDecl\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
+	"\x06header\x18\x02 \x01(\tR\x06header\x12\x16\n" +
+	"\x06prefix\x18\x03 \x01(\tR\x06prefix\x12\x12\n" +
+	"\x04flow\x18\x04 \x01(\tR\x04flow\x12;\n" +
+	"\x05oauth\x18\x05 \x01(\v2%.clawpatrol.plugin.v1.OAuthConfigDeclR\x05oauth\x12U\n" +
+	"\x0foptional_scopes\x18\x06 \x03(\v2,.clawpatrol.plugin.v1.OptionalScopeGroupDeclR\x0eoptionalScopes\"\xa5\x02\n" +
+	"\x12CredentialMetadata\x12&\n" +
+	"\x0edisambiguators\x18\x01 \x03(\tR\x0edisambiguators\x12G\n" +
+	"\fsecret_slots\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.SecretSlotDeclR\vsecretSlots\x12;\n" +
+	"\benv_vars\x18\x03 \x03(\v2 .clawpatrol.plugin.v1.EnvVarDeclR\aenvVars\x12@\n" +
+	"\x05oauth\x18\x04 \x01(\v2*.clawpatrol.plugin.v1.OAuthIntegrationDeclR\x05oauth\x12\x1f\n" +
+	"\vhttp_inject\x18\x05 \x01(\bR\n" +
+	"httpInject\"\xac\x01\n" +
 	"\x0eCredentialDecl\x12\x1b\n" +
 	"\ttype_name\x18\x01 \x01(\tR\btypeName\x124\n" +
-	"\x06schema\x18\x02 \x01(\v2\x1c.clawpatrol.plugin.v1.SchemaR\x06schema\"_\n" +
+	"\x06schema\x18\x02 \x01(\v2\x1c.clawpatrol.plugin.v1.SchemaR\x06schema\x12&\n" +
+	"\x0edisambiguators\x18\x03 \x03(\tR\x0edisambiguators\x12\x1f\n" +
+	"\vhttp_inject\x18\x04 \x01(\bR\n" +
+	"httpInject\"_\n" +
 	"\n" +
 	"TunnelDecl\x12\x1b\n" +
 	"\ttype_name\x18\x01 \x01(\tR\btypeName\x124\n" +
@@ -2279,10 +3187,11 @@ const file_plugin_proto_rawDesc = "" +
 	"\ttype_name\x18\x02 \x01(\tR\btypeName\x12#\n" +
 	"\rinstance_name\x18\x03 \x01(\tR\finstanceName\x12\x1f\n" +
 	"\vconfig_json\x18\x04 \x01(\fR\n" +
-	"configJson\"z\n" +
+	"configJson\"\xd5\x01\n" +
 	"\rBuildResponse\x12%\n" +
 	"\x0ecanonical_json\x18\x01 \x01(\fR\rcanonicalJson\x12B\n" +
-	"\vdiagnostics\x18\x02 \x03(\v2 .clawpatrol.plugin.v1.DiagnosticR\vdiagnostics\"\xa9\x01\n" +
+	"\vdiagnostics\x18\x02 \x03(\v2 .clawpatrol.plugin.v1.DiagnosticR\vdiagnostics\x12Y\n" +
+	"\x13credential_metadata\x18\x03 \x01(\v2(.clawpatrol.plugin.v1.CredentialMetadataR\x12credentialMetadata\"\xa9\x01\n" +
 	"\n" +
 	"Diagnostic\x12E\n" +
 	"\bseverity\x18\x01 \x01(\x0e2).clawpatrol.plugin.v1.Diagnostic.SeverityR\bseverity\x12\x18\n" +
@@ -2290,7 +3199,42 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06detail\x18\x03 \x01(\tR\x06detail\"\"\n" +
 	"\bSeverity\x12\t\n" +
 	"\x05ERROR\x10\x00\x12\v\n" +
-	"\aWARNING\x10\x01\"\xd0\x04\n" +
+	"\aWARNING\x10\x01\"*\n" +
+	"\x10HTTPHeaderValues\x12\x16\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\xca\x05\n" +
+	"\x11InjectHTTPRequest\x120\n" +
+	"\x14credential_type_name\x18\x01 \x01(\tR\x12credentialTypeName\x12/\n" +
+	"\x13credential_instance\x18\x02 \x01(\tR\x12credentialInstance\x12:\n" +
+	"\x19credential_canonical_json\x18\x03 \x01(\fR\x17credentialCanonicalJson\x12+\n" +
+	"\x11credential_secret\x18\x04 \x01(\fR\x10credentialSecret\x12j\n" +
+	"\x11credential_extras\x18\x05 \x03(\v2=.clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntryR\x10credentialExtras\x12\x16\n" +
+	"\x06method\x18\x06 \x01(\tR\x06method\x12\x10\n" +
+	"\x03url\x18\a \x01(\tR\x03url\x12\x12\n" +
+	"\x04host\x18\b \x01(\tR\x04host\x12N\n" +
+	"\aheaders\x18\t \x03(\v24.clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntryR\aheaders\x12\x1f\n" +
+	"\vbody_prefix\x18\n" +
+	" \x01(\fR\n" +
+	"bodyPrefix\x12%\n" +
+	"\x0ebody_truncated\x18\v \x01(\bR\rbodyTruncated\x1aC\n" +
+	"\x15CredentialExtrasEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1ab\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12<\n" +
+	"\x05value\x18\x02 \x01(\v2&.clawpatrol.plugin.v1.HTTPHeaderValuesR\x05value:\x028\x01\"\x96\x01\n" +
+	"\x0eHeaderMutation\x127\n" +
+	"\x02op\x18\x01 \x01(\x0e2'.clawpatrol.plugin.v1.HeaderMutation.OpR\x02op\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\tR\x06values\"\x1f\n" +
+	"\x02Op\x12\a\n" +
+	"\x03SET\x10\x00\x12\a\n" +
+	"\x03ADD\x10\x01\x12\a\n" +
+	"\x03DEL\x10\x02\"t\n" +
+	"\x12InjectHTTPResponse\x12>\n" +
+	"\aheaders\x18\x01 \x03(\v2$.clawpatrol.plugin.v1.HeaderMutationR\aheaders\x12\x1e\n" +
+	"\n" +
+	"redactions\x18\x02 \x03(\tR\n" +
+	"redactions\"\xd0\x04\n" +
 	"\vConnMessage\x124\n" +
 	"\x04init\x18\x01 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnInitH\x00R\x04init\x124\n" +
 	"\x04data\x18\x02 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnDataH\x00R\x04data\x127\n" +
@@ -2400,7 +3344,11 @@ const file_plugin_proto_rawDesc = "" +
 	"\rTLS_TERMINATE\x10\x012\xb5\x01\n" +
 	"\x06Plugin\x12Y\n" +
 	"\bManifest\x12%.clawpatrol.plugin.v1.ManifestRequest\x1a&.clawpatrol.plugin.v1.ManifestResponse\x12P\n" +
-	"\x05Build\x12\".clawpatrol.plugin.v1.BuildRequest\x1a#.clawpatrol.plugin.v1.BuildResponse2b\n" +
+	"\x05Build\x12\".clawpatrol.plugin.v1.BuildRequest\x1a#.clawpatrol.plugin.v1.BuildResponse2m\n" +
+	"\n" +
+	"Credential\x12_\n" +
+	"\n" +
+	"InjectHTTP\x12'.clawpatrol.plugin.v1.InjectHTTPRequest\x1a(.clawpatrol.plugin.v1.InjectHTTPResponse2b\n" +
 	"\bEndpoint\x12V\n" +
 	"\n" +
 	"HandleConn\x12!.clawpatrol.plugin.v1.ConnMessage\x1a!.clawpatrol.plugin.v1.ConnMessage(\x010\x012\x9f\x02\n" +
@@ -2422,92 +3370,120 @@ func file_plugin_proto_rawDescGZIP() []byte {
 	return file_plugin_proto_rawDescData
 }
 
-var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_plugin_proto_goTypes = []any{
-	(FacetKind)(0),              // 0: clawpatrol.plugin.v1.FacetKind
-	(TLSMode)(0),                // 1: clawpatrol.plugin.v1.TLSMode
-	(Diagnostic_Severity)(0),    // 2: clawpatrol.plugin.v1.Diagnostic.Severity
-	(*ManifestRequest)(nil),     // 3: clawpatrol.plugin.v1.ManifestRequest
-	(*ManifestResponse)(nil),    // 4: clawpatrol.plugin.v1.ManifestResponse
-	(*FacetDecl)(nil),           // 5: clawpatrol.plugin.v1.FacetDecl
-	(*FacetFieldDecl)(nil),      // 6: clawpatrol.plugin.v1.FacetFieldDecl
-	(*Schema)(nil),              // 7: clawpatrol.plugin.v1.Schema
-	(*SchemaField)(nil),         // 8: clawpatrol.plugin.v1.SchemaField
-	(*CredentialDecl)(nil),      // 9: clawpatrol.plugin.v1.CredentialDecl
-	(*TunnelDecl)(nil),          // 10: clawpatrol.plugin.v1.TunnelDecl
-	(*EndpointDecl)(nil),        // 11: clawpatrol.plugin.v1.EndpointDecl
-	(*BuildRequest)(nil),        // 12: clawpatrol.plugin.v1.BuildRequest
-	(*BuildResponse)(nil),       // 13: clawpatrol.plugin.v1.BuildResponse
-	(*Diagnostic)(nil),          // 14: clawpatrol.plugin.v1.Diagnostic
-	(*ConnMessage)(nil),         // 15: clawpatrol.plugin.v1.ConnMessage
-	(*StreamRead)(nil),          // 16: clawpatrol.plugin.v1.StreamRead
-	(*StreamChunk)(nil),         // 17: clawpatrol.plugin.v1.StreamChunk
-	(*StreamCancel)(nil),        // 18: clawpatrol.plugin.v1.StreamCancel
-	(*EvaluateAction)(nil),      // 19: clawpatrol.plugin.v1.EvaluateAction
-	(*ActionVerdict)(nil),       // 20: clawpatrol.plugin.v1.ActionVerdict
-	(*ConnInit)(nil),            // 21: clawpatrol.plugin.v1.ConnInit
-	(*ConnData)(nil),            // 22: clawpatrol.plugin.v1.ConnData
-	(*ConnClose)(nil),           // 23: clawpatrol.plugin.v1.ConnClose
-	(*ConnEvent)(nil),           // 24: clawpatrol.plugin.v1.ConnEvent
-	(*OpenTunnelRequest)(nil),   // 25: clawpatrol.plugin.v1.OpenTunnelRequest
-	(*OpenTunnelResponse)(nil),  // 26: clawpatrol.plugin.v1.OpenTunnelResponse
-	(*CloseTunnelRequest)(nil),  // 27: clawpatrol.plugin.v1.CloseTunnelRequest
-	(*CloseTunnelResponse)(nil), // 28: clawpatrol.plugin.v1.CloseTunnelResponse
-	(*DialMessage)(nil),         // 29: clawpatrol.plugin.v1.DialMessage
-	(*DialInit)(nil),            // 30: clawpatrol.plugin.v1.DialInit
-	(*DialData)(nil),            // 31: clawpatrol.plugin.v1.DialData
-	(*DialClose)(nil),           // 32: clawpatrol.plugin.v1.DialClose
-	nil,                         // 33: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	nil,                         // 34: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	nil,                         // 35: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	(FacetKind)(0),                 // 0: clawpatrol.plugin.v1.FacetKind
+	(TLSMode)(0),                   // 1: clawpatrol.plugin.v1.TLSMode
+	(Diagnostic_Severity)(0),       // 2: clawpatrol.plugin.v1.Diagnostic.Severity
+	(HeaderMutation_Op)(0),         // 3: clawpatrol.plugin.v1.HeaderMutation.Op
+	(*ManifestRequest)(nil),        // 4: clawpatrol.plugin.v1.ManifestRequest
+	(*ManifestResponse)(nil),       // 5: clawpatrol.plugin.v1.ManifestResponse
+	(*FacetDecl)(nil),              // 6: clawpatrol.plugin.v1.FacetDecl
+	(*FacetFieldDecl)(nil),         // 7: clawpatrol.plugin.v1.FacetFieldDecl
+	(*Schema)(nil),                 // 8: clawpatrol.plugin.v1.Schema
+	(*SchemaField)(nil),            // 9: clawpatrol.plugin.v1.SchemaField
+	(*SecretSlotDecl)(nil),         // 10: clawpatrol.plugin.v1.SecretSlotDecl
+	(*EnvVarDecl)(nil),             // 11: clawpatrol.plugin.v1.EnvVarDecl
+	(*OptionalScopeDecl)(nil),      // 12: clawpatrol.plugin.v1.OptionalScopeDecl
+	(*OptionalScopeGroupDecl)(nil), // 13: clawpatrol.plugin.v1.OptionalScopeGroupDecl
+	(*OAuthConfigDecl)(nil),        // 14: clawpatrol.plugin.v1.OAuthConfigDecl
+	(*OAuthIntegrationDecl)(nil),   // 15: clawpatrol.plugin.v1.OAuthIntegrationDecl
+	(*CredentialMetadata)(nil),     // 16: clawpatrol.plugin.v1.CredentialMetadata
+	(*CredentialDecl)(nil),         // 17: clawpatrol.plugin.v1.CredentialDecl
+	(*TunnelDecl)(nil),             // 18: clawpatrol.plugin.v1.TunnelDecl
+	(*EndpointDecl)(nil),           // 19: clawpatrol.plugin.v1.EndpointDecl
+	(*BuildRequest)(nil),           // 20: clawpatrol.plugin.v1.BuildRequest
+	(*BuildResponse)(nil),          // 21: clawpatrol.plugin.v1.BuildResponse
+	(*Diagnostic)(nil),             // 22: clawpatrol.plugin.v1.Diagnostic
+	(*HTTPHeaderValues)(nil),       // 23: clawpatrol.plugin.v1.HTTPHeaderValues
+	(*InjectHTTPRequest)(nil),      // 24: clawpatrol.plugin.v1.InjectHTTPRequest
+	(*HeaderMutation)(nil),         // 25: clawpatrol.plugin.v1.HeaderMutation
+	(*InjectHTTPResponse)(nil),     // 26: clawpatrol.plugin.v1.InjectHTTPResponse
+	(*ConnMessage)(nil),            // 27: clawpatrol.plugin.v1.ConnMessage
+	(*StreamRead)(nil),             // 28: clawpatrol.plugin.v1.StreamRead
+	(*StreamChunk)(nil),            // 29: clawpatrol.plugin.v1.StreamChunk
+	(*StreamCancel)(nil),           // 30: clawpatrol.plugin.v1.StreamCancel
+	(*EvaluateAction)(nil),         // 31: clawpatrol.plugin.v1.EvaluateAction
+	(*ActionVerdict)(nil),          // 32: clawpatrol.plugin.v1.ActionVerdict
+	(*ConnInit)(nil),               // 33: clawpatrol.plugin.v1.ConnInit
+	(*ConnData)(nil),               // 34: clawpatrol.plugin.v1.ConnData
+	(*ConnClose)(nil),              // 35: clawpatrol.plugin.v1.ConnClose
+	(*ConnEvent)(nil),              // 36: clawpatrol.plugin.v1.ConnEvent
+	(*OpenTunnelRequest)(nil),      // 37: clawpatrol.plugin.v1.OpenTunnelRequest
+	(*OpenTunnelResponse)(nil),     // 38: clawpatrol.plugin.v1.OpenTunnelResponse
+	(*CloseTunnelRequest)(nil),     // 39: clawpatrol.plugin.v1.CloseTunnelRequest
+	(*CloseTunnelResponse)(nil),    // 40: clawpatrol.plugin.v1.CloseTunnelResponse
+	(*DialMessage)(nil),            // 41: clawpatrol.plugin.v1.DialMessage
+	(*DialInit)(nil),               // 42: clawpatrol.plugin.v1.DialInit
+	(*DialData)(nil),               // 43: clawpatrol.plugin.v1.DialData
+	(*DialClose)(nil),              // 44: clawpatrol.plugin.v1.DialClose
+	nil,                            // 45: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	nil,                            // 46: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	nil,                            // 47: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	nil,                            // 48: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	nil,                            // 49: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 }
 var file_plugin_proto_depIdxs = []int32{
-	9,  // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
-	10, // 1: clawpatrol.plugin.v1.ManifestResponse.tunnels:type_name -> clawpatrol.plugin.v1.TunnelDecl
-	11, // 2: clawpatrol.plugin.v1.ManifestResponse.endpoints:type_name -> clawpatrol.plugin.v1.EndpointDecl
-	5,  // 3: clawpatrol.plugin.v1.ManifestResponse.facets:type_name -> clawpatrol.plugin.v1.FacetDecl
-	6,  // 4: clawpatrol.plugin.v1.FacetDecl.fields:type_name -> clawpatrol.plugin.v1.FacetFieldDecl
+	17, // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
+	18, // 1: clawpatrol.plugin.v1.ManifestResponse.tunnels:type_name -> clawpatrol.plugin.v1.TunnelDecl
+	19, // 2: clawpatrol.plugin.v1.ManifestResponse.endpoints:type_name -> clawpatrol.plugin.v1.EndpointDecl
+	6,  // 3: clawpatrol.plugin.v1.ManifestResponse.facets:type_name -> clawpatrol.plugin.v1.FacetDecl
+	7,  // 4: clawpatrol.plugin.v1.FacetDecl.fields:type_name -> clawpatrol.plugin.v1.FacetFieldDecl
 	0,  // 5: clawpatrol.plugin.v1.FacetFieldDecl.kind:type_name -> clawpatrol.plugin.v1.FacetKind
-	8,  // 6: clawpatrol.plugin.v1.Schema.fields:type_name -> clawpatrol.plugin.v1.SchemaField
-	7,  // 7: clawpatrol.plugin.v1.CredentialDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
-	7,  // 8: clawpatrol.plugin.v1.TunnelDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
-	7,  // 9: clawpatrol.plugin.v1.EndpointDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
-	1,  // 10: clawpatrol.plugin.v1.EndpointDecl.tls_mode:type_name -> clawpatrol.plugin.v1.TLSMode
-	14, // 11: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
-	2,  // 12: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
-	21, // 13: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
-	22, // 14: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
-	23, // 15: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
-	24, // 16: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
-	19, // 17: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
-	20, // 18: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
-	16, // 19: clawpatrol.plugin.v1.ConnMessage.stream_read:type_name -> clawpatrol.plugin.v1.StreamRead
-	17, // 20: clawpatrol.plugin.v1.ConnMessage.stream_chunk:type_name -> clawpatrol.plugin.v1.StreamChunk
-	18, // 21: clawpatrol.plugin.v1.ConnMessage.stream_cancel:type_name -> clawpatrol.plugin.v1.StreamCancel
-	33, // 22: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	34, // 23: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	35, // 24: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
-	30, // 25: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
-	31, // 26: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
-	32, // 27: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
-	3,  // 28: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
-	12, // 29: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
-	15, // 30: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
-	25, // 31: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
-	29, // 32: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
-	27, // 33: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
-	4,  // 34: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	13, // 35: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	15, // 36: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	26, // 37: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	29, // 38: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	28, // 39: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	34, // [34:40] is the sub-list for method output_type
-	28, // [28:34] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	9,  // 6: clawpatrol.plugin.v1.Schema.fields:type_name -> clawpatrol.plugin.v1.SchemaField
+	12, // 7: clawpatrol.plugin.v1.OptionalScopeGroupDecl.scopes:type_name -> clawpatrol.plugin.v1.OptionalScopeDecl
+	14, // 8: clawpatrol.plugin.v1.OAuthIntegrationDecl.oauth:type_name -> clawpatrol.plugin.v1.OAuthConfigDecl
+	13, // 9: clawpatrol.plugin.v1.OAuthIntegrationDecl.optional_scopes:type_name -> clawpatrol.plugin.v1.OptionalScopeGroupDecl
+	10, // 10: clawpatrol.plugin.v1.CredentialMetadata.secret_slots:type_name -> clawpatrol.plugin.v1.SecretSlotDecl
+	11, // 11: clawpatrol.plugin.v1.CredentialMetadata.env_vars:type_name -> clawpatrol.plugin.v1.EnvVarDecl
+	15, // 12: clawpatrol.plugin.v1.CredentialMetadata.oauth:type_name -> clawpatrol.plugin.v1.OAuthIntegrationDecl
+	8,  // 13: clawpatrol.plugin.v1.CredentialDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
+	8,  // 14: clawpatrol.plugin.v1.TunnelDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
+	8,  // 15: clawpatrol.plugin.v1.EndpointDecl.schema:type_name -> clawpatrol.plugin.v1.Schema
+	1,  // 16: clawpatrol.plugin.v1.EndpointDecl.tls_mode:type_name -> clawpatrol.plugin.v1.TLSMode
+	22, // 17: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
+	16, // 18: clawpatrol.plugin.v1.BuildResponse.credential_metadata:type_name -> clawpatrol.plugin.v1.CredentialMetadata
+	2,  // 19: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
+	45, // 20: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	46, // 21: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	3,  // 22: clawpatrol.plugin.v1.HeaderMutation.op:type_name -> clawpatrol.plugin.v1.HeaderMutation.Op
+	25, // 23: clawpatrol.plugin.v1.InjectHTTPResponse.headers:type_name -> clawpatrol.plugin.v1.HeaderMutation
+	33, // 24: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
+	34, // 25: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
+	35, // 26: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
+	36, // 27: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
+	31, // 28: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
+	32, // 29: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
+	28, // 30: clawpatrol.plugin.v1.ConnMessage.stream_read:type_name -> clawpatrol.plugin.v1.StreamRead
+	29, // 31: clawpatrol.plugin.v1.ConnMessage.stream_chunk:type_name -> clawpatrol.plugin.v1.StreamChunk
+	30, // 32: clawpatrol.plugin.v1.ConnMessage.stream_cancel:type_name -> clawpatrol.plugin.v1.StreamCancel
+	47, // 33: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	48, // 34: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	49, // 35: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	42, // 36: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
+	43, // 37: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
+	44, // 38: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
+	23, // 39: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry.value:type_name -> clawpatrol.plugin.v1.HTTPHeaderValues
+	4,  // 40: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
+	20, // 41: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
+	24, // 42: clawpatrol.plugin.v1.Credential.InjectHTTP:input_type -> clawpatrol.plugin.v1.InjectHTTPRequest
+	27, // 43: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
+	37, // 44: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
+	41, // 45: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
+	39, // 46: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
+	5,  // 47: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	21, // 48: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	26, // 49: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
+	27, // 50: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	38, // 51: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	41, // 52: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	40, // 53: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	47, // [47:54] is the sub-list for method output_type
+	40, // [40:47] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -2515,7 +3491,7 @@ func file_plugin_proto_init() {
 	if File_plugin_proto != nil {
 		return
 	}
-	file_plugin_proto_msgTypes[12].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[23].OneofWrappers = []any{
 		(*ConnMessage_Init)(nil),
 		(*ConnMessage_Data)(nil),
 		(*ConnMessage_Close)(nil),
@@ -2526,7 +3502,7 @@ func file_plugin_proto_init() {
 		(*ConnMessage_StreamChunk)(nil),
 		(*ConnMessage_StreamCancel)(nil),
 	}
-	file_plugin_proto_msgTypes[26].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[37].OneofWrappers = []any{
 		(*DialMessage_Init)(nil),
 		(*DialMessage_Data)(nil),
 		(*DialMessage_Close)(nil),
@@ -2536,10 +3512,10 @@ func file_plugin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   33,
+			NumEnums:      4,
+			NumMessages:   46,
 			NumExtensions: 0,
-			NumServices:   3,
+			NumServices:   4,
 		},
 		GoTypes:           file_plugin_proto_goTypes,
 		DependencyIndexes: file_plugin_proto_depIdxs,

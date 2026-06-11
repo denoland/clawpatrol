@@ -98,8 +98,10 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
 	}
 	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
+		discardHTTPRedactions(injector, hreq)
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
 	}
+	discardHTTPRedactions(injector, hreq)
 	c := &http.Client{Timeout: 30 * time.Second}
 	resp, err := c.Do(hreq)
 	if err != nil {
@@ -117,6 +119,12 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	verdict, reason := parseJudgeVerdict(text)
 	by := "llm:" + a.Model
 	return runtime.ApproveVerdict{Decision: verdict, Reason: reason, By: by}, nil
+}
+
+func discardHTTPRedactions(injector runtime.HTTPCredentialRuntime, req *http.Request) {
+	if rp, ok := injector.(runtime.HTTPCredentialRedactionProvider); ok {
+		_ = rp.ConsumeHTTPRedactions(req)
+	}
 }
 
 func buildJudgePrompt(req runtime.ApproveRequest, policyText string) string {
@@ -306,8 +314,10 @@ func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest)
 		return nil, fmt.Errorf("secret fetch: %w", err)
 	}
 	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
+		discardHTTPRedactions(injector, hreq)
 		return nil, fmt.Errorf("credential inject: %w", err)
 	}
+	discardHTTPRedactions(injector, hreq)
 	c := &http.Client{Timeout: 30 * time.Second}
 	resp, err := c.Do(hreq)
 	if err != nil {

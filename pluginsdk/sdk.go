@@ -22,6 +22,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 )
@@ -108,20 +109,156 @@ type StreamValue struct {
 	R io.Reader
 }
 
+// SecretSlot describes one dashboard secret input an external
+// credential type exposes to operators.
+type SecretSlot struct {
+	Name        string
+	Label       string
+	Multiline   bool
+	Description string
+}
+
+// EnvVar is one environment variable pushed to agent processes. The
+// Value should be a placeholder, not a real secret.
+type EnvVar struct {
+	Name        string
+	Value       string
+	Description string
+}
+
+// OptionalScopeGroup is one dashboard OAuth scope-picker section.
+type OptionalScopeGroup struct {
+	Title  string
+	Scopes []OptionalScope
+}
+
+// OptionalScope is one toggleable OAuth scope.
+type OptionalScope struct {
+	ID    string
+	Label string
+}
+
+// OAuthConfig describes the OAuth client/endpoint configuration for
+// an external credential's gateway-owned OAuth flow.
+type OAuthConfig struct {
+	ClientID     string
+	ClientSecret string
+	AuthURL      string
+	TokenURL     string
+	DeviceURL    string
+	RegisterURL  string
+	RedirectURI  string
+	Scopes       []string
+	RefreshToken string
+}
+
+// OAuthIntegration describes how an OAuth access token is acquired and
+// injected for an external credential.
+type OAuthIntegration struct {
+	Type           string
+	Header         string
+	Prefix         string
+	Flow           string
+	OAuth          OAuthConfig
+	OptionalScopes []OptionalScopeGroup
+}
+
+// CredentialMetadata is the instance-specific metadata a credential
+// Build callback may return alongside its canonical config.
+type CredentialMetadata struct {
+	Disambiguators []string
+	SecretSlots    []SecretSlot
+	EnvVars        []EnvVar
+	OAuth          *OAuthIntegration
+	HTTPInject     bool
+}
+
+// CredentialBuildResult lets a Build callback return both canonical
+// config and instance-specific metadata. Returning a plain value keeps
+// the legacy behavior and treats that value as canonical config.
+type CredentialBuildResult struct {
+	Canonical any
+	Metadata  CredentialMetadata
+}
+
+// HeaderMutationOp is a request-header operation returned by an
+// external credential InjectHTTP callback.
+type HeaderMutationOp string
+
+const (
+	// HeaderSet replaces all existing values for the named request header.
+	HeaderSet HeaderMutationOp = "set"
+	// HeaderAdd appends values to the named request header. Use HeaderSet for
+	// Authorization and other replacement-style auth headers so the agent's
+	// placeholder header is removed before the real value is forwarded.
+	HeaderAdd HeaderMutationOp = "add"
+	// HeaderDel removes the named request header.
+	HeaderDel HeaderMutationOp = "del"
+)
+
+// HeaderMutation mutates an outbound HTTP request header.
+type HeaderMutation struct {
+	Op     HeaderMutationOp
+	Name   string
+	Values []string
+}
+
+// HTTPInjectRequest is sent to an external credential just before the
+// built-in HTTPS endpoint forwards a request upstream.
+type HTTPInjectRequest struct {
+	CredentialTypeName        string
+	CredentialInstance        string
+	CredentialCanonicalConfig []byte
+	CredentialSecret          []byte
+	CredentialExtras          map[string]string
+
+	Method  string
+	URL     string
+	Host    string
+	Headers http.Header
+
+	BodyPrefix    []byte
+	BodyTruncated bool
+}
+
+// HTTPInjectResponse is the header-only mutation set returned by an
+// external credential InjectHTTP callback.
+type HTTPInjectResponse struct {
+	Headers []HeaderMutation
+	// Redactions lists exact derived secret strings the gateway should mask from
+	// audit samples. Include any exchanged JWTs, HMAC signatures, or other values
+	// derived from CredentialSecret that are injected into non-sensitive headers.
+	Redactions []string
+}
+
 // CredentialDef declares one credential type. The plugin's endpoints
-// receive the credential's secret bytes via Conn.CredentialSecret;
-// there is no per-request RPC for credential injection in v1, since
-// "plugin owns the whole conn" means the plugin's endpoint code
-// applies the credential however the protocol requires.
+// still receive the credential's secret bytes via Conn.CredentialSecret,
+// and credentials with HTTPInject=true can also participate in the
+// built-in HTTPS endpoint's request-time injection path.
 type CredentialDef struct {
 	TypeName string
 	Schema   Schema
+
+	// Disambiguators names registration-time supported dispatch
+	// discriminator fields, e.g. "placeholder" for HTTP bearer-style
+	// credentials. The gateway validates credential/profile HCL against
+	// this list.
+	Disambiguators []string
+
+	// HTTPInject declares that this credential can inject into the
+	// built-in HTTPS endpoint via InjectHTTP.
+	HTTPInject bool
+
 	// Build is optional. When set, the gateway invokes it once per
 	// HCL block at config-load time. The plugin can validate the
-	// decoded body, fill defaults, and return a canonical form that
-	// later rides on Conn.CredentialCanonicalJSON. When nil, the
-	// SDK echoes the request body unchanged.
+	// decoded body, fill defaults, and return either a canonical form
+	// or CredentialBuildResult. When nil, the SDK echoes the request
+	// body unchanged.
 	Build func(req BuildRequest) (any, error)
+
+	// InjectHTTP is called for credentials bound to a built-in HTTPS
+	// endpoint when HTTPInject is true.
+	InjectHTTP func(ctx context.Context, req HTTPInjectRequest) (*HTTPInjectResponse, error)
 }
 
 // TunnelDef declares one tunnel type. Open returns an opaque handle

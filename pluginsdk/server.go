@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -47,6 +50,7 @@ type grpcServer struct {
 
 func (g *grpcServer) GRPCServer(_ *plugin.GRPCBroker, s *grpc.Server) error {
 	pb.RegisterPluginServer(s, g.srv)
+	pb.RegisterCredentialServer(s, g.srv)
 	pb.RegisterEndpointServer(s, g.srv)
 	pb.RegisterTunnelServer(s, g.srv)
 	return nil
@@ -60,6 +64,7 @@ func (g *grpcServer) GRPCClient(_ context.Context, _ *plugin.GRPCBroker, _ *grpc
 // server is the in-process dispatcher behind the three gRPC services.
 type server struct {
 	pb.UnimplementedPluginServer
+	pb.UnimplementedCredentialServer
 	pb.UnimplementedEndpointServer
 	pb.UnimplementedTunnelServer
 
@@ -100,8 +105,10 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 	}
 	for _, c := range s.plug.Credentials {
 		resp.Credentials = append(resp.Credentials, &pb.CredentialDecl{
-			TypeName: c.TypeName,
-			Schema:   schemaToProto(c.Schema),
+			TypeName:       c.TypeName,
+			Schema:         schemaToProto(c.Schema),
+			Disambiguators: append([]string(nil), c.Disambiguators...),
+			HttpInject:     c.HTTPInject,
 		})
 	}
 	for _, t := range s.plug.Tunnels {
@@ -169,7 +176,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: credential %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("credential", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	case "tunnel":
 		def, ok := s.tunnels[req.TypeName]
@@ -177,7 +184,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: tunnel %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("tunnel", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	case "endpoint":
 		def, ok := s.endpoints[req.TypeName]
@@ -185,7 +192,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: endpoint %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("endpoint", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	default:
 		return nil, fmt.Errorf("pluginsdk: unknown build kind %q", req.Kind)
@@ -201,8 +208,22 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		return resp, nil //nolint:nilerr // Build errors are returned as diagnostics in the successful gRPC response.
 	}
 
-	if built != nil {
-		j, jerr := json.Marshal(built)
+	canonical := built
+	if req.Kind == "credential" {
+		switch r := built.(type) {
+		case CredentialBuildResult:
+			canonical = r.Canonical
+			resp.CredentialMetadata = credentialMetadataToProto(r.Metadata)
+		case *CredentialBuildResult:
+			if r != nil {
+				canonical = r.Canonical
+				resp.CredentialMetadata = credentialMetadataToProto(r.Metadata)
+			}
+		}
+	}
+
+	if canonical != nil {
+		j, jerr := json.Marshal(canonical)
 		if jerr != nil {
 			resp.Diagnostics = []*pb.Diagnostic{{
 				Severity: pb.Diagnostic_ERROR,
@@ -218,6 +239,142 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		resp.CanonicalJson = req.ConfigJson
 	}
 	return resp, nil
+}
+
+func invokeBuild(kind, typeName, instanceName string, fn func(BuildRequest) (any, error), req BuildRequest) (built any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("%s.%s %q Build", kind, typeName, instanceName), r)
+		}
+	}()
+	return fn(req)
+}
+
+func credentialMetadataToProto(m CredentialMetadata) *pb.CredentialMetadata {
+	out := &pb.CredentialMetadata{
+		Disambiguators: append([]string(nil), m.Disambiguators...),
+		HttpInject:     m.HTTPInject,
+	}
+	for _, s := range m.SecretSlots {
+		out.SecretSlots = append(out.SecretSlots, &pb.SecretSlotDecl{
+			Name:        s.Name,
+			Label:       s.Label,
+			Multiline:   s.Multiline,
+			Description: s.Description,
+		})
+	}
+	for _, ev := range m.EnvVars {
+		out.EnvVars = append(out.EnvVars, &pb.EnvVarDecl{
+			Name:        ev.Name,
+			Value:       ev.Value,
+			Description: ev.Description,
+		})
+	}
+	if m.OAuth != nil {
+		out.Oauth = oauthIntegrationToProto(*m.OAuth)
+	}
+	return out
+}
+
+func oauthIntegrationToProto(in OAuthIntegration) *pb.OAuthIntegrationDecl {
+	out := &pb.OAuthIntegrationDecl{
+		Type:   in.Type,
+		Header: in.Header,
+		Prefix: in.Prefix,
+		Flow:   in.Flow,
+		Oauth: &pb.OAuthConfigDecl{
+			ClientId:     in.OAuth.ClientID,
+			ClientSecret: in.OAuth.ClientSecret,
+			AuthUrl:      in.OAuth.AuthURL,
+			TokenUrl:     in.OAuth.TokenURL,
+			DeviceUrl:    in.OAuth.DeviceURL,
+			RegisterUrl:  in.OAuth.RegisterURL,
+			RedirectUri:  in.OAuth.RedirectURI,
+			Scopes:       append([]string(nil), in.OAuth.Scopes...),
+			RefreshToken: in.OAuth.RefreshToken,
+		},
+	}
+	for _, g := range in.OptionalScopes {
+		pg := &pb.OptionalScopeGroupDecl{Title: g.Title}
+		for _, s := range g.Scopes {
+			pg.Scopes = append(pg.Scopes, &pb.OptionalScopeDecl{Id: s.ID, Label: s.Label})
+		}
+		out.OptionalScopes = append(out.OptionalScopes, pg)
+	}
+	return out
+}
+
+// InjectHTTP dispatches a built-in HTTPS credential injection call to
+// the credential definition's callback.
+func (s *server) InjectHTTP(ctx context.Context, req *pb.InjectHTTPRequest) (*pb.InjectHTTPResponse, error) {
+	def, ok := s.credentials[req.CredentialTypeName]
+	if !ok {
+		return nil, fmt.Errorf("%w: credential %q", ErrNoSuchType, req.CredentialTypeName)
+	}
+	if def.InjectHTTP == nil {
+		return nil, fmt.Errorf("pluginsdk: credential %q has no InjectHTTP callback", req.CredentialTypeName)
+	}
+	in := HTTPInjectRequest{
+		CredentialTypeName:        req.CredentialTypeName,
+		CredentialInstance:        req.CredentialInstance,
+		CredentialCanonicalConfig: req.CredentialCanonicalJson,
+		CredentialSecret:          req.CredentialSecret,
+		CredentialExtras:          req.CredentialExtras,
+		Method:                    req.Method,
+		URL:                       req.Url,
+		Host:                      req.Host,
+		Headers:                   headersFromProto(req.Headers),
+		BodyPrefix:                req.BodyPrefix,
+		BodyTruncated:             req.BodyTruncated,
+	}
+	out, err := invokeInjectHTTP(ctx, req.CredentialTypeName, req.CredentialInstance, def.InjectHTTP, in)
+	if err != nil {
+		return nil, err
+	}
+	return httpInjectResponseToProto(out), nil
+}
+
+func invokeInjectHTTP(ctx context.Context, typeName, instanceName string, fn func(context.Context, HTTPInjectRequest) (*HTTPInjectResponse, error), req HTTPInjectRequest) (out *HTTPInjectResponse, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("credential.%s %q InjectHTTP", typeName, instanceName), r)
+		}
+	}()
+	return fn(ctx, req)
+}
+
+func headersFromProto(in map[string]*pb.HTTPHeaderValues) http.Header {
+	out := http.Header{}
+	for k, v := range in {
+		if v == nil {
+			continue
+		}
+		out[k] = append([]string(nil), v.Values...)
+	}
+	return out
+}
+
+func httpInjectResponseToProto(in *HTTPInjectResponse) *pb.InjectHTTPResponse {
+	out := &pb.InjectHTTPResponse{}
+	if in == nil {
+		return out
+	}
+	for _, h := range in.Headers {
+		op := pb.HeaderMutation_SET
+		switch h.Op {
+		case HeaderAdd:
+			op = pb.HeaderMutation_ADD
+		case HeaderDel:
+			op = pb.HeaderMutation_DEL
+		}
+		out.Headers = append(out.Headers, &pb.HeaderMutation{
+			Op:     op,
+			Name:   h.Name,
+			Values: append([]string(nil), h.Values...),
+		})
+	}
+	out.Redactions = append([]string(nil), in.Redactions...)
+	return out
 }
 
 // HandleConn pumps the gateway-provided agent connection to the
@@ -473,7 +630,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}
 	}()
 
-	handleErr := def.HandleConn(ctx, conn)
+	handleErr := invokeHandleConn(ctx, def, conn)
 	_ = conn.Close()
 	closer()
 	<-recvErr
@@ -491,6 +648,49 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}})
 	}
 	return handleErr
+}
+
+func invokeHandleConn(ctx context.Context, def EndpointDef, conn *Conn) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("endpoint.%s HandleConn", def.TypeName), r)
+		}
+	}()
+	if def.HandleConn == nil {
+		return fmt.Errorf("pluginsdk: endpoint %q has no HandleConn callback", def.TypeName)
+	}
+	return def.HandleConn(ctx, conn)
+}
+
+func invokeTunnelOpen(ctx context.Context, def TunnelDef, req TunnelOpenRequest) (handle any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s %q Open", def.TypeName, req.TunnelInstance), r)
+		}
+	}()
+	return def.Open(ctx, req)
+}
+
+func invokeTunnelClose(ctx context.Context, def TunnelDef, handle any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s Close", def.TypeName), r)
+		}
+	}()
+	return def.Close(ctx, handle)
+}
+
+func invokeTunnelDial(ctx context.Context, def TunnelDef, req TunnelDialRequest, conn net.Conn) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s Dial", def.TypeName), r)
+		}
+	}()
+	return def.Dial(ctx, req, conn)
+}
+
+func callbackPanicError(where string, r any) error {
+	return fmt.Errorf("pluginsdk: panic in %s: %v\n%s", where, r, debug.Stack())
 }
 
 // streamReg holds one StreamValue's reader plus a cancel sentinel
@@ -582,7 +782,7 @@ func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb
 		err    error
 	)
 	if def.Open != nil {
-		handle, err = def.Open(ctx, openReq)
+		handle, err = invokeTunnelOpen(ctx, def, openReq)
 		if err != nil {
 			return nil, fmt.Errorf("plugin tunnel %q open: %w", req.TunnelInstance, err)
 		}
@@ -601,7 +801,7 @@ func (s *server) CloseTunnel(ctx context.Context, req *pb.CloseTunnelRequest) (*
 	}
 	th := v.(*tunnelHandle)
 	if th.def.Close != nil {
-		if err := th.def.Close(ctx, th.handle); err != nil {
+		if err := invokeTunnelClose(ctx, th.def, th.handle); err != nil {
 			return nil, err
 		}
 	}
@@ -681,7 +881,7 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 		}
 	}()
 
-	dialErr := th.def.Dial(ctx, TunnelDialRequest{
+	dialErr := invokeTunnelDial(ctx, th.def, TunnelDialRequest{
 		Handle:  th.handle,
 		Network: initMsg.Init.Network,
 		Addr:    initMsg.Init.Addr,

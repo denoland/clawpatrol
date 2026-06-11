@@ -190,6 +190,112 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	Credential_InjectHTTP_FullMethodName = "/clawpatrol.plugin.v1.Credential/InjectHTTP"
+)
+
+// CredentialClient is the client API for Credential service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type CredentialClient interface {
+	// InjectHTTP lets an external credential type participate in the
+	// built-in HTTPS endpoint's request-time credential injection path.
+	InjectHTTP(ctx context.Context, in *InjectHTTPRequest, opts ...grpc.CallOption) (*InjectHTTPResponse, error)
+}
+
+type credentialClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewCredentialClient(cc grpc.ClientConnInterface) CredentialClient {
+	return &credentialClient{cc}
+}
+
+func (c *credentialClient) InjectHTTP(ctx context.Context, in *InjectHTTPRequest, opts ...grpc.CallOption) (*InjectHTTPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InjectHTTPResponse)
+	err := c.cc.Invoke(ctx, Credential_InjectHTTP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CredentialServer is the server API for Credential service.
+// All implementations must embed UnimplementedCredentialServer
+// for forward compatibility.
+type CredentialServer interface {
+	// InjectHTTP lets an external credential type participate in the
+	// built-in HTTPS endpoint's request-time credential injection path.
+	InjectHTTP(context.Context, *InjectHTTPRequest) (*InjectHTTPResponse, error)
+	mustEmbedUnimplementedCredentialServer()
+}
+
+// UnimplementedCredentialServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedCredentialServer struct{}
+
+func (UnimplementedCredentialServer) InjectHTTP(context.Context, *InjectHTTPRequest) (*InjectHTTPResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InjectHTTP not implemented")
+}
+func (UnimplementedCredentialServer) mustEmbedUnimplementedCredentialServer() {}
+func (UnimplementedCredentialServer) testEmbeddedByValue()                    {}
+
+// UnsafeCredentialServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to CredentialServer will
+// result in compilation errors.
+type UnsafeCredentialServer interface {
+	mustEmbedUnimplementedCredentialServer()
+}
+
+func RegisterCredentialServer(s grpc.ServiceRegistrar, srv CredentialServer) {
+	// If the following call panics, it indicates UnimplementedCredentialServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&Credential_ServiceDesc, srv)
+}
+
+func _Credential_InjectHTTP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InjectHTTPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CredentialServer).InjectHTTP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Credential_InjectHTTP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CredentialServer).InjectHTTP(ctx, req.(*InjectHTTPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// Credential_ServiceDesc is the grpc.ServiceDesc for Credential service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var Credential_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "clawpatrol.plugin.v1.Credential",
+	HandlerType: (*CredentialServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "InjectHTTP",
+			Handler:    _Credential_InjectHTTP_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "plugin.proto",
+}
+
+const (
 	Endpoint_HandleConn_FullMethodName = "/clawpatrol.plugin.v1.Endpoint/HandleConn"
 )
 

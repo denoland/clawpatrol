@@ -26,8 +26,24 @@ import (
 //
 // Implementations live next to their config plugin so the schema and
 // runtime stay co-located, mirroring unclaw's plugin layout.
+//
+// Callers MUST check whether the injector also implements
+// HTTPCredentialRedactionProvider and, if so, call
+// ConsumeHTTPRedactions(req) after InjectHTTP returns — including on
+// inject error. Skipping the consume strands the injector's
+// per-request redaction state for the lifetime of the credential
+// instance.
 type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
+}
+
+// HTTPCredentialRedactionProvider is an optional companion to
+// HTTPCredentialRuntime for injectors that derive additional sensitive
+// values at request time. The gateway calls ConsumeHTTPRedactions after
+// InjectHTTP and adds the returned values to request audit redaction.
+// Implementations should forget the values they return for req.
+type HTTPCredentialRedactionProvider interface {
+	ConsumeHTTPRedactions(req *http.Request) []string
 }
 
 // HTTPRequestSigner is the credential-plugin contract for HTTP auth

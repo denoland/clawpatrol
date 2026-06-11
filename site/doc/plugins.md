@@ -95,6 +95,101 @@ func main() {
 Build with `go build` like any Go binary; deploy by setting
 `source = "<path>"` in the gateway HCL.
 
+### External credential metadata and HTTPS injection
+
+External credential plugins are trusted gateway components. The
+gateway may send them credential secret bytes over the local plugin
+RPC channel when a request is about to leave through the built-in
+HTTPS endpoint. Only load plugin binaries you trust, and protect the
+paths they are loaded from the same way you protect the gateway
+binary.
+
+A credential can return `pluginsdk.CredentialBuildResult` from
+`Build` to publish dashboard secret slots, env pushdown placeholders,
+OAuth flow metadata, and HTTPS injection support while keeping its
+canonical config opaque to the gateway:
+
+```go
+pluginsdk.CredentialDef{
+    TypeName:       "example_bearer",
+    Disambiguators: []string{"placeholder"},
+    HTTPInject:     true,
+    Build: func(req pluginsdk.BuildRequest) (any, error) {
+        return pluginsdk.CredentialBuildResult{
+            Canonical: map[string]any{},
+            Metadata: pluginsdk.CredentialMetadata{
+                SecretSlots: []pluginsdk.SecretSlot{{Label: "Bearer token"}},
+                EnvVars: []pluginsdk.EnvVar{{
+                    Name:  "EXAMPLE_TOKEN",
+                    Value: "PH_example",
+                }},
+                HTTPInject: true,
+            },
+        }, nil
+    },
+    InjectHTTP: func(ctx context.Context, req pluginsdk.HTTPInjectRequest) (*pluginsdk.HTTPInjectResponse, error) {
+        return &pluginsdk.HTTPInjectResponse{Headers: []pluginsdk.HeaderMutation{{
+            Op:     pluginsdk.HeaderSet,
+            Name:   "Authorization",
+            Values: []string{"Bearer " + string(req.CredentialSecret)},
+        }}}, nil
+    },
+}
+```
+
+`Disambiguators` declares which credential/profile attrs are valid
+for multi-credential dispatch. For HTTP credentials the conventional
+field is `placeholder`: the agent sends a placeholder-looking token,
+and the built-in HTTPS endpoint selects the matching credential
+before calling `InjectHTTP`. `InjectHTTP` is intentionally
+header-only; external credentials cannot rewrite the destination URL
+or request body through this hook. Use `HeaderSet` for auth headers
+such as `Authorization`; `HeaderAdd` appends and may leave the
+agent's placeholder value in place.
+
+At runtime the built-in HTTPS endpoint keeps the privilege split:
+
+1. The wrapped process sees only metadata and placeholders from
+   `EnvVars` (for example `EXAMPLE_TOKEN=PH_example`).
+2. The gateway resolves the matched credential and fetches its
+   gateway-held secret.
+3. The gateway calls the external plugin's `InjectHTTP` callback
+   with request metadata and that secret.
+4. The plugin returns header mutations and any derived strings that
+   should be redacted from audit samples.
+
+Redactions are part of the security contract. The gateway automatically
+redacts the raw credential secret it fetched, and audit samples also
+mask obviously sensitive header names such as `Authorization`. If your
+plugin injects any derived secret (for example an exchanged JWT or HMAC
+signature), return the exact derived string in `HTTPInjectResponse.Redactions`.
+Otherwise a derived value placed in a non-sensitive header such as
+`X-Signature` may appear verbatim in request audit samples.
+
+OAuth credentials can set `CredentialMetadata.OAuth` instead of
+secret slots. OAuth metadata is intentionally Build-time and
+instance-scoped, so two HCL blocks of the same credential type can
+select different regions, URLs, scopes, or flows. The gateway owns the
+OAuth lifecycle and stores or refreshes tokens under the credential
+instance name; the external credential receives the current access
+token as `CredentialSecret` when HTTPS injection runs. Dynamic MCP
+OAuth providers should set
+`Flow: "dynamic_mcp"`; the gateway will use public-client PKCE
+exchange and refresh behavior selected by that flow, not by a
+hardcoded provider hostname.
+
+`InjectHTTP` is one gateway→plugin RPC round trip per proxied
+request. External credentials that need provider-specific exchange
+logic (for example exchanging a durable service-account token for a
+short-lived JWT) should do that inside `InjectHTTP`, but must cache
+the derived token in plugin memory and reuse it until expiry — do
+not mint a fresh token on every request. The gateway bounds each
+`InjectHTTP` call with a 30s deadline; a plugin that exceeds it is
+logged and the request is forwarded without injection. Validate any provider base
+URLs before sending long-lived secrets: plugin HCL is operator
+configuration, but the plugin process is still the component that
+knows which upstream hosts are allowed to receive its secret material.
+
 ### Endpoints own the connection
 
 For each accepted agent connection on a plugin endpoint, the

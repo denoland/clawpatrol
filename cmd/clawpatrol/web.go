@@ -2775,12 +2775,16 @@ var sensitiveHeader = regexp.MustCompile(
 )
 
 func flatHeaders(h http.Header) map[string]string {
+	return flatHeadersRedacted(h, nil)
+}
+
+func flatHeadersRedacted(h http.Header, redactions []string) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
 		if sensitiveHeader.MatchString(k) {
 			out[k] = "***"
 		} else {
-			out[k] = strings.Join(v, ", ")
+			out[k] = redactCredentialSample(strings.Join(v, ", "), redactions)
 		}
 	}
 	return out
