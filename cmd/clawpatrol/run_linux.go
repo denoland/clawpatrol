@@ -439,10 +439,11 @@ func runRunChild() {
 // doesn't inherit them.
 func strippedRunEnv() []string {
 	drop := map[string]bool{
-		runChildEnv:   true,
-		runTunAddrEnv: true,
-		runDropUIDEnv: true,
-		runDropGIDEnv: true,
+		runChildEnv:        true,
+		runTunAddrEnv:      true,
+		runDropUIDEnv:      true,
+		runDropGIDEnv:      true,
+		runNoAutoExposeEnv: true,
 	}
 	env := os.Environ()
 	out := env[:0]
