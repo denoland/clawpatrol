@@ -7,10 +7,16 @@
 # long-running Docker agents lost gateway-mediated network access and
 # started logging `error connecting to api.github.com`.
 
-set -eu
+set -u
 
 out="$(timeout 30s "${CLAWPATROL_BIN}" run -- \
     curl -fsS https://api.github.com/rate_limit 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    echo "clawpatrol run failed while reaching api.github.com" >&2
+    exit "$rc"
+fi
 
 printf '%s' "$out" | grep -q '"rate"' || {
     printf '%s\n' "$out" >&2

@@ -5,7 +5,7 @@
 # in place, the supervisor must keep serving auto-expose across runtime
 # signals.
 #
-set -eu
+set -u
 
 out="$(timeout 30s "${CLAWPATROL_BIN}" run -- sh -eu -c '
     sleep 1
@@ -18,6 +18,12 @@ out="$(timeout 30s "${CLAWPATROL_BIN}" run -- sh -eu -c '
         wait "$p" 2>/dev/null || true
     done
 ' 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    echo "clawpatrol run failed during SIGURG resilience probe" >&2
+    exit "$rc"
+fi
 
 printf '%s' "$out" | grep -q '\[clawpatrol relay\] notif_recv: interrupted system call' && {
     printf '%s\n' "$out" >&2

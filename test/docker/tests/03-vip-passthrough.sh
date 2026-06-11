@@ -3,10 +3,16 @@
 # the policy root, profile excludes it, agent dials the VIP, must reach
 # the real upstream (passthrough) instead of being silently RST'd.
 #
-set -eu
+set -u
 
 out="$(timeout 30s "${CLAWPATROL_BIN}" run -- \
     socat -T 5 - TCP:ssh.example.test:22 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    echo "clawpatrol run failed during VIP passthrough probe" >&2
+    exit "$rc"
+fi
 
 printf '%s' "$out" | grep -q 'SSH-2.0-clawpatrol-e2e' || {
     printf '%s\n' "$out" >&2
