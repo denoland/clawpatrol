@@ -19,13 +19,16 @@ Five actors take part in a clawpatrol deployment:
 - **Device.** The machine the agent runs on. The device hosts a
   small clawpatrol client (CLI binary on Linux; system extension
   inside `Clawpatrol.app` on macOS) that captures the agent’s
-  outbound flows and feeds them into the tunnel.
-- **Tunnel.** A WireGuard underlay between the device and the
-  gateway. The tunnel carries L3 packets — every byte the agent
-  emits travels inside it. The agent never sees a proxy URL or a
-  CA bundle.
+  outbound flows and feeds them into the transport.
+- **Transport.** A WireGuard or Tailscale connection between the
+  device and the gateway, configured by the `gateway { wireguard
+  { ... } }` or `gateway { tailscale { ... } }` block (see
+  [Configure the gateway › Transports](/docs/configure-gateway/#transports-wireguard-tailscale-or-both)).
+  The transport carries L3 packets — every byte the agent emits
+  travels inside it. The agent never sees a proxy URL or a CA
+  bundle.
 - **Gateway.** The clawpatrol process. A single Go binary that
-  terminates the tunnel, decides per flow whether to intercept or
+  terminates the transport, decides per flow whether to intercept or
   pass through, and runs the policy plugins that inject real
   credentials, gate requests, and emit events. The diagram below
   draws the gateway on its own machine — typically a small VM the
@@ -45,7 +48,7 @@ The gateway is drawn on a separate machine; the device runs only
 the client — it does not run policy logic, does not hold
 credentials, and does not know upstream secrets.
 
-<svg viewBox="0 0 920 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="clawpatrol process diagram: device captures agent flows, tunnels them via WireGuard to the gateway, which either runs them through endpoint, rule, and credential plugins or splices them transparently to the upstream">
+<svg viewBox="0 0 920 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="clawpatrol process diagram: device captures agent flows, transports them via WireGuard or Tailscale to the gateway, which either runs them through endpoint, rule, and credential plugins or splices them transparently to the upstream">
   <defs>
     <marker id="ar-proc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#2a342f"/>
@@ -70,7 +73,7 @@ credentials, and does not know upstream secrets.
   <text class="sm-proc" x="180" y="106">capture</text>
   <line class="arr-proc" x1="120" y1="90" x2="140" y2="90" marker-end="url(#ar-proc)"/>
   <line class="arr-proc" x1="240" y1="90" x2="335" y2="90" marker-end="url(#ar-proc)"/>
-  <text class="sm-proc" x="287" y="82">tunnel (WireGuard)</text>
+  <text class="sm-proc" x="287" y="82">transport</text>
   <rect class="f-proc" x="335" y="20" width="565" height="320" rx="6"/>
   <text class="ttl-proc" x="345" y="14">gateway</text>
   <rect class="b-proc" x="345" y="70" width="100" height="40" rx="4"/>
@@ -197,7 +200,7 @@ PPID-filtered. Reference: `run_darwin.go`,
 
 ## Network traffic processing
 
-Once a flow reaches the gateway over the tunnel, the gateway
+Once a flow reaches the gateway over the transport, the gateway
 inspects the destination port (and, for some families, the SNI or
 the resolved hostname) to pick a handler. A **family** is the
 protocol class an endpoint plugin advertises so the rule engine

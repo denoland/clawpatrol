@@ -10,12 +10,6 @@ write them as top-level blocks in `gateway.hcl`:
 tunnel "<type>" "<name>" { ... }
 ```
 
-> **Not the same "tunnel" as in [Architecture](/docs/architecture/).**
-> That page uses "tunnel" for the WireGuard underlay carrying
-> agent traffic *into* the gateway. The blocks on this page are
-> the opposite direction — how the gateway reaches *out* to
-> upstreams. Same word, two layers.
-
 ## When you need a tunnel
 
 The gateway dials upstreams from its own netns by default. If the
