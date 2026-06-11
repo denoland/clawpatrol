@@ -5,4 +5,12 @@
 
 set -eu
 
-exec socat -v TCP-LISTEN:22,reuseaddr,fork SYSTEM:'printf "SSH-2.0-clawpatrol-e2e\r\n"; cat >/dev/null'
+handler=/tmp/clawpatrol-ssh-stub-handler.sh
+cat >"$handler" <<'EOF'
+#!/bin/sh
+printf 'SSH-2.0-clawpatrol-e2e\r\n'
+sleep 1
+EOF
+chmod +x "$handler"
+
+exec socat TCP-LISTEN:22,reuseaddr,fork EXEC:"$handler"

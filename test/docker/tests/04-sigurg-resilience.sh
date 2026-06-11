@@ -30,3 +30,5 @@ printf '%s' "$out" | grep -q '\[clawpatrol relay\] notif_recv: interrupted syste
     echo "relay supervisor exited on SIGURG/EINTR" >&2
     exit 1
 }
+
+exit 0

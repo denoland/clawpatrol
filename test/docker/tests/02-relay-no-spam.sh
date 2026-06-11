@@ -26,3 +26,5 @@ printf '%s' "$out" | grep -q '\[clawpatrol relay\] inspect listen sockfd' && {
     echo "AF_UNIX listener produced relay inspect spam" >&2
     exit 1
 }
+
+exit 0

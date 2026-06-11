@@ -23,3 +23,5 @@ printf '%s' "$out" | grep -q '"rate"' || {
     echo "api.github.com request did not return the GitHub rate payload" >&2
     exit 1
 }
+
+exit 0

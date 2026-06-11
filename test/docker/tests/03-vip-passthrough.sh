@@ -24,3 +24,5 @@ printf '%s' "$out" | grep -qi 'Connection reset' && {
     echo "VIP passthrough regressed to reset" >&2
     exit 1
 }
+
+exit 0
