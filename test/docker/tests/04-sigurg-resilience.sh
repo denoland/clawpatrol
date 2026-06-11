@@ -5,16 +5,22 @@
 # in place, the supervisor must keep serving auto-expose across runtime
 # signals.
 #
-# Placeholder until `clawpatrol run` can drive a multi-listener probe
-# from inside this container. The shape of the eventual probe:
-#
-#   - long-running `clawpatrol run` that periodically binds a fresh
-#     TCP listener inside the netns
-#   - a host-side prober that connects to each via the relayed port
-#   - assert every bind became reachable
-#
-# Until then, exit 0; the EINTR retry is unit-covered indirectly via
-# the relay tests under cmd/clawpatrol/relay_linux_test.go.
+set -eu
 
-echo "04-sigurg-resilience: placeholder — see file header" >&2
-exit 0
+out="$(timeout 30s "${CLAWPATROL_BIN}" run -- sh -eu -c '
+    sleep 1
+    pkill -URG -f "clawpatrol.*relay-supervisor" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        socat TCP-LISTEN:0,reuseaddr,fork EXEC:/bin/cat &
+        p=$!
+        sleep 0.2
+        kill "$p" 2>/dev/null || true
+        wait "$p" 2>/dev/null || true
+    done
+' 2>&1)"
+
+printf '%s' "$out" | grep -q '\[clawpatrol relay\] notif_recv: interrupted system call' && {
+    printf '%s\n' "$out" >&2
+    echo "relay supervisor exited on SIGURG/EINTR" >&2
+    exit 1
+}

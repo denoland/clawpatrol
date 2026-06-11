@@ -3,16 +3,17 @@
 # HTTPS endpoint via `clawpatrol run` and the request lands in the
 # gateway's action log.
 #
-# Placeholder: needs:
-#   - a stub HTTPS upstream the gateway can splice / MITM
-#   - `clawpatrol run` to actually run inside this container (requires
-#     successful `clawpatrol join` + working daemon socket)
-#   - a GATEWAY_URL/api/actions GET that returns the request the
-#     `curl` produced, for the assertion
-#
-# Exit 0 for now so the harness stays green; the unit tests under
-# cmd/clawpatrol/ cover the dispatch path on the production code
-# until the integration assertion can be wired up.
+# Regression target from divybot#184: after the relay supervisor died,
+# long-running Docker agents lost gateway-mediated network access and
+# started logging `error connecting to api.github.com`.
 
-echo "01-https-mitm: placeholder — see file header" >&2
-exit 0
+set -eu
+
+out="$(timeout 30s "${CLAWPATROL_BIN}" run -- \
+    curl -fsS https://api.github.com/rate_limit 2>&1)"
+
+printf '%s' "$out" | grep -q '"rate"' || {
+    printf '%s\n' "$out" >&2
+    echo "api.github.com request did not return the GitHub rate payload" >&2
+    exit 1
+}

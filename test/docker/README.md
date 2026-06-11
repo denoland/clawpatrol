@@ -14,7 +14,7 @@ silent VIP RST when a profile excludes the SSH endpoint).
 test/docker/
 ├── README.md             this file
 ├── Dockerfile            single image, the entrypoint selects gateway or agent
-├── docker-compose.yml    gateway + agent + assertion sidecar
+├── docker-compose.yml    gateway + agent + SSH-stub sidecar
 ├── gateway.hcl           minimal policy for the harness
 ├── entrypoint-gateway.sh launches `clawpatrol gateway`
 ├── entrypoint-agent.sh   `clawpatrol join` + `clawpatrol run -- <probe>`
@@ -27,7 +27,11 @@ test/docker/
 
 The gateway image embeds the `examples/gateway.example.hcl`-shaped
 policy in `gateway.hcl`; the agent image embeds the `clawpatrol`
-binary and a small shell harness.
+binary and a small shell harness. CI bootstraps the agent through the
+same onboard API used by `clawpatrol join`: it starts an onboard
+session, authenticates to the dashboard with the test-only password,
+approves the session, polls the WireGuard config, and writes the state
+files that `clawpatrol run` consumes.
 
 ## Why two images aren't necessary
 
@@ -81,17 +85,14 @@ is meant to catch isn't masked by the harness itself.
 
 ## Known gaps
 
-- WireGuard UDP transport in Docker requires
-  `/dev/net/tun` on the gateway; the compose file mounts it.
-  Hosts without TUN support (some CI runners) fall back to
-  loopback-only HTTPS MITM tests — the gateway boots but the
-  agent's `join` step is skipped.
+- WireGuard UDP transport in Docker requires `/dev/net/tun` on the
+  gateway; the compose file mounts it. Hosts without TUN support fail
+  the harness instead of silently passing because every probe now
+  depends on a working `clawpatrol run` session.
 - No tsnet/Tailscale coverage — tsnet bootstrap depends on a
   real Tailscale tailnet, which doesn't fit in a hermetic
   harness. The TS-specific paths stay covered by the in-process
   tests under `cmd/clawpatrol/tailscale_*_test.go`.
-- The orchid#184 SSH passthrough assertion needs a stub SSH
-  server reachable from the agent's netns; `03-vip-passthrough.sh`
-  spins one up via `socat` rather than a full OpenSSH daemon,
-  since the assertion is on whether the bytes flow at all, not on
-  the SSH handshake itself.
+- The SSH passthrough assertion uses a `socat` banner service rather
+  than a full OpenSSH daemon, since the assertion is on whether bytes
+  flow through the VIP fallback at all, not on the SSH handshake.

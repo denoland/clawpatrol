@@ -20,9 +20,10 @@ gateway {
   }
 }
 
-# One MITM-able HTTPS endpoint so 01-https-mitm.sh has somewhere to dial.
-endpoint "https" "echo" {
-  hosts = ["echo.example.test"]
+# One MITM-able HTTPS endpoint so 01-https-mitm.sh can verify that
+# GitHub API connectivity survives inside `clawpatrol run`.
+endpoint "https" "github-api" {
+  hosts = ["api.github.com"]
 }
 
 # One SSH endpoint declared at the policy root so 03-vip-passthrough.sh
@@ -34,7 +35,7 @@ endpoint "ssh" "ssh-stub" {
 }
 
 credential "bearer_token" "echo-pat" {
-  endpoint = https.echo
+  endpoint = https.github-api
 }
 
 profile "e2e" {

@@ -16,4 +16,9 @@ fi
 mkdir -p /var/lib/clawpatrol
 
 # `clawpatrol gateway` reads the path positionally.
+if [ -n "${CP_E2E_DASHBOARD_PASSWORD:-}" ]; then
+    exec /usr/local/bin/clawpatrol gateway \
+        --set-dashboard-password "${CP_E2E_DASHBOARD_PASSWORD}" \
+        "$CONFIG"
+fi
 exec /usr/local/bin/clawpatrol gateway "$CONFIG"

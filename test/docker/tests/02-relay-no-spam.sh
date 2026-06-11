@@ -4,18 +4,19 @@
 # trapped AF_UNIX listen(2) call. With dedup + the AF_UNIX silent skip,
 # a gpg-style workload should produce zero such lines.
 #
-# Placeholder until `clawpatrol run` can be driven from inside this
-# container — that needs a working `clawpatrol join` step ahead of it
-# (currently no-trust + non-tailnet join is half-wired in
-# entrypoint-agent.sh). Once it runs, the body should be:
-#
-#   out=$("${CLAWPATROL_BIN}" run -- \
-#           sh -c 'GNUPGHOME=/tmp/gnupg gpg --list-keys' 2>&1)
-#   echo "$out" | grep -q '\[clawpatrol relay\] inspect listen sockfd' \
-#       && { echo "AF_UNIX skip regressed" >&2; exit 1; }
-#
-# Until then, exit 0; the dispatch path is covered by the unit tests
-# under cmd/clawpatrol/relay_linux_test.go.
+set -eu
 
-echo "02-relay-no-spam: placeholder — see file header" >&2
-exit 0
+out="$(timeout 30s "${CLAWPATROL_BIN}" run -- sh -eu -c '
+    rm -f /tmp/clawpatrol-e2e.sock
+    socat UNIX-LISTEN:/tmp/clawpatrol-e2e.sock,fork EXEC:/bin/cat &
+    p=$!
+    sleep 1
+    kill "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+' 2>&1)"
+
+printf '%s' "$out" | grep -q '\[clawpatrol relay\] inspect listen sockfd' && {
+    printf '%s\n' "$out" >&2
+    echo "AF_UNIX listener produced relay inspect spam" >&2
+    exit 1
+}

@@ -10,27 +10,56 @@ set -eu
 
 GATEWAY="${GATEWAY_URL:-http://gateway:8080}"
 TESTS_DIR="${1:-/workspace/tests}"
+E2E_HOME=/home/e2e
+COOKIE=/tmp/clawpatrol-e2e-cookie
+PASSWORD="${CP_E2E_DASHBOARD_PASSWORD:-clawpatrol-e2e-password}"
 
-echo "[e2e-agent] joining ${GATEWAY}"
-# Gateway URL is positional; --profile picks the gateway-side profile
-# block (matches policy.hcl `profile "e2e" {}`). --no-trust skips the
-# host-trust step because that needs sudo + a system trust store, both
-# beyond what the harness container needs to assert on. --hostname pins
-# the container's device-row identity so the assertions later can
-# look the agent up by name.
-#
-# Join is best-effort while the harness is being filled in — the
-# device-flow approval step still needs operator interaction, which the
-# probe scripts mock for now. A failure here logs but doesn't abort so
-# the placeholder tests still get their chance to assert.
-if ! /usr/local/bin/clawpatrol join \
-    --profile e2e \
-    --no-trust \
-    --hostname "e2e-agent" \
-    "${GATEWAY}" 2>&1 | sed 's/^/[join] /'
-then
-    echo "[e2e-agent] WARNING: clawpatrol join failed; tests that depend on the tunnel will skip" >&2
+json_get() {
+    jq -r "$1 // empty"
+}
+
+echo "[e2e-agent] bootstrapping WireGuard client state from ${GATEWAY}"
+mkdir -p "${E2E_HOME}/.clawpatrol" "${E2E_HOME}/.config/clawpatrol"
+
+curl -fsS -c "${COOKIE}" \
+    -d "password=${PASSWORD}" \
+    "${GATEWAY}/__login" >/tmp/e2e-login.html
+
+curl -fsS "${GATEWAY}/ca.crt" -o "${E2E_HOME}/.clawpatrol/ca.crt"
+
+start_json="$(curl -fsS -X POST \
+    "${GATEWAY}/api/onboard/start?hostname=e2e-agent&profile=e2e")"
+device_code="$(printf '%s' "$start_json" | json_get '.device_code')"
+user_code="$(printf '%s' "$start_json" | json_get '.user_code')"
+if [ -z "$device_code" ] || [ -z "$user_code" ]; then
+    echo "[e2e-agent] onboard/start returned unusable payload: ${start_json}" >&2
+    exit 1
 fi
+
+curl -fsS -b "${COOKIE}" -X POST \
+    "${GATEWAY}/api/onboard/approve?code=${user_code}&profile=e2e" >/tmp/e2e-approve.json
+
+auth_key=""
+api_token=""
+for _ in $(seq 1 30); do
+    poll_json="$(curl -fsS -X POST "${GATEWAY}/api/onboard/poll?device_code=${device_code}")"
+    auth_key="$(printf '%s' "$poll_json" | json_get '.auth_key')"
+    api_token="$(printf '%s' "$poll_json" | json_get '.api_token')"
+    [ -n "$auth_key" ] && break
+    sleep 1
+done
+if [ -z "$auth_key" ]; then
+    echo "[e2e-agent] onboard/poll did not return auth_key; last payload: ${poll_json:-}" >&2
+    exit 1
+fi
+
+printf '%s\n' "$auth_key" >"${E2E_HOME}/.config/clawpatrol/wg.conf"
+printf 'wireguard\n' >"${E2E_HOME}/.clawpatrol/mode"
+printf '%s\n' "$GATEWAY" >"${E2E_HOME}/.clawpatrol/gateway"
+if [ -n "$api_token" ]; then
+    printf '%s\n' "$api_token" >"${E2E_HOME}/.clawpatrol/api-token"
+fi
+chown -R e2e:e2e "${E2E_HOME}/.clawpatrol" "${E2E_HOME}/.config"
 
 if [ ! -d "${TESTS_DIR}" ]; then
     echo "[e2e-agent] no tests dir at ${TESTS_DIR}; nothing to do" >&2
@@ -44,9 +73,8 @@ for t in "${TESTS_DIR}"/*.sh; do
     [ -r "$t" ] || continue
     name="$(basename "$t")"
     echo "[e2e-agent] ▶ ${name}"
-    if CLAWPATROL_BIN=/usr/local/bin/clawpatrol \
-        GATEWAY_URL="${GATEWAY}" \
-        sh "$t"; then
+    if su -s /bin/sh e2e -c \
+        "CLAWPATROL_BIN=/usr/local/bin/clawpatrol GATEWAY_URL='${GATEWAY}' sh '$t'"; then
         echo "[e2e-agent]   ✓ ${name}"
         PASS=$((PASS + 1))
     else

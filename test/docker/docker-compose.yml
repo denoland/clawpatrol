@@ -13,6 +13,7 @@ services:
     environment:
       ROLE: gateway
       CLAWPATROL_CONFIG: /opt/clawpatrol/gateway.hcl
+      CP_E2E_DASHBOARD_PASSWORD: clawpatrol-e2e-password
     cap_add:
       - NET_ADMIN
     devices:
@@ -33,9 +34,12 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+      ssh-stub:
+        condition: service_started
     environment:
       ROLE: agent
       GATEWAY_URL: http://gateway:8080
+      CP_E2E_DASHBOARD_PASSWORD: clawpatrol-e2e-password
       # `clawpatrol run` installs a seccomp listen-trap filter; Docker's
       # default seccomp profile sometimes rejects the seccomp(2) call
       # that's the whole point of the test. unconfined here removes the
@@ -50,6 +54,15 @@ services:
     volumes:
       - ./tests:/workspace/tests:ro
     command: ["/workspace/tests"]
+
+  ssh-stub:
+    image: clawpatrol-e2e:latest
+    environment:
+      ROLE: ssh-stub
+    networks:
+      default:
+        aliases:
+          - ssh.example.test
 
 volumes:
   gateway-state:
