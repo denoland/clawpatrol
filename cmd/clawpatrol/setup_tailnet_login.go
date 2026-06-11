@@ -201,20 +201,31 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 		return nil, err
 	}
 
+	// tsnet's HTTPClient() has neither a client Timeout nor a dial
+	// deadline. The gateway calls the join flow makes through it run
+	// right after the node comes up, before routes/MagicDNS have fully
+	// settled, so a dial to the gateway can stall — and with no timeout
+	// the request (and the whole join) hangs indefinitely. Cap it so a
+	// stalled request fails and surfaces an error instead.
+	hc := s.HTTPClient()
+	hc.Timeout = 30 * time.Second
+
 	return &tailnetBootstrap{
 		server: s,
 		lc:     lc,
-		client: s.HTTPClient(),
+		client: hc,
 		dir:    dir,
 	}, nil
 }
 
 // awaitTailnetAuth blocks until the tsnet node reaches Running,
-// printing the BrowseToURL exactly once when the control plane
-// surfaces it. Polls the LocalClient because StatusWithoutPeers is
-// cheap and the auth phase rarely lasts more than a few seconds in
-// the happy path — a wait of 10 minutes (the device-flow timeout
-// elsewhere in the join code) is the soft upper bound.
+// printing the BrowseToURL the control plane surfaces and re-printing
+// it if it changes (the interactive URL is short-lived). Polls the
+// LocalClient because StatusWithoutPeers is cheap and the auth phase
+// rarely lasts more than a few seconds in the happy path — a wait of
+// 10 minutes (the device-flow timeout elsewhere in the join code) is
+// the soft upper bound. Each poll is itself time-bounded so a wedged
+// localapi call can't silently eat that whole budget.
 func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	deadline, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
@@ -237,10 +248,13 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			return fmt.Errorf("tailnet bootstrap: timed out waiting for login (last state: %s)", lastState)
 		default:
 		}
-		st, err := lc.StatusWithoutPeers(deadline)
+		sctx, scancel := context.WithTimeout(deadline, 10*time.Second)
+		st, err := lc.StatusWithoutPeers(sctx)
+		scancel()
 		if err != nil {
 			// tsnet isn't ready yet during the first few hundred ms
-			// after Start(); back off briefly and retry.
+			// after Start(); a later call can also wedge mid-login. Back
+			// off briefly and retry rather than blocking on one call.
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
