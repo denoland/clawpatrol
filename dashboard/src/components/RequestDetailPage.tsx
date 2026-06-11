@@ -300,7 +300,13 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   }, [ev.id]);
 
   async function copyHCL() {
-    setMsg((await copyText(hcl)) ? "HCL copied." : "Copy failed.");
+    if (await copyText(hcl)) {
+      setErr(null);
+      setMsg("HCL copied.");
+    } else {
+      setMsg(null);
+      setErr("Copy failed.");
+    }
   }
 
   async function applyRule() {
