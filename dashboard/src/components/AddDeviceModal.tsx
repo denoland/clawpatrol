@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listProfiles, type Whoami } from "../lib/api";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
+import { copyText } from "../lib/clipboard";
 
 // shellArg quotes s for copy-paste into a POSIX shell when it
 // contains anything beyond plain word characters.
@@ -105,28 +106,9 @@ export function AddDeviceModal({
 function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    const flash = () => {
+    if (await copyText(cmd)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    };
-    try {
-      await navigator.clipboard.writeText(cmd);
-      flash();
-      return;
-    } catch {
-      // Fall through to the legacy path below. Reasons writeText can
-      // throw: non-secure context, page not focused, browser policy.
-    }
-    const ta = document.createElement("textarea");
-    ta.value = cmd;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-      if (document.execCommand("copy")) flash();
-    } finally {
-      document.body.removeChild(ta);
     }
   }
   return (

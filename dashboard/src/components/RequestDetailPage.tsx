@@ -9,7 +9,7 @@ import {
   type FacetSchema,
   type RulePreview,
 } from "../lib/api";
-import { headersToJSON } from "../lib/clipboard";
+import { copyText, headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
@@ -300,8 +300,7 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   }, [ev.id]);
 
   async function copyHCL() {
-    await navigator.clipboard.writeText(hcl);
-    setMsg("HCL copied.");
+    setMsg((await copyText(hcl)) ? "HCL copied." : "Copy failed.");
   }
 
   async function applyRule() {
