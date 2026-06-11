@@ -222,6 +222,43 @@ profile "default" { credentials = [%s.external] }
 	}
 }
 
+func TestValidateCredentialMetadataShapeRejectsDuplicateAndEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		meta credentialMetadata
+	}{
+		{name: "duplicate named secret slots", meta: credentialMetadata{secretSlots: []config.SecretSlot{{Name: "token"}, {Name: "token"}}}},
+		{name: "multiple unnamed secret slots", meta: credentialMetadata{secretSlots: []config.SecretSlot{{Label: "Token"}, {Label: "Other"}}}},
+		{name: "empty env var name", meta: credentialMetadata{envVars: []config.EnvVar{{Value: "PH_token"}}}},
+		{name: "duplicate env var names", meta: credentialMetadata{envVars: []config.EnvVar{{Name: "TOKEN"}, {Name: "TOKEN"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if diags := validateCredentialMetadataShape("p", "t", tt.meta); !diags.HasErrors() {
+				t.Fatalf("validateCredentialMetadataShape returned no errors")
+			}
+		})
+	}
+}
+
+func TestApplyHeaderMutationsRejectsInvalidHeaders(t *testing.T) {
+	h := http.Header{}
+	applyHeaderMutations(h, []*pb.HeaderMutation{
+		{Op: pb.HeaderMutation_SET, Name: "X-Good", Values: []string{"ok"}},
+		{Op: pb.HeaderMutation_SET, Name: "X-Bad\r\nInjected", Values: []string{"oops"}},
+		{Op: pb.HeaderMutation_SET, Name: "X-Bad-Value", Values: []string{"oops\r\nInjected: 1"}},
+	})
+	if got := h.Get("X-Good"); got != "ok" {
+		t.Fatalf("X-Good = %q, want ok", got)
+	}
+	if got := h.Get("X-Bad"); got != "" {
+		t.Fatalf("X-Bad = %q, want empty", got)
+	}
+	if got := h.Get("X-Bad-Value"); got != "" {
+		t.Fatalf("X-Bad-Value = %q, want empty", got)
+	}
+}
+
 func newCredentialPluginTestClient(t *testing.T, srv *credentialPluginTestServer) (*Client, func()) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)

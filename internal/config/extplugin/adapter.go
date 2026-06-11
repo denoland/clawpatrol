@@ -19,6 +19,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/facet"
 	"github.com/denoland/clawpatrol/internal/config/match"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"golang.org/x/net/http/httpguts"
 )
 
 // =====================================================================
@@ -851,7 +852,10 @@ func (b *dynamicOAuthHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request
 // slow plugin must degrade to a logged inject error instead of
 // wedging the proxied request for as long as the agent keeps the
 // connection open.
-const injectHTTPTimeout = 30 * time.Second
+const (
+	injectHTTPTimeout          = 30 * time.Second
+	maxHTTPRedactionMapEntries = 1024
+)
 
 func injectHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) error {
 	if body == nil {
@@ -889,6 +893,12 @@ func (b *dynamicCredentialBody) recordHTTPRedactions(req *http.Request, redactio
 	defer b.redactionsMu.Unlock()
 	if b.redactions == nil {
 		b.redactions = map[*http.Request][]string{}
+	}
+	if len(b.redactions) >= maxHTTPRedactionMapEntries {
+		for stale := range b.redactions {
+			delete(b.redactions, stale)
+			break
+		}
 	}
 	b.redactions[req] = append([]string(nil), redactions...)
 }
@@ -954,7 +964,7 @@ func headersToProto(in http.Header) map[string]*pb.HTTPHeaderValues {
 
 func applyHeaderMutations(h http.Header, mutations []*pb.HeaderMutation) {
 	for _, m := range mutations {
-		if m == nil || m.Name == "" {
+		if !validHeaderMutation(m) {
 			continue
 		}
 		switch m.Op {
@@ -974,6 +984,21 @@ func applyHeaderMutations(h http.Header, mutations []*pb.HeaderMutation) {
 			// proto) are skipped rather than guessed at as SET.
 		}
 	}
+}
+
+func validHeaderMutation(m *pb.HeaderMutation) bool {
+	if m == nil || !httpguts.ValidHeaderFieldName(m.Name) {
+		return false
+	}
+	if m.Op == pb.HeaderMutation_DEL {
+		return true
+	}
+	for _, v := range m.Values {
+		if !httpguts.ValidHeaderFieldValue(v) {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneOAuthIntegration(in *config.OAuthIntegration) *config.OAuthIntegration {

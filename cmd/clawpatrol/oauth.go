@@ -793,23 +793,25 @@ func registerOAuthClient(ctx context.Context, registerURL, redirectURI string, s
 }
 
 func normalizeOAuthExchangeInput(input string) string {
+	code, _ := parseOAuthExchangeInput(input)
+	return code
+}
+
+func parseOAuthExchangeInput(input string) (code, oauthErr string) {
 	s := strings.TrimSpace(input)
 	if s == "" {
-		return ""
+		return "", ""
 	}
 
 	// Operators often paste the whole callback URL after providers
 	// redirect to a loopback URI (for example
 	// localhost:8900/callback?code=...&state=...) or just its raw query
-	// string, with parameters in any order. Try the query-shaped
-	// interpretations first, then fall back to a bare code.
-	if !strings.Contains(s, "?") {
-		if vals, err := url.ParseQuery(strings.TrimPrefix(s, "?")); err == nil {
-			if code := strings.TrimSpace(vals.Get("code")); code != "" {
-				return code
-			}
-		}
-	} else {
+	// string, with parameters in any order. Try query-shaped inputs
+	// first, then fall back to a bare opaque code.
+	if code, oauthErr, ok := parseOAuthRawQuery(s); ok {
+		return code, oauthErr
+	}
+	if strings.Contains(s, "?") {
 		candidate := s
 		if !strings.Contains(candidate, "://") && !strings.HasPrefix(candidate, "/") {
 			// Browsers omit the scheme when the URL is copied from the
@@ -817,19 +819,41 @@ func normalizeOAuthExchangeInput(input string) string {
 			candidate = "http://" + candidate
 		}
 		if u, err := url.Parse(candidate); err == nil {
-			if code := strings.TrimSpace(u.Query().Get("code")); code != "" {
-				return code
+			if code, oauthErr := oauthCodeOrError(u.Query()); code != "" || oauthErr != "" {
+				return code, oauthErr
 			}
 		}
 	}
 
-	// Otherwise treat the input as a bare code. Codes never contain
-	// fragment/query metacharacters, so anything after one is junk the
-	// browser appended (e.g. "#" anchors) and gets truncated.
-	if i := strings.IndexAny(s, "#&?"); i > 0 {
+	// Otherwise treat the input as a bare code. Preserve '&' and '=' because
+	// opaque provider codes may contain them; only strip fragment/query suffixes.
+	if i := strings.IndexAny(s, "#?"); i > 0 {
 		s = s[:i]
 	}
-	return strings.TrimSpace(s)
+	return strings.TrimSpace(s), ""
+}
+
+func parseOAuthRawQuery(input string) (code, oauthErr string, ok bool) {
+	raw := strings.TrimPrefix(input, "?")
+	vals, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", "", false
+	}
+	code, oauthErr = oauthCodeOrError(vals)
+	return code, oauthErr, code != "" || oauthErr != ""
+}
+
+func oauthCodeOrError(vals url.Values) (code, oauthErr string) {
+	if code := strings.TrimSpace(vals.Get("code")); code != "" {
+		return code, ""
+	}
+	if errCode := strings.TrimSpace(vals.Get("error")); errCode != "" {
+		if desc := strings.TrimSpace(vals.Get("error_description")); desc != "" {
+			return "", fmt.Sprintf("%s: %s", errCode, desc)
+		}
+		return "", errCode
+	}
+	return "", ""
 }
 
 func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
@@ -845,7 +869,12 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	body.Code = normalizeOAuthExchangeInput(body.Code)
+	var oauthErr string
+	body.Code, oauthErr = parseOAuthExchangeInput(body.Code)
+	if oauthErr != "" {
+		http.Error(rw, "oauth error: "+oauthErr, 400)
+		return
+	}
 	if body.Code == "" || body.State == "" {
 		http.Error(rw, "missing code/state", 400)
 		return

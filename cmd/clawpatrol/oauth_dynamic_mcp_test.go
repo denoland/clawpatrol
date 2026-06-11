@@ -25,6 +25,7 @@ func TestNormalizeOAuthExchangeInput(t *testing.T) {
 	}{
 		{name: "raw code", in: "abc123", want: "abc123"},
 		{name: "raw code with suffix", in: "abc123?ignored=1", want: "abc123"},
+		{name: "raw opaque code with ampersand and equals", in: "abc=def&ghi=jkl", want: "abc=def&ghi=jkl"},
 		{name: "https callback url", in: "https://gateway.example/oauth/callback?code=url-code&state=s", want: "url-code"},
 		{name: "localhost callback without scheme", in: "localhost:8900/callback?code=loopback-code&state=s", want: "loopback-code"},
 		{name: "absolute path callback", in: "/callback?code=path-code&state=s", want: "path-code"},
@@ -39,6 +40,16 @@ func TestNormalizeOAuthExchangeInput(t *testing.T) {
 				t.Fatalf("normalizeOAuthExchangeInput(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseOAuthExchangeInputReportsCallbackError(t *testing.T) {
+	code, oauthErr := parseOAuthExchangeInput("?error=access_denied&error_description=user+cancelled")
+	if code != "" {
+		t.Fatalf("code = %q, want empty", code)
+	}
+	if oauthErr != "access_denied: user cancelled" {
+		t.Fatalf("oauthErr = %q, want callback error", oauthErr)
 	}
 }
 

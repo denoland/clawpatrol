@@ -3,6 +3,7 @@ package extplugin
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
@@ -153,7 +154,11 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 				if resp.CredentialMetadata.HttpInject && !decl.HttpInject {
 					return nil, fail("plugin %q credential %q: build metadata declared HTTP injection but manifest did not", pluginName, decl.TypeName)
 				}
-				meta = mergeCredentialMetadata(manifestMeta, credentialMetadataFromProto(resp.CredentialMetadata))
+				instanceMeta := credentialMetadataFromProto(resp.CredentialMetadata)
+				if d := validateCredentialMetadataShape(pluginName, decl.TypeName, instanceMeta); d.HasErrors() {
+					return nil, d
+				}
+				meta = mergeCredentialMetadata(manifestMeta, instanceMeta)
 			}
 			b.metadata = meta
 			return wrapCredentialBody(b), nil
@@ -260,12 +265,46 @@ func mergeCredentialMetadata(base, instance credentialMetadata) credentialMetada
 	out := base
 	out.secretSlots = instance.secretSlots
 	out.envVars = instance.envVars
+	// OAuth is intentionally instance-scoped Build metadata: region, scopes,
+	// URLs, and flow can differ across two HCL blocks of the same type.
 	out.oauth = instance.oauth
 	// HTTP injection is a registration-time capability. Build metadata
 	// can restate it but cannot enable it for a type whose manifest did
 	// not declare it.
 	out.httpInject = base.httpInject
 	return out
+}
+
+func validateCredentialMetadataShape(pluginName, typeName string, meta credentialMetadata) hcl.Diagnostics {
+	seenSlots := map[string]bool{}
+	unnamedSlots := 0
+	for _, slot := range meta.secretSlots {
+		name := strings.TrimSpace(slot.Name)
+		if name == "" {
+			unnamedSlots++
+			if unnamedSlots > 1 {
+				return fail("plugin %q credential %q: build metadata declared multiple unnamed secret slots", pluginName, typeName)
+			}
+			continue
+		}
+		if seenSlots[name] {
+			return fail("plugin %q credential %q: build metadata declared duplicate secret slot %q", pluginName, typeName, name)
+		}
+		seenSlots[name] = true
+	}
+
+	seenEnv := map[string]bool{}
+	for _, ev := range meta.envVars {
+		name := strings.TrimSpace(ev.Name)
+		if name == "" {
+			return fail("plugin %q credential %q: build metadata declared empty env var name", pluginName, typeName)
+		}
+		if seenEnv[name] {
+			return fail("plugin %q credential %q: build metadata declared duplicate env var %q", pluginName, typeName, name)
+		}
+		seenEnv[name] = true
+	}
+	return nil
 }
 
 func validateBuildDisambiguators(pluginName, typeName string, supported, got []string) hcl.Diagnostics {

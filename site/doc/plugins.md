@@ -143,7 +143,9 @@ field is `placeholder`: the agent sends a placeholder-looking token,
 and the built-in HTTPS endpoint selects the matching credential
 before calling `InjectHTTP`. `InjectHTTP` is intentionally
 header-only; external credentials cannot rewrite the destination URL
-or request body through this hook.
+or request body through this hook. Use `HeaderSet` for auth headers
+such as `Authorization`; `HeaderAdd` appends and may leave the
+agent's placeholder value in place.
 
 At runtime the built-in HTTPS endpoint keeps the privilege split:
 
@@ -165,10 +167,13 @@ Otherwise a derived value placed in a non-sensitive header such as
 `X-Signature` may appear verbatim in request audit samples.
 
 OAuth credentials can set `CredentialMetadata.OAuth` instead of
-secret slots. The gateway owns the OAuth lifecycle and stores or
-refreshes tokens under the credential instance name; the external
-credential receives the current access token as `CredentialSecret`
-when HTTPS injection runs. Dynamic MCP OAuth providers should set
+secret slots. OAuth metadata is intentionally Build-time and
+instance-scoped, so two HCL blocks of the same credential type can
+select different regions, URLs, scopes, or flows. The gateway owns the
+OAuth lifecycle and stores or refreshes tokens under the credential
+instance name; the external credential receives the current access
+token as `CredentialSecret` when HTTPS injection runs. Dynamic MCP
+OAuth providers should set
 `Flow: "dynamic_mcp"`; the gateway will use public-client PKCE
 exchange and refresh behavior selected by that flow, not by a
 hardcoded provider hostname.
