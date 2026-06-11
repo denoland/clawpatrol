@@ -29,6 +29,14 @@ Every other host is passed through untouched: the gateway does not
 intercept it, you get the upstream's real certificate, and you must
 still verify it against the public web PKI as usual.
 
+## Human-in-the-loop approval
+
+Some endpoints have rules that gate a matching request behind human approval (human-in-the-loop). When such a rule matches, the gateway PARKS the request pending a human decision instead of forwarding it upstream — and it may stay parked indefinitely while it waits for a person to approve or deny it. Do NOT treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the gateway is holding it on purpose.
+
+After a short synchronous wait the gateway stops holding the connection open and answers the original request with HTTP 202 Accepted. That response carries an `operation_id` (also echoed in a `status_url` field and the Location header) identifying the parked request. Poll the returned `status_url`, or GET https://clawpatrol.internal/api/hitl/operations/{operation_id}/status with that id, until the state is terminal. The state is one of: pending (still awaiting a human), approved, or denied (plus expired if the approval window lapses). The gateway does NOT call upstream while a request is parked, so no side effect has happened yet. On approval, replay the original request with the Clawpatrol-HITL-Operation header set to the operation_id to execute it.
+
+None of this profile's endpoints currently gate requests behind human approval.
+
 ## Endpoints (2)
 
 ### gemini  (https)

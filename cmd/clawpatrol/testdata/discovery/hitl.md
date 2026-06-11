@@ -1,4 +1,4 @@
-# Claw Patrol access manifest — profile: tunneled
+# Claw Patrol access manifest — profile: ops
 
 You are connected through the Claw Patrol gateway. It intercepts your
 connections transparently: dial the hosts below as you normally would and
@@ -35,46 +35,35 @@ Some endpoints have rules that gate a matching request behind human approval (hu
 
 After a short synchronous wait the gateway stops holding the connection open and answers the original request with HTTP 202 Accepted. That response carries an `operation_id` (also echoed in a `status_url` field and the Location header) identifying the parked request. Poll the returned `status_url`, or GET https://clawpatrol.internal/api/hitl/operations/{operation_id}/status with that id, until the state is terminal. The state is one of: pending (still awaiting a human), approved, or denied (plus expired if the approval window lapses). The gateway does NOT call upstream while a request is parked, so no side effect has happened yet. On approval, replay the original request with the Clawpatrol-HITL-Operation header set to the operation_id to execute it.
 
-None of this profile's endpoints currently gate requests behind human approval.
+Endpoints below that may park a request for human approval: admin, deploy.
 
-## Endpoints (5)
+## Endpoints (4)
 
-### github  (https)
+### admin  (https)
 
-- Host(s): api.github.com
-- Credential: bearer_token `gh` — send placeholder `PH_GH`
-- Example: `curl https://api.github.com/ -H "Authorization: Bearer PH_GH"`
+- Host(s): admin.example
+- Credential: bearer_token `admin` — send placeholder `PH_ADMIN`
+- Example: `curl https://admin.example/ -H "Authorization: Bearer PH_ADMIN"`
+- Human-in-the-loop: a matching request may be PARKED pending human approval and held indefinitely. Poll its approval status (see the human-in-the-loop section above) instead of treating a slow request as a failure.
 
-### k8s-pg  (postgres)
+### deploy  (https)
 
-- Host(s): k8s-pg.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `k8s-rw` — connect with database=prod user=app
-- Example: `psql "host=k8s-pg.example port=5432 user=app dbname=prod sslmode=require"`
+- Host(s): deploy.example
+- Credential: bearer_token `deploy` — send placeholder `PH_DEPLOY`
+- Example: `curl https://deploy.example/ -H "Authorization: Bearer PH_DEPLOY"`
+- Human-in-the-loop: a matching request may be PARKED pending human approval and held indefinitely. Poll its approval status (see the human-in-the-loop section above) instead of treating a slow request as a failure.
 
-### metrics  (clickhouse_native)
+### search  (https)
 
-- Host(s): ch.example
-- Port: 9440
-- Credential: clickhouse_credential `ch-ro` — connect with user=ro
-- Example: `clickhouse-client --host ch.example --port 9440 --user ro`
+- Host(s): search.example
+- Credential: bearer_token `search` — send placeholder `PH_SEARCH`
+- Example: `curl https://search.example/ -H "Authorization: Bearer PH_SEARCH"`
 
-### prod-pg  (postgres)
+### status  (https)
 
-- Host(s): main-pg.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `pg-rw` — connect with database=prod user=app
-- Example: `psql "host=main-pg.example port=5432 user=app dbname=prod sslmode=require"`
-
-### rds-pg  (postgres)
-
-- Host(s): rds.example
-- Port: 5432
-- SSL mode: require
-- Credential: postgres_credential `rds-rw` — connect with database=prod user=app
-- Example: `psql "host=rds.example port=5432 user=app dbname=prod sslmode=require"`
+- Host(s): status.example
+- Credential: bearer_token `status` — send placeholder `PH_STATUS`
+- Example: `curl https://status.example/ -H "Authorization: Bearer PH_STATUS"`
 
 ## Environment variables (0)
 

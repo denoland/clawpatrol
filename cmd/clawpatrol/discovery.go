@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -54,6 +55,12 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 	defer func() { _ = c.Close() }()
 	defer otelTrackConn("internal")()
 	profile := g.profileFor(peerIP(c))
+	// Principal is the canonical agent identity the HITL request path
+	// stamps onto a parked operation (main.go: agentAddr = agentIPFor(c),
+	// principal = hitlPeerPrincipalID(agentAddr)). Resolve it the same way
+	// here so the internal poll endpoint can scope an operation lookup to
+	// exactly the device that parked it, alias remapping and all.
+	principal := hitlPeerPrincipalID(g.agentIPFor(c))
 	cert, err := g.certs.mint(certHost)
 	if err != nil {
 		log.Printf("internal: mint %s: %v", certHost, err)
@@ -70,7 +77,7 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 	defer func() { _ = tc.Close() }()
 	policy := g.Policy()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.routeInternal(w, r, policy, profile)
+		g.routeInternal(w, r, policy, profile, principal)
 	})
 	_ = http.Serve(&oneShotListener{c: tc}, h)
 }
@@ -78,12 +85,19 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 // routeInternal dispatches a request to the in-tunnel internal API
 // entrypoint by path. clawpatrol.internal is the canonical device-facing
 // API surface, so it exposes the profile manifest at / and /manifest,
-// the gateway CA at /ca.crt, and a liveness + CA-fingerprint blob at
-// /info — the same public endpoints the gateway's tailnet web server
-// serves, mirrored here so a device with only tunnel reachability can
-// fetch them by name. Unknown paths 404 rather than falling through to
+// the gateway CA at /ca.crt, a liveness + CA-fingerprint blob at /info —
+// the same public endpoints the gateway's tailnet web server serves,
+// mirrored here so a device with only tunnel reachability can fetch them
+// by name — and the HITL approval-status poll surface under
+// /api/hitl/operations/. Unknown paths 404 rather than falling through to
 // the manifest, so the canonical paths stay unambiguous.
-func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile string) {
+func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile, principal string) {
+	// The poll surface is a path prefix (the operation id is embedded), so
+	// it can't be a switch arm — match it before the exact-path cases.
+	if strings.HasPrefix(r.URL.Path, hitlOperationStatusPrefix) {
+		g.serveInternalHITLStatus(w, r, profile, principal)
+		return
+	}
 	switch r.URL.Path {
 	case "/", "/manifest":
 		writeDiscoveryResponse(w, r, policy, profile)
@@ -94,6 +108,68 @@ func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveInternalHITLStatus answers the approval-status poll for a parked
+// HITL operation at clawpatrol.internal/api/hitl/operations/{id}/status.
+// It mirrors the tailnet web server's apiHITLOperationStatus but resolves
+// the caller from the connection-derived profile/principal instead of a
+// bearer token: an agent inside the tunnel polls its own parked request
+// by the operation id it got from the original request's 202 response.
+//
+// An operation is located either by its capability token (the `token`
+// query param the 202's status_url carries) or, tokenless, by scoping the
+// lookup to this device's profile + principal — so a device only ever
+// sees operations it parked. The status body is identical to the public
+// surface (same state machine, same retry guidance).
+func (g *Gateway) serveInternalHITLStatus(w http.ResponseWriter, r *http.Request, profile, principal string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+	if !ok || g.db == nil {
+		writeHITLOperationNotFound(w)
+		return
+	}
+	store := NewHITLOperationStore(g.db)
+	var (
+		op  HITLOperation
+		err error
+	)
+	if token := r.URL.Query().Get("token"); token != "" {
+		op, err = store.GetForStatusToken(r.Context(), operationID, token)
+		if err == nil {
+			op.StatusToken = token
+		}
+	} else {
+		op, err = store.GetForPrincipal(r.Context(), operationID, profile, principal)
+	}
+	if errors.Is(err, ErrHITLOperationNotFound) {
+		writeHITLOperationNotFound(w)
+		return
+	}
+	if err != nil {
+		log.Printf("internal: hitl status %s: %v", operationID, err)
+		http.Error(w, "load hitl operation", http.StatusInternalServerError)
+		return
+	}
+	writeHITLOperationStatus(w, op, g.internalHITLPublicURL())
+}
+
+// internalHITLPublicURL returns the gateway's public URL for building the
+// status_url echoed in a poll response, preferring the live config (the
+// public_url may be auto-derived from the tsnet Funnel cert after the web
+// mux is built). Empty when unset — the status_url then comes back as a
+// relative path the agent resolves against clawpatrol.internal.
+func (g *Gateway) internalHITLPublicURL() string {
+	if g != nil {
+		if cfg := g.cfg.Load(); cfg != nil {
+			return cfg.PublicURL()
+		}
+	}
+	return ""
 }
 
 // serveInternalCA returns the gateway CA in PEM form at
@@ -171,6 +247,33 @@ type DiscoveryManifest struct {
 	// agent whose profile grants nothing can tell its human where to go.
 	// Empty when public_url is unset.
 	Dashboard string `json:"dashboard,omitempty"`
+	// HITL documents human-in-the-loop approval for this profile: that a
+	// matching request may be parked pending human approval (possibly
+	// indefinitely), which of the profile's endpoints carry such rules,
+	// and how to poll a parked request's approval status. Always present
+	// on a non-empty manifest so an agent learns the mechanism before it
+	// trips a gated rule.
+	HITL *DiscoveryHITL `json:"hitl,omitempty"`
+}
+
+// DiscoveryHITL is the profile-scoped human-in-the-loop summary embedded
+// in the manifest. Rendered from a single representation into both output
+// formats, like the rest of the manifest.
+type DiscoveryHITL struct {
+	// Explanation is the human/LLM-readable description of how parking and
+	// polling work. Carried in the JSON and rendered verbatim into the
+	// markdown HITL section so both consumers get identical guidance.
+	Explanation string `json:"explanation"`
+	// GatedEndpoints names this profile's endpoints (sorted) whose rules
+	// may park a request for human approval. Mirrors DiscoveryEndpoint.HITL
+	// as a top-level summary; empty when no endpoint is gated.
+	GatedEndpoints []string `json:"gated_endpoints"`
+	// PollPath is the internal-API path template for polling a parked
+	// request's approval status. `{operation_id}` is replaced with the id
+	// from the parked request's 202 response (the `operation_id` field, or
+	// the Location header). The full URL is `https://` + the internal host
+	// + this path.
+	PollPath string `json:"poll_path"`
 }
 
 // isEmpty reports whether the profile grants nothing — no endpoints and
@@ -205,6 +308,14 @@ type DiscoveryEndpoint struct {
 	// Hint is a concrete client invocation when the protocol makes one
 	// unambiguous (psql / kubectl / clickhouse-client / ssh / curl).
 	Hint string `json:"hint,omitempty"`
+	// HITL is true when at least one enabled rule on this endpoint routes
+	// matching requests through a human approver — so a request here may be
+	// parked pending human approval and held indefinitely. The agent must
+	// not treat a slow/hanging request to this endpoint as a failure; it
+	// should poll the approval-status endpoint (see DiscoveryManifest.HITL)
+	// instead. Rules approved purely by an automated (llm) approver do NOT
+	// set this — they don't wait on a human.
+	HITL bool `json:"hitl,omitempty"`
 }
 
 // DiscoveryCredentialRef is a credential the profile can present at a
@@ -290,6 +401,7 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 			de.Credentials = []DiscoveryCredentialRef{}
 		}
 		de.Hint = connectionHint(de)
+		de.HITL = endpointHasHITL(policy, ep)
 		m.Endpoints = append(m.Endpoints, de)
 	}
 
@@ -321,6 +433,14 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 	// same union the env-pushdown API serves, scoped here too.
 	m.EnvVars = buildDiscoveryEnvVars(prof)
 
+	// HITL guidance: the mechanism, which of this profile's endpoints can
+	// park a request for human approval, and how to poll a parked request.
+	// An empty profile has nothing to gate or poll, so it gets the empty-
+	// state guidance below instead.
+	if !m.isEmpty() {
+		m.HITL = buildDiscoveryHITL(m.Endpoints)
+	}
+
 	// A profile that grants nothing leaves the agent with nothing to act
 	// on; surface the dashboard URL so it can point its human at where the
 	// device's profile gets configured. Non-empty manifests already carry
@@ -329,6 +449,91 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 		m.Dashboard = policy.DashboardURL
 	}
 	return m
+}
+
+// endpointHasHITL reports whether any enabled rule on ep routes matching
+// requests through a human approver — i.e. a request to this endpoint may
+// be parked pending human approval. Rules decided purely by an automated
+// (llm) approver don't count: they don't wait on a human.
+func endpointHasHITL(policy *config.CompiledPolicy, ep *config.CompiledEndpoint) bool {
+	if ep == nil {
+		return false
+	}
+	for _, rule := range ep.Rules {
+		if rule == nil || rule.Disabled {
+			continue
+		}
+		for _, stage := range rule.Outcome.Approve {
+			if isHumanApprover(policy, stage.Name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isHumanApprover reports whether the named approve-chain stage waits on a
+// human. The built-in `dashboard` approver is always human (it has no HCL
+// block — `approve = [dashboard]` resolves without a declaration). Any
+// other stage is human when its declared approver plugin is the
+// human_approver type; llm_approver and anything else are automated.
+func isHumanApprover(policy *config.CompiledPolicy, name string) bool {
+	if name == "dashboard" {
+		return true
+	}
+	if policy == nil {
+		return false
+	}
+	ent := policy.Approvers[name]
+	if ent == nil || ent.Plugin == nil {
+		return false
+	}
+	return ent.Plugin.Type == "human_approver"
+}
+
+// buildDiscoveryHITL assembles the profile-scoped HITL summary from the
+// already-flagged endpoint list, so the gated set and the per-endpoint
+// HITL bool can never disagree. Always returns a value for a non-empty
+// profile: the explanation and poll path are useful even when no endpoint
+// is currently gated, since rules can change under the agent.
+func buildDiscoveryHITL(eps []DiscoveryEndpoint) *DiscoveryHITL {
+	gated := []string{}
+	for _, ep := range eps {
+		if ep.HITL {
+			gated = append(gated, ep.Name)
+		}
+	}
+	sort.Strings(gated)
+	return &DiscoveryHITL{
+		Explanation:    hitlManifestExplanation(),
+		GatedEndpoints: gated,
+		PollPath:       hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix,
+	}
+}
+
+// hitlManifestExplanation is the prose an agent reads to understand that a
+// parked request is expected behavior, not a hang, and how to poll it to
+// completion. Built from the live routing constants (internal host, poll
+// path, retry header) so the documented flow can't drift from the served
+// one.
+func hitlManifestExplanation() string {
+	pollURL := "https://" + internalHostname + hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix
+	return fmt.Sprintf(`Some endpoints have rules that gate a matching request behind human `+
+		`approval (human-in-the-loop). When such a rule matches, the gateway PARKS the `+
+		`request pending a human decision instead of forwarding it upstream — and it may stay `+
+		`parked indefinitely while it waits for a person to approve or deny it. Do NOT treat a `+
+		`slow or hanging request to a gated endpoint as a failure or retry it blindly; the `+
+		`gateway is holding it on purpose.
+
+After a short synchronous wait the gateway stops holding the connection open and answers `+
+		`the original request with HTTP 202 Accepted. That response carries an `+"`operation_id`"+` `+
+		`(also echoed in a `+"`status_url`"+` field and the Location header) identifying the parked `+
+		`request. Poll the returned `+"`status_url`"+`, or GET %s with that id, until the state is `+
+		`terminal. The state is one of: pending (still awaiting a human), approved, or denied `+
+		`(plus expired if the approval window lapses). The gateway does NOT call upstream while a `+
+		`request is parked, so no side effect has happened yet. On approval, replay the original `+
+		`request with the %s header set to the operation_id to execute it.`,
+		pollURL, hitlRetryOperationHeader)
 }
 
 // buildDiscoveryEnvVars collects the environment variables this profile
@@ -651,6 +856,19 @@ func (m *DiscoveryManifest) Markdown() string {
 		b.WriteString(m.emptyGuidance())
 	}
 
+	if m.HITL != nil {
+		b.WriteString("## Human-in-the-loop approval\n\n")
+		b.WriteString(m.HITL.Explanation)
+		b.WriteString("\n\n")
+		if len(m.HITL.GatedEndpoints) > 0 {
+			b.WriteString("Endpoints below that may park a request for human approval: ")
+			b.WriteString(strings.Join(m.HITL.GatedEndpoints, ", "))
+			b.WriteString(".\n\n")
+		} else {
+			b.WriteString("None of this profile's endpoints currently gate requests behind human approval.\n\n")
+		}
+	}
+
 	fmt.Fprintf(&b, "## Endpoints (%d)\n\n", len(m.Endpoints))
 	if len(m.Endpoints) == 0 {
 		b.WriteString("_None reachable for this profile._\n\n")
@@ -693,6 +911,11 @@ func (m *DiscoveryManifest) Markdown() string {
 		}
 		if ep.Hint != "" {
 			fmt.Fprintf(&b, "- Example: `%s`\n", ep.Hint)
+		}
+		if ep.HITL {
+			b.WriteString("- Human-in-the-loop: a matching request may be PARKED pending human " +
+				"approval and held indefinitely. Poll its approval status (see the " +
+				"human-in-the-loop section above) instead of treating a slow request as a failure.\n")
 		}
 		b.WriteString("\n")
 	}

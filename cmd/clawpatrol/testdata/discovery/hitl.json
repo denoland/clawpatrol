@@ -1,72 +1,114 @@
 {
-  "profile": "ai",
+  "profile": "ops",
   "endpoints": [
     {
-      "name": "gemini",
+      "name": "admin",
       "type": "https",
       "family": "http",
       "hosts": [
-        "generativelanguage.googleapis.com"
+        "admin.example"
       ],
       "credentials": [
         {
-          "name": "gem",
-          "type": "gemini_api_key"
+          "name": "admin",
+          "type": "bearer_token",
+          "placeholder": "PH_ADMIN"
         }
       ],
-      "hint": "curl https://generativelanguage.googleapis.com/"
+      "hint": "curl https://admin.example/ -H \"Authorization: Bearer PH_ADMIN\"",
+      "hitl": true
     },
     {
-      "name": "github",
+      "name": "deploy",
       "type": "https",
       "family": "http",
       "hosts": [
-        "api.github.com"
+        "deploy.example"
       ],
       "credentials": [
         {
-          "name": "gh",
+          "name": "deploy",
           "type": "bearer_token",
-          "placeholder": "PH_GH"
+          "placeholder": "PH_DEPLOY"
         }
       ],
-      "hint": "curl https://api.github.com/ -H \"Authorization: Bearer PH_GH\""
+      "hint": "curl https://deploy.example/ -H \"Authorization: Bearer PH_DEPLOY\"",
+      "hitl": true
+    },
+    {
+      "name": "search",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "search.example"
+      ],
+      "credentials": [
+        {
+          "name": "search",
+          "type": "bearer_token",
+          "placeholder": "PH_SEARCH"
+        }
+      ],
+      "hint": "curl https://search.example/ -H \"Authorization: Bearer PH_SEARCH\""
+    },
+    {
+      "name": "status",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "status.example"
+      ],
+      "credentials": [
+        {
+          "name": "status",
+          "type": "bearer_token",
+          "placeholder": "PH_STATUS"
+        }
+      ],
+      "hint": "curl https://status.example/ -H \"Authorization: Bearer PH_STATUS\""
     }
   ],
   "credentials": [
     {
-      "name": "gem",
-      "type": "gemini_api_key",
-      "endpoints": [
-        "gemini"
-      ]
-    },
-    {
-      "name": "gh",
+      "name": "admin",
       "type": "bearer_token",
-      "placeholder": "PH_GH",
+      "placeholder": "PH_ADMIN",
       "endpoints": [
-        "github"
+        "admin"
+      ]
+    },
+    {
+      "name": "deploy",
+      "type": "bearer_token",
+      "placeholder": "PH_DEPLOY",
+      "endpoints": [
+        "deploy"
+      ]
+    },
+    {
+      "name": "search",
+      "type": "bearer_token",
+      "placeholder": "PH_SEARCH",
+      "endpoints": [
+        "search"
+      ]
+    },
+    {
+      "name": "status",
+      "type": "bearer_token",
+      "placeholder": "PH_STATUS",
+      "endpoints": [
+        "status"
       ]
     }
   ],
-  "env_vars": [
-    {
-      "name": "GOOGLE_API_KEY",
-      "value": "AIzaClawpatrolPlaceholderDoNotUse00000000",
-      "description": "Gemini SDKs",
-      "type": "gemini_api_key"
-    },
-    {
-      "name": "GEMINI_API_KEY",
-      "value": "AIzaClawpatrolPlaceholderDoNotUse00000000",
-      "description": "Gemini CLI",
-      "type": "gemini_api_key"
-    }
-  ],
+  "env_vars": [],
   "hitl": {
     "explanation": "Some endpoints have rules that gate a matching request behind human approval (human-in-the-loop). When such a rule matches, the gateway PARKS the request pending a human decision instead of forwarding it upstream — and it may stay parked indefinitely while it waits for a person to approve or deny it. Do NOT treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the gateway is holding it on purpose.\n\nAfter a short synchronous wait the gateway stops holding the connection open and answers the original request with HTTP 202 Accepted. That response carries an `operation_id` (also echoed in a `status_url` field and the Location header) identifying the parked request. Poll the returned `status_url`, or GET https://clawpatrol.internal/api/hitl/operations/{operation_id}/status with that id, until the state is terminal. The state is one of: pending (still awaiting a human), approved, or denied (plus expired if the approval window lapses). The gateway does NOT call upstream while a request is parked, so no side effect has happened yet. On approval, replay the original request with the Clawpatrol-HITL-Operation header set to the operation_id to execute it.",
-    "gated_endpoints": [],
+    "gated_endpoints": [
+      "admin",
+      "deploy"
+    ],
     "poll_path": "/api/hitl/operations/{operation_id}/status"
   }
 }

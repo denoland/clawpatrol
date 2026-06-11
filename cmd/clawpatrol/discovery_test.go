@@ -476,6 +476,88 @@ profile "empty" { credentials = [] }
 	}
 }
 
+// TestDiscoveryHITLFlagging is the core HITL guarantee: an endpoint with
+// a rule routed through a human approver (human_approver or the built-in
+// dashboard) is flagged; an endpoint approved only by an automated (llm)
+// approver, or with no approve rule at all, is not. The hitl.hcl fixture
+// pairs all four cases in one profile.
+func TestDiscoveryHITLFlagging(t *testing.T) {
+	policy := compileDiscoveryFile(t, "hitl.hcl")
+	m := buildDiscoveryManifest(policy, "ops")
+
+	want := map[string]bool{
+		"deploy": true,  // human_approver
+		"admin":  true,  // built-in dashboard approver
+		"search": false, // llm_approver — automated, no human wait
+		"status": false, // no approve rule
+	}
+	for name, wantHITL := range want {
+		ep := findEndpoint(m, name)
+		if ep == nil {
+			t.Fatalf("endpoint %q missing", name)
+		}
+		if ep.HITL != wantHITL {
+			t.Errorf("endpoint %q HITL = %v, want %v", name, ep.HITL, wantHITL)
+		}
+	}
+
+	if m.HITL == nil {
+		t.Fatal("manifest HITL summary missing")
+	}
+	if got := strings.Join(m.HITL.GatedEndpoints, ","); got != "admin,deploy" {
+		t.Errorf("gated endpoints = %q, want admin,deploy", got)
+	}
+	if m.HITL.PollPath != "/api/hitl/operations/{operation_id}/status" {
+		t.Errorf("poll path = %q", m.HITL.PollPath)
+	}
+	if !strings.Contains(m.HITL.Explanation, "parked indefinitely") {
+		t.Errorf("explanation missing the indefinite-parking warning:\n%s", m.HITL.Explanation)
+	}
+
+	// The llm approver's own auth credential (judge, kept out of the
+	// profile) must never surface in the manifest.
+	js := string(renderJSON(t, policy, "ops"))
+	if strings.Contains(js, "PH_JUDGE") || strings.Contains(js, "judge") {
+		t.Errorf("manifest leaked the llm approver's private credential:\n%s", js)
+	}
+
+	// Markdown carries the section, the poll URL, and per-endpoint markers
+	// only on the gated endpoints.
+	md := m.Markdown()
+	if !strings.Contains(md, "## Human-in-the-loop approval") {
+		t.Errorf("markdown missing HITL section:\n%s", md)
+	}
+	if !strings.Contains(md, "clawpatrol.internal/api/hitl/operations/{operation_id}/status") {
+		t.Errorf("markdown missing internal poll URL:\n%s", md)
+	}
+	if c := strings.Count(md, "- Human-in-the-loop: a matching request may be PARKED"); c != 2 {
+		t.Errorf("per-endpoint HITL marker count = %d, want 2 (deploy, admin)", c)
+	}
+}
+
+// TestDiscoveryHITLAbsentWhenNoEndpoints: a profile that grants nothing
+// gets no HITL summary — there is nothing to gate or poll, only the
+// empty-state guidance.
+func TestDiscoveryHITLAbsentWhenEmpty(t *testing.T) {
+	policy := compileDiscoveryFixture(t)
+	empty := buildDiscoveryManifest(policy, "does-not-exist")
+	if empty.HITL != nil {
+		t.Errorf("empty manifest should carry no HITL summary, got %+v", empty.HITL)
+	}
+	// A populated profile with no HITL rules still gets the section (the
+	// mechanism is worth documenting), but with an empty gated set.
+	ops := buildDiscoveryManifest(policy, "ops")
+	if ops.HITL == nil {
+		t.Fatal("populated manifest should carry the HITL summary")
+	}
+	if len(ops.HITL.GatedEndpoints) != 0 {
+		t.Errorf("fixture has no HITL rules; gated = %v", ops.HITL.GatedEndpoints)
+	}
+	if !strings.Contains(ops.Markdown(), "None of this profile's endpoints currently gate") {
+		t.Errorf("markdown should say no endpoints are gated")
+	}
+}
+
 func TestIsInternalHost(t *testing.T) {
 	cases := map[string]bool{
 		"clawpatrol.internal":      true,

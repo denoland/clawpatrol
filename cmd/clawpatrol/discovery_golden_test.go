@@ -34,6 +34,7 @@ var discoveryGoldenCases = []struct {
 	{name: "multicred", hcl: "multicred.hcl", profile: "dba"},
 	{name: "tunnel", hcl: "tunnel.hcl", profile: "tunneled"},
 	{name: "envvars", hcl: "envvars.hcl", profile: "ai"},
+	{name: "hitl", hcl: "hitl.hcl", profile: "ops"},
 }
 
 func compileDiscoveryFile(t *testing.T, file string) *config.CompiledPolicy {
