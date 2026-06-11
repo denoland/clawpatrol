@@ -4,6 +4,7 @@
   "configure-gateway",
   "credentials",
   "rules",
+  "tunnels",
   "clawpatrol-test",
   "plugins",
   "architecture",
