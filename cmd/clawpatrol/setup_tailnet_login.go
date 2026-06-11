@@ -220,6 +220,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	defer cancel()
 
 	var finish func(string)
+	shownURL := ""
 	lastState := "unknown"
 	// settle resolves the pending step (if shown) with line, else prints
 	// line on its own.
@@ -244,14 +245,32 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			continue
 		}
 		lastState = st.BackendState
-		if finish == nil && st.AuthURL != "" {
+		if st.AuthURL != "" && st.AuthURL != shownURL {
 			// The box running `clawpatrol join` is usually headless
 			// (SSH session, no browser). Show the login URL + a QR so
 			// the operator can scan from a phone — it's a public
 			// login.tailscale.com link, reachable from any device. The
 			// whole block collapses to "✓ logged in" once auth lands.
-			finish = beginStep("Log in to the tailnet to reach the gateway", linkDetail(st.AuthURL, true), true)
+			//
+			// Re-display whenever the URL changes rather than latching
+			// the first one: the interactive login URL is short-lived,
+			// so an operator slow to complete it sees the control plane
+			// expire it and tsnet re-register for a fresh URL. Latching
+			// the first link left a slow operator scanning a dead URL
+			// while the node sat in NeedsLogin until the 10-minute
+			// deadline — i.e. an apparent hang.
+			headline := "Log in to the tailnet to reach the gateway"
+			if shownURL != "" {
+				// Collapse the dead link's block before reprinting so
+				// the erase accounting stays balanced.
+				if finish != nil {
+					finish("")
+				}
+				headline = "Previous login link expired — open the refreshed link"
+			}
+			finish = beginStep(headline, linkDetail(st.AuthURL, true), true)
 			tryOpen(st.AuthURL) // best-effort local browser if one exists
+			shownURL = st.AuthURL
 		}
 		switch st.BackendState {
 		case "Running":
