@@ -61,13 +61,14 @@ Three load-time consequences worth knowing:
    on a tunneled endpoint is a compile error — there's no DNS
    for the gateway to intercept. See
    [Architecture › DNS interception → VIP](/docs/architecture/#dns-interception--vip).
-2. **The endpoint's `host` is what the *tunnel* will dial.** Some
-   tunnels honour it (`ssh_port_forward` opens a TCP channel to
-   that host:port through the bastion). Some ignore it
-   (`local_command`, `kubernetes_port_forward` already encode the
-   upstream in their own config and dial a fixed local listener).
-   The hostname is still mandatory so the DNS-VIP path has a name
-   to allocate against.
+2. **The endpoint's `host` is what gets the VIP allocated.**
+   Whether the tunnel then dials that address depends on the type.
+   `ssh_port_forward` and `tailscale` honour it (the bastion /
+   tsnet resolves the upstream from inside the remote network).
+   `local_command` and `kubernetes_port_forward` ignore it — they
+   already encode the upstream in their own config and dial a
+   fixed local listener. The hostname is mandatory regardless, so
+   DNS-VIP has a name to allocate against.
 3. **One tunnel can serve many endpoints.** A single
    `local_command` running `cloud-sql-proxy` (`share =
    "singleton"`) is shared across every endpoint that names it.
@@ -240,9 +241,9 @@ is zero — tear down as soon as the last endpoint goes idle.
 ## Chaining tunnels with `via`
 
 Set `via = <other-tunnel>` on a tunnel block to dial its
-transport through another tunnel instead of `net.Dial`. The
-canonical case is `kubectl port-forward → ssh-server pod →
-ssh -L to RDS`:
+underlying TCP connection through another tunnel instead of
+`net.Dial`. The canonical case is `kubectl port-forward →
+ssh-server pod → ssh -L to RDS`:
 
 ```hcl
 tunnel "kubernetes_port_forward" "ssh-jump-pod" {

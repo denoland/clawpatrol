@@ -35,7 +35,7 @@ Five actors take part in a clawpatrol deployment:
   operator controls — to keep the picture clean, but the deployment
   shape is independent of the binary: the same gateway also runs on
   `localhost` next to the agent for single-machine setups, or
-  anywhere reachable by the device’s WireGuard config.
+  anywhere reachable by the device’s transport config.
 - **Upstream.** The API or service the agent is calling
   (api.anthropic.com, api.github.com, an internal Kubernetes API
   server, a Postgres database, a ClickHouse cluster, an SSH
