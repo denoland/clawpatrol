@@ -32,6 +32,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,10 @@ const (
 	// daemonLogMaxBytes caps the persistent daemon.log: when a respawn
 	// finds the file larger than this it truncates instead of appending.
 	daemonLogMaxBytes = 2 << 20 // 2 MiB
+	// afUnixMaxPath is the AF_UNIX sun_path capacity on Linux (108
+	// bytes including the trailing NUL). The control socket path must
+	// fit; daemonRuntimeDir falls back to a short path when it wouldn't.
+	afUnixMaxPath = 108
 )
 
 // daemonTransport is the per-host network identity shared by every
@@ -112,8 +117,22 @@ type daemonTransport interface {
 // state dir" deterministically means "one daemon". AF_UNIX sockets work
 // fine on the persistent FS, and the existing stale-socket handling in
 // daemonConnect copes with a leftover socket after a reboot.
+//
+// Fallback for an unusually long $HOME / $XDG_STATE_HOME: the control
+// socket path must fit AF_UNIX's sun_path limit. When the state-dir
+// path would overflow it, use a short /tmp path keyed on a hash of the
+// (stable) state dir — still deterministic across invocation contexts,
+// so the one-daemon-per-identity guarantee holds, just not env-derived.
 func daemonRuntimeDir() string {
-	return filepath.Join(daemonStateDir(), "run")
+	dir := filepath.Join(daemonStateDir(), "run")
+	// +1 for the NUL terminator counted against sun_path.
+	if len(filepath.Join(dir, "control.sock"))+1 <= afUnixMaxPath {
+		return dir
+	}
+	sum := sha256.Sum256([]byte(daemonStateDir()))
+	// Hardcoded /tmp (not os.TempDir(), which honours $TMPDIR and could
+	// vary by context) keeps the fallback path env-independent too.
+	return filepath.Join("/tmp", fmt.Sprintf("clawpatrol-%d-%x", os.Getuid(), sum[:6]))
 }
 
 func daemonControlSockPath() string { return filepath.Join(daemonRuntimeDir(), "control.sock") }
