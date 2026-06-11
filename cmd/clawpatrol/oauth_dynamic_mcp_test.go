@@ -30,6 +30,8 @@ func TestNormalizeOAuthExchangeInput(t *testing.T) {
 		{name: "absolute path callback", in: "/callback?code=path-code&state=s", want: "path-code"},
 		{name: "raw query", in: "code=query-code&state=s", want: "query-code"},
 		{name: "raw query with state first", in: "state=s&code=query-code", want: "query-code"},
+		{name: "raw query with leading question mark", in: "?code=query-code&state=s", want: "query-code"},
+		{name: "raw query with slash in code", in: "code=ab/cd&state=s", want: "ab/cd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

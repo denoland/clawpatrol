@@ -798,23 +798,22 @@ func normalizeOAuthExchangeInput(input string) string {
 		return ""
 	}
 
-	// Operators often paste the callback URL after providers redirect to a
-	// loopback URI (for example localhost:8900/callback?code=...&state=...).
-	// Also accept raw query strings, regardless of parameter order.
-	rawQuery := strings.TrimPrefix(s, "?")
-	if strings.Contains(rawQuery, "=") && !strings.Contains(rawQuery, "://") && !strings.Contains(rawQuery, "/") {
-		if vals, err := url.ParseQuery(rawQuery); err == nil {
+	// Operators often paste the whole callback URL after providers
+	// redirect to a loopback URI (for example
+	// localhost:8900/callback?code=...&state=...) or just its raw query
+	// string, with parameters in any order. Try the query-shaped
+	// interpretations first, then fall back to a bare code.
+	if !strings.Contains(s, "?") {
+		if vals, err := url.ParseQuery(strings.TrimPrefix(s, "?")); err == nil {
 			if code := strings.TrimSpace(vals.Get("code")); code != "" {
 				return code
 			}
 		}
-	}
-
-	// Treat anything carrying a code query parameter as URL/query-shaped even
-	// when the browser omitted the scheme in the copied text.
-	if strings.Contains(s, "?code=") || strings.Contains(s, "&code=") {
+	} else {
 		candidate := s
 		if !strings.Contains(candidate, "://") && !strings.HasPrefix(candidate, "/") {
+			// Browsers omit the scheme when the URL is copied from the
+			// address bar; url.Parse needs one to find the query.
 			candidate = "http://" + candidate
 		}
 		if u, err := url.Parse(candidate); err == nil {
@@ -823,13 +822,10 @@ func normalizeOAuthExchangeInput(input string) string {
 			}
 		}
 	}
-	if strings.HasPrefix(s, "code=") || strings.HasPrefix(s, "?code=") {
-		if vals, err := url.ParseQuery(strings.TrimPrefix(s, "?")); err == nil {
-			if code := strings.TrimSpace(vals.Get("code")); code != "" {
-				return code
-			}
-		}
-	}
+
+	// Otherwise treat the input as a bare code. Codes never contain
+	// fragment/query metacharacters, so anything after one is junk the
+	// browser appended (e.g. "#" anchors) and gets truncated.
 	if i := strings.IndexAny(s, "#&?"); i > 0 {
 		s = s[:i]
 	}
@@ -1224,28 +1220,28 @@ type dynamicMCPRefreshSource struct {
 	current *oauth2.Token
 }
 
-func (n *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.current.Valid() {
-		return n.current, nil
+func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.current.Valid() {
+		return d.current, nil
 	}
-	if n.current.RefreshToken == "" {
+	if d.current.RefreshToken == "" {
 		return nil, fmt.Errorf("dynamic_mcp refresh: no refresh_token")
 	}
-	if n.cfg.ClientID == "" {
+	if d.cfg.ClientID == "" {
 		return nil, fmt.Errorf("dynamic_mcp refresh: no client_id (dynamic registration was never persisted)")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", n.current.RefreshToken)
-	form.Set("client_id", n.cfg.ClientID)
+	form.Set("refresh_token", d.current.RefreshToken)
+	form.Set("client_id", d.cfg.ClientID)
 	// See anthropicRefreshSource.Token: oauth2 has no ctx on Token(),
-	// so we bound the upstream round-trip here so n.mu stays available
+	// so we bound the upstream round-trip here so d.mu stays available
 	// even if the MCP token endpoint hangs.
 	ctx, cancel := context.WithTimeout(context.Background(), oauthUpstreamTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", n.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", d.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("dynamic_mcp refresh: build request: %w", err)
 	}
@@ -1275,12 +1271,12 @@ func (n *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 		TokenType:    tr.TokenType,
 	}
 	if t.RefreshToken == "" {
-		t.RefreshToken = n.current.RefreshToken
+		t.RefreshToken = d.current.RefreshToken
 	}
 	if tr.ExpiresIn > 0 {
 		t.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
 	}
-	n.current = t
+	d.current = t
 	return t, nil
 }
 

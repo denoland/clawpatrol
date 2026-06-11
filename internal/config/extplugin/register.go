@@ -250,6 +250,12 @@ func oauthIntegrationFromProto(in *pb.OAuthIntegrationDecl) *config.OAuthIntegra
 	return out
 }
 
+// mergeCredentialMetadata combines registration-time (base) and
+// Build-time (instance) credential metadata. The per-instance
+// surfaces — secret slots, env vars, OAuth — are wholesale REPLACED
+// by the instance metadata, not appended: the manifest declaration
+// cannot carry them, so whatever Build returned is the complete set
+// for that instance.
 func mergeCredentialMetadata(base, instance credentialMetadata) credentialMetadata {
 	out := base
 	out.secretSlots = instance.secretSlots

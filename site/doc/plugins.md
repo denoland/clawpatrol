@@ -165,9 +165,14 @@ when HTTPS injection runs. Dynamic MCP OAuth providers should set
 exchange and refresh behavior selected by that flow, not by a
 hardcoded provider hostname.
 
-External credentials that need provider-specific exchange logic (for
-example exchanging a durable service-account token for a short-lived
-JWT) should do that inside `InjectHTTP`. Validate any provider base
+`InjectHTTP` is one gateway→plugin RPC round trip per proxied
+request. External credentials that need provider-specific exchange
+logic (for example exchanging a durable service-account token for a
+short-lived JWT) should do that inside `InjectHTTP`, but must cache
+the derived token in plugin memory and reuse it until expiry — do
+not mint a fresh token on every request. The gateway bounds each
+`InjectHTTP` call with a 30s deadline; a plugin that exceeds it is
+logged and the request is forwarded without injection. Validate any provider base
 URLs before sending long-lived secrets: plugin HCL is operator
 configuration, but the plugin process is still the component that
 knows which upstream hosts are allowed to receive its secret material.

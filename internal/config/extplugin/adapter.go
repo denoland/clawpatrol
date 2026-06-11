@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
@@ -845,10 +846,19 @@ func (b *dynamicOAuthHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request
 	return consumeHTTPRedactions(b.dynamicCredentialBody, req)
 }
 
+// injectHTTPTimeout bounds the plugin InjectHTTP round trip. Plugins
+// may perform network token exchanges at request time, so a hung or
+// slow plugin must degrade to a logged inject error instead of
+// wedging the proxied request for as long as the agent keeps the
+// connection open.
+const injectHTTPTimeout = 30 * time.Second
+
 func injectHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) error {
 	if body == nil || body.adapter == nil || body.adapter.client == nil || body.adapter.client.credential == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, injectHTTPTimeout)
+	defer cancel()
 	out, err := body.adapter.client.credential.InjectHTTP(ctx, &pb.InjectHTTPRequest{
 		CredentialTypeName:      body.adapter.typeName,
 		CredentialInstance:      body.instanceName,
@@ -945,6 +955,11 @@ func applyHeaderMutations(h http.Header, mutations []*pb.HeaderMutation) {
 			continue
 		}
 		switch m.Op {
+		case pb.HeaderMutation_SET:
+			h.Del(m.Name)
+			for _, v := range m.Values {
+				h.Add(m.Name, v)
+			}
 		case pb.HeaderMutation_ADD:
 			for _, v := range m.Values {
 				h.Add(m.Name, v)
@@ -952,10 +967,8 @@ func applyHeaderMutations(h http.Header, mutations []*pb.HeaderMutation) {
 		case pb.HeaderMutation_DEL:
 			h.Del(m.Name)
 		default:
-			h.Del(m.Name)
-			for _, v := range m.Values {
-				h.Add(m.Name, v)
-			}
+			// Ops this gateway build doesn't know (a newer plugin
+			// proto) are skipped rather than guessed at as SET.
 		}
 	}
 }
