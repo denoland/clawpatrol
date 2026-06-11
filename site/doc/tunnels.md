@@ -240,10 +240,10 @@ is zero — tear down as soon as the last endpoint goes idle.
 
 ## Chaining tunnels with `via`
 
-Set `via = <other-tunnel>` on a tunnel block to dial its
+Set `via = <other-tunnel>` on a tunnel block to route its
 underlying TCP connection through another tunnel instead of
-`net.Dial`. The canonical case is `kubectl port-forward →
-ssh-server pod → ssh -L to RDS`:
+dialing directly from the gateway host. The canonical case is
+`kubectl port-forward → ssh-server pod → ssh -L to RDS`:
 
 ```hcl
 tunnel "kubernetes_port_forward" "ssh-jump-pod" {
