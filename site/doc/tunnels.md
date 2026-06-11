@@ -26,11 +26,11 @@ for a tunnel when:
 - **Upstream lives on a tailnet.** MagicDNS-only hostnames and
   tailnet-internal IPs aren't reachable from the gateway's normal
   netns; embedded tsnet joins the tailnet in-process.
-- **The upstream is only reachable from a jump host.** A common
-  pattern: a public-facing SSH server (the "bastion") sits in
-  front of a private database or service that has no public route.
-  The gateway opens one SSH session to the bastion and forwards
-  every dial through it (`ssh -L` semantics).
+- **The upstream is only reachable from an SSH jump host.** A
+  common pattern: a public-facing SSH server (the "bastion") sits
+  in front of a private database or service that has no public
+  route. The gateway opens one SSH session to the bastion and
+  forwards every dial through it (`ssh -L` semantics).
 
 ## How endpoints reference a tunnel
 
