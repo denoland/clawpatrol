@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
@@ -27,6 +27,11 @@ import (
 // agent was handed lands here as long as the SNI matches. Keep this in
 // sync with dnsvip.InternalHostname.
 const internalHostname = "clawpatrol.internal"
+
+// hitlPendingPath is the internal-API path where a device lists every
+// request it currently has parked awaiting human approval. The full URL is
+// `https://` + internalHostname + this path.
+const hitlPendingPath = "/pending"
 
 // isInternalHost reports whether host names the reserved internal API
 // endpoint. The match is case-insensitive (DNS is) and tolerates a
@@ -88,16 +93,10 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 // the gateway CA at /ca.crt, a liveness + CA-fingerprint blob at /info —
 // the same public endpoints the gateway's tailnet web server serves,
 // mirrored here so a device with only tunnel reachability can fetch them
-// by name — and the HITL approval-status poll surface under
-// /api/hitl/operations/. Unknown paths 404 rather than falling through to
-// the manifest, so the canonical paths stay unambiguous.
+// by name — and the list of the device's parked-for-approval requests at
+// /pending. Unknown paths 404 rather than falling through to the manifest,
+// so the canonical paths stay unambiguous.
 func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile, principal string) {
-	// The poll surface is a path prefix (the operation id is embedded), so
-	// it can't be a switch arm — match it before the exact-path cases.
-	if strings.HasPrefix(r.URL.Path, hitlOperationStatusPrefix) {
-		g.serveInternalHITLStatus(w, r, profile, principal)
-		return
-	}
 	switch r.URL.Path {
 	case "/", "/manifest":
 		writeDiscoveryResponse(w, r, policy, profile)
@@ -105,72 +104,66 @@ func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *
 		g.serveInternalCA(w)
 	case "/info":
 		g.serveInternalInfo(w)
+	case hitlPendingPath:
+		g.serveInternalPending(w, r, profile, principal)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-// serveInternalHITLStatus answers the approval-status poll for a parked
-// HITL operation at clawpatrol.internal/api/hitl/operations/{id}/status.
-// It mirrors the tailnet web server's apiHITLOperationStatus but resolves
-// the caller from the connection-derived profile/principal instead of a
-// bearer token: an agent inside the tunnel polls its own parked request
-// by its operation id — whether the request is still held synchronously
-// (sync HITL) or was handed back to the agent to follow asynchronously.
+// serveInternalPending answers clawpatrol.internal/pending with the list of
+// this device's parked actions — requests gated behind human approval that
+// are still awaiting a decision, held with no upstream side effect yet. The
+// caller is resolved from the connection-derived profile/principal (the same
+// identity that parked the request), never a token, so a device only ever
+// sees the actions it parked.
 //
-// An operation is located either by its capability token (the `token`
-// query param the status_url carries) or, tokenless, by scoping the
-// lookup to this device's profile + principal — so a device only ever
-// sees operations it parked. The status body is identical to the public
-// surface (same state machine, same retry guidance).
-func (g *Gateway) serveInternalHITLStatus(w http.ResponseWriter, r *http.Request, profile, principal string) {
+// This is the sync-HITL way to see what is waiting on a human: the request
+// is parked synchronously (its connection held open until a person decides),
+// so the agent needs no operation handle to track it — it just lists what is
+// currently held for its device.
+func (g *Gateway) serveInternalPending(w http.ResponseWriter, r *http.Request, profile, principal string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
-	if !ok || g.db == nil {
-		writeHITLOperationNotFound(w)
-		return
-	}
-	store := NewHITLOperationStore(g.db)
-	var (
-		op  HITLOperation
-		err error
-	)
-	if token := r.URL.Query().Get("token"); token != "" {
-		op, err = store.GetForStatusToken(r.Context(), operationID, token)
-		if err == nil {
-			op.StatusToken = token
+	pending := []map[string]any{}
+	if g.db != nil {
+		ops, err := NewHITLOperationStore(g.db).ListParkedForPrincipal(r.Context(), profile, principal)
+		if err != nil {
+			log.Printf("internal: pending list: %v", err)
+			http.Error(w, "load pending actions", http.StatusInternalServerError)
+			return
 		}
-	} else {
-		op, err = store.GetForPrincipal(r.Context(), operationID, profile, principal)
+		for _, op := range ops {
+			pending = append(pending, pendingActionView(op))
+		}
 	}
-	if errors.Is(err, ErrHITLOperationNotFound) {
-		writeHITLOperationNotFound(w)
-		return
-	}
-	if err != nil {
-		log.Printf("internal: hitl status %s: %v", operationID, err)
-		http.Error(w, "load hitl operation", http.StatusInternalServerError)
-		return
-	}
-	writeHITLOperationStatus(w, op, g.internalHITLPublicURL())
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]any{"pending": pending})
 }
 
-// internalHITLPublicURL returns the gateway's public URL for building the
-// status_url echoed in a poll response, preferring the live config (the
-// public_url may be auto-derived from the tsnet Funnel cert after the web
-// mux is built). Empty when unset — the status_url then comes back as a
-// relative path the agent resolves against clawpatrol.internal.
-func (g *Gateway) internalHITLPublicURL() string {
-	if g != nil {
-		if cfg := g.cfg.Load(); cfg != nil {
-			return cfg.PublicURL()
-		}
+// pendingActionView is the redacted, secret-free description of one parked
+// action returned by /pending — enough for an agent or operator to tell
+// which held request is which (method + endpoint + redacted target) without
+// exposing credentials or any async-poll machinery (no operation id, no
+// status token).
+func pendingActionView(op HITLOperation) map[string]any {
+	v := map[string]any{
+		"endpoint":  op.EndpointID,
+		"method":    op.Method,
+		"url":       op.Scheme + "://" + op.Host + op.RedactedPath,
+		"parked_at": op.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
-	return ""
+	if op.RedactedQuery != "" {
+		v["query"] = op.RedactedQuery
+	}
+	if !op.ApprovalExpiresAt.IsZero() {
+		v["approval_expires_at"] = op.ApprovalExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return v
 }
 
 // serveInternalCA returns the gateway CA in PEM form at
@@ -269,12 +262,10 @@ type DiscoveryHITL struct {
 	// may park a request for human approval. Mirrors DiscoveryEndpoint.HITL
 	// as a top-level summary; empty when no endpoint is gated.
 	GatedEndpoints []string `json:"gated_endpoints"`
-	// PollPath is the internal-API path template for polling a parked
-	// request's approval status, for a request parked synchronously or
-	// asynchronously alike. `{operation_id}` is replaced with the parked
-	// request's id (the `operation_id` field, or the Location header). The
-	// full URL is `https://` + the internal host + this path.
-	PollPath string `json:"poll_path"`
+	// PendingPath is the internal-API path where the device lists every
+	// request it currently has parked awaiting human approval. The full URL
+	// is `https://` + the internal host + this path.
+	PendingPath string `json:"pending_path"`
 }
 
 // isEmpty reports whether the profile grants nothing — no endpoints and
@@ -508,17 +499,16 @@ func buildDiscoveryHITL(eps []DiscoveryEndpoint) *DiscoveryHITL {
 	return &DiscoveryHITL{
 		Explanation:    hitlManifestExplanation(),
 		GatedEndpoints: gated,
-		PollPath:       hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix,
+		PendingPath:    hitlPendingPath,
 	}
 }
 
 // hitlManifestExplanation is the prose an agent reads to understand that a
-// parked request is expected behavior, not a hang, and how to poll it to
-// completion. Built from the live routing constants (internal host, poll
-// path, retry header) so the documented flow can't drift from the served
-// one.
+// parked request is expected behavior, not a hang. Built from the live
+// routing constant (internal host + pending path) so the documented flow
+// can't drift from the served one.
 func hitlManifestExplanation() string {
-	pollURL := "https://" + internalHostname + hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix
+	pendingURL := "https://" + internalHostname + hitlPendingPath
 	return fmt.Sprintf(`Some endpoints have rules that gate a matching request behind human `+
 		`approval (human-in-the-loop). When such a rule matches, the gateway PARKS the `+
 		`request pending a human decision instead of forwarding it upstream — and it may stay `+
@@ -527,21 +517,14 @@ func hitlManifestExplanation() string {
 		`treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the `+
 		`gateway is holding it on purpose.
 
-By default the gateway parks the request synchronously: it holds your connection open until a `+
-		`human decides and then answers on that same connection — the real upstream response once the `+
-		`request is approved, or a denial if it is rejected. You do not have to do anything special; `+
-		`just let the request run instead of aborting it.
+The gateway parks the request synchronously: it holds your connection open until a human `+
+		`decides and then answers on that same connection — the real upstream response once the `+
+		`request is approved, or a denial if it is rejected. You do not have to do anything special `+
+		`or re-send anything; just let the request run instead of aborting it.
 
-Either way the parked request has an approval status you can poll — you do not need to wait on a `+
-		`held connection to see where it stands. The gateway identifies a parked request by an `+
-		"`operation_id`"+`. When it cannot hold the connection open long enough to answer inline it `+
-		`hands the request back with that `+"`operation_id`"+` (carried in a `+"`status_url`"+` field and `+
-		`the Location header) so you can follow it without re-sending. Poll the returned `+"`status_url`"+`, `+
-		`or GET %s with that id, until the state is terminal: pending (still awaiting a human), `+
-		`approved, or denied (plus expired if the approval window lapses). On approval, replay the `+
-		`original request with the %s header set to the operation_id to execute it — the gateway `+
-		`recognizes it as the same approved request and forwards it upstream.`,
-		pollURL, hitlRetryOperationHeader)
+To see everything currently waiting on a human for your device, GET %s. It lists each parked `+
+		`action — its method, endpoint, and redacted target — so you can tell what is held without `+
+		`keeping the original connection in view.`, pendingURL)
 }
 
 // buildDiscoveryEnvVars collects the environment variables this profile
@@ -922,8 +905,8 @@ func (m *DiscoveryManifest) Markdown() string {
 		}
 		if ep.HITL {
 			b.WriteString("- Human-in-the-loop: a matching request may be PARKED pending human " +
-				"approval and held indefinitely. Poll its approval status (see the " +
-				"human-in-the-loop section above) instead of treating a slow request as a failure.\n")
+				"approval and held until a person decides. Let it run instead of treating a slow " +
+				"request as a failure; see the human-in-the-loop section above.\n")
 		}
 		b.WriteString("\n")
 	}

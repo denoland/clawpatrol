@@ -507,11 +507,15 @@ func TestDiscoveryHITLFlagging(t *testing.T) {
 	if got := strings.Join(m.HITL.GatedEndpoints, ","); got != "admin,deploy" {
 		t.Errorf("gated endpoints = %q, want admin,deploy", got)
 	}
-	if m.HITL.PollPath != "/api/hitl/operations/{operation_id}/status" {
-		t.Errorf("poll path = %q", m.HITL.PollPath)
+	if m.HITL.PendingPath != "/pending" {
+		t.Errorf("pending path = %q", m.HITL.PendingPath)
 	}
 	if !strings.Contains(m.HITL.Explanation, "parked indefinitely") {
 		t.Errorf("explanation missing the indefinite-parking warning:\n%s", m.HITL.Explanation)
+	}
+	// The async-poll machinery must not be documented — sync HITL only.
+	if strings.Contains(m.HITL.Explanation, "operation_id") || strings.Contains(m.HITL.Explanation, "status_url") {
+		t.Errorf("explanation leaks async HITL machinery:\n%s", m.HITL.Explanation)
 	}
 
 	// The llm approver's own auth credential (judge, kept out of the
@@ -521,14 +525,14 @@ func TestDiscoveryHITLFlagging(t *testing.T) {
 		t.Errorf("manifest leaked the llm approver's private credential:\n%s", js)
 	}
 
-	// Markdown carries the section, the poll URL, and per-endpoint markers
-	// only on the gated endpoints.
+	// Markdown carries the section, the pending-list URL, and per-endpoint
+	// markers only on the gated endpoints.
 	md := m.Markdown()
 	if !strings.Contains(md, "## Human-in-the-loop approval") {
 		t.Errorf("markdown missing HITL section:\n%s", md)
 	}
-	if !strings.Contains(md, "clawpatrol.internal/api/hitl/operations/{operation_id}/status") {
-		t.Errorf("markdown missing internal poll URL:\n%s", md)
+	if !strings.Contains(md, "clawpatrol.internal/pending") {
+		t.Errorf("markdown missing internal pending URL:\n%s", md)
 	}
 	if c := strings.Count(md, "- Human-in-the-loop: a matching request may be PARKED"); c != 2 {
 		t.Errorf("per-endpoint HITL marker count = %d, want 2 (deploy, admin)", c)

@@ -33,9 +33,9 @@ still verify it against the public web PKI as usual.
 
 Some endpoints have rules that gate a matching request behind human approval (human-in-the-loop). When such a rule matches, the gateway PARKS the request pending a human decision instead of forwarding it upstream — and it may stay parked indefinitely while it waits for a person to approve or deny it. The gateway does NOT call upstream while a request is parked, so no side effect has happened yet. Do NOT treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the gateway is holding it on purpose.
 
-By default the gateway parks the request synchronously: it holds your connection open until a human decides and then answers on that same connection — the real upstream response once the request is approved, or a denial if it is rejected. You do not have to do anything special; just let the request run instead of aborting it.
+The gateway parks the request synchronously: it holds your connection open until a human decides and then answers on that same connection — the real upstream response once the request is approved, or a denial if it is rejected. You do not have to do anything special or re-send anything; just let the request run instead of aborting it.
 
-Either way the parked request has an approval status you can poll — you do not need to wait on a held connection to see where it stands. The gateway identifies a parked request by an `operation_id`. When it cannot hold the connection open long enough to answer inline it hands the request back with that `operation_id` (carried in a `status_url` field and the Location header) so you can follow it without re-sending. Poll the returned `status_url`, or GET https://clawpatrol.internal/api/hitl/operations/{operation_id}/status with that id, until the state is terminal: pending (still awaiting a human), approved, or denied (plus expired if the approval window lapses). On approval, replay the original request with the Clawpatrol-HITL-Operation header set to the operation_id to execute it — the gateway recognizes it as the same approved request and forwards it upstream.
+To see everything currently waiting on a human for your device, GET https://clawpatrol.internal/pending. It lists each parked action — its method, endpoint, and redacted target — so you can tell what is held without keeping the original connection in view.
 
 Endpoints below that may park a request for human approval: admin, deploy.
 
@@ -46,14 +46,14 @@ Endpoints below that may park a request for human approval: admin, deploy.
 - Host(s): admin.example
 - Credential: bearer_token `admin` — send placeholder `PH_ADMIN`
 - Example: `curl https://admin.example/ -H "Authorization: Bearer PH_ADMIN"`
-- Human-in-the-loop: a matching request may be PARKED pending human approval and held indefinitely. Poll its approval status (see the human-in-the-loop section above) instead of treating a slow request as a failure.
+- Human-in-the-loop: a matching request may be PARKED pending human approval and held until a person decides. Let it run instead of treating a slow request as a failure; see the human-in-the-loop section above.
 
 ### deploy  (https)
 
 - Host(s): deploy.example
 - Credential: bearer_token `deploy` — send placeholder `PH_DEPLOY`
 - Example: `curl https://deploy.example/ -H "Authorization: Bearer PH_DEPLOY"`
-- Human-in-the-loop: a matching request may be PARKED pending human approval and held indefinitely. Poll its approval status (see the human-in-the-loop section above) instead of treating a slow request as a failure.
+- Human-in-the-loop: a matching request may be PARKED pending human approval and held until a person decides. Let it run instead of treating a slow request as a failure; see the human-in-the-loop section above.
 
 ### search  (https)
 

@@ -194,6 +194,22 @@ func (s *HITLOperationStore) GetForPrincipal(ctx context.Context, id, profileID,
 	return s.scanOne(ctx, `SELECT `+hitlOperationColumns+` FROM hitl_operations WHERE id = ? AND profile_id = ? AND principal_id = ?`, id, profileID, principalID)
 }
 
+// ListParkedForPrincipal returns the device's actions that are parked
+// awaiting a human decision — held synchronously (sync_waiting) or pending
+// approval (pending_approval) — scoped to one profile+principal, newest
+// first. A parked action is one a human still has to approve or deny, with
+// no upstream side effect yet; terminal, approved, and in-flight operations
+// are excluded. Backs the internal /pending list surface.
+func (s *HITLOperationStore) ListParkedForPrincipal(ctx context.Context, profileID, principalID string) ([]HITLOperation, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	return s.scanMany(ctx, `SELECT `+hitlOperationColumns+` FROM hitl_operations
+WHERE profile_id = ? AND principal_id = ? AND state IN (?, ?)
+ORDER BY created_ns DESC`,
+		profileID, principalID, string(HITLOperationStateSyncWaiting), string(HITLOperationStatePendingApproval))
+}
+
 func (s *HITLOperationStore) GetForStatusToken(ctx context.Context, id, token string) (HITLOperation, error) {
 	if s == nil || s.db == nil {
 		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
@@ -469,7 +485,37 @@ func (s *HITLOperationStore) get(ctx context.Context, id string) (HITLOperation,
 }
 
 func (s *HITLOperationStore) scanOne(ctx context.Context, query string, args ...any) (HITLOperation, error) {
-	row := s.db.QueryRowContext(ctx, query, args...)
+	op, err := scanHITLOperationRow(s.db.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return HITLOperation{}, ErrHITLOperationNotFound
+	}
+	return op, err
+}
+
+func (s *HITLOperationStore) scanMany(ctx context.Context, query string, args ...any) ([]HITLOperation, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []HITLOperation
+	for rows.Next() {
+		op, err := scanHITLOperationRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, op)
+	}
+	return out, rows.Err()
+}
+
+// hitlOperationRowScanner is satisfied by both *sql.Row and *sql.Rows, so
+// the column-mapping below serves single-row and multi-row reads alike.
+type hitlOperationRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanHITLOperationRow(row hitlOperationRowScanner) (HITLOperation, error) {
 	var op HITLOperation
 	var state string
 	var redactedQuery, redactedHeaders sql.NullString
@@ -487,9 +533,6 @@ func (s *HITLOperationStore) scanOne(ctx context.Context, query string, args ...
 		&expiredReason, &terminalNS, &terminalRetentionNS,
 		&upstreamCalled, &grantConsumedNS, &grantConsumedBy, &approverMessageRef, &dashboardRef, &lastError,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return HITLOperation{}, ErrHITLOperationNotFound
-	}
 	if err != nil {
 		return HITLOperation{}, err
 	}
