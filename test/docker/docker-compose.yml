@@ -50,6 +50,8 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
+    devices:
+      - /dev/net/tun
     # The harness drops probe scripts into /workspace at run time.
     volumes:
       - ./tests:/workspace/tests:ro
