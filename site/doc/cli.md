@@ -95,26 +95,43 @@ The agent sees a normal network — outbound flows just route through
 the gateway, which matches each request against the rules, injects
 the configured credential, and forwards.
 
-#### No root inside `clawpatrol run` (Linux)
+#### Root and `sudo` inside `clawpatrol run` (Linux)
 
-The wrapped command runs in an unprivileged user namespace. As a
-consequence of how Linux user namespaces work, that namespace has no
-mapped root: your own uid is the only one mapped in, host root (uid 0)
-is not. So commands that need real root won't work — `sudo` fails
-with messages like:
+`clawpatrol run` builds the network namespace one of two ways,
+depending on whether the invoking user has **passwordless `sudo`**:
 
-```
-sudo: /etc/sudo.conf is owned by uid 65534, should be 0
-sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
-```
+- **Passwordless `sudo` available (preferred).** clawpatrol uses it to
+  set up the net + mount namespace as real root, then drops back to
+  your own user before exec'ing the command. Inside the wrapper you
+  are your normal uid, root (uid 0) exists in the namespace, and
+  `sudo` works — a command that needs to elevate can just call `sudo`
+  as it would anywhere. The wrapped command can't tell it was launched
+  this way: clean environment, normal uid, no leftover `SUDO_*` vars.
+- **No passwordless `sudo` (or `CLAWPATROL_NO_SUDO=1`).** clawpatrol
+  falls back to an unprivileged user namespace. As a consequence of
+  how Linux user namespaces work, that namespace has no mapped root:
+  your own uid is the only one mapped in, host root (uid 0) is not. So
+  commands that need real root won't work — `sudo` fails with messages
+  like:
 
-The first is the namespace mapping root-owned files to "nobody"
-(65534); the second is the `no_new_privileges` flag clawpatrol sets to
-install its unprivileged seccomp filter. This isn't a deliberate
-restriction — it falls out of running unprivileged, and the host's own
-`sudo` is unaffected outside the wrapper.
+  ```
+  sudo: /etc/sudo.conf is owned by uid 65534, should be 0
+  sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+  ```
 
-If a command needs to act as root:
+  The first is the namespace mapping root-owned files to "nobody"
+  (65534); the second is the `no_new_privileges` flag clawpatrol sets
+  to install its unprivileged seccomp filter. This isn't a deliberate
+  restriction — it falls out of running unprivileged, and the host's
+  own `sudo` is unaffected outside the wrapper.
+
+Gaining root inside the wrapper doesn't bypass the gateway's purpose:
+real secrets never leave the gateway, so a process that steps around
+the tunnel only reaches the network with placeholder credentials that
+mean nothing upstream. The namespace makes the gateway the path of
+least resistance, not an escape-proof jail.
+
+If you're on the unprivileged path and a command needs to act as root:
 
 - **Install the tooling on the host first**, then launch — e.g.
   `sudo apt-get install -y postgresql-client && clawpatrol run -- psql …`.
@@ -206,6 +223,7 @@ device-side knobs:
 | `CLAWPATROL_RUN_CONF` | Override the WG conf path `clawpatrol run` reads |
 | `CLAWPATROL_DEBUG` | Print the relay / auto-expose diagnostic lines, which are otherwise silent |
 | `CLAWPATROL_NO_ENV` | Skip the env pushdown (`SSL_CERT_FILE`, placeholders) when wrapping a command |
+| `CLAWPATROL_NO_SUDO` | Force the unprivileged user-namespace path even when passwordless `sudo` is available (see [Root and `sudo` inside `clawpatrol run`](#root-and-sudo-inside-clawpatrol-run-linux)); `sudo` won't work inside the wrapper |
 | `CLAWPATROL_TELEMETRY` | `0` to disable telemetry (same as `DO_NOT_TRACK=1`) |
 | `DO_NOT_TRACK` | Standard opt-out, honored |
 | `TS_AUTHKEY` | Used by `clawpatrol login` to authenticate to Tailscale non-interactively |
