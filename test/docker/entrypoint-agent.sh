@@ -73,8 +73,17 @@ for t in "${TESTS_DIR}"/*.sh; do
     [ -r "$t" ] || continue
     name="$(basename "$t")"
     echo "[e2e-agent] ▶ ${name}"
-    if su -s /bin/sh e2e -c \
-        "HOME=/home/e2e XDG_CONFIG_HOME=/home/e2e/.config CLAWPATROL_BIN=/usr/local/bin/clawpatrol-agent GATEWAY_URL='${GATEWAY}' sh '$t'"; then
+    if setpriv \
+        --reuid e2e \
+        --regid e2e \
+        --init-groups \
+        --inh-caps +net_admin,+sys_admin \
+        --ambient-caps +net_admin,+sys_admin \
+        env HOME=/home/e2e \
+        XDG_CONFIG_HOME=/home/e2e/.config \
+        CLAWPATROL_BIN=/usr/local/bin/clawpatrol \
+        GATEWAY_URL="${GATEWAY}" \
+        sh "$t"; then
         echo "[e2e-agent]   ✓ ${name}"
         PASS=$((PASS + 1))
     else

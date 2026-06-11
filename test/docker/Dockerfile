@@ -15,18 +15,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     jq \
-    libcap2-bin \
     iproute2 \
     iputils-ping \
     openssh-client \
     procps \
     socat \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY clawpatrol /usr/local/bin/clawpatrol
 RUN chmod +x /usr/local/bin/clawpatrol \
-    && cp /usr/local/bin/clawpatrol /usr/local/bin/clawpatrol-agent \
-    && setcap cap_net_admin,cap_sys_admin+eip /usr/local/bin/clawpatrol-agent \
     && useradd -m -u 10001 -s /bin/sh e2e
 
 WORKDIR /opt/clawpatrol
