@@ -580,17 +580,51 @@ func readLenPrefixed(br *bufio.Reader, tag string, maxLen int) (int, error) {
 	return n, nil
 }
 
+// daemonClientWaitAttached blocks on the daemon's post-handoff reply.
+// Two valid frames:
+//   - "ATTACHED\n" — gVisor stack is wired up AND the transport's
+//     WaitReady fired green, so the child can exec into a working
+//     tunnel right away.
+//   - "READYERR <n>\n<n bytes>" — the daemon couldn't confirm
+//     transport readiness within daemonReadyTimeout (handshake
+//     stalled, exit-node ACL missing, etc). We surface the body as
+//     the error so `clawpatrol run` exits with the actual reason
+//     instead of "expected ATTACHED, got ..." gibberish.
+//
+// The deadline is daemonReadyTimeout + buffer so the wrapper's read
+// outlasts the daemon's own WaitReady budget; a bare 5s window (the
+// pre-WaitReady value) would expire before the daemon could even
+// report the timeout.
 func daemonClientWaitAttached(ctrl net.Conn, br *bufio.Reader) error {
-	_ = ctrl.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = ctrl.SetReadDeadline(time.Now().Add(35 * time.Second))
 	defer func() { _ = ctrl.SetReadDeadline(time.Time{}) }()
 	line, err := br.ReadString('\n')
 	if err != nil {
 		return err
 	}
-	if strings.TrimRight(line, "\r\n") != "ATTACHED" {
+	line = strings.TrimRight(line, "\r\n")
+	switch {
+	case line == "ATTACHED":
+		return nil
+	case strings.HasPrefix(line, "READYERR "):
+		var n int
+		if _, err := fmt.Sscanf(line[len("READYERR "):], "%d", &n); err != nil {
+			return fmt.Errorf("parse READYERR length: %w", err)
+		}
+		if n < 0 || n > 4096 {
+			return fmt.Errorf("READYERR length %d out of range", n)
+		}
+		if n == 0 {
+			return fmt.Errorf("daemon transport not ready")
+		}
+		body := make([]byte, n)
+		if _, err := io.ReadFull(br, body); err != nil {
+			return fmt.Errorf("read READYERR body: %w", err)
+		}
+		return fmt.Errorf("daemon transport not ready: %s", string(body))
+	default:
 		return fmt.Errorf("expected ATTACHED, got %q", line)
 	}
-	return nil
 }
 
 // --- capability manipulation -------------------------------------------------
