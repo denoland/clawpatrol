@@ -46,6 +46,10 @@ type HumanApprover struct {
 	RequireApprovers int `hcl:"require_approvers,optional"`
 	// SyncWaitTimeout is the HTTP hold budget before an async-capable
 	// HITL request returns 202 and moves to polling/retry-grant mode.
+	// Optional, including when async_grant is enabled: when unset the
+	// gateway parks the request synchronously for the full approval
+	// window (it holds the connection until a human decides) and never
+	// hands back a 202 — the async retry-grant path stays dormant.
 	SyncWaitTimeout string `hcl:"sync_wait_timeout,optional" json:"sync_wait_timeout,omitempty"`
 	// AsyncGrant configures v1 HITL async retry grants for this approver.
 	// The nested block must set enabled = true, and the active profile must

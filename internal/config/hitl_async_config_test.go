@@ -181,14 +181,26 @@ func TestHITLAsyncConfigReaderDefaultsWithoutAsyncGrant(t *testing.T) {
 	}
 }
 
-func TestHITLAsyncConfigRequiresSyncWaitTimeoutWhenEnabled(t *testing.T) {
+func TestHITLAsyncConfigAllowsOmittedSyncWaitTimeoutWhenEnabled(t *testing.T) {
 	src := hitlAsyncConfigSource("https://clawpatrol.example.test", true, true, "", `enabled = true`)
-	_, diags := config.LoadBytes([]byte(src), "missing_sync_wait_timeout.hcl")
-	if !diags.HasErrors() {
-		t.Fatal("load succeeded, want missing sync_wait_timeout diagnostic")
+	gw, diags := config.LoadBytes([]byte(src), "omitted_sync_wait_timeout.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
 	}
-	if !diagnosticsContain(diags, "sync_wait_timeout is required") {
-		t.Fatalf("diagnostics did not mention sync_wait_timeout requirement:\n%v", diags)
+	reader, ok := gw.Policy.Approvers["ops"].Body.(interface {
+		HITLAsyncGrantEnabled() bool
+		HITLSyncWaitTimeout() time.Duration
+	})
+	if !ok {
+		t.Fatalf("human approver body does not expose async HITL reader: %T", gw.Policy.Approvers["ops"].Body)
+	}
+	if !reader.HITLAsyncGrantEnabled() {
+		t.Fatal("async grant disabled, want enabled")
+	}
+	// Omitted sync_wait_timeout parses to zero: the request is parked
+	// synchronously for the full approval window with no early 202.
+	if got := reader.HITLSyncWaitTimeout(); got != 0 {
+		t.Fatalf("sync wait timeout = %v, want 0", got)
 	}
 }
 

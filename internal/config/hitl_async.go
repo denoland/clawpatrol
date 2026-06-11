@@ -169,19 +169,22 @@ func policyHasAsyncApprover(p *Policy) bool {
 }
 
 // ValidateHITLAsyncGrant returns HCL diagnostics for an async-grant
-// config block. It checks that, when the grant is enabled, the
-// surrounding sync_wait_timeout and the grant's TTLs are well-formed.
+// config block. It checks that, when the grant is enabled, the grant's
+// TTLs are well-formed. sync_wait_timeout is optional: when set it must
+// be a positive duration, but omitting it is valid — the request is then
+// parked synchronously for the full approval window with no early 202
+// hand-back, and the async retry-grant path simply never activates.
 func ValidateHITLAsyncGrant(name string, syncWaitTimeout string, grant *HITLAsyncGrantConfig) hcl.Diagnostics {
 	if grant == nil || !grant.Enabled {
 		return nil
 	}
 	var diags hcl.Diagnostics
-	if syncWaitTimeout == "" {
-		diags = append(diags, hitlAsyncDiagnostic(name, "sync_wait_timeout is required", "set sync_wait_timeout to the synchronous HTTP hold budget, e.g. \"90s\"."))
-	} else if d, err := time.ParseDuration(syncWaitTimeout); err != nil {
-		diags = append(diags, hitlAsyncDiagnostic(name, "invalid sync_wait_timeout", err.Error()))
-	} else if d <= 0 {
-		diags = append(diags, hitlAsyncDiagnostic(name, "sync_wait_timeout must be positive", "sync_wait_timeout must be greater than zero."))
+	if syncWaitTimeout != "" {
+		if d, err := time.ParseDuration(syncWaitTimeout); err != nil {
+			diags = append(diags, hitlAsyncDiagnostic(name, "invalid sync_wait_timeout", err.Error()))
+		} else if d <= 0 {
+			diags = append(diags, hitlAsyncDiagnostic(name, "sync_wait_timeout must be positive", "sync_wait_timeout must be greater than zero."))
+		}
 	}
 
 	if grant.ApprovalTTL != "" {
