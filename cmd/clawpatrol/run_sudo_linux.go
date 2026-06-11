@@ -223,7 +223,18 @@ func runRunPrivileged(args []string) {
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	child.ExtraFiles = []*os.File{cSock, tunUpR}
 	child.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
+		Cloneflags: syscall.CLONE_NEWNET,
+		// Create the mount namespace via Unshareflags rather than
+		// Cloneflags: Go follows an Unshareflags CLONE_NEWNS with a
+		// recursive MS_PRIVATE remount of `/`. Without that the new
+		// mount namespace inherits the host's shared propagation, so
+		// the resolv.conf bind-mount runRunChild does propagates back
+		// to the host /etc/resolv.conf and stacks up one overmount per
+		// `clawpatrol run` (and pins the /tmp temp file forever). The
+		// unprivileged userns path doesn't need this — a userns-owned
+		// mount namespace is already private. Real root here can
+		// unshare the mount namespace directly.
+		Unshareflags: syscall.CLONE_NEWNS,
 	}
 	if err := child.Start(); err != nil {
 		fail("clone child: %v", err)
