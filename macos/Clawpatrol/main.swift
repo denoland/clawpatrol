@@ -22,6 +22,20 @@ let extBundleID = "dev.clawpatrol.app.extension"
 let parentBundleID = "dev.clawpatrol.app"
 let proxyProfileName = "clawpatrol"
 
+// Routine setup progress ("system extension: 0", "✓ proxy up", …) is
+// noise during a normal `clawpatrol run`, so it's silenced unless
+// CLAWPATROL_DEBUG is set — mirroring the Linux client. Errors (fail /
+// stderr writes) and action-required prompts (system-extension
+// approval) always print regardless.
+let debugEnabled: Bool = {
+    let v = ProcessInfo.processInfo.environment["CLAWPATROL_DEBUG"] ?? ""
+    return v != "" && v != "0"
+}()
+
+func debugLog(_ msg: String) {
+    if debugEnabled { print(msg) }
+}
+
 func usage() -> Never {
     FileHandle.standardError.write(Data("usage: Clawpatrol {install [--whole-machine]|start <conf>|stop|run -- <cmd> [args...]}\n".utf8))
     exit(2)
@@ -136,8 +150,15 @@ class ExtDelegate: NSObject, OSSystemExtensionRequestDelegate {
         self.explicit = explicit
     }
     func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
-        print("system extension: \(result.rawValue)")
-        if result == .completed { saveProxyProfileAndExit(wholeMachine: wholeMachine, explicit: explicit) } else { exit(1) }
+        debugLog("system extension: \(result.rawValue)")
+        if result == .completed {
+            saveProxyProfileAndExit(wholeMachine: wholeMachine, explicit: explicit)
+        } else {
+            // A non-.completed result means activation will only finish
+            // after a reboot — surface that so the user knows it's pending.
+            FileHandle.standardError.write(Data("clawpatrol-macos: system extension activation incomplete (result \(result.rawValue)) — a reboot may be required\n".utf8))
+            exit(1)
+        }
     }
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         FileHandle.standardError.write(Data("system extension failed: \(error)\n".utf8))
@@ -202,7 +223,7 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
         manager.isEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("saveToPreferences: \(err)") }
-            print("✓ proxy profile installed (\(resolvedMode))")
+            debugLog("✓ proxy profile installed (\(resolvedMode))")
             // Mode change while the tunnel is already running needs an
             // explicit reload — providerConfiguration is read once at
             // startProxy time, so saveToPreferences alone leaves the
@@ -227,7 +248,7 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
 // (mode flip, conf swap) that providerConfiguration alone won't
 // surface to the running extension.
 func reloadTunnelAndExit(manager: NETransparentProxyManager, label: String) {
-    print("↻ reloading tunnel for new \(label)")
+    debugLog("↻ reloading tunnel for new \(label)")
     manager.connection.stopVPNTunnel()
     var attempts = 0
     func tick() {
@@ -235,7 +256,7 @@ func reloadTunnelAndExit(manager: NETransparentProxyManager, label: String) {
         if s == .disconnected || s == .invalid || attempts > 50 {
             do {
                 try manager.connection.startVPNTunnel()
-                print("✓ tunnel reloaded")
+                debugLog("✓ tunnel reloaded")
                 exit(0)
             } catch {
                 fail("startVPNTunnel: \(error)")
@@ -281,12 +302,12 @@ func startProxy(confPath: String) {
                     return
                 }
                 if running {
-                    print("✓ proxy already up (no change)")
+                    debugLog("✓ proxy already up (no change)")
                     exit(0)
                 }
                 do {
                     try manager.connection.startVPNTunnel()
-                    print("✓ proxy up")
+                    debugLog("✓ proxy up")
                     exit(0)
                 } catch {
                     fail("startVPNTunnel: \(error)")
@@ -362,7 +383,7 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: 
         let running = manager.connection.status == .connected
             || manager.connection.status == .connecting
         if running && tsnetCfgEqual(existingCfg, newCfg) {
-            print("✓ tsnet tunnel already running with this config")
+            debugLog("✓ tsnet tunnel already running with this config")
             exit(0)
         }
         let proto = NETunnelProviderProtocol()
@@ -382,7 +403,7 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: 
                 }
                 do {
                     try manager.connection.startVPNTunnel()
-                    print("✓ tsnet proxy starting")
+                    debugLog("✓ tsnet proxy starting")
                     exit(0)
                 } catch {
                     fail("startVPNTunnel: \(error)")

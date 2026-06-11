@@ -93,7 +93,12 @@ func runRunTsnet(args []string) {
 	// authKey arg → container app reuses the value stored in NE
 	// preferences at join time.
 	hn, _ := os.Hostname()
-	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
+	// Routine progress — silent unless CLAWPATROL_DEBUG is set, matching
+	// the Clawpatrol.app helper and the Linux client. Errors below still
+	// surface via fail().
+	if v := os.Getenv("CLAWPATROL_DEBUG"); v != "" && v != "0" {
+		fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
+	}
 	{
 		c := exec.Command(macHelperPath, "start-tsnet", "", controlURL, gwHost, gwIP, token, hn)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
