@@ -74,6 +74,56 @@ func TestInternalHITLStatusPoll(t *testing.T) {
 		}
 	})
 
+	// A request parked synchronously (the connection is still held open
+	// pending approval, state sync_waiting) is pollable on the same endpoint
+	// — polling is not limited to the async/handed-back path. The owning
+	// device sees it pending, with upstream not yet called.
+	t.Run("sync-parked operation pollable", func(t *testing.T) {
+		syncOp, err := store.Create(ctx, HITLOperationCreate{
+			ID:                 "hitl_op_sync",
+			State:              HITLOperationStateSyncWaiting,
+			ProfileID:          profile,
+			PrincipalID:        principal,
+			EndpointID:         "deploy",
+			ApprovalRuleID:     "gated-deploy",
+			ApproverID:         "release",
+			Method:             "POST",
+			Scheme:             "https",
+			Host:               "deploy.example",
+			RedactedPath:       "/v1/deploy",
+			AuthBindingID:      "credential:deploy:v1",
+			FingerprintVersion: HITLFingerprintVersionV1,
+			HMACKeyID:          "hitl-hmac:v1",
+			RequestFingerprint: "hmac-sha256:sync",
+			CreatedAt:          now,
+			SyncWaitDeadline:   now.Add(90 * time.Second),
+			ApprovalExpiresAt:  now.Add(15 * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("Create sync op: %v", err)
+		}
+		path := hitlOperationStatusPrefix + syncOp.ID + hitlOperationStatusSuffix
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "https://clawpatrol.internal"+path, nil)
+		g.serveInternalHITLStatus(rec, req, profile, principal)
+		if rec.Code != 200 {
+			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body["state"] != string(HITLOperationStateSyncWaiting) {
+			t.Errorf("state = %v, want %q", body["state"], HITLOperationStateSyncWaiting)
+		}
+		if body["upstream_called"] != false {
+			t.Errorf("upstream_called = %v, want false (parked, not yet forwarded)", body["upstream_called"])
+		}
+		if body["terminal"] != false {
+			t.Errorf("terminal = %v, want false (still awaiting a human)", body["terminal"])
+		}
+	})
+
 	// A different device (wrong principal) must not see another device's
 	// parked request.
 	t.Run("other device 404", func(t *testing.T) {

@@ -115,10 +115,11 @@ func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *
 // It mirrors the tailnet web server's apiHITLOperationStatus but resolves
 // the caller from the connection-derived profile/principal instead of a
 // bearer token: an agent inside the tunnel polls its own parked request
-// by the operation id it got from the original request's 202 response.
+// by its operation id — whether the request is still held synchronously
+// (sync HITL) or was handed back to the agent to follow asynchronously.
 //
 // An operation is located either by its capability token (the `token`
-// query param the 202's status_url carries) or, tokenless, by scoping the
+// query param the status_url carries) or, tokenless, by scoping the
 // lookup to this device's profile + principal — so a device only ever
 // sees operations it parked. The status body is identical to the public
 // surface (same state machine, same retry guidance).
@@ -269,10 +270,10 @@ type DiscoveryHITL struct {
 	// as a top-level summary; empty when no endpoint is gated.
 	GatedEndpoints []string `json:"gated_endpoints"`
 	// PollPath is the internal-API path template for polling a parked
-	// request's approval status. `{operation_id}` is replaced with the id
-	// from the parked request's 202 response (the `operation_id` field, or
-	// the Location header). The full URL is `https://` + the internal host
-	// + this path.
+	// request's approval status, for a request parked synchronously or
+	// asynchronously alike. `{operation_id}` is replaced with the parked
+	// request's id (the `operation_id` field, or the Location header). The
+	// full URL is `https://` + the internal host + this path.
 	PollPath string `json:"poll_path"`
 }
 
@@ -521,18 +522,25 @@ func hitlManifestExplanation() string {
 	return fmt.Sprintf(`Some endpoints have rules that gate a matching request behind human `+
 		`approval (human-in-the-loop). When such a rule matches, the gateway PARKS the `+
 		`request pending a human decision instead of forwarding it upstream — and it may stay `+
-		`parked indefinitely while it waits for a person to approve or deny it. Do NOT treat a `+
-		`slow or hanging request to a gated endpoint as a failure or retry it blindly; the `+
+		`parked indefinitely while it waits for a person to approve or deny it. The gateway does `+
+		`NOT call upstream while a request is parked, so no side effect has happened yet. Do NOT `+
+		`treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the `+
 		`gateway is holding it on purpose.
 
-After a short synchronous wait the gateway stops holding the connection open and answers `+
-		`the original request with HTTP 202 Accepted. That response carries an `+"`operation_id`"+` `+
-		`(also echoed in a `+"`status_url`"+` field and the Location header) identifying the parked `+
-		`request. Poll the returned `+"`status_url`"+`, or GET %s with that id, until the state is `+
-		`terminal. The state is one of: pending (still awaiting a human), approved, or denied `+
-		`(plus expired if the approval window lapses). The gateway does NOT call upstream while a `+
-		`request is parked, so no side effect has happened yet. On approval, replay the original `+
-		`request with the %s header set to the operation_id to execute it.`,
+By default the gateway parks the request synchronously: it holds your connection open until a `+
+		`human decides and then answers on that same connection — the real upstream response once the `+
+		`request is approved, or a denial if it is rejected. You do not have to do anything special; `+
+		`just let the request run instead of aborting it.
+
+Either way the parked request has an approval status you can poll — you do not need to wait on a `+
+		`held connection to see where it stands. The gateway identifies a parked request by an `+
+		"`operation_id`"+`. When it cannot hold the connection open long enough to answer inline it `+
+		`hands the request back with that `+"`operation_id`"+` (carried in a `+"`status_url`"+` field and `+
+		`the Location header) so you can follow it without re-sending. Poll the returned `+"`status_url`"+`, `+
+		`or GET %s with that id, until the state is terminal: pending (still awaiting a human), `+
+		`approved, or denied (plus expired if the approval window lapses). On approval, replay the `+
+		`original request with the %s header set to the operation_id to execute it — the gateway `+
+		`recognizes it as the same approved request and forwards it upstream.`,
 		pollURL, hitlRetryOperationHeader)
 }
 
