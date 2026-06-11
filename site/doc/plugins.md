@@ -156,6 +156,14 @@ At runtime the built-in HTTPS endpoint keeps the privilege split:
 4. The plugin returns header mutations and any derived strings that
    should be redacted from audit samples.
 
+Redactions are part of the security contract. The gateway automatically
+redacts the raw credential secret it fetched, and audit samples also
+mask obviously sensitive header names such as `Authorization`. If your
+plugin injects any derived secret (for example an exchanged JWT or HMAC
+signature), return the exact derived string in `HTTPInjectResponse.Redactions`.
+Otherwise a derived value placed in a non-sensitive header such as
+`X-Signature` may appear verbatim in request audit samples.
+
 OAuth credentials can set `CredentialMetadata.OAuth` instead of
 secret slots. The gateway owns the OAuth lifecycle and stores or
 refreshes tokens under the credential instance name; the external

@@ -854,8 +854,11 @@ func (b *dynamicOAuthHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request
 const injectHTTPTimeout = 30 * time.Second
 
 func injectHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) error {
-	if body == nil || body.adapter == nil || body.adapter.client == nil || body.adapter.client.credential == nil {
+	if body == nil {
 		return nil
+	}
+	if body.adapter == nil || body.adapter.client == nil || body.adapter.client.credential == nil {
+		return fmt.Errorf("extplugin: credential %q InjectHTTP unavailable: plugin client is not connected", body.instanceName)
 	}
 	ctx, cancel := context.WithTimeout(ctx, injectHTTPTimeout)
 	defer cancel()

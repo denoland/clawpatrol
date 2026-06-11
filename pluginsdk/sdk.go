@@ -222,7 +222,10 @@ type HTTPInjectRequest struct {
 // HTTPInjectResponse is the header-only mutation set returned by an
 // external credential InjectHTTP callback.
 type HTTPInjectResponse struct {
-	Headers    []HeaderMutation
+	Headers []HeaderMutation
+	// Redactions lists exact derived secret strings the gateway should mask from
+	// audit samples. Include any exchanged JWTs, HMAC signatures, or other values
+	// derived from CredentialSecret that are injected into non-sensitive headers.
 	Redactions []string
 }
 

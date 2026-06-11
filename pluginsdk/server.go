@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -174,7 +176,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: credential %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("credential", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	case "tunnel":
 		def, ok := s.tunnels[req.TypeName]
@@ -182,7 +184,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: tunnel %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("tunnel", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	case "endpoint":
 		def, ok := s.endpoints[req.TypeName]
@@ -190,7 +192,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			return nil, fmt.Errorf("%w: endpoint %q", ErrNoSuchType, req.TypeName)
 		}
 		if def.Build != nil {
-			built, err = def.Build(br)
+			built, err = invokeBuild("endpoint", req.TypeName, req.InstanceName, def.Build, br)
 		}
 	default:
 		return nil, fmt.Errorf("pluginsdk: unknown build kind %q", req.Kind)
@@ -237,6 +239,15 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		resp.CanonicalJson = req.ConfigJson
 	}
 	return resp, nil
+}
+
+func invokeBuild(kind, typeName, instanceName string, fn func(BuildRequest) (any, error), req BuildRequest) (built any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("%s.%s %q Build", kind, typeName, instanceName), r)
+		}
+	}()
+	return fn(req)
 }
 
 func credentialMetadataToProto(m CredentialMetadata) *pb.CredentialMetadata {
@@ -316,11 +327,20 @@ func (s *server) InjectHTTP(ctx context.Context, req *pb.InjectHTTPRequest) (*pb
 		BodyPrefix:                req.BodyPrefix,
 		BodyTruncated:             req.BodyTruncated,
 	}
-	out, err := def.InjectHTTP(ctx, in)
+	out, err := invokeInjectHTTP(ctx, req.CredentialTypeName, req.CredentialInstance, def.InjectHTTP, in)
 	if err != nil {
 		return nil, err
 	}
 	return httpInjectResponseToProto(out), nil
+}
+
+func invokeInjectHTTP(ctx context.Context, typeName, instanceName string, fn func(context.Context, HTTPInjectRequest) (*HTTPInjectResponse, error), req HTTPInjectRequest) (out *HTTPInjectResponse, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("credential.%s %q InjectHTTP", typeName, instanceName), r)
+		}
+	}()
+	return fn(ctx, req)
 }
 
 func headersFromProto(in map[string]*pb.HTTPHeaderValues) http.Header {
@@ -610,7 +630,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}
 	}()
 
-	handleErr := def.HandleConn(ctx, conn)
+	handleErr := invokeHandleConn(ctx, def, conn)
 	_ = conn.Close()
 	closer()
 	<-recvErr
@@ -628,6 +648,49 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}})
 	}
 	return handleErr
+}
+
+func invokeHandleConn(ctx context.Context, def EndpointDef, conn *Conn) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("endpoint.%s HandleConn", def.TypeName), r)
+		}
+	}()
+	if def.HandleConn == nil {
+		return fmt.Errorf("pluginsdk: endpoint %q has no HandleConn callback", def.TypeName)
+	}
+	return def.HandleConn(ctx, conn)
+}
+
+func invokeTunnelOpen(ctx context.Context, def TunnelDef, req TunnelOpenRequest) (handle any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s %q Open", def.TypeName, req.TunnelInstance), r)
+		}
+	}()
+	return def.Open(ctx, req)
+}
+
+func invokeTunnelClose(ctx context.Context, def TunnelDef, handle any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s Close", def.TypeName), r)
+		}
+	}()
+	return def.Close(ctx, handle)
+}
+
+func invokeTunnelDial(ctx context.Context, def TunnelDef, req TunnelDialRequest, conn net.Conn) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = callbackPanicError(fmt.Sprintf("tunnel.%s Dial", def.TypeName), r)
+		}
+	}()
+	return def.Dial(ctx, req, conn)
+}
+
+func callbackPanicError(where string, r any) error {
+	return fmt.Errorf("pluginsdk: panic in %s: %v\n%s", where, r, debug.Stack())
 }
 
 // streamReg holds one StreamValue's reader plus a cancel sentinel
@@ -719,7 +782,7 @@ func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb
 		err    error
 	)
 	if def.Open != nil {
-		handle, err = def.Open(ctx, openReq)
+		handle, err = invokeTunnelOpen(ctx, def, openReq)
 		if err != nil {
 			return nil, fmt.Errorf("plugin tunnel %q open: %w", req.TunnelInstance, err)
 		}
@@ -738,7 +801,7 @@ func (s *server) CloseTunnel(ctx context.Context, req *pb.CloseTunnelRequest) (*
 	}
 	th := v.(*tunnelHandle)
 	if th.def.Close != nil {
-		if err := th.def.Close(ctx, th.handle); err != nil {
+		if err := invokeTunnelClose(ctx, th.def, th.handle); err != nil {
 			return nil, err
 		}
 	}
@@ -818,7 +881,7 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 		}
 	}()
 
-	dialErr := th.def.Dial(ctx, TunnelDialRequest{
+	dialErr := invokeTunnelDial(ctx, th.def, TunnelDialRequest{
 		Handle:  th.handle,
 		Network: initMsg.Init.Network,
 		Addr:    initMsg.Init.Addr,

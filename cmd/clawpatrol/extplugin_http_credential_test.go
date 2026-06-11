@@ -157,6 +157,9 @@ rule "allow-api" {
 	if strings.Contains(fmt.Sprint(end.ReqHeaders), "real-external-token") {
 		t.Fatalf("request headers audit leaked injected external credential: %#v", end.ReqHeaders)
 	}
+	if strings.Contains(fmt.Sprint(end.ReqHeaders), "derived-real-external-token") {
+		t.Fatalf("request headers audit leaked derived external credential: %#v", end.ReqHeaders)
+	}
 	if got := end.ReqHeaders["X-Magic"]; got != credentialSampleRedaction {
 		t.Fatalf("X-Magic audit header = %q, want credential redaction marker", got)
 	}
@@ -351,12 +354,13 @@ func main() {
 				if got := req.Headers.Get("Authorization"); !strings.HasPrefix(got, "Bearer PH_") {
 					return nil, fmt.Errorf("authorization = %%q", got)
 				}
+				derived := "derived-" + string(req.CredentialSecret)
 				return &pluginsdk.HTTPInjectResponse{
 					Headers: []pluginsdk.HeaderMutation{
 						{Op: pluginsdk.HeaderSet, Name: "Authorization", Values: []string{"Bearer " + string(req.CredentialSecret)}},
-						{Op: pluginsdk.HeaderSet, Name: "X-Magic", Values: []string{string(req.CredentialSecret)}},
+						{Op: pluginsdk.HeaderSet, Name: "X-Magic", Values: []string{derived}},
 					},
-					Redactions: []string{string(req.CredentialSecret)},
+					Redactions: []string{string(req.CredentialSecret), derived},
 				}, nil
 			},
 		}},
