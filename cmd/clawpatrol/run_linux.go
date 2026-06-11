@@ -917,6 +917,19 @@ func bindResolv(body string) error {
 		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("write resolv temp file: %w", err)
 	}
+	// os.CreateTemp makes the file 0600. In the sudo path bindResolv
+	// runs as root (before the drop to the invoking user), so a 0600
+	// file ends up root-owned and the unprivileged command can't read
+	// the resolv.conf bind-mounted over /etc/resolv.conf — every name
+	// lookup then fails with "could not resolve host" while raw-IP
+	// traffic still works. Make it world-readable like a normal
+	// /etc/resolv.conf; it holds only a nameserver line, nothing
+	// sensitive.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("chmod resolv temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("close resolv temp file: %w", err)
