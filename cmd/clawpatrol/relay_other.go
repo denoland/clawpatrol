@@ -14,3 +14,7 @@ func runRelaySupervisor(_ []string) {
 func runRelayWorker(_ []string) {
 	fail("relay-worker is linux-only")
 }
+
+func runRunPrivileged(_ []string) {
+	fail("__run-privileged is linux-only")
+}

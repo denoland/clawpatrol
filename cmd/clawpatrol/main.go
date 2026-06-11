@@ -2769,6 +2769,11 @@ func main() {
 		// internal: re-exec'd from inside the agent netns to host the
 		// auto-expose worker. Hidden from usage.
 		runRelayWorker(os.Args[2:])
+	case "__run-privileged":
+		// internal: re-exec'd via sudo by `clawpatrol run` on hosts with
+		// passwordless sudo, to set up the netns as real root (so the
+		// wrapped command can sudo). Hidden from usage.
+		runRunPrivileged(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
 	case "validate":
