@@ -55,6 +55,9 @@ const (
 	daemonHelloTimeout = 2 * time.Second
 	daemonSpawnTimeout = 30 * time.Second
 	daemonMagicLine    = "CLAWPATROL/1\n"
+	// daemonLogMaxBytes caps the persistent daemon.log: when a respawn
+	// finds the file larger than this it truncates instead of appending.
+	daemonLogMaxBytes = 2 << 20 // 2 MiB
 )
 
 // daemonTransport is the per-host network identity shared by every
@@ -88,15 +91,29 @@ type daemonTransport interface {
 	Close() error
 }
 
-// daemonRuntimeDir resolves the per-user runtime directory holding the
-// daemon's coordination state (control socket, spawn lock, log). Prefer
-// XDG_RUNTIME_DIR (tmpfs, per-user, no NFS pitfalls); fall back to
-// /tmp/clawpatrol-<uid> when unset (containers, minimal images).
+// daemonRuntimeDir resolves the directory holding the daemon's
+// coordination state (control socket, spawn lock, log). It MUST be a
+// stable, env-independent path: the whole point of the daemon is to be
+// a per-identity singleton that multiplexes every `clawpatrol run`
+// over the one tailnet key in daemonStateDir(), so the socket/lock have
+// to live at the same place no matter how the invoking process was
+// launched.
+//
+// It used to key on $XDG_RUNTIME_DIR (→ /run/user/<uid>/clawpatrol),
+// falling back to /tmp/clawpatrol-<uid> when unset. But pam_systemd
+// sets XDG_RUNTIME_DIR only for login sessions: an interactive shell
+// had it, while `ssh host cmd`, cron, and system services did not. The
+// two contexts therefore resolved different runtime dirs and spawned
+// *two* daemons that both bound the single tailnet identity and fought
+// over it — connections landed on whichever daemon a given invocation
+// happened to reach, so traffic intermittently went nowhere.
+//
+// Co-locate with the auth-key under daemonStateDir() so "one key in the
+// state dir" deterministically means "one daemon". AF_UNIX sockets work
+// fine on the persistent FS, and the existing stale-socket handling in
+// daemonConnect copes with a leftover socket after a reboot.
 func daemonRuntimeDir() string {
-	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		return filepath.Join(d, "clawpatrol")
-	}
-	return filepath.Join("/tmp", fmt.Sprintf("clawpatrol-%d", os.Getuid()))
+	return filepath.Join(daemonStateDir(), "run")
 }
 
 func daemonControlSockPath() string { return filepath.Join(daemonRuntimeDir(), "control.sock") }
@@ -214,8 +231,17 @@ func daemonSpawn(_ string) error {
 	}
 	defer func() { _ = pr.Close() }()
 
-	logf, err := os.OpenFile(daemonLogPath(),
-		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	// Truncate when starting if the log has grown past the cap. The
+	// daemon idle-exits and respawns often, and the log now lives on
+	// the persistent state dir (not tmpfs that a reboot would clear),
+	// so plain O_APPEND would grow without bound. A start-time size
+	// check keeps recent history across a handful of restarts while
+	// bounding total size.
+	logFlags := os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	if fi, err := os.Stat(daemonLogPath()); err == nil && fi.Size() > daemonLogMaxBytes {
+		logFlags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+	}
+	logf, err := os.OpenFile(daemonLogPath(), logFlags, 0o600)
 	if err != nil {
 		_ = pw.Close()
 		return err
