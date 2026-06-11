@@ -272,11 +272,16 @@ func runRunPrivileged(args []string) {
 }
 
 // sudoTargetIDs returns the uid/gid sudo recorded for the invoking user.
+// Both must be non-root (we only ever drop privileges, never retarget to
+// root or the root group). sudo resets the environment and sets these
+// from the real invoker by default, so the unprivileged caller can't
+// spoof them — barring an unusual sudoers that env_keeps SUDO_UID/GID,
+// and even then the worst case is dropping to another non-root identity.
 func sudoTargetIDs() (uid, gid int, ok bool) {
 	us, gs := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
 	u, err1 := strconv.Atoi(us)
 	g, err2 := strconv.Atoi(gs)
-	if err1 != nil || err2 != nil || u <= 0 || g < 0 {
+	if err1 != nil || err2 != nil || u <= 0 || g <= 0 {
 		return 0, 0, false
 	}
 	return u, g, true
@@ -325,6 +330,12 @@ func buildPrivilegedEnv(envFile, caPath string, pushVars []pushdownEnvVar) []str
 // and saved), restoring the user's supplementary groups, and verifies
 // the drop took. Groups before gid before uid, so each step still has
 // the privilege it needs.
+//
+// Uses the syscall package's setid family deliberately: the Go runtime
+// broadcasts those across every OS thread (unlike x/sys/unix.Setgroups,
+// which is a per-thread raw syscall). A uniform, all-threads drop means
+// no runtime thread is left holding root's credentials, so it doesn't
+// matter which thread the subsequent execve runs on.
 func dropToUser(uid, gid int) error {
 	groups := []int{gid}
 	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
@@ -340,17 +351,17 @@ func dropToUser(uid, gid int) error {
 			}
 		}
 	}
-	if err := unix.Setgroups(groups); err != nil {
+	if err := syscall.Setgroups(groups); err != nil {
 		return fmt.Errorf("setgroups: %w", err)
 	}
-	if err := unix.Setresgid(gid, gid, gid); err != nil {
+	if err := syscall.Setresgid(gid, gid, gid); err != nil {
 		return fmt.Errorf("setresgid: %w", err)
 	}
-	if err := unix.Setresuid(uid, uid, uid); err != nil {
+	if err := syscall.Setresuid(uid, uid, uid); err != nil {
 		return fmt.Errorf("setresuid: %w", err)
 	}
-	if unix.Getuid() != uid || unix.Geteuid() != uid {
-		return fmt.Errorf("uid still %d/%d after drop, want %d", unix.Getuid(), unix.Geteuid(), uid)
+	if syscall.Getuid() != uid || syscall.Geteuid() != uid {
+		return fmt.Errorf("uid still %d/%d after drop, want %d", syscall.Getuid(), syscall.Geteuid(), uid)
 	}
 	return nil
 }

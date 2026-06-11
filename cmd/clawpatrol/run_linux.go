@@ -51,7 +51,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -406,16 +405,16 @@ func runRunChild() {
 	// Privileged (sudo) path: this child was cloned by a root parent and
 	// is itself root in the netns. Drop to the invoking user before
 	// exec, so the command runs unprivileged (and can sudo on its own).
-	// Lock the OS thread so the per-thread credential change and the
-	// execve land on the same thread. Unprivileged userns path: just
-	// shed the ambient caps the parent granted for TUN setup.
+	// dropToUser changes credentials on every OS thread, so the execve
+	// below runs as the user regardless of which thread it lands on.
+	// Unprivileged userns path: just shed the ambient caps the parent
+	// granted for TUN setup.
 	if uidStr := os.Getenv(runDropUIDEnv); uidStr != "" {
 		uid, err1 := strconv.Atoi(uidStr)
 		gid, err2 := strconv.Atoi(os.Getenv(runDropGIDEnv))
 		if err1 != nil || err2 != nil {
 			fail("internal: bad drop uid/gid")
 		}
-		runtime.LockOSThread()
 		if err := dropToUser(uid, gid); err != nil {
 			fail("drop privileges: %v", err)
 		}
