@@ -131,13 +131,21 @@ added must re-run the dashboard OAuth flow once).
 
 ## Where the shim runs across the Linux run paths
 
-`clawpatrol run` has two Linux sandboxing paths, and the shim must run
+`clawpatrol run` has three Linux run paths, and the shim must run
 *after* the gateway env-pushdown has injected `ANTHROPIC_AUTH_TOKEN` —
 otherwise it sees no bearer and silently no-ops:
 
 - **Unprivileged user-namespace path** (`run_linux.go`): the parent
   applies the pushdown then calls `installClaudeCodeOAuthShim` against its
   own process env, and the child inherits the result. Straightforward.
+- **Whole-machine path** (`runWholeMachineDirect` in `run_linux.go`, taken
+  on a `--whole-machine` device where the host already routes all traffic
+  through the gateway): there is no sandbox — the command is exec'd
+  directly as the invoking user. The pushdown is fetched straight from the
+  gateway and the shim runs against the live process env right after, same
+  as the userns path. Omitting the shim here (as the original
+  whole-machine direct-exec did) left `clawpatrol run claude` in bearer
+  mode on whole-machine devices even with the opt-in set.
 - **Passwordless-sudo path** (`run_sudo_linux.go`, the default when
   passwordless `sudo` is available): the pushdown is fetched and merged
   *root-side*, in the privileged helper, long after the unprivileged
