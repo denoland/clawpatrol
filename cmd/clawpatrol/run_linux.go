@@ -51,6 +51,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -68,6 +69,12 @@ const (
 	// netns can configure `ip addr add` without round-tripping
 	// the value through the SCM_RIGHTS conn.
 	runTunAddrEnv = "CLAWPATROL_TUN_ADDR"
+	// runDropUIDEnv / runDropGIDEnv are set by the privileged (sudo)
+	// parent (run_sudo_linux.go) to tell runRunChild to drop from root
+	// to the invoking user before exec'ing the command. Absent on the
+	// unprivileged userns path, where the child already runs as the user.
+	runDropUIDEnv = "CLAWPATROL_RUN_DROP_UID"
+	runDropGIDEnv = "CLAWPATROL_RUN_DROP_GID"
 	tunIfName     = "wg0"
 	// runTunMTU is the TUN MTU inside the child's netns. Set to the
 	// max IPv4 packet size — the daemon's transport handles real
@@ -100,6 +107,15 @@ func runRun(args []string) {
 	// root, unlike the unprivileged-userns path below).
 	if isWholeMachineJoin() {
 		runWholeMachineDirect(cmd)
+		return
+	}
+
+	// With passwordless sudo we can set the netns up as real root
+	// instead of an unprivileged user namespace, so the wrapped command
+	// keeps real uids and `sudo` works inside it. Opt out with
+	// CLAWPATROL_NO_SUDO.
+	if sudoSetupAvailable() {
+		runViaSudo(cmd)
 		return
 	}
 
@@ -386,7 +402,23 @@ func runRunChild() {
 			unix.PR_SET_PTRACER, ptraceAny, 0, 0, 0, 0)
 	}
 
-	if err := clearAmbientCaps(); err != nil {
+	// Privileged (sudo) path: this child was cloned by a root parent and
+	// is itself root in the netns. Drop to the invoking user before
+	// exec, so the command runs unprivileged (and can sudo on its own).
+	// dropToUser changes credentials on every OS thread, so the execve
+	// below runs as the user regardless of which thread it lands on.
+	// Unprivileged userns path: just shed the ambient caps the parent
+	// granted for TUN setup.
+	if uidStr := os.Getenv(runDropUIDEnv); uidStr != "" {
+		uid, err1 := strconv.Atoi(uidStr)
+		gid, err2 := strconv.Atoi(os.Getenv(runDropGIDEnv))
+		if err1 != nil || err2 != nil {
+			fail("internal: bad drop uid/gid")
+		}
+		if err := dropToUser(uid, gid); err != nil {
+			fail("drop privileges: %v", err)
+		}
+	} else if err := clearAmbientCaps(); err != nil {
 		fail("clear ambient caps: %v", err)
 	}
 
@@ -394,9 +426,37 @@ func runRunChild() {
 	if err != nil {
 		fail("lookpath %s: %v", argv[0], err)
 	}
-	if err := syscall.Exec(bin, argv, os.Environ()); err != nil {
+	// Strip the internal re-exec coordination vars so the command
+	// doesn't inherit them (and can't tell how it was launched).
+	if err := syscall.Exec(bin, argv, strippedRunEnv()); err != nil {
 		fail("exec %s: %v", bin, err)
 	}
+}
+
+// strippedRunEnv returns the process environment with clawpatrol's
+// internal run-coordination variables removed, so the wrapped command
+// doesn't inherit them.
+func strippedRunEnv() []string {
+	drop := map[string]bool{
+		runChildEnv:        true,
+		runTunAddrEnv:      true,
+		runDropUIDEnv:      true,
+		runDropGIDEnv:      true,
+		runNoAutoExposeEnv: true,
+	}
+	env := os.Environ()
+	out := env[:0]
+	for _, kv := range env {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		if drop[name] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // --- daemon client protocol ------------------------------------------
