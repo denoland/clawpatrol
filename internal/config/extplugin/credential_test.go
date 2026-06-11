@@ -229,16 +229,14 @@ func newCredentialPluginTestClient(t *testing.T, srv *credentialPluginTestServer
 	pb.RegisterPluginServer(gs, srv)
 	pb.RegisterCredentialServer(gs, srv)
 	go func() { _ = gs.Serve(lis) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
-	cancel()
 	if err != nil {
 		gs.Stop()
 		_ = lis.Close()
-		t.Fatalf("DialContext: %v", err)
+		t.Fatalf("NewClient: %v", err)
 	}
 	client := &Client{
 		name:       "extcredtest",

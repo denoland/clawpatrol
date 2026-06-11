@@ -800,7 +800,10 @@ func (b *dynamicCredentialBody) EnvVars() []config.EnvVar {
 type dynamicOAuthCredentialBody struct{ *dynamicCredentialBody }
 
 func (b *dynamicOAuthCredentialBody) OAuthFlow() *config.OAuthIntegration {
-	return cloneOAuthIntegration(b.dynamicCredentialBody.metadata.oauth)
+	if b == nil || b.dynamicCredentialBody == nil {
+		return nil
+	}
+	return cloneOAuthIntegration(b.metadata.oauth)
 }
 
 type dynamicHTTPCredentialBody struct{ *dynamicCredentialBody }
@@ -808,22 +811,37 @@ type dynamicHTTPCredentialBody struct{ *dynamicCredentialBody }
 type dynamicOAuthHTTPCredentialBody struct{ *dynamicCredentialBody }
 
 func (b *dynamicOAuthHTTPCredentialBody) OAuthFlow() *config.OAuthIntegration {
-	return cloneOAuthIntegration(b.dynamicCredentialBody.metadata.oauth)
+	if b == nil || b.dynamicCredentialBody == nil {
+		return nil
+	}
+	return cloneOAuthIntegration(b.metadata.oauth)
 }
 
 func (b *dynamicHTTPCredentialBody) InjectHTTP(ctx context.Context, req *http.Request, sec runtime.Secret) error {
+	if b == nil {
+		return nil
+	}
 	return injectHTTPWithExternalCredential(ctx, b.dynamicCredentialBody, req, sec)
 }
 
 func (b *dynamicOAuthHTTPCredentialBody) InjectHTTP(ctx context.Context, req *http.Request, sec runtime.Secret) error {
+	if b == nil {
+		return nil
+	}
 	return injectHTTPWithExternalCredential(ctx, b.dynamicCredentialBody, req, sec)
 }
 
 func (b *dynamicHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request) []string {
+	if b == nil {
+		return nil
+	}
 	return consumeHTTPRedactions(b.dynamicCredentialBody, req)
 }
 
 func (b *dynamicOAuthHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request) []string {
+	if b == nil {
+		return nil
+	}
 	return consumeHTTPRedactions(b.dynamicCredentialBody, req)
 }
 
@@ -878,11 +896,20 @@ func credentialBaseOf(v any) (*dynamicCredentialBody, bool) {
 	case *dynamicCredentialBody:
 		return b, b != nil
 	case *dynamicHTTPCredentialBody:
-		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+		if b == nil || b.dynamicCredentialBody == nil {
+			return nil, false
+		}
+		return b.dynamicCredentialBody, true
 	case *dynamicOAuthCredentialBody:
-		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+		if b == nil || b.dynamicCredentialBody == nil {
+			return nil, false
+		}
+		return b.dynamicCredentialBody, true
 	case *dynamicOAuthHTTPCredentialBody:
-		return b.dynamicCredentialBody, b != nil && b.dynamicCredentialBody != nil
+		if b == nil || b.dynamicCredentialBody == nil {
+			return nil, false
+		}
+		return b.dynamicCredentialBody, true
 	default:
 		return nil, false
 	}

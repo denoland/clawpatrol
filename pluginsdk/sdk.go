@@ -186,8 +186,11 @@ type CredentialBuildResult struct {
 type HeaderMutationOp string
 
 const (
+	// HeaderSet replaces all existing values for the named request header.
 	HeaderSet HeaderMutationOp = "set"
+	// HeaderAdd appends values to the named request header.
 	HeaderAdd HeaderMutationOp = "add"
+	// HeaderDel removes the named request header.
 	HeaderDel HeaderMutationOp = "del"
 )
 
