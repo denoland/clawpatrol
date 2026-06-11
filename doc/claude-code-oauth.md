@@ -129,6 +129,27 @@ added must re-run the dashboard OAuth flow once).
   memory, and MCP servers are *not* visible — set `CLAUDE_CONFIG_DIR`
   yourself if you need them.
 
+## Where the shim runs across the Linux run paths
+
+`clawpatrol run` has two Linux sandboxing paths, and the shim must run
+*after* the gateway env-pushdown has injected `ANTHROPIC_AUTH_TOKEN` —
+otherwise it sees no bearer and silently no-ops:
+
+- **Unprivileged user-namespace path** (`run_linux.go`): the parent
+  applies the pushdown then calls `installClaudeCodeOAuthShim` against its
+  own process env, and the child inherits the result. Straightforward.
+- **Passwordless-sudo path** (`run_sudo_linux.go`, the default when
+  passwordless `sudo` is available): the pushdown is fetched and merged
+  *root-side*, in the privileged helper, long after the unprivileged
+  parent captured its environment. So the shim runs there too —
+  `applyClaudeCodeOAuthShimSudo` evaluates against the built child env,
+  derives the managed config dir from the *child's* `HOME`, and `chown`s
+  the synthesized `.credentials.json` to the target uid/gid so the
+  dropped-to-user `claude` can read it. Running the shim in the
+  unprivileged parent instead (as an earlier version did) left it a
+  no-op: the token wasn't in the env yet, so the child fell back to
+  bearer mode and OAuth-only features stayed gated.
+
 ## Caveat: macOS Keychain
 
 On macOS, an interactive `claude /login` stores credentials in the

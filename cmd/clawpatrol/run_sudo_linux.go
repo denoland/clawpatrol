@@ -77,9 +77,12 @@ func runViaSudo(cmd []string) {
 	}
 
 	// sudo resets the environment, but the command must run with this
-	// user's env. Capture it — after the OAuth shim, so CLAUDE_CONFIG_DIR
-	// is included — into a 0600 file the helper reads and deletes.
-	installClaudeCodeOAuthShim(cmd)
+	// user's env. Capture it into a 0600 file the helper reads and deletes.
+	// The Claude Code OAuth shim is NOT applied here: the gateway
+	// env-pushdown that feeds it ANTHROPIC_AUTH_TOKEN isn't in this
+	// (unprivileged, pre-session) env yet. The privileged helper applies it
+	// against the fully-built child env instead — see
+	// applyClaudeCodeOAuthShimSudo in runRunPrivileged.
 	envFile, err := writePrivilegedEnvFile(os.Environ())
 	if err != nil {
 		fail("env file: %v", err)
@@ -185,6 +188,12 @@ func runRunPrivileged(args []string) {
 	// The control vars below are consumed by runRunChild and stripped
 	// before it execs the actual command.
 	childEnv := buildPrivilegedEnv(*envFile, *caPath, pushVars)
+	// Apply the `clawpatrol run claude` OAuth shim here, not in the
+	// unprivileged runViaSudo parent: the gateway env-pushdown that
+	// supplies ANTHROPIC_AUTH_TOKEN is merged just above (buildPrivilegedEnv),
+	// so the parent's env never had the token to shim. Evaluate against the
+	// built child env instead.
+	childEnv = applyClaudeCodeOAuthShimSudo(childEnv, cmd, uid, gid)
 	childEnv = append(childEnv,
 		runChildEnv+"=1",
 		runTunAddrEnv+"="+tunAddr.String(),
@@ -324,6 +333,55 @@ func buildPrivilegedEnv(envFile, caPath string, pushVars []pushdownEnvVar) []str
 		have[ev.Name] = true
 	}
 	return env
+}
+
+// applyClaudeCodeOAuthShimSudo reflects the `clawpatrol run claude` OAuth
+// shim onto the privileged child's environment slice.
+//
+// The userns/darwin paths run the shim against the live process env right
+// before exec (installClaudeCodeOAuthShim). The sudo path can't: the
+// gateway env-pushdown that supplies ANTHROPIC_AUTH_TOKEN is merged here,
+// in the root helper (buildPrivilegedEnv), long after the unprivileged
+// parent captured its env — so at capture time there was no token to shim
+// and the shim silently no-op'd, leaving the child in bearer mode (Claude
+// Code precedence #2) instead of subscription OAuth (#6). We instead
+// evaluate the shim against the built childEnv: derive the managed config
+// dir from the child's (the user's) HOME, and chown the synthesized
+// credentials to the target uid/gid so the dropped-to-user command can
+// read them.
+func applyClaudeCodeOAuthShimSudo(env, cmd []string, uid, gid int) []string {
+	get := func(k string) string {
+		pre := k + "="
+		v := ""
+		for _, kv := range env {
+			if strings.HasPrefix(kv, pre) {
+				v = kv[len(pre):] // last wins, matching exec env semantics
+			}
+		}
+		return v
+	}
+	clawDir := filepath.Join(get("HOME"), ".clawpatrol")
+	res := planClaudeCodeOAuthShim(cmd, get, clawDir, uid, gid)
+	if res.warn {
+		warnClaudeCodeRemoteControlDisabled()
+	}
+	if !res.applied {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if res.unsetAuthToken && strings.HasPrefix(kv, "ANTHROPIC_AUTH_TOKEN=") {
+			continue
+		}
+		if res.configDir != "" && strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if res.configDir != "" {
+		out = append(out, "CLAUDE_CONFIG_DIR="+res.configDir)
+	}
+	return out
 }
 
 // dropToUser permanently drops the process to uid/gid (real, effective,
