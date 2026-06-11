@@ -27,7 +27,7 @@ func TestVIPPassthroughBridgesBytes(t *testing.T) {
 	// sees on accept — the bidi echo path is exercised separately
 	// further down via the full handleVIPConn test.
 	ln := testTCPBanner(t, "SSH-2.0-clawpatrol-test\r\n")
-	_, port := splitHostPort(t, ln.Addr().String())
+	_, port := testSplitHostPort(t, ln.Addr().String())
 	const host = "localhost"
 
 	g := newPassthroughTestGateway(t)
@@ -64,7 +64,7 @@ func TestVIPPassthroughBridgesBytes(t *testing.T) {
 // silently dropped from analytics.
 func TestVIPPassthroughEmitsRelayEvent(t *testing.T) {
 	ln := testTCPEcho(t, "ok")
-	_, port := splitHostPort(t, ln.Addr().String())
+	_, port := testSplitHostPort(t, ln.Addr().String())
 	const host = "localhost"
 
 	g := newPassthroughTestGateway(t)
@@ -114,7 +114,7 @@ func TestVIPPassthroughDialError(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot create TCP listener (sandboxed?): %v", err)
 	}
-	_, port := splitHostPort(t, ln.Addr().String())
+	_, port := testSplitHostPort(t, ln.Addr().String())
 	const host = "127.0.0.1"
 	_ = ln.Close()
 
@@ -156,7 +156,7 @@ func TestVIPPassthroughDialError(t *testing.T) {
 // upstream.
 func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	ln := testTCPEcho(t, "ssh-banner")
-	_, port := splitHostPort(t, ln.Addr().String())
+	_, port := testSplitHostPort(t, ln.Addr().String())
 	// Use "localhost" so dnsvip allocates a VIP (it skips IP-literal
 	// hosts) and so the passthrough's net.Dial("tcp", "localhost:N")
 	// resolves to the loopback test listener.
@@ -168,7 +168,7 @@ func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	// endpoint filter (rather than falling through the empty-profile
 	// shortcut). net.Pipe's RemoteAddr stringifies as "pipe".
 	g.onboard = newOnboardRegistry()
-	g.onboard.assignProfileMemOnly("pipe", "crowlbot")
+	g.onboard.AssignProfile("pipe", "crowlbot")
 
 	// Policy: one SSH endpoint declared at the root, "crowlbot"
 	// profile doesn't grant it. Mirrors orchid#184 — global SSH
@@ -309,7 +309,7 @@ func testTCPEcho(t *testing.T, banner string) net.Listener {
 	return ln
 }
 
-func splitHostPort(t *testing.T, addr string) (string, uint16) {
+func testSplitHostPort(t *testing.T, addr string) (string, uint16) {
 	t.Helper()
 	h, p, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -333,11 +333,12 @@ func newPassthroughTestGateway(t *testing.T) *Gateway {
 		t.Fatalf("NewSink: %v", err)
 	}
 	t.Cleanup(func() { close(sink.ch) })
-	return &Gateway{
-		cfg:    &config.Gateway{},
+	g := &Gateway{
 		dialer: &net.Dialer{Timeout: 2 * time.Second},
 		sink:   sink,
 	}
+	g.cfg.Store(&config.Gateway{})
+	return g
 }
 
 func newTestDNSVIPDB(t *testing.T) *sql.DB {
