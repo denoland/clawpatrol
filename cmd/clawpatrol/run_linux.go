@@ -900,13 +900,12 @@ func childResolvConf() string {
 
 // bindResolv writes body to a temp file and bind-mounts it over
 // /etc/resolv.conf in the calling mount namespace. The temp file is
-// unlinked on every error path so a child whose CreateTemp succeeded
-// but WriteString / Mount failed doesn't strand a file in /tmp.
-//
-// On the success path the file stays on disk because the bind mount
-// holds a reference to its inode — unlinking before the namespace
-// tears down would replace /etc/resolv.conf with an empty path.
-// Kernel reclaims it when the mount goes away (mount namespace exit).
+// unlinked on every path — including success: once the bind-mount is
+// in place it holds a reference to the inode, so removing the source
+// directory entry leaves /etc/resolv.conf intact (it points at the
+// inode, not the path) while ensuring we don't strand one
+// /tmp/clawpatrol-resolv-* file per `clawpatrol run`. The kernel
+// reclaims the inode when the mount goes away on namespace exit.
 func bindResolv(body string) error {
 	tmp, err := os.CreateTemp("", "clawpatrol-resolv-*")
 	if err != nil {
@@ -938,5 +937,8 @@ func bindResolv(body string) error {
 		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("bind-mount resolv: %w", err)
 	}
+	// Mount holds the inode; drop the now-redundant /tmp path so it
+	// doesn't accumulate across runs.
+	_ = os.Remove(tmp.Name())
 	return nil
 }
