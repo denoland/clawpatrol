@@ -896,6 +896,12 @@ func hitlOperationStatusBody(op HITLOperation, statusURL string, upstreamCalled 
 	switch op.State {
 	case HITLOperationStateSyncWaiting, HITLOperationStatePendingApproval:
 		body["retry_original_request"] = true
+		// A non-terminal state is an instruction to keep waiting: tell the
+		// agent how soon to poll again so it does not abandon a request that
+		// is still awaiting a human (and mirrors the Retry-After header for
+		// clients that read the body rather than the headers).
+		body["poll_again"] = true
+		body["retry_after_seconds"] = hitlDefaultRetryAfterSeconds
 		if !op.ApprovalExpiresAt.IsZero() {
 			body["approval_expires_at"] = op.ApprovalExpiresAt.UTC().Format(time.RFC3339Nano)
 		}

@@ -136,6 +136,18 @@ func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsync
 			redactedHeadersJSON = string(b)
 		}
 	}
+	syncDeadline := now.Add(syncWait)
+	// The approval (poll) window opens only when the synchronous hold ends
+	// and the request moves to pending_approval — so measure the approval
+	// TTL from syncDeadline, not from creation. Folding the sync-wait budget
+	// into the window (now+TTL) shrinks it by syncWait and, when syncWait
+	// approaches or exceeds the TTL, leaves a request already past its
+	// deadline the instant it becomes pollable — so a poll of a still-pending
+	// operation comes back "expired" before a human ever had the full window.
+	// Reserve expiry for an operation that has genuinely outlived its poll
+	// window. (The approved-retry window is re-based at approval time in
+	// resolveAsyncHITLGrant; the approval window had no such guard.)
+	approvalExpires := syncDeadline.Add(in.Approver.HITLAsyncApprovalTTL())
 	op, err := NewHITLOperationStore(g.db).Create(ctx, HITLOperationCreate{
 		State:               HITLOperationStateSyncWaiting,
 		ProfileID:           in.ProfileID,
@@ -154,8 +166,8 @@ func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsync
 		HMACKeyID:           fp.HMACKeyID,
 		RequestFingerprint:  fp.RequestFingerprint,
 		CreatedAt:           now,
-		SyncWaitDeadline:    now.Add(syncWait),
-		ApprovalExpiresAt:   now.Add(in.Approver.HITLAsyncApprovalTTL()),
+		SyncWaitDeadline:    syncDeadline,
+		ApprovalExpiresAt:   approvalExpires,
 		RetryExpiresAt:      now.Add(in.Approver.HITLAsyncApprovedRetryTTL()),
 	})
 	if err != nil {

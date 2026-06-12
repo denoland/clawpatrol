@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -122,8 +123,27 @@ func TestHITLAsyncApprovalGrantEndToEndHTTPFlow(t *testing.T) {
 	}
 }
 
-func newHITLAsyncE2EHarness(t *testing.T) *hitlAsyncE2EHarness {
+// hitlAsyncE2EOptions tunes the approver timing the harness compiles. The
+// zero value reproduces the default fast-sync flow (1ms hold, 15m approval
+// window); a test that needs the synchronous hold to rival the approval
+// window sets these explicitly.
+type hitlAsyncE2EOptions struct {
+	syncWaitTimeout string
+	approvalTTL     string
+}
+
+func newHITLAsyncE2EHarness(t *testing.T, opts ...hitlAsyncE2EOptions) *hitlAsyncE2EHarness {
 	t.Helper()
+
+	o := hitlAsyncE2EOptions{syncWaitTimeout: "1ms", approvalTTL: "15m"}
+	if len(opts) > 0 {
+		if opts[0].syncWaitTimeout != "" {
+			o.syncWaitTimeout = opts[0].syncWaitTimeout
+		}
+		if opts[0].approvalTTL != "" {
+			o.approvalTTL = opts[0].approvalTTL
+		}
+	}
 
 	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -137,7 +157,7 @@ func newHITLAsyncE2EHarness(t *testing.T) *hitlAsyncE2EHarness {
 		t.Fatalf("mint peer API token: %v", err)
 	}
 
-	gw, diags := config.LoadBytes([]byte(`
+	gw, diags := config.LoadBytes([]byte(fmt.Sprintf(`
 gateway {
   state_dir  = "/opt/clawpatrol"
   public_url = "https://gateway.example.test"
@@ -153,10 +173,10 @@ credential "bearer_token" "pat" {
 approver "human_approver" "ops" {
   channel           = "#ops"
   timeout           = 60
-  sync_wait_timeout = "1ms"
+  sync_wait_timeout = %q
   async_grant {
     enabled            = true
-    approval_ttl       = "15m"
+    approval_ttl       = %q
     approved_retry_ttl = "5m"
     fingerprint_body   = "raw"
     max_body_bytes     = 1048576
@@ -171,7 +191,7 @@ profile "default" {
   credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
-`), "hitl-async-e2e-test.hcl")
+`, o.syncWaitTimeout, o.approvalTTL)), "hitl-async-e2e-test.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load config: %v", diags)
 	}
