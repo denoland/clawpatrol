@@ -266,6 +266,32 @@ Default-profile auto-assignment is a UX convenience for fresh
 registrations; the security-relevant property is the scoping rule
 above.
 
+## Egress interception is best-effort
+
+Routing the agent’s traffic through the gateway is what lets Claw
+Patrol inject credentials and apply policy — it is **not** a
+containment wall, and intercepting every packet the agent emits is not
+part of the guarantee. Per-process `clawpatrol run` confines the
+wrapped process as well as the platform allows (a kernel network
+namespace on Linux; a PPID-chain match in the macOS Network
+Extension), but neither is airtight: on macOS an agent that detaches
+from its session — double-fork + `setsid` to reparent under launchd —
+no longer matches and egresses untunneled, and even the Linux
+namespace can be left by an agent with enough privilege (passwordless
+`sudo`). Whole-machine mode routes at the host level and sidesteps the
+question.
+
+This does not weaken the guarantee, because credentials and policy
+share one chokepoint: traversing the gateway is what earns a request a
+real credential *and* what subjects it to policy. A flow that escapes
+interception is therefore *uncredentialed* — an anonymous client
+holding only placeholders, with no access to any privileged system,
+not a credentialed-but-unpoliced path. What this does **not** prevent
+is a hostile process exfiltrating data it can already read locally,
+over a side channel it opens outside the tunnel; if that is in your
+threat model, use whole-machine mode or an external network egress
+control.
+
 ## Out of scope
 
 Claw Patrol does not defend against:
@@ -276,4 +302,7 @@ Claw Patrol does not defend against:
 - a kernel or hypervisor compromise that bypasses UNIX user
   separation;
 - supply-chain compromise of the binary or its build toolchain;
-- cross-user side channels (shared-CPU timing, etc.).
+- cross-user side channels (shared-CPU timing, etc.);
+- exfiltration of locally-readable data by a process that bypasses
+  per-process egress interception (see [Egress interception is
+  best-effort](#egress-interception-is-best-effort)).
