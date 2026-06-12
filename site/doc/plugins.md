@@ -62,6 +62,108 @@ registry — with a built-in (e.g. `https` endpoint type, `http`
 facet) or another plugin — fails at validate time with a clear
 diagnostic.
 
+## Sandbox and capability grants
+
+Plugins are **untrusted**. A plugin runs in the gateway process tree
+and the gateway holds secrets (the state DB with the CA key and
+credential material, WireGuard / Tailscale keys, `CLAWPATROL_SECRET_*`
+environment variables). To contain a malicious or compromised plugin,
+every plugin subprocess runs inside an OS sandbox by default and with
+a scrubbed environment — it inherits **none** of the gateway's
+environment, only `PATH`, `HOME`, `TMPDIR` (pointing at a private
+scratch dir) and the plugin socket path.
+
+Grants are declared on the `plugin` block:
+
+```hcl
+plugin "ssh_tools" {
+  source = "./plugins/ssh_tools"
+
+  network     = "outbound"     # "none" (default) | "outbound"
+  sandbox     = "enforce"      # "enforce" (default) | "off"
+  read_paths  = ["~/.ssh"]     # extra recursive read-only grants
+  write_paths = []             # extra recursive read-write grants
+}
+```
+
+- **`network`** — `"none"` (the default) cuts the plugin off from the
+  network entirely; its only channel is the gateway socket. Endpoint
+  and credential plugins don't need more — their upstream connections
+  go through the gateway's [brokered dial](#brokered-upstream-dial).
+  `"outbound"` lets the plugin dial out itself; **tunnel plugins**
+  (they *are* the upstream transport, e.g. SSH or WireGuard) need it.
+- **`sandbox`** — `"enforce"` (the default) runs the plugin inside an
+  OS sandbox and **fails config load** if none can be established on
+  this host. `"off"` runs the plugin with the gateway user's full
+  privileges (the environment is still scrubbed). Only set `"off"`
+  when you trust the plugin and the platform can't sandbox it.
+- **`read_paths` / `write_paths`** — extra host paths the plugin may
+  read or write recursively, for plugins that genuinely need host
+  files (an SSH tunnel reading `~/.ssh`). Paths are absolute; a
+  leading `~/` expands to the gateway user's home.
+
+Backends, by platform:
+
+| Platform | Backend | Isolation |
+| --- | --- | --- |
+| Linux | namespaces | user + mount + pid (+ network when `network="none"`) namespaces, a deny-by-default mount tree, dropped capabilities, `no_new_privs` |
+| Linux (userns blocked) | Landlock | filesystem deny-by-default; TCP bind/connect denied on kernels with Landlock ABI ≥ 4. Degraded — loads with a warning |
+| macOS | seatbelt | `sandbox-exec` deny-default profile |
+| other | — | none; the plugin requires `sandbox = "off"` |
+
+On Linux hosts where unprivileged user namespaces are disabled (e.g.
+Ubuntu 24.04 with `kernel.apparmor_restrict_unprivileged_userns=1`),
+the gateway automatically falls back to Landlock and logs a warning
+describing what the fallback does not cover. If neither backend works
+and `sandbox` is not `"off"`, the plugin block fails to load with a
+diagnostic naming the cause and the opt-out.
+
+Changing a plugin's sandbox or network grants takes effect on the
+next gateway restart, not on config hot-reload.
+
+### Brokered upstream dial
+
+An endpoint plugin that needs to reach an upstream service does **not**
+open the connection itself — it asks the gateway to:
+
+```go
+c, err := conn.DialUpstream(ctx, "tcp", "api.example.com:443",
+    &pluginsdk.DialUpstreamOptions{TLS: true})
+```
+
+The gateway opens the connection on the plugin's behalf, routes it
+through the endpoint's bound tunnel when one is configured,
+optionally terminates upstream TLS (real certificate verification —
+`TLS: true`), audits the attempt, and hands back a `net.Conn`. This
+is what lets endpoint plugins run with `network = "none"`: they
+receive credential secrets but cannot exfiltrate them, because they
+have no socket of their own.
+
+The gateway only dials targets the operator's HCL sanctions for that
+endpoint instance:
+
+1. the exact host:port the agent originally dialed,
+2. an entry of the endpoint's `hosts` list, or
+3. an entry of the endpoint's `dial` allow-list:
+
+```hcl
+endpoint "example_https" "demo-site" {
+  hosts    = ["demo.invalid"]
+  upstream = "http://10.0.0.5:8000"
+  dial     = ["10.0.0.5:8000", "*.internal.svc:443"]
+}
+```
+
+Any other target is refused and audited (a `dial` / `deny` event on
+the dashboard). Plugin-supplied config is never consulted for dial
+authorization — only HCL the operator wrote.
+
+`DialUpstream` requires a gateway that supports the brokered-dial
+protocol; against an older gateway it returns
+`pluginsdk.ErrDialUpstreamUnsupported` immediately (rather than
+hanging), and the plugin must fall back to its own `net.Dial` with an
+operator-granted `network = "outbound"`.
+
 ## Writing a plugin
 
 Plugins are ordinary Go programs. The author SDK lives at

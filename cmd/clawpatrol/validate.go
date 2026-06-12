@@ -53,9 +53,10 @@ func validateCmd(args []string) (string, int) {
 		if mf == nil {
 			continue
 		}
-		fmt.Fprintf(&b, "\n  plugin %q v%s: %d facet(s), %d credential type(s), %d tunnel type(s), %d endpoint type(s)",
+		fmt.Fprintf(&b, "\n  plugin %q v%s: %d facet(s), %d credential type(s), %d tunnel type(s), %d endpoint type(s) [sandbox: %s]",
 			mf.Name, mf.Version,
-			len(mf.Facets), len(mf.Credentials), len(mf.Tunnels), len(mf.Endpoints))
+			len(mf.Facets), len(mf.Credentials), len(mf.Tunnels), len(mf.Endpoints),
+			c.SandboxMode())
 	}
 	return b.String(), 0
 }

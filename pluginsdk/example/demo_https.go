@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -136,7 +134,7 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 		}
 
 		req.Body = io.NopCloser(bytes.NewReader(body))
-		resp, ferr := forwardOneHTTPS(ctx, req, upstreamURL, headerName, tokenValue)
+		resp, ferr := forwardOneHTTPS(ctx, conn, req, upstreamURL, headerName, tokenValue)
 		if ferr != nil {
 			// Operational failure (couldn't reach upstream / parse
 			// response). Not a verdict, but worth logging — the
@@ -183,7 +181,7 @@ func writeDenyResponse(w io.Writer, req *http.Request, reason string) error {
 	return resp.Write(w)
 }
 
-func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, headerName, headerValue string) (*http.Response, error) {
+func forwardOneHTTPS(ctx context.Context, conn *pluginsdk.Conn, req *http.Request, upstream *url.URL, headerName, headerValue string) (*http.Response, error) {
 	host := upstream.Host
 	if !strings.Contains(host, ":") {
 		switch upstream.Scheme {
@@ -194,16 +192,16 @@ func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, 
 		}
 	}
 
-	var (
-		c   net.Conn
-		err error
-	)
-	dialer := &net.Dialer{}
+	// The gateway dials on the plugin's behalf (and terminates
+	// upstream TLS with real certificate verification), so this
+	// plugin runs with no network access of its own. The target must
+	// be sanctioned by the operator's HCL — for the demo config
+	// that's the `dial = [...]` entry on the endpoint block.
+	var opts *pluginsdk.DialUpstreamOptions
 	if upstream.Scheme == "https" {
-		c, err = tls.Dial("tcp", host, &tls.Config{InsecureSkipVerify: true, ServerName: stripPort(upstream.Host)})
-	} else {
-		c, err = dialer.DialContext(ctx, "tcp", host)
+		opts = &pluginsdk.DialUpstreamOptions{TLS: true, TLSServerName: stripPort(upstream.Host)}
 	}
+	c, err := conn.DialUpstream(ctx, "tcp", host, opts)
 	if err != nil {
 		return nil, fmt.Errorf("dial upstream %s: %w", host, err)
 	}

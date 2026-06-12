@@ -24,6 +24,10 @@ gateway {
 
 plugin "example" {
   source = "./pluginsdk/example/example"
+  // The passthrough tunnel dials upstream itself, so the plugin
+  // needs the outbound network grant. The endpoints don't: their
+  // upstream connections go through the gateway's brokered dial.
+  network = "outbound"
 }
 
 tunnel "example_passthrough" "passthru" {}
@@ -46,6 +50,11 @@ endpoint "example_https" "demo-site" {
   hosts    = ["demo.invalid"]
   tunnel   = example_passthrough.passthru
   upstream = "http://127.0.0.1:8000"
+  // The plugin reaches the upstream through the gateway's brokered
+  // dial (it has no network access of its own); `dial` is the
+  // operator-sanctioned allow-list of targets the gateway will open
+  // for it beyond the agent's own destination.
+  dial = ["127.0.0.1:8000"]
 }
 
 rule "https-reads" {

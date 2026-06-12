@@ -377,6 +377,20 @@ func httpInjectResponseToProto(in *HTTPInjectResponse) *pb.InjectHTTPResponse {
 	return out
 }
 
+// dialState is the SDK-side bookkeeping for one brokered upstream
+// dial. reply and recv are closed only by the HandleConn recv
+// goroutine (their sole sender); done is closed on local Close.
+type dialState struct {
+	reply chan *pb.DialUpstreamReply
+	recv  chan []byte
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (d *dialState) localClose() {
+	d.once.Do(func() { close(d.done) })
+}
+
 // HandleConn pumps the gateway-provided agent connection to the
 // EndpointDef.HandleConn callback. Sequence:
 //
@@ -464,6 +478,14 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	streams := map[string]*streamReg{}
 	var streamSeq atomic.Uint64
 
+	// dials tracks brokered upstream connections (Conn.DialUpstream)
+	// keyed by dial_id. The recv goroutine routes DialUpstreamReply /
+	// Data / Close frames here; reg.recv is closed only by the recv
+	// goroutine (its sole sender), so readers get a clean io.EOF.
+	var dialsMu sync.Mutex
+	dials := map[string]*dialState{}
+	var dialSeq atomic.Uint64
+
 	conn.evaluate = func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error) {
 		// Pull StreamValue entries out of the action map, allocate a
 		// handle for each, register the reader, and replace the
@@ -540,6 +562,78 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}
 	}
 
+	conn.dialUpstream = func(ctx context.Context, network, addr string, opts *DialUpstreamOptions) (net.Conn, error) {
+		if !in.SupportsDialUpstream {
+			return nil, ErrDialUpstreamUnsupported
+		}
+		id := fmt.Sprintf("d%d", dialSeq.Add(1))
+		reg := &dialState{
+			reply: make(chan *pb.DialUpstreamReply, 1),
+			recv:  make(chan []byte, 16),
+			done:  make(chan struct{}),
+		}
+		dialsMu.Lock()
+		dials[id] = reg
+		dialsMu.Unlock()
+		unregister := func() {
+			dialsMu.Lock()
+			delete(dials, id)
+			dialsMu.Unlock()
+		}
+		req := &pb.DialUpstreamRequest{DialId: id, Network: network, Addr: addr}
+		if opts != nil {
+			req.Tls = opts.TLS
+			req.TlsServerName = opts.TLSServerName
+		}
+		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_DialRequest{DialRequest: req}}); err != nil {
+			unregister()
+			return nil, fmt.Errorf("pluginsdk: send DialUpstreamRequest: %w", err)
+		}
+		select {
+		case r, ok := <-reg.reply:
+			if !ok {
+				return nil, errors.New("pluginsdk: connection closed before dial reply")
+			}
+			if r.Error != "" {
+				unregister()
+				return nil, fmt.Errorf("pluginsdk: dial %s: %s", addr, r.Error)
+			}
+		case <-ctx.Done():
+			unregister()
+			return nil, ctx.Err()
+		case <-closed:
+			unregister()
+			return nil, errors.New("pluginsdk: connection closed before dial reply")
+		}
+
+		// Per-dial sender: drains the conn's write channel into
+		// DialUpstreamData frames.
+		dialSend := make(chan []byte, 16)
+		go func() {
+			for {
+				select {
+				case b := <-dialSend:
+					if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_DialData{DialData: &pb.DialUpstreamData{
+						DialId: id, Payload: b,
+					}}}); err != nil {
+						reg.localClose()
+						return
+					}
+				case <-reg.done:
+					return
+				case <-closed:
+					return
+				}
+			}
+		}()
+		closeFn := func() {
+			reg.localClose()
+			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_DialClose{DialClose: &pb.DialUpstreamClose{DialId: id}}})
+		}
+		return newStreamConn(reg.recv, dialSend, closeFn,
+			fakeAddr{name: "plugin"}, fakeAddr{name: addr}), nil
+	}
+
 	// Goroutine: gateway -> recv channel
 	recvErr := make(chan error, 1)
 	go func() {
@@ -559,6 +653,16 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 				delete(streams, h)
 			}
 			streamsMu.Unlock()
+			// Fail pending DialUpstream callers and EOF open dial
+			// conns. Safe: this goroutine is the sole sender on
+			// reply / recv.
+			dialsMu.Lock()
+			for id, reg := range dials {
+				close(reg.reply)
+				close(reg.recv)
+				delete(dials, id)
+			}
+			dialsMu.Unlock()
 		}()
 		for {
 			msg, err := stream.Recv()
@@ -604,6 +708,36 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 					delete(streams, k.StreamCancel.Handle)
 				}
 				streamsMu.Unlock()
+			case *pb.ConnMessage_DialReply:
+				dialsMu.Lock()
+				reg := dials[k.DialReply.DialId]
+				dialsMu.Unlock()
+				if reg != nil {
+					select {
+					case reg.reply <- k.DialReply:
+					default:
+						// Duplicate reply — drop.
+					}
+				}
+			case *pb.ConnMessage_DialData:
+				dialsMu.Lock()
+				reg := dials[k.DialData.DialId]
+				dialsMu.Unlock()
+				if reg != nil {
+					select {
+					case reg.recv <- k.DialData.Payload:
+					case <-reg.done:
+					case <-closed:
+					}
+				}
+			case *pb.ConnMessage_DialClose:
+				dialsMu.Lock()
+				reg := dials[k.DialClose.DialId]
+				delete(dials, k.DialClose.DialId)
+				dialsMu.Unlock()
+				if reg != nil {
+					close(reg.recv) // readers see io.EOF
+				}
 			default:
 				// Unexpected init / event / evaluate from the gateway
 				// — ignore.
@@ -614,18 +748,34 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	// Goroutine: send channel -> gateway
 	sendErr := make(chan error, 1)
 	go func() {
+		forward := func(b []byte) error {
+			return doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
+				Data: &pb.ConnData{Payload: b},
+			}})
+		}
 		for {
 			select {
 			case b := <-send:
-				if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
-					Data: &pb.ConnData{Payload: b},
-				}}); err != nil {
+				if err := forward(b); err != nil {
 					sendErr <- err
 					return
 				}
 			case <-closed:
-				sendErr <- nil
-				return
+				// Flush any bytes the handler wrote just before it
+				// returned (Write only buffers onto `send`), so a
+				// response isn't truncated by the teardown.
+				for {
+					select {
+					case b := <-send:
+						if err := forward(b); err != nil {
+							sendErr <- err
+							return
+						}
+					default:
+						sendErr <- nil
+						return
+					}
+				}
 			}
 		}
 	}()
@@ -633,20 +783,26 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	handleErr := invokeHandleConn(ctx, def, conn)
 	_ = conn.Close()
 	closer()
-	<-recvErr
+
+	// Wait for the send goroutine to flush every queued response byte
+	// before announcing the close, so the agent sees a complete
+	// response and not a truncated one.
 	<-sendErr
 
-	// Best-effort final ConnClose (the gRPC layer may already be
-	// torn down; ignore the error).
+	// Then tell the gateway we're done. This must happen before we
+	// wait on the recv goroutine: it is blocked in stream.Recv() and
+	// only unblocks when the gateway tears the stream down — which it
+	// does in response to this ConnClose. Sending it after <-recvErr
+	// would deadlock when the handler returns before the agent closes
+	// the connection (e.g. an upstream dial was refused), since the
+	// gateway is simultaneously waiting on us to send it.
+	closeMsg := &pb.ConnClose{}
 	if handleErr != nil {
-		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
-			Close: &pb.ConnClose{Reason: handleErr.Error()},
-		}})
-	} else {
-		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
-			Close: &pb.ConnClose{},
-		}})
+		closeMsg.Reason = handleErr.Error()
 	}
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: closeMsg}})
+
+	<-recvErr
 	return handleErr
 }
 

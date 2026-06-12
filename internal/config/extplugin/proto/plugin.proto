@@ -297,7 +297,58 @@ message ConnMessage {
     StreamRead     stream_read   = 7;   // gateway -> plugin
     StreamChunk    stream_chunk  = 8;   // plugin -> gateway
     StreamCancel   stream_cancel = 9;   // gateway -> plugin
+
+    DialUpstreamRequest dial_request = 10;  // plugin -> gateway
+    DialUpstreamReply   dial_reply   = 11;  // gateway -> plugin
+    DialUpstreamData    dial_data    = 12;  // both directions
+    DialUpstreamClose   dial_close   = 13;  // both directions
   }
+}
+
+// DialUpstreamRequest asks the gateway to open one upstream
+// connection on the plugin's behalf — the brokered-dial path that
+// lets endpoint plugins run with no network access of their own.
+// The gateway validates the target against the endpoint instance's
+// allowed dial set (the agent's original target, the endpoint's
+// `hosts`, or the operator-written `dial` list), performs the dial
+// (through the endpoint's bound tunnel when one is configured),
+// optionally terminates upstream TLS, audits the attempt, and then
+// pumps bytes as DialUpstreamData frames keyed by dial_id.
+message DialUpstreamRequest {
+  // dial_id is plugin-chosen and must be unique within the
+  // HandleConn stream; every later frame for this connection
+  // carries it.
+  string dial_id = 1;
+  // network must be "tcp" in v1.
+  string network = 2;
+  // addr is "host:port".
+  string addr = 3;
+  // tls asks the gateway to run the upstream TLS client handshake
+  // (system roots + the endpoint's TLS configuration) and exchange
+  // plaintext with the plugin. Plugins may instead run their own
+  // TLS over the byte pipe, but the gateway-terminated form gets
+  // real certificate verification for free.
+  bool tls = 4;
+  // tls_server_name overrides the SNI/verification name; defaults
+  // to the host part of addr.
+  string tls_server_name = 5;
+}
+
+message DialUpstreamReply {
+  string dial_id = 1;
+  // error is empty on success. On refusal or dial failure it names
+  // the cause; the attempt is audited either way.
+  string error = 2;
+}
+
+message DialUpstreamData {
+  string dial_id = 1;
+  bytes payload = 2;
+}
+
+message DialUpstreamClose {
+  string dial_id = 1;
+  string reason = 2;
 }
 
 // StreamRead asks the plugin for the next chunk of an open stream.
@@ -382,11 +433,17 @@ message ConnInit {
   bytes  credential_secret    = 11;
   map<string,string> credential_extras = 12;
 
-  // Bound tunnel (optional). When set, the plugin can call Tunnel.Dial
-  // on the host side using this handle to reach the upstream. v1 does
-  // not implement reverse calls; the plugin uses its own net.Dial.
+  // Bound tunnel (optional, informational). Brokered dials
+  // (DialUpstreamRequest) are routed through this tunnel by the
+  // gateway automatically.
   string tunnel_type_name = 13;
   string tunnel_instance  = 14;
+
+  // supports_dial_upstream tells the plugin SDK this gateway
+  // handles DialUpstreamRequest frames. Old gateways leave it
+  // false (they silently drop unknown frames); the SDK fails
+  // Conn.DialUpstream fast instead of hanging.
+  bool supports_dial_upstream = 15;
 }
 
 message ConnData {

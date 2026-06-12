@@ -36,6 +36,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/sandbox"
 	"github.com/google/uuid"
 	"tailscale.com/client/local"
 )
@@ -1774,6 +1775,12 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			}
 			return g.dialThrough(ctx, ep, network, addr)
 		},
+		DialUpstreamTLS: func(ctx context.Context, network, addr, serverName string) (net.Conn, error) {
+			if addr == "" {
+				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
+			}
+			return g.dialUpstream(ctx, network, addr, serverName, ep, profile)
+		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
 				return
@@ -2753,6 +2760,10 @@ func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) str
 }
 
 func main() {
+	// Must run before anything else: when this process is the
+	// re-exec'd sandbox stage-1 child for an external plugin, Stage1
+	// sets the sandbox up and execs the plugin binary in place.
+	sandbox.Stage1()
 	if len(os.Args) < 2 {
 		usage()
 	}

@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"sort"
 	"sync"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/sandbox"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/hcl/v2"
@@ -48,59 +48,82 @@ func New(out *log.Logger) *Manager {
 	}
 }
 
-// Start spawns the plugin binary at source, performs the
-// gRPC handshake, fetches the Manifest, and returns a *Client whose
-// Manifest method exposes the declared types. The caller (the
-// register helper in this package) typically immediately registers
-// every type with the global config registry.
+// Start spawns the plugin binary declared by sp inside the sandbox
+// its grants call for, performs the gRPC handshake, fetches the
+// Manifest, and returns a *Client whose Manifest method exposes the
+// declared types. The caller (the register helper in this package)
+// typically immediately registers every type with the global config
+// registry.
 //
 // Start blocks until the subprocess is ready or fails. Returns the
 // client + manifest, or an error suitable for surfacing as an HCL
 // diagnostic on the `plugin` block.
-func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.ManifestResponse, error) {
-	if _, err := os.Stat(source); err != nil {
-		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
+func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *pb.ManifestResponse, error) {
+	source := sp.Source
+	spec, mode, warning, err := buildSandboxSpec(sp)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd, err := sandbox.Command(spec, mode)
+	if err != nil {
+		os.RemoveAll(spec.SocketDir)
+		return nil, nil, fmt.Errorf("plugin %q: %w", source, err)
+	}
+	if warning != "" {
+		m.logger.Warn("plugin sandbox degraded", "plugin", sp.Name, "warning", warning)
 	}
 	cli := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
 		Plugins: map[string]plugin.Plugin{
 			PluginName: &grpcClient{},
 		},
-		Cmd:              exec.Command(source),
+		Cmd: cmd,
+		// The plugin's environment is exactly what sandbox.Command
+		// set (plus go-plugin's handshake vars): the gateway's own
+		// environment — CLAWPATROL_SECRET_*, cloud credentials —
+		// must never reach plugin code.
+		SkipHostEnv:      true,
 		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
 		Logger:           m.logger,
 	})
+	kill := func() {
+		cli.Kill()
+		os.RemoveAll(spec.SocketDir)
+	}
 	rpcCli, err := cli.Client()
 	if err != nil {
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q: handshake: %w", source, err)
 	}
 	raw, err := rpcCli.Dispense(PluginName)
 	if err != nil {
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q: dispense: %w", source, err)
 	}
 	conn, ok := raw.(*grpc.ClientConn)
 	if !ok {
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q: unexpected client type %T", source, raw)
 	}
 	c := &Client{
-		source:     source,
-		gp:         cli,
-		conn:       conn,
-		pluginCli:  pb.NewPluginClient(conn),
-		credential: pb.NewCredentialClient(conn),
-		endpoint:   pb.NewEndpointClient(conn),
-		tunnel:     pb.NewTunnelClient(conn),
+		source:         source,
+		sandboxMode:    mode,
+		sandboxWarning: warning,
+		socketDir:      spec.SocketDir,
+		gp:             cli,
+		conn:           conn,
+		pluginCli:      pb.NewPluginClient(conn),
+		credential:     pb.NewCredentialClient(conn),
+		endpoint:       pb.NewEndpointClient(conn),
+		tunnel:         pb.NewTunnelClient(conn),
 	}
 	manifest, err := c.pluginCli.Manifest(ctx, &pb.ManifestRequest{})
 	if err != nil {
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q: manifest: %w", source, err)
 	}
 	if manifest.Name == "" {
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q: empty manifest name", source)
 	}
 	c.name = manifest.Name
@@ -109,7 +132,7 @@ func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.Manife
 	m.mu.Lock()
 	if _, dup := m.plugins[manifest.Name]; dup {
 		m.mu.Unlock()
-		cli.Kill()
+		kill()
 		return nil, nil, fmt.Errorf("plugin %q (%q) already registered", manifest.Name, source)
 	}
 	m.plugins[manifest.Name] = c
@@ -144,7 +167,7 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
 		if dup {
 			continue // already loaded — caller is reloading
 		}
-		client, manifest, err := m.Start(ctx, sp.Source)
+		client, manifest, err := m.Start(ctx, sp)
 		if err != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -152,6 +175,13 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
 				Detail:   err.Error(),
 			})
 			continue
+		}
+		if w := client.SandboxWarning(); w != "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  fmt.Sprintf("Plugin %q: running under a reduced sandbox", sp.Name),
+				Detail:   w,
+			})
 		}
 		if manifest.Name != sp.Name {
 			diags = append(diags, &hcl.Diagnostic{
@@ -245,6 +275,9 @@ func (m *Manager) Stop() {
 	defer m.mu.Unlock()
 	for _, c := range m.plugins {
 		c.gp.Kill()
+		if c.socketDir != "" {
+			os.RemoveAll(c.socketDir)
+		}
 	}
 	m.plugins = make(map[string]*Client)
 }
@@ -252,16 +285,27 @@ func (m *Manager) Stop() {
 // Client is the gateway-side handle to one running plugin subprocess.
 // Adapters use it to issue RPCs.
 type Client struct {
-	name       string
-	source     string
-	manifest   *pb.ManifestResponse
-	gp         *plugin.Client
-	conn       *grpc.ClientConn
-	pluginCli  pb.PluginClient
-	credential pb.CredentialClient
-	endpoint   pb.EndpointClient
-	tunnel     pb.TunnelClient
+	name           string
+	source         string
+	sandboxMode    sandbox.Mode
+	sandboxWarning string
+	socketDir      string
+	manifest       *pb.ManifestResponse
+	gp             *plugin.Client
+	conn           *grpc.ClientConn
+	pluginCli      pb.PluginClient
+	credential     pb.CredentialClient
+	endpoint       pb.EndpointClient
+	tunnel         pb.TunnelClient
 }
+
+// SandboxMode reports which sandbox backend the subprocess runs
+// under ("off" when the operator opted out).
+func (c *Client) SandboxMode() string { return string(c.sandboxMode) }
+
+// SandboxWarning is non-empty when the plugin runs under a degraded
+// fallback backend; it describes what the fallback does not cover.
+func (c *Client) SandboxWarning() string { return c.sandboxWarning }
 
 // Name returns the plugin's manifest name (lower-case identifier).
 func (c *Client) Name() string { return c.name }

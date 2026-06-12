@@ -370,8 +370,48 @@ type Conn struct {
 	TunnelTypeName string
 	TunnelInstance string
 
-	emit     func(ConnEvent)
-	evaluate func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error)
+	emit         func(ConnEvent)
+	evaluate     func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error)
+	dialUpstream func(ctx context.Context, network, addr string, opts *DialUpstreamOptions) (net.Conn, error)
+}
+
+// DialUpstreamOptions controls gateway-side TLS for a brokered dial.
+type DialUpstreamOptions struct {
+	// TLS asks the gateway to terminate upstream TLS: the gateway
+	// performs real certificate verification (system roots plus the
+	// endpoint's TLS configuration and any mTLS credential) and the
+	// plugin exchanges plaintext over the brokered pipe. Preferred
+	// over running tls.Client inside the plugin — sandboxed plugins
+	// may not even have a CA bundle mounted.
+	TLS bool
+	// TLSServerName overrides the SNI / verification name. Defaults
+	// to the host part of addr.
+	TLSServerName string
+}
+
+// ErrDialUpstreamUnsupported is returned by Conn.DialUpstream when
+// the gateway predates the brokered-dial protocol. Such gateways
+// silently drop the request frame, so the SDK fails fast instead of
+// hanging; plugins that must support them need their own net.Dial
+// and an operator-granted network = "outbound".
+var ErrDialUpstreamUnsupported = errors.New(
+	"pluginsdk: gateway does not support brokered dial (upgrade clawpatrol, or grant the plugin network = \"outbound\" and dial directly)")
+
+// DialUpstream asks the gateway to open an upstream connection on
+// the plugin's behalf. The gateway only dials targets the operator's
+// HCL sanctions for this endpoint instance (the agent's original
+// target, the endpoint's `hosts`, or its `dial` allow-list), routes
+// through the endpoint's bound tunnel when one is configured, and
+// audits every attempt. This is how endpoint plugins reach their
+// upstream while running with no network access of their own.
+//
+// network must be "tcp". Safe for concurrent use; each call opens an
+// independent upstream connection.
+func (c *Conn) DialUpstream(ctx context.Context, network, addr string, opts *DialUpstreamOptions) (net.Conn, error) {
+	if c.dialUpstream == nil {
+		return nil, errors.New("pluginsdk: Conn.DialUpstream not wired (running without a gateway?)")
+	}
+	return c.dialUpstream(ctx, network, addr, opts)
 }
 
 // Emit hands an audit event to the gateway. The gateway funnels it

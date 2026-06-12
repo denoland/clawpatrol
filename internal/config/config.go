@@ -533,6 +533,33 @@ func (f FrameworkAttrs) Str(name string) string {
 type PluginSource struct {
 	Name   string `hcl:"name,label"`
 	Source string `hcl:"source"`
+
+	// Network grants the plugin direct network access. "none" (the
+	// default) confines the plugin to its gateway socket — endpoint
+	// and credential plugins don't need more: upstream connections
+	// go through the gateway's brokered dial. "outbound" lets the
+	// plugin dial out itself; tunnel plugins (they are the upstream
+	// transport) need it.
+	Network string `hcl:"network,optional"`
+
+	// Sandbox controls subprocess isolation. "enforce" (the default)
+	// runs the plugin inside an OS sandbox — Linux namespaces (or
+	// Landlock where user namespaces are unavailable), macOS
+	// seatbelt — and fails config load when no sandbox can be
+	// established on this host. "off" runs the plugin with the
+	// gateway user's full privileges; the gateway's environment is
+	// scrubbed either way.
+	Sandbox string `hcl:"sandbox,optional"`
+
+	// ReadPaths grants the plugin recursive read-only access to
+	// extra host paths (e.g. "~/.ssh" for an SSH tunnel plugin).
+	// Paths must be absolute; a leading "~/" expands to the gateway
+	// user's home directory.
+	ReadPaths []string `hcl:"read_paths,optional"`
+
+	// WritePaths grants the plugin recursive read-write access to
+	// extra host paths. Same path rules as read_paths.
+	WritePaths []string `hcl:"write_paths,optional"`
 }
 
 // PluginLoader is the gateway-side hook the loader calls before

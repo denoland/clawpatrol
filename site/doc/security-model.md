@@ -266,6 +266,51 @@ Default-profile auto-assignment is a UX convenience for fresh
 registrations; the security-relevant property is the scoping rule
 above.
 
+## Plugins are untrusted
+
+External plugins (`plugin "<name>" { source = "..." }`) extend the
+gateway with new credential, endpoint, and tunnel types. They run as
+subprocesses inside the gateway's process tree, and the gateway holds
+the secrets a plugin must never reach: the state database (CA private
+key, stored credential material), the WireGuard / Tailscale keys, and
+the `CLAWPATROL_SECRET_*` environment variables. A planned
+Terraform-style distribution mechanism would let operators fetch
+plugins they did not write — so plugins are treated as a supply-chain
+attack surface, not trusted gateway code.
+
+Two mechanisms contain a malicious or compromised plugin:
+
+- **Scrubbed environment.** A plugin inherits **none** of the
+  gateway's environment — only `PATH`, `HOME` and `TMPDIR` (a private
+  scratch dir) and its gateway socket path. This holds even with
+  `sandbox = "off"`.
+- **OS sandbox, on by default.** Every plugin runs inside an OS
+  sandbox: Linux user/mount/pid (and, with `network = "none"`,
+  network) namespaces over a deny-by-default mount tree; Landlock
+  where unprivileged user namespaces are blocked; macOS seatbelt. The
+  sandbox hides the filesystem (the plugin sees only its own binary,
+  system libraries, and explicitly granted paths) and, by default,
+  the network. If no sandbox can be established the plugin **fails to
+  load** unless the operator explicitly sets `sandbox = "off"`.
+
+Because the default `network = "none"` cuts a plugin off from the
+network entirely, an endpoint plugin that receives credential secrets
+(to inject them into an upstream request) cannot exfiltrate them: its
+only channel is the gateway socket, and its upstream connections are
+opened *by the gateway* through the [brokered
+dial](plugins.md#brokered-upstream-dial), restricted to targets the
+operator's HCL sanctions and audited on every attempt. Tunnel plugins
+are the upstream transport themselves and must be granted
+`network = "outbound"`; that grant is per-plugin, so granting it to a
+tunnel plugin does not loosen the endpoint plugins beside it.
+
+The sandbox is defense-in-depth, not a capability wall around the
+gateway as a whole: a plugin granted `read_paths` / `write_paths` or
+`network = "outbound"` has exactly that access, and `sandbox = "off"`
+removes the OS sandbox entirely (the environment scrub remains). Grant
+the minimum a plugin needs, and prefer the brokered dial over
+`network = "outbound"` for anything that handles secrets.
+
 ## Egress interception is best-effort
 
 Routing the agent’s traffic through the gateway is what lets Claw
