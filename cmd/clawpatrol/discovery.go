@@ -15,6 +15,7 @@ import (
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // internalHostname is the reserved name an agent inside the tunnel
@@ -64,8 +65,12 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 	// stamps onto a parked operation (main.go: agentAddr = agentIPFor(c),
 	// principal = hitlPeerPrincipalID(agentAddr)). Resolve it the same way
 	// here so the internal poll endpoint can scope an operation lookup to
-	// exactly the device that parked it, alias remapping and all.
-	principal := hitlPeerPrincipalID(g.agentIPFor(c))
+	// exactly the device that parked it, alias remapping and all. agentIP
+	// is the pre-principal address the in-memory HITL pool stamps onto its
+	// entries (HITLPending.AgentIP), so /pending can scope the sync-only
+	// pool the same way it scopes the DB lookup.
+	agentIP := g.agentIPFor(c)
+	principal := hitlPeerPrincipalID(agentIP)
 	cert, err := g.certs.mint(certHost)
 	if err != nil {
 		log.Printf("internal: mint %s: %v", certHost, err)
@@ -82,7 +87,7 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 	defer func() { _ = tc.Close() }()
 	policy := g.Policy()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.routeInternal(w, r, policy, profile, principal)
+		g.routeInternal(w, r, policy, profile, principal, agentIP)
 	})
 	_ = http.Serve(&oneShotListener{c: tc}, h)
 }
@@ -96,7 +101,7 @@ func (g *Gateway) serveInternal(c net.Conn, certHost string) {
 // by name — and the list of the device's parked-for-approval requests at
 // /pending. Unknown paths 404 rather than falling through to the manifest,
 // so the canonical paths stay unambiguous.
-func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile, principal string) {
+func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *config.CompiledPolicy, profile, principal, agentIP string) {
 	switch r.URL.Path {
 	case "/", "/manifest":
 		writeDiscoveryResponse(w, r, policy, profile)
@@ -105,7 +110,7 @@ func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *
 	case "/info":
 		g.serveInternalInfo(w)
 	case hitlPendingPath:
-		g.serveInternalPending(w, r, profile, principal)
+		g.serveInternalPending(w, r, profile, principal, agentIP)
 	default:
 		http.NotFound(w, r)
 	}
@@ -122,13 +127,34 @@ func (g *Gateway) routeInternal(w http.ResponseWriter, r *http.Request, policy *
 // is parked synchronously (its connection held open until a person decides),
 // so the agent needs no operation handle to track it — it just lists what is
 // currently held for its device.
-func (g *Gateway) serveInternalPending(w http.ResponseWriter, r *http.Request, profile, principal string) {
+//
+// Two stores hold parked requests and /pending must union them:
+//   - The operation store (DB) holds requests that took the async-grant path
+//     (sync_waiting / pending_approval rows). Scoped by profile+principal.
+//   - The in-memory HITL pool holds every park, including the PURE-SYNC case
+//     (a human approver with no async grant) that never writes a DB row.
+//     Reading only the DB would return [] on a sync-only deployment — exactly
+//     the case the manifest tells the agent to use /pending for.
+//
+// De-dup falls out of the operation id: buildPending sets OperationID to the
+// async operation id, so a pool entry with OperationID == "" is a pure-sync
+// park that is NOT in the DB, while OperationID != "" is already covered by a
+// DB row. So we take the DB rows plus the pool entries that have no operation
+// id and were parked by this caller (AgentIP match) — covering the sync case,
+// leaving the async case unchanged, and never double-listing.
+func (g *Gateway) serveInternalPending(w http.ResponseWriter, r *http.Request, profile, principal, agentIP string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pending := []map[string]any{}
+	// Collect (parked_at, view) so the merged DB+pool list can be ordered
+	// newest-first regardless of which store each entry came from.
+	type entry struct {
+		at   time.Time
+		view map[string]any
+	}
+	var entries []entry
 	if g.db != nil {
 		ops, err := NewHITLOperationStore(g.db).ListParkedForPrincipal(r.Context(), profile, principal)
 		if err != nil {
@@ -137,8 +163,21 @@ func (g *Gateway) serveInternalPending(w http.ResponseWriter, r *http.Request, p
 			return
 		}
 		for _, op := range ops {
-			pending = append(pending, pendingActionView(op))
+			entries = append(entries, entry{op.CreatedAt, pendingActionView(op)})
 		}
+	}
+	if g.hitl != nil {
+		for _, p := range g.hitl.List() {
+			if p.OperationID != "" || p.AgentIP != agentIP {
+				continue
+			}
+			entries = append(entries, entry{p.CreatedAt, pendingPoolView(p)})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.After(entries[j].at) })
+	pending := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		pending = append(pending, e.view)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -162,6 +201,33 @@ func pendingActionView(op HITLOperation) map[string]any {
 	}
 	if !op.ApprovalExpiresAt.IsZero() {
 		v["approval_expires_at"] = op.ApprovalExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return v
+}
+
+// pendingPoolView renders one in-memory pending HITL entry — a pure-sync
+// park that never reached the operation store — into the same redacted view
+// shape pendingActionView produces for a DB row, so /pending presents both
+// sources identically. The pool entry carries no scheme (the gateway only
+// MITMs TLS, so it is always https, matching the operation store's hardcoded
+// "https") and its Path is the raw request URI, so the query string is
+// dropped here to match the DB path's redaction (RedactedPath is the path
+// component only, RedactedQuery is left empty). HITLPending.Endpoint is the
+// same label the DB stores as EndpointID — the endpoint config name for HTTP,
+// the resource/host for SQL and k8s.
+func pendingPoolView(p runtime.HITLPending) map[string]any {
+	path := p.Path
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	v := map[string]any{
+		"endpoint":  p.Endpoint,
+		"method":    p.Method,
+		"url":       "https://" + p.Host + path,
+		"parked_at": p.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !p.ExpiresAt.IsZero() {
+		v["approval_expires_at"] = p.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 	return v
 }

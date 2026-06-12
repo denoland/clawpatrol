@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // TestInternalPendingList exercises the parked-action list surface the
@@ -85,7 +88,7 @@ func TestInternalPendingList(t *testing.T) {
 		t.Helper()
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "https://clawpatrol.internal"+hitlPendingPath, nil)
-		g.serveInternalPending(rec, req, prof, prin)
+		g.serveInternalPending(rec, req, prof, prin, strings.TrimPrefix(prin, "peer:"))
 		if rec.Code != 200 {
 			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 		}
@@ -137,9 +140,87 @@ func TestInternalPendingList(t *testing.T) {
 	t.Run("method not allowed", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "https://clawpatrol.internal"+hitlPendingPath, nil)
-		g.serveInternalPending(rec, req, profile, principal)
+		g.serveInternalPending(rec, req, profile, principal, "100.64.0.2")
 		if rec.Code != 405 {
 			t.Errorf("status = %d, want 405", rec.Code)
 		}
 	})
+}
+
+// TestInternalPendingListsSyncPool covers the case the manifest actually
+// advertises /pending for: a PURE-SYNCHRONOUS human-approval park (a
+// `dashboard` / `human_approver` rule with no async grant). Such a park lives
+// only in the in-memory HITL pool — it never writes a hitl_operations row — so
+// reading the DB alone returns []. /pending must merge the caller's sync-only
+// pool entries (OperationID == "", matching AgentIP) so the list reflects what
+// is really held. Entries that carry an operation id (the async path) are
+// already in the DB and must not be double-listed; another device's pool
+// entry must stay invisible.
+func TestInternalPendingListsSyncPool(t *testing.T) {
+	const agentIP = "100.64.0.2"
+	principal := hitlPeerPrincipalID(agentIP)
+	g := &Gateway{hitl: newHITLRegistry(nil)}
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	// A pure-sync park by this device — no operation id, so never in the DB.
+	g.hitl.Add(runtime.HITLPending{
+		AgentIP:   agentIP,
+		Host:      "httpbin.org",
+		Method:    "GET",
+		Path:      "/get?token=shh-secret",
+		Endpoint:  "httpbin",
+		CreatedAt: now,
+	})
+	// An async park (operation id set) — already represented by a DB row, so
+	// /pending must NOT re-list it from the pool.
+	g.hitl.Add(runtime.HITLPending{
+		OperationID: "hitl_op_async",
+		AgentIP:     agentIP,
+		Host:        "httpbin.org",
+		Method:      "POST",
+		Path:        "/post",
+		Endpoint:    "httpbin",
+		CreatedAt:   now,
+	})
+	// Another device's pure-sync park — must stay invisible here.
+	g.hitl.Add(runtime.HITLPending{
+		AgentIP:   "100.64.0.9",
+		Host:      "httpbin.org",
+		Method:    "GET",
+		Path:      "/headers",
+		Endpoint:  "httpbin",
+		CreatedAt: now,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "https://clawpatrol.internal"+hitlPendingPath, nil)
+	g.serveInternalPending(rec, req, "ops", principal, agentIP)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Pending []map[string]any `json:"pending"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Pending) != 1 {
+		t.Fatalf("pending count = %d, want 1 (only the caller's sync-only park)", len(body.Pending))
+	}
+	got := body.Pending[0]
+	if got["endpoint"] != "httpbin" {
+		t.Errorf("endpoint = %v, want httpbin", got["endpoint"])
+	}
+	if got["method"] != "GET" {
+		t.Errorf("method = %v, want GET", got["method"])
+	}
+	// Query string is dropped, matching the DB path's redaction — the
+	// secret-bearing token must not surface in the redacted view.
+	if got["url"] != "https://httpbin.org/get" {
+		t.Errorf("url = %v, want https://httpbin.org/get (query dropped)", got["url"])
+	}
+	if _, ok := got["operation_id"]; ok {
+		t.Errorf("pending action leaked operation_id: %v", got)
+	}
 }
