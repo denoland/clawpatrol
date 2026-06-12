@@ -88,7 +88,7 @@ func TestBuildSandboxSpecOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(spec.SocketDir)
+	defer func() { _ = os.RemoveAll(spec.SocketDir) }()
 	if mode != sandbox.ModeOff {
 		t.Errorf("mode = %q, want off", mode)
 	}

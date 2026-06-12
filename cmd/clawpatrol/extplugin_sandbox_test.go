@@ -70,7 +70,7 @@ func runNosyProbe(t *testing.T, sandboxMode, network string, extraGrants string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -136,7 +136,7 @@ func TestNosyPluginBlockedUnderSandbox(t *testing.T) {
 		}(); err == nil && forced.Mode == sandbox.ModeLandlock {
 			backends = append(backends, "landlock")
 		}
-		os.Unsetenv(sandbox.EnvBackend)
+		_ = os.Unsetenv(sandbox.EnvBackend)
 	}
 
 	for _, backend := range backends {

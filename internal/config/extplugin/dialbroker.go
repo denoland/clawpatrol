@@ -138,7 +138,7 @@ func (r *dialRegistry) closeAll() {
 func checkDialTarget(entry string) error {
 	host, port, err := net.SplitHostPort(entry)
 	if err != nil {
-		return fmt.Errorf("expected \"host:port\" or \"*.suffix:port\": %v", err)
+		return fmt.Errorf("expected \"host:port\" or \"*.suffix:port\": %w", err)
 	}
 	if host == "" {
 		return fmt.Errorf("host must not be empty")
@@ -170,7 +170,7 @@ func checkDialTarget(entry string) error {
 func validateBrokeredDialTarget(ch *runtime.ConnHandle, hosts, dialTargets []string, addr string) error {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("addr %q: expected \"host:port\": %v", addr, err)
+		return fmt.Errorf("addr %q: expected \"host:port\": %w", addr, err)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
@@ -367,7 +367,7 @@ func dialBrokeredUpstream(ctx context.Context, ch *runtime.ConnHandle, req *pb.D
 	if serverName == "" {
 		host, _, err := net.SplitHostPort(req.Addr)
 		if err != nil {
-			return nil, fmt.Errorf("addr %q: %v", req.Addr, err)
+			return nil, fmt.Errorf("addr %q: %w", req.Addr, err)
 		}
 		serverName = host
 	}

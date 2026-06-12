@@ -81,7 +81,7 @@ func applyLandlock(spec Spec) error {
 	if errno != 0 {
 		return fmt.Errorf("landlock_create_ruleset: %w", errno)
 	}
-	defer unix.Close(int(fd))
+	defer func() { _ = unix.Close(int(fd)) }()
 
 	type grant struct {
 		path     string
@@ -139,7 +139,7 @@ func landlockAllowPath(rulesetFD int, path string, access uint64) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(pathFD)
+	defer func() { _ = unix.Close(pathFD) }()
 	// A rule on a regular file may only carry file-applicable rights;
 	// directory-only bits make landlock_add_rule return EINVAL.
 	var st unix.Stat_t

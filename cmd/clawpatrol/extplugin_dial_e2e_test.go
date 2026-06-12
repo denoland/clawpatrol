@@ -46,7 +46,7 @@ var buildSharedExamplePlugin = func() func(t *testing.T) string {
 			cmd := exec.Command("go", "build", "-o", path, "./pluginsdk/example")
 			cmd.Dir = moduleRoot
 			if b, berr := cmd.CombinedOutput(); berr != nil {
-				err = fmt.Errorf("build example plugin: %v\n%s", berr, b)
+				err = fmt.Errorf("build example plugin: %w\n%s", berr, b)
 			}
 		})
 		if err != nil {
@@ -128,10 +128,17 @@ func (h *dialE2EHarness) eventsSnapshot() []runtime.ConnEvent {
 	return append([]runtime.ConnEvent(nil), h.events...)
 }
 
+// demoResp is the read-and-closed result of one brokered-dial
+// request, so the helper doesn't leak an open *http.Response.
+type demoResp struct {
+	StatusCode int
+	Body       []byte
+}
+
 // runDemoHTTPSRequest drives one HTTPS request from a fake agent
 // through the real example plugin's HandleConn and returns the
 // response (nil when the conn died before a response).
-func runDemoHTTPSRequest(t *testing.T, policy *config.CompiledPolicy, h *dialE2EHarness) *http.Response {
+func runDemoHTTPSRequest(t *testing.T, policy *config.CompiledPolicy, h *dialE2EHarness) *demoResp {
 	t.Helper()
 	ep := policy.Endpoints["demo-site"]
 	if ep == nil {
@@ -191,26 +198,28 @@ func runDemoHTTPSRequest(t *testing.T, policy *config.CompiledPolicy, h *dialE2E
 	if err := req.Write(clientTLS); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
+	waitDone := func() {
+		_ = clientTLS.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("plugin HandleConn did not exit")
+		}
+	}
 	resp, err := http.ReadResponse(bufio.NewReader(clientTLS), req)
 	if err != nil {
-		_ = clientTLS.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("plugin HandleConn did not exit")
-		}
+		waitDone()
 		return nil
 	}
-	t.Cleanup(func() {
-		_ = resp.Body.Close()
-		_ = clientTLS.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("plugin HandleConn did not exit")
-		}
-	})
-	return resp
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		waitDone()
+		t.Fatalf("read body: %v", readErr)
+	}
+	out := &demoResp{StatusCode: resp.StatusCode, Body: body}
+	waitDone()
+	return out
 }
 
 func newDialE2EHarness(t *testing.T) *dialE2EHarness {
@@ -221,7 +230,7 @@ func newDialE2EHarness(t *testing.T) *dialE2EHarness {
 		case h.upstreamHdr <- r.Header.Get("X-Magic"):
 		default:
 		}
-		fmt.Fprint(w, "upstream says hi")
+		_, _ = fmt.Fprint(w, "upstream says hi")
 	}))
 	t.Cleanup(upstream.Close)
 	h.upstreamAddr = upstream.Listener.Addr().String()
@@ -246,12 +255,8 @@ func TestExampleHTTPSEndpointThroughBrokeredDial(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if !strings.Contains(string(body), "upstream says hi") || !strings.Contains(string(body), "bye!") {
-		t.Fatalf("body = %q, want upstream content with bye! suffix", body)
+	if !strings.Contains(string(resp.Body), "upstream says hi") || !strings.Contains(string(resp.Body), "bye!") {
+		t.Fatalf("body = %q, want upstream content with bye! suffix", resp.Body)
 	}
 
 	select {

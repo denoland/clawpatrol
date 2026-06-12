@@ -98,6 +98,11 @@ jobs:
           restore-keys: |
             go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
             go-${{ runner.os }}-
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # cmd/clawpatrol go:embed's dashboard/dist; build it first.
+      - run: make dashboard
       - run: go test ./internal/sandbox/... ./internal/config/extplugin/... -run 'Sandbox|Dial|Nosy|ExternalCredential'
       - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|ExternalCredential'
 
@@ -119,5 +124,10 @@ jobs:
           restore-keys: |
             go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
             go-${{ runner.os }}-
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # cmd/clawpatrol go:embed's dashboard/dist; build it first.
+      - run: make dashboard
       - run: go test ./internal/sandbox/...
       - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|ExternalCredential'

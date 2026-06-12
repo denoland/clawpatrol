@@ -66,7 +66,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 	}
 	cmd, err := sandbox.Command(spec, mode)
 	if err != nil {
-		os.RemoveAll(spec.SocketDir)
+		_ = os.RemoveAll(spec.SocketDir)
 		return nil, nil, fmt.Errorf("plugin %q: %w", source, err)
 	}
 	if warning != "" {
@@ -88,7 +88,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 	})
 	kill := func() {
 		cli.Kill()
-		os.RemoveAll(spec.SocketDir)
+		_ = os.RemoveAll(spec.SocketDir)
 	}
 	rpcCli, err := cli.Client()
 	if err != nil {
@@ -276,7 +276,7 @@ func (m *Manager) Stop() {
 	for _, c := range m.plugins {
 		c.gp.Kill()
 		if c.socketDir != "" {
-			os.RemoveAll(c.socketDir)
+			_ = os.RemoveAll(c.socketDir)
 		}
 	}
 	m.plugins = make(map[string]*Client)

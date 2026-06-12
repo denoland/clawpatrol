@@ -113,7 +113,7 @@ func makePluginDirs() (string, string, error) {
 	}
 	tmpDir := filepath.Join(sockDir, "tmp")
 	if err := os.Mkdir(tmpDir, 0o700); err != nil {
-		os.RemoveAll(sockDir)
+		_ = os.RemoveAll(sockDir)
 		return "", "", err
 	}
 	return sockDir, tmpDir, nil

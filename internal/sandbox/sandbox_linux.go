@@ -75,7 +75,7 @@ func probePlatform(force Mode) (Availability, error) {
 			av.Warning = fmt.Sprintf("user namespaces unavailable (%v); %s", nsErr, av.Warning)
 			return av, nil
 		}
-		return Availability{}, fmt.Errorf("no sandbox backend works on this host: user namespaces unavailable (%v); Landlock unavailable (%v)", nsErr, llErr)
+		return Availability{}, fmt.Errorf("no sandbox backend works on this host: user namespaces unavailable (%w); Landlock unavailable (%w)", nsErr, llErr)
 	case ModeNamespaces:
 		if err := probeNamespaces(); err != nil {
 			return Availability{}, fmt.Errorf("forced backend %q: %w", force, err)
@@ -104,7 +104,7 @@ func probeNamespaces() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	tmp := dir + "/tmp"
 	if err := os.Mkdir(tmp, 0o700); err != nil {
 		return err
