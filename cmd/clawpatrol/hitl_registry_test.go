@@ -126,21 +126,21 @@ func TestHITLRegistryAddDoesNotFabricateExpiryForSyncPark(t *testing.T) {
 		CreatedAt: created,
 		ExpiresAt: created.Add(10 * time.Minute),
 	})
-	var real *runtime.HITLPending
+	var found *runtime.HITLPending
 	for _, p := range registry.List() {
 		if p.ID == id2 {
 			rp := p
-			real = &rp
+			found = &rp
 			break
 		}
 	}
-	if real == nil {
+	if found == nil {
 		t.Fatalf("Add entry %q not found in List", id2)
 	}
-	if real.ExpiresAt.IsZero() {
+	if found.ExpiresAt.IsZero() {
 		t.Fatalf("real deadline was dropped by Add for %q", id2)
 	}
-	if _, ok := pendingPoolView(*real)["approval_expires_at"]; !ok {
+	if _, ok := pendingPoolView(*found)["approval_expires_at"]; !ok {
 		t.Fatalf("pendingPoolView omitted a real approval_expires_at")
 	}
 }
