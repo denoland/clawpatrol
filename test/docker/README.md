@@ -77,11 +77,8 @@ is meant to catch isn't masked by the harness itself.
    execution order; reserve 00 for setup, 99 for teardown).
 2. Exit non-zero on assertion failure with a one-line reason on
    stderr — `run-e2e.sh` reports the stderr line in the summary.
-3. Tests run inside the agent container by default
-   (`COMPOSE_TEST_TARGET=agent`); set
-   `COMPOSE_TEST_TARGET=gateway` in the script's first line to
-   run it on the gateway side instead (used by the relay log
-   scrape and policy inspection tests).
+3. Tests run inside the agent container after it has joined the
+   gateway and seeded the state files that `clawpatrol run` consumes.
 
 ## Known gaps
 
