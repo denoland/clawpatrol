@@ -71,6 +71,14 @@ func (s *ramStateStore) WriteState(k ipn.StateKey, v []byte) error {
 	return nil
 }
 
+// clawpatrolDebugEnabled reports whether CLAWPATROL_DEBUG selects the
+// verbose diagnostics (same semantics as the Linux relay / macOS
+// helper: any value other than "" or "0").
+func clawpatrolDebugEnabled() bool {
+	v := os.Getenv("CLAWPATROL_DEBUG")
+	return v != "" && v != "0"
+}
+
 // tailnetBootstrap is a transient tsnet.Server that exists only for
 // the duration of `clawpatrol join`. Use Client() to talk to the
 // bootstrapHostnamePrefix names the ephemeral tsnet node a `--login`
@@ -124,6 +132,18 @@ func (b *tailnetBootstrap) Close(ctx context.Context) {
 	}
 }
 
+// bootstrapTsnetLogf returns the logf the bootstrap tsnet node uses:
+// silent unless CLAWPATROL_DEBUG is set, in which case it forwards
+// tsnet's lines to stderr behind a [tsnet] prefix.
+func bootstrapTsnetLogf() func(string, ...any) {
+	if !clawpatrolDebugEnabled() {
+		return func(string, ...any) {}
+	}
+	return func(format string, a ...any) {
+		fmt.Fprintf(os.Stderr, "[tsnet] "+strings.TrimRight(format, "\n")+"\n", a...)
+	}
+}
+
 // bootstrapTailnetForJoin stands up a temporary tsnet node and walks
 // the operator through Tailscale's standard interactive auth flow
 // (browser → IdP → control-plane assigns a tailnet IP). The auth URL
@@ -160,62 +180,117 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	}
 	hostname := bootstrapHostnamePrefix + hex.EncodeToString(suffix)
 
-	s := &tsnet.Server{
-		// Dir still hosts tsnet's log buffer (tailscaled.log.conf
-		// and the tailscaled/ subdir) regardless of Store — no
-		// credentials here, just operational logs the temp dir
-		// disposes of on Close.
-		Dir:      dir,
-		Hostname: hostname,
-		// In-memory state store. The bootstrap's machine key, login
-		// profile, and netmap snapshot all live in this map and are
-		// gone the instant the process exits — clean or otherwise.
-		Store: &ramStateStore{},
-		// Silence tsnet's internal chatter — we drive the auth-URL
-		// display ourselves below so the operator sees one clean
-		// message, not interleaved control-plane debug lines.
-		Logf:     func(string, ...any) {},
-		UserLogf: func(string, ...any) {},
+	// One overall budget across every re-registration attempt below.
+	// awaitTailnetAuth derives its own deadline from this ctx, so a
+	// pathological wedge can't multiply the wait by recovering N times —
+	// the whole bootstrap still caps at the documented ~10 minutes.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	// One state store, reused across any re-registration below. It holds
+	// the node key, so once the single-use interactive auth URL is
+	// consumed (the operator approved it), a fresh Server can re-register
+	// that same — now authorized — key and reach Running without a second
+	// browser round-trip.
+	store := &ramStateStore{}
+	newServer := func() *tsnet.Server {
+		return &tsnet.Server{
+			// Dir hosts only tsnet's log buffer (state lives in `store`),
+			// so it's safe to reuse across re-registration.
+			Dir:      dir,
+			Hostname: hostname,
+			Store:    store,
+			// Silent by default — we drive the auth-URL display ourselves.
+			// CLAWPATROL_DEBUG surfaces tsnet's control-plane chatter for
+			// diagnosing a stuck login.
+			Logf:     bootstrapTsnetLogf(),
+			UserLogf: bootstrapTsnetLogf(),
+		}
 	}
 
-	if err := s.Start(); err != nil {
-		_ = s.Close()
-		cleanup()
-		return nil, fmt.Errorf("tailnet bootstrap: start tsnet: %w", err)
-	}
-	lc, err := s.LocalClient()
-	if err != nil {
-		_ = s.Close()
-		cleanup()
-		return nil, fmt.Errorf("tailnet bootstrap: local client: %w", err)
-	}
+	// The interactive auth URL is single-use. Once the operator approves
+	// it, control returns "auth path not found" (HTTP 410) on tsnet's
+	// follow-up poll — and tsnet wedges re-polling the dead path forever
+	// instead of re-registering the now-authorized node key.
+	// awaitTailnetAuth detects that (errLoginPathConsumed); we recover by
+	// starting a fresh node on the same store, whose plain re-register
+	// picks up the authorization and reaches Running. The cap guards
+	// against an unexpected loop.
+	const maxLoginRecoveries = 3
+	for attempt := 0; ; attempt++ {
+		s := newServer()
+		if err := s.Start(); err != nil {
+			_ = s.Close()
+			cleanup()
+			return nil, fmt.Errorf("tailnet bootstrap: start tsnet: %w", err)
+		}
+		lc, err := s.LocalClient()
+		if err != nil {
+			_ = s.Close()
+			cleanup()
+			return nil, fmt.Errorf("tailnet bootstrap: local client: %w", err)
+		}
 
-	if err := awaitTailnetAuth(ctx, lc); err != nil {
-		// Best-effort cleanup of a partially-onboarded node so we
-		// don't leave a NeedsLogin entry in the tailnet admin.
+		awErr := awaitTailnetAuth(ctx, lc)
+		if awErr == nil {
+			// tsnet's HTTPClient() has neither a client Timeout nor a dial
+			// deadline. The gateway calls the join flow makes through it
+			// run right after the node comes up, before routes/MagicDNS
+			// have settled, so a stalled dial would hang the whole join.
+			// Cap it so a stalled request surfaces an error instead.
+			hc := s.HTTPClient()
+			hc.Timeout = 30 * time.Second
+			return &tailnetBootstrap{server: s, lc: lc, client: hc, dir: dir}, nil
+		}
+
+		if errors.Is(awErr, errLoginPathConsumed) && attempt < maxLoginRecoveries {
+			// Stop this engine WITHOUT logging out — logout would discard
+			// the authorized node key in `store` that we're about to
+			// reuse — then loop to start a fresh node on the same store.
+			if clawpatrolDebugEnabled() {
+				fmt.Fprintf(os.Stderr, "[bootstrap] auth path consumed (device approved); re-registering the approved key (attempt %d/%d)\n", attempt+1, maxLoginRecoveries)
+			}
+			_ = s.Close()
+			continue
+		}
+
+		// Genuine failure, or out of recoveries: log the node out so it
+		// doesn't linger in the tailnet admin, then give up.
 		logoutCtx, lcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = lc.Logout(logoutCtx)
 		lcancel()
 		_ = s.Close()
 		cleanup()
-		return nil, err
+		if errors.Is(awErr, errLoginPathConsumed) {
+			return nil, fmt.Errorf("tailnet bootstrap: login did not finalize after %d re-registration attempts", maxLoginRecoveries)
+		}
+		return nil, awErr
 	}
+}
 
-	// tsnet's HTTPClient() has neither a client Timeout nor a dial
-	// deadline. The gateway calls the join flow makes through it run
-	// right after the node comes up, before routes/MagicDNS have fully
-	// settled, so a dial to the gateway can stall — and with no timeout
-	// the request (and the whole join) hangs indefinitely. Cap it so a
-	// stalled request fails and surfaces an error instead.
-	hc := s.HTTPClient()
-	hc.Timeout = 30 * time.Second
+// errLoginPathConsumed signals that the interactive auth path was
+// consumed: control returned "auth path not found" (HTTP 410) on the
+// login follow-up, which is what happens once the operator approves the
+// single-use URL. The node key is authorized at that point;
+// bootstrapTailnetForJoin recovers by re-registering it on a fresh node.
+var errLoginPathConsumed = errors.New("tailnet bootstrap: interactive auth path consumed")
 
-	return &tailnetBootstrap{
-		server: s,
-		lc:     lc,
-		client: hc,
-		dir:    dir,
-	}, nil
+// loginConsumedGrace is how long the "auth path not found" error must
+// persist before we treat the login as wedged and re-register. tsnet
+// usually retries the follow-up poll and picks up the authorization
+// within milliseconds; we only step in when it stays stuck on the dead
+// path well past that, so we never interfere with the common self-heal.
+const loginConsumedGrace = 8 * time.Second
+
+// loginPathConsumed reports whether the backend health includes the
+// control-plane "auth path not found" error.
+func loginPathConsumed(health []string) bool {
+	for _, h := range health {
+		if strings.Contains(h, "auth path not found") {
+			return true
+		}
+	}
+	return false
 }
 
 // awaitTailnetAuth blocks until the tsnet node reaches Running,
@@ -233,6 +308,7 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 	var finish func(string)
 	shownURL := ""
 	lastState := "unknown"
+	var consumedSince time.Time
 	// settle resolves the pending step (if shown) with line, else prints
 	// line on its own.
 	settle := func(line string) {
@@ -258,7 +334,31 @@ func awaitTailnetAuth(ctx context.Context, lc *local.Client) error {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		lastState = st.BackendState
+		if st.BackendState != lastState {
+			if clawpatrolDebugEnabled() {
+				fmt.Fprintf(os.Stderr, "[bootstrap] backend state: %s -> %s\n", lastState, st.BackendState)
+			}
+			lastState = st.BackendState
+		}
+		if loginPathConsumed(st.Health) && st.BackendState != "Running" {
+			// The single-use auth URL was consumed (operator approved).
+			// tsnet normally retries the follow-up poll and picks up the
+			// authorization within milliseconds — let that self-heal
+			// happen. Only if it stays wedged on the dead path past the
+			// grace do we clear the QR and hand back to
+			// bootstrapTailnetForJoin to re-register the now-authorized
+			// key on a fresh node.
+			if consumedSince.IsZero() {
+				consumedSince = time.Now()
+			} else if time.Since(consumedSince) > loginConsumedGrace {
+				if finish != nil {
+					finish("")
+				}
+				return errLoginPathConsumed
+			}
+		} else {
+			consumedSince = time.Time{}
+		}
 		if st.AuthURL != "" && st.AuthURL != shownURL {
 			// The box running `clawpatrol join` is usually headless
 			// (SSH session, no browser). Show the login URL + a QR so
