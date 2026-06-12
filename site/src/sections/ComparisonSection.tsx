@@ -94,8 +94,9 @@ function Capability({
   );
 }
 
-// Each icon ties to the tool category: sparkle for LLM (AI), shield
-// for content guardrails (filter), globe for HTTP/MCP gateways
+// Each icon ties to the tool category: arrow-through-gate for LLM
+// gateways (request passing through), no-entry sign for content
+// guardrails (blocked content), globe for HTTP/MCP gateways
 // (network), 3D cube for sandboxes (confined space), key for
 // credential stores.
 const ICON_PATHS: Record<IconKey, JSX.Element> = {

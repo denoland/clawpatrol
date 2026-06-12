@@ -133,8 +133,7 @@ export function ProblemSection() {
           Claw Patrol is an agent proxy that{" "}
           <span className="text-rust">intercepts</span> all traffic,{" "}
           <span className="text-rust">evaluates</span> actions against custom
-          rules,
-          <span className="text-rust">safeguards</span> credentials, and{" "}
+          rules, <span className="text-rust">safeguards</span> credentials, and{" "}
           <span className="text-rust">logs</span> everything that happens.
         </div>
       </div>

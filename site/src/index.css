@@ -155,7 +155,7 @@
   }
 
   body {
-    line-height: 1.7;
+    line-height: 1.5;
     /* No-op for the current fonts (IBM Plex Sans is wght-only variable);
        kept so a future opsz-axis face engages automatically. */
     font-optical-sizing: auto;
@@ -183,6 +183,15 @@
   h6,
   :is(h1, h2, h3, h4, h5, h6) + p {
     text-wrap: balance;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    --tw-leading: 1.1;
   }
 
   *:focus-visible {
