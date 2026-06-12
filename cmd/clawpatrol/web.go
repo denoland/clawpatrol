@@ -2987,9 +2987,14 @@ func (r *HITLRegistry) Add(p runtime.HITLPending) (string, <-chan runtime.HITLDe
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now()
 	}
-	if p.ExpiresAt.IsZero() {
-		p.ExpiresAt = p.CreatedAt.Add(30 * time.Minute)
-	}
+	// Leave ExpiresAt zero when the caller set no real deadline. A
+	// pure-sync park (builtin.dashboard) carries no enforced timeout — it
+	// stays parked until a human decides or the agent disconnects — so we
+	// must not fabricate one. Callers with a genuine deadline set ExpiresAt
+	// themselves (human_approver does, via CreatedAt+timeout), and that is
+	// actually enforced. pendingPoolView / the dashboard already guard on
+	// ExpiresAt.IsZero(), so a zero value correctly renders as "no expiry"
+	// instead of advertising a clock /pending never honors.
 	ch := make(chan runtime.HITLDecision, 1)
 	r.mu.Lock()
 	r.pruneTerminalLocked(time.Now())

@@ -79,6 +79,72 @@ func TestHITLRegistryAsyncPendingApprovalCreatesRetryGrantInsteadOfSendingChanne
 	}
 }
 
+func TestHITLRegistryAddDoesNotFabricateExpiryForSyncPark(t *testing.T) {
+	// A pure-sync park (builtin.dashboard, no async grant, no
+	// human_approver timeout) carries no enforced deadline — it parks
+	// until a human decides or the agent disconnects. Add must leave
+	// ExpiresAt zero so /pending omits approval_expires_at rather than
+	// advertising a 30m clock the gateway never honors.
+	registry := newHITLRegistry(nil)
+	id, _ := registry.Add(runtime.HITLPending{
+		Host:      "httpbin.org",
+		Method:    "GET",
+		Path:      "/ip",
+		Endpoint:  "httpbin.org",
+		CreatedAt: time.Now(),
+	})
+
+	list := registry.List()
+	var entry *runtime.HITLPending
+	for i := range list {
+		if list[i].ID == id {
+			entry = &list[i]
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("Add entry %q not found in List", id)
+	}
+	if !entry.ExpiresAt.IsZero() {
+		t.Fatalf("sync park ExpiresAt = %v, want zero (no fabricated deadline)", entry.ExpiresAt)
+	}
+
+	// pendingPoolView must then omit approval_expires_at entirely.
+	v := pendingPoolView(*entry)
+	if _, ok := v["approval_expires_at"]; ok {
+		t.Fatalf("pendingPoolView emitted approval_expires_at for a sync park with no real deadline: %#v", v)
+	}
+
+	// A caller with a genuine deadline (e.g. human_approver) still has it
+	// preserved and surfaced.
+	created := time.Now()
+	id2, _ := registry.Add(runtime.HITLPending{
+		Host:      "deploy.example",
+		Method:    "POST",
+		Path:      "/v1/deploy",
+		Endpoint:  "deploy",
+		CreatedAt: created,
+		ExpiresAt: created.Add(10 * time.Minute),
+	})
+	var real *runtime.HITLPending
+	for _, p := range registry.List() {
+		if p.ID == id2 {
+			rp := p
+			real = &rp
+			break
+		}
+	}
+	if real == nil {
+		t.Fatalf("Add entry %q not found in List", id2)
+	}
+	if real.ExpiresAt.IsZero() {
+		t.Fatalf("real deadline was dropped by Add for %q", id2)
+	}
+	if _, ok := pendingPoolView(*real)["approval_expires_at"]; !ok {
+		t.Fatalf("pendingPoolView omitted a real approval_expires_at")
+	}
+}
+
 func TestHITLRegistryDecideWithResultRecordsTerminalState(t *testing.T) {
 	registry := newHITLRegistry(nil)
 	id, ch := registry.Add(runtime.HITLPending{
