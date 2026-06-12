@@ -180,6 +180,13 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	}
 	hostname := bootstrapHostnamePrefix + hex.EncodeToString(suffix)
 
+	// One overall budget across every re-registration attempt below.
+	// awaitTailnetAuth derives its own deadline from this ctx, so a
+	// pathological wedge can't multiply the wait by recovering N times —
+	// the whole bootstrap still caps at the documented ~10 minutes.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	// One state store, reused across any re-registration below. It holds
 	// the node key, so once the single-use interactive auth URL is
 	// consumed (the operator approved it), a fresh Server can re-register
