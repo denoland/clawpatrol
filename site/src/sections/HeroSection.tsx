@@ -11,11 +11,11 @@ export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;
 export function HeroSection() {
   return (
     <section
-      class="max-w-6xl mx-auto px-6 sm:px-8
+      class="iso-stack-host max-w-6xl mx-auto px-6 sm:px-8
       pt-16 sm:pt-28 pb-16"
     >
       <div class="grid md:grid-cols-2 gap-12 md:gap-12 lg:gap-16 items-center w-full">
-        <div class="order-2 md:order-1 min-w-0 flex flex-col items-center md:items-start text-center md:text-left">
+        <div class="order-2 md:order-1 min-w-0 flex flex-col items-center md:items-start text-center md:text-left relative z-10 bg-linear-to-b from-transparent py-16 via-canvas via-35% to-canvas">
           <h1 class="text-4xl sm:text-5xl md:text-5xl lg:text-6xl lg:text-[4rem] mb-6 font-display text-balance text-text">
             {HERO_H1}
           </h1>
@@ -29,8 +29,8 @@ export function HeroSection() {
           </p>
           <InstallTerminal />
         </div>
-        <div class="order-1 md:order-2 flex justify-center">
-          <IsometricStack class="w-40 sm:w-48 md:w-full md:max-w-56 lg:max-w-64" />
+        <div class="order-1 md:order-2 flex justify-center sticky top-50 z-0">
+          <IsometricStack class="h-[calc(100dvh-4rem)] w-auto md:h-auto md:w-full md:max-w-56 lg:max-w-64" />
         </div>
       </div>
     </section>

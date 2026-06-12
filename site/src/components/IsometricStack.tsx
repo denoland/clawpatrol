@@ -170,6 +170,18 @@ const TILE_DELAY: Record<string, number> = Object.fromEntries([
   [CP_TILE.alt, NON_CP_SORTED.length * STAGGER_MS],
 ]);
 
+// Scroll-driven exit animation: each tile fades out + slides up
+// further as the user scrolls past the SVG. Stagger order is
+// bottom-to-top by `cy` (Notion, the lowest tile on screen, fades
+// first; Claude, the highest, fades last). CP lands naturally in
+// the middle since its cy=0 sits between the two clusters. Only
+// applies below the md breakpoint (see CSS); on md+ the exit
+// animation is disabled and tiles stay visible.
+const EXIT_STAGGER_PCT = 3;
+const EXIT_OFFSET: Record<string, number> = Object.fromEntries(
+  SORTED.map((t, i) => [t.alt, i * EXIT_STAGGER_PCT]),
+);
+
 // ViewBox extent — derived from every tile's bounding box. The
 // vertical bounds are padded by WALL_OVERHANG so the back/front
 // wall apexes (which always land at yMin/yMax in screen space)
@@ -191,194 +203,239 @@ const BOT_WALL_H = yMax - BIG_W / 2;
 
 export function IsometricStack({ class: cls = "" }: { class?: string }) {
   return (
-    <svg
-      role="img"
-      aria-label="Cluster of isometric panels: four AI agents above Claw Patrol, four downstream tools below it"
-      viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
-      class={`block -my-24 ${cls}`}
-    >
-      <style>
-        {`
+    <div class={`iso-stack-wrap block -my-24 ${cls}`}>
+      <svg
+        role="img"
+        aria-label="Cluster of isometric panels: four AI agents above Claw Patrol, four downstream tools below it"
+        viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
+        class="iso-stack-svg block h-full w-auto md:h-auto md:w-full"
+      >
+        <style>
+          {
+            /*css*/ `
           @keyframes iso-tile-enter {
             from { opacity: 0; transform: translateY(28px); }
             to   { opacity: 1; transform: translateY(0); }
           }
+          @keyframes iso-tile-exit {
+            from { opacity: 1; transform: translateY(0); }
+            to   { opacity: 0; transform: translateY(-40px); }
+          }
+          @keyframes iso-wall-fade {
+            from { opacity: 1; }
+            to   { opacity: 0; }
+          }
           .iso-tile {
             animation: iso-tile-enter 950ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+            animation-delay: var(--enter-delay, 0ms);
+          }
+          @supports (animation-timeline: view()) {
+            /* Named view-timeline lives on HeroSection (.iso-stack-host),
+               not on the iso stack itself. The iso stack's parent uses
+               position: sticky, which freezes its bounding rect while
+               it's pinned — that would prevent view() progress.
+               HeroSection scrolls normally, so its view timeline
+               progresses through the user's whole scroll past the
+               hero, and inner tiles/walls resolve --iso-stack from
+               this ancestor. Gated to below md; the effect doesn't
+               do anything at desktop widths. */
+            @media (max-width: 767.98px) {
+              .iso-stack-host {
+                view-timeline-name: --iso-stack;
+                view-timeline-axis: block;
+              }
+              .iso-tile {
+                animation:
+                  iso-tile-enter 950ms cubic-bezier(0.22, 1, 0.36, 1) backwards,
+                  iso-tile-exit linear forwards;
+                animation-delay: var(--enter-delay, 0ms), 0s;
+                animation-timeline: auto, --iso-stack;
+                animation-range:
+                  normal,
+                  cover calc(var(--exit-offset, 0) * 1% + 30%) cover calc(var(--exit-offset, 0) * 1% + 55%);
+              }
+              .iso-wall {
+                animation: iso-wall-fade linear forwards;
+                animation-timeline: --iso-stack;
+                animation-range: cover 23% cover 55%;
+              }
+            }
           }
           @media (prefers-reduced-motion: reduce) {
-            .iso-tile { animation: none; }
+            .iso-tile, .iso-wall { animation: none; }
           }
-        `}
-      </style>
-      {/* Two back walls — vertical 3D planes that contain CP's
+        `
+          }
+        </style>
+        {/* Two back walls — vertical 3D planes that contain CP's
           W-N and N-E top-face edges, extended both up (over the
           top cluster) and down (through CP into the bottom
           cluster). Each gradient peaks opaque near CP and fades
           toward both the top and bottom apex of the wall. Color
           per wall is for visual ID — unify later. */}
-      <defs>
-        {/* Back walls share a darker navy, front walls share a
+        <defs>
+          {/* Back walls share a darker navy, front walls share a
             lighter step — two shades total, suggesting the back of
             the box recedes into shadow. Each gradient peaks at the
             CP midline (~y=0) and fades to nearly transparent at
             both apexes. */}
-        <linearGradient
-          id="wallBackLeft"
-          x1="0"
-          y1={yMin}
-          x2="0"
-          y2={yMax}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop
-            offset="0%"
-            stop-color="var(--color-navy-100)"
-            stop-opacity="0"
-          />
-          <stop
-            offset="50%"
-            stop-color="var(--color-navy-100)"
-            stop-opacity="0.18"
-          />
-          <stop
-            offset="100%"
-            stop-color="var(--color-navy-100)"
-            stop-opacity="0"
-          />
-        </linearGradient>
-        <linearGradient
-          id="wallBackRight"
-          x1="0"
-          y1={yMin}
-          x2="0"
-          y2={yMax}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop
-            offset="0%"
-            stop-color="var(--color-navy-300)"
-            stop-opacity="0"
-          />
-          <stop
-            offset="50%"
-            stop-color="var(--color-navy-300)"
-            stop-opacity="0.18"
-          />
-          <stop
-            offset="100%"
-            stop-color="var(--color-navy-300)"
-            stop-opacity="0"
-          />
-        </linearGradient>
-        <linearGradient
-          id="wallFrontLeft"
-          x1="0"
-          y1={yMin}
-          x2="0"
-          y2={yMax}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop
-            offset="0%"
-            stop-color="var(--color-navy-50)"
-            stop-opacity="0"
-          />
-          <stop
-            offset="50%"
-            stop-color="var(--color-navy-50)"
-            stop-opacity="0.18"
-          />
-          <stop
-            offset="100%"
-            stop-color="var(--color-navy-50)"
-            stop-opacity="0"
-          />
-        </linearGradient>
-        <linearGradient
-          id="wallFrontRight"
-          x1="0"
-          y1={yMin}
-          x2="0"
-          y2={yMax}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop
-            offset="0%"
-            stop-color="var(--color-navy-200)"
-            stop-opacity="0"
-          />
-          <stop
-            offset="50%"
-            stop-color="var(--color-navy-200)"
-            stop-opacity="0.18"
-          />
-          <stop
-            offset="100%"
-            stop-color="var(--color-navy-200)"
-            stop-opacity="0"
-          />
-        </linearGradient>
-      </defs>
-      {/* Back walls — two big parallelograms along CP's back-left
+          <linearGradient
+            id="wallBackLeft"
+            x1="0"
+            y1={yMin}
+            x2="0"
+            y2={yMax}
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop
+              offset="0%"
+              stop-color="var(--color-navy-100)"
+              stop-opacity="0"
+            />
+            <stop
+              offset="50%"
+              stop-color="var(--color-navy-100)"
+              stop-opacity="0.18"
+            />
+            <stop
+              offset="100%"
+              stop-color="var(--color-navy-100)"
+              stop-opacity="0"
+            />
+          </linearGradient>
+          <linearGradient
+            id="wallBackRight"
+            x1="0"
+            y1={yMin}
+            x2="0"
+            y2={yMax}
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop
+              offset="0%"
+              stop-color="var(--color-navy-300)"
+              stop-opacity="0"
+            />
+            <stop
+              offset="50%"
+              stop-color="var(--color-navy-300)"
+              stop-opacity="0.18"
+            />
+            <stop
+              offset="100%"
+              stop-color="var(--color-navy-300)"
+              stop-opacity="0"
+            />
+          </linearGradient>
+          <linearGradient
+            id="wallFrontLeft"
+            x1="0"
+            y1={yMin}
+            x2="0"
+            y2={yMax}
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop
+              offset="0%"
+              stop-color="var(--color-navy-50)"
+              stop-opacity="0"
+            />
+            <stop
+              offset="50%"
+              stop-color="var(--color-navy-50)"
+              stop-opacity="0.18"
+            />
+            <stop
+              offset="100%"
+              stop-color="var(--color-navy-50)"
+              stop-opacity="0"
+            />
+          </linearGradient>
+          <linearGradient
+            id="wallFrontRight"
+            x1="0"
+            y1={yMin}
+            x2="0"
+            y2={yMax}
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop
+              offset="0%"
+              stop-color="var(--color-navy-200)"
+              stop-opacity="0"
+            />
+            <stop
+              offset="50%"
+              stop-color="var(--color-navy-200)"
+              stop-opacity="0.18"
+            />
+            <stop
+              offset="100%"
+              stop-color="var(--color-navy-200)"
+              stop-opacity="0"
+            />
+          </linearGradient>
+        </defs>
+        {/* Back walls — two big parallelograms along CP's back-left
           (W-N) and back-right (N-E) edges, extending the full
           height of the viewBox (up to enclose the top cluster,
           down through CP into the bottom cluster). Drawn first,
           behind everything. */}
-      <g aria-hidden="true">
-        {/* Back-left wall (3D plane at x=-65), full vertical extent */}
-        <polygon
-          fill="url(#wallBackLeft)"
-          points={`0,${
-            -BIG_W / 2 - TOP_WALL_H
-          } ${-BIG_W},${-TOP_WALL_H} ${-BIG_W},${BOT_WALL_H} 0,${
-            -BIG_W / 2 + BOT_WALL_H
-          }`}
-        />
-        {/* Back-right wall (3D plane at y=-65), full vertical extent */}
-        <polygon
-          fill="url(#wallBackRight)"
-          points={`0,${
-            -BIG_W / 2 - TOP_WALL_H
-          } ${BIG_W},${-TOP_WALL_H} ${BIG_W},${BOT_WALL_H} 0,${
-            -BIG_W / 2 + BOT_WALL_H
-          }`}
-        />
-      </g>
+        <g aria-hidden="true" class="iso-wall">
+          {/* Back-left wall (3D plane at x=-65), full vertical extent */}
+          <polygon
+            fill="url(#wallBackLeft)"
+            points={`0,${
+              -BIG_W / 2 - TOP_WALL_H
+            } ${-BIG_W},${-TOP_WALL_H} ${-BIG_W},${BOT_WALL_H} 0,${
+              -BIG_W / 2 + BOT_WALL_H
+            }`}
+          />
+          {/* Back-right wall (3D plane at y=-65), full vertical extent */}
+          <polygon
+            fill="url(#wallBackRight)"
+            points={`0,${
+              -BIG_W / 2 - TOP_WALL_H
+            } ${BIG_W},${-TOP_WALL_H} ${BIG_W},${BOT_WALL_H} 0,${
+              -BIG_W / 2 + BOT_WALL_H
+            }`}
+          />
+        </g>
 
-      {/* Bottom cluster — drawn after back walls so the tiles
+        {/* Bottom cluster — drawn after back walls so the tiles
           appear in front of the walls. */}
-      {BOTTOM_CLUSTER.map((t) => (
-        <Tile key={t.alt} tile={t} />
-      ))}
+        {BOTTOM_CLUSTER.map((t) => (
+          <Tile key={t.alt} tile={t} />
+        ))}
 
-      <Tile tile={CP_TILE} />
+        <Tile tile={CP_TILE} />
 
-      {/* Top cluster — drawn before front walls. */}
-      {TOP_CLUSTER.map((t) => (
-        <Tile key={t.alt} tile={t} />
-      ))}
+        {/* Top cluster — drawn before front walls. */}
+        {TOP_CLUSTER.map((t) => (
+          <Tile key={t.alt} tile={t} />
+        ))}
 
-      {/* Front walls — two big parallelograms along CP's front-left
+        {/* Front walls — two big parallelograms along CP's front-left
           (W-S) and front-right (S-E) edges, full vertical extent.
           Drawn last so they wash over every tile from in front. */}
-      <g aria-hidden="true">
-        {/* Front-left wall (3D plane at y=65), full vertical extent */}
-        <polygon
-          fill="url(#wallFrontLeft)"
-          points={`${-BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
-            BIG_W / 2 + BOT_WALL_H
-          } ${-BIG_W},${BOT_WALL_H}`}
-        />
-        {/* Front-right wall (3D plane at x=65), full vertical extent */}
-        <polygon
-          fill="url(#wallFrontRight)"
-          points={`${BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
-            BIG_W / 2 + BOT_WALL_H
-          } ${BIG_W},${BOT_WALL_H}`}
-        />
-      </g>
-    </svg>
+        <g aria-hidden="true" class="iso-wall">
+          {/* Front-left wall (3D plane at y=65), full vertical extent */}
+          <polygon
+            fill="url(#wallFrontLeft)"
+            points={`${-BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
+              BIG_W / 2 + BOT_WALL_H
+            } ${-BIG_W},${BOT_WALL_H}`}
+          />
+          {/* Front-right wall (3D plane at x=65), full vertical extent */}
+          <polygon
+            fill="url(#wallFrontRight)"
+            points={`${BIG_W},${-TOP_WALL_H} 0,${BIG_W / 2 - TOP_WALL_H} 0,${
+              BIG_W / 2 + BOT_WALL_H
+            } ${BIG_W},${BOT_WALL_H}`}
+          />
+        </g>
+      </svg>
+    </div>
   );
 }
 
@@ -409,7 +466,10 @@ function Tile({ tile }: { tile: Tile }) {
   return (
     <g
       class="iso-tile"
-      style={{ animationDelay: `${TILE_DELAY[tile.alt] ?? 0}ms` }}
+      style={{
+        ["--enter-delay" as string]: `${TILE_DELAY[tile.alt] ?? 0}ms`,
+        ["--exit-offset" as string]: EXIT_OFFSET[tile.alt] ?? 0,
+      }}
     >
       <polygon
         points={`${left} ${leftB} ${bottomB} ${bottom}`}

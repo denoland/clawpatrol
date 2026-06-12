@@ -9,12 +9,11 @@ import { approver_human, approver_llm } from "../lib/examples";
    Approvers — deepens the `require_llm` and `require_human` verdicts
    that RulesSection introduces.
 
-   Both cards share an identical skeleton:
-     1. header (title + verdict code)
-     2. one-line pitch
-     3. HCL snippet (top half)
-     4. a stylized "in practice" panel (bottom half) — same 3-row flow
-        for both: incoming → response → verdict pill
+   Both cards share the same outer skeleton (header + pitch + HCL
+   snippet), then drop into a stylized "in practice" diagram below.
+   The two diagrams diverge intentionally: LlmDiagram is an incoming
+   request + a single AI verdict line; HumanDiagram is a three-message
+   Slack-style thread.
    ──────────────────────────────────────────────────────────────────── */
 
 const LLM_CONFIG = snippet(approver_llm);
