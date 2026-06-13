@@ -164,7 +164,10 @@ func setupNamespaceRoot(spec Spec) error {
 	// invisible to the host; the host tree stays visible for
 	// resolving bind sources until pivot_root.
 	root := "/tmp/.cproot-" + filepath.Base(spec.SocketDir)
-	if err := os.Mkdir(root, 0o755); err != nil && !os.IsExist(err) {
+	// Do not tolerate EEXIST: the suffix is the unique socket-dir
+	// basename, so a collision means a leftover or a planted entry
+	// (e.g. a symlink the following mount would chase). Fail instead.
+	if err := os.Mkdir(root, 0o755); err != nil {
 		return err
 	}
 	if err := unix.Mount("tmpfs", root, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=0755"); err != nil {
@@ -187,21 +190,32 @@ func setupNamespaceRoot(spec Spec) error {
 		}
 	}
 
-	// Minimal /dev: file-binds of the harmless device nodes.
+	// Minimal /dev: file-binds of the harmless device nodes. The
+	// writable ones (/dev/null, /dev/zero, /dev/full) are no-ops to
+	// the host; the random sources are read-only.
 	if err := os.MkdirAll(root+"/dev", 0o755); err != nil {
 		return err
 	}
-	for _, dev := range []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"} {
+	for _, dev := range []string{"/dev/null", "/dev/zero", "/dev/full"} {
 		if err := bindIntoRoot(root, bind{src: dev, ro: false}); err != nil {
+			return err
+		}
+	}
+	for _, dev := range []string{"/dev/random", "/dev/urandom"} {
+		if err := bindIntoRoot(root, bind{src: dev, ro: true}); err != nil {
 			return err
 		}
 	}
 
 	// Fresh /proc scoped to the new pid namespace (we are its pid 1).
+	// subset=pid drops the global, non-pid procfs files (/proc/sys,
+	// /proc/kallsyms, kernel config and version) so the plugin sees
+	// only per-process dirs; hidepid=2 hides even those for pids it
+	// doesn't own (it owns only itself here).
 	if err := os.MkdirAll(root+"/proc", 0o555); err != nil {
 		return err
 	}
-	if err := unix.Mount("proc", root+"/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+	if err := unix.Mount("proc", root+"/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "subset=pid,hidepid=2"); err != nil {
 		return fmt.Errorf("mount /proc: %w", err)
 	}
 
@@ -304,29 +318,16 @@ func bindIntoRoot(root string, b bind) error {
 	return nil
 }
 
-// remountRO flips a fresh bind mount read-only. The remount must
-// preserve every flag the kernel locked when our mount namespace was
-// cloned from the host's (can_change_locked_flags in fs/namespace.c):
-// locked nosuid/nodev/noexec may not be cleared and atime flags must
-// match exactly, so the current flags are read back via statfs and
-// carried over.
+// remountRO makes a fresh recursive bind mount read-only, including
+// every submount. A plain MS_REMOUNT only flips the top mount, leaving
+// nested mounts under a bound directory writable; mount_setattr with
+// AT_RECURSIVE applies the attributes down the whole subtree (and is
+// the only way to recursively set read-only). nosuid/nodev are set
+// too. The plugin holds no capabilities by exec time, so it cannot
+// revert this.
 func remountRO(target string) error {
-	var st unix.Statfs_t
-	if err := unix.Statfs(target, &st); err != nil {
-		return err
+	attr := &unix.MountAttr{
+		Attr_set: unix.MOUNT_ATTR_RDONLY | unix.MOUNT_ATTR_NOSUID | unix.MOUNT_ATTR_NODEV,
 	}
-	flags := uintptr(unix.MS_REMOUNT | unix.MS_BIND | unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV)
-	if st.Flags&unix.ST_NOEXEC != 0 {
-		flags |= unix.MS_NOEXEC
-	}
-	if st.Flags&unix.ST_NOATIME != 0 {
-		flags |= unix.MS_NOATIME
-	}
-	if st.Flags&unix.ST_NODIRATIME != 0 {
-		flags |= unix.MS_NODIRATIME
-	}
-	if st.Flags&unix.ST_RELATIME != 0 {
-		flags |= unix.MS_RELATIME
-	}
-	return unix.Mount("", target, "", flags, "")
+	return unix.MountSetattr(unix.AT_FDCWD, target, unix.AT_RECURSIVE, attr)
 }

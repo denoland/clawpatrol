@@ -44,11 +44,10 @@ func canRead(path string) (bool, string) {
 	if path == "" {
 		return false, "no path"
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := os.ReadFile(path); err != nil {
 		return false, err.Error()
 	}
-	return len(b) >= 0, ""
+	return true, ""
 }
 
 func canDial(addr string) bool {

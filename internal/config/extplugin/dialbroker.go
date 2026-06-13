@@ -74,19 +74,26 @@ func (d *brokeredDial) close() {
 // dialRegistry tracks the open brokered dials of one HandleConn
 // stream.
 type dialRegistry struct {
-	mu sync.Mutex
-	m  map[string]*brokeredDial
+	mu     sync.Mutex
+	m      map[string]*brokeredDial
+	closed bool
 }
 
 func newDialRegistry() *dialRegistry {
 	return &dialRegistry{m: map[string]*brokeredDial{}}
 }
 
-// add registers a new dial slot. Errors when the id is taken or the
-// concurrency cap is reached.
+// add registers a new dial slot. Errors when the registry has been
+// closed (the stream is tearing down), the id is taken, or the
+// concurrency cap is reached. Refusing after close closes the race
+// where a handleDialRequest goroutine spawned just before closeAll
+// would otherwise open an upstream that nothing tracks or tears down.
 func (r *dialRegistry) add(id string) (*brokeredDial, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil, fmt.Errorf("connection is closing")
+	}
 	if id == "" {
 		return nil, fmt.Errorf("empty dial_id")
 	}
@@ -121,6 +128,7 @@ func (r *dialRegistry) remove(id string) {
 // stream ends.
 func (r *dialRegistry) closeAll() {
 	r.mu.Lock()
+	r.closed = true
 	dials := make([]*brokeredDial, 0, len(r.m))
 	for _, d := range r.m {
 		dials = append(dials, d)
@@ -291,11 +299,14 @@ func handleDialRequest(ctx context.Context, ch *runtime.ConnHandle, reg *dialReg
 	}
 	d.setConn(up)
 
-	// The done channel may already be closed (stream torn down while
-	// we were dialing); close() above then races setConn. Re-check.
+	// The done channel may already be closed (the stream tore down
+	// while we were dialing). A real upstream was opened, so audit it
+	// before dropping it.
 	select {
 	case <-d.done:
+		emit("allow", "connection closed before use")
 		_ = up.Close()
+		reg.remove(req.DialId)
 		return
 	default:
 	}

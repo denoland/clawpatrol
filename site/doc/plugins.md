@@ -164,6 +164,14 @@ protocol; against an older gateway it returns
 hanging), and the plugin must fall back to its own `net.Dial` with an
 operator-granted `network = "outbound"`.
 
+Brokered dials and the agent connection are multiplexed over one
+gRPC stream, so a plugin must keep reading every dial it opens
+concurrently with the agent connection. A plugin that opens a dial
+and then stops reading it can stall its own connection's other
+traffic (other dials, audit events, the agent response). This only
+affects the one connection the plugin is handling, but a misbehaving
+plugin can wedge itself — drain your dial conns.
+
 ## Writing a plugin
 
 Plugins are ordinary Go programs. The author SDK lives at

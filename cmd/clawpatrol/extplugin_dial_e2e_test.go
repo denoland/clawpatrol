@@ -206,6 +206,9 @@ func runDemoHTTPSRequest(t *testing.T, policy *config.CompiledPolicy, h *dialE2E
 			t.Fatal("plugin HandleConn did not exit")
 		}
 	}
+	// Localize a hang (plugin never responds) to this test instead of
+	// the whole-binary timeout.
+	_ = clientTLS.SetReadDeadline(time.Now().Add(10 * time.Second))
 	resp, err := http.ReadResponse(bufio.NewReader(clientTLS), req)
 	if err != nil {
 		waitDone()

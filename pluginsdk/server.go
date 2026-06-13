@@ -600,6 +600,11 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 			}
 		case <-ctx.Done():
 			unregister()
+			// The gateway may have already opened the upstream and a
+			// reply may be racing in; tell it to tear the dial down
+			// now rather than leaking it until the idle timeout. The
+			// conn itself is still up, so this send is worthwhile.
+			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_DialClose{DialClose: &pb.DialUpstreamClose{DialId: id}}})
 			return nil, ctx.Err()
 		case <-closed:
 			unregister()

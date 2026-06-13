@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -63,8 +64,20 @@ func runNosyProbe(t *testing.T, sandboxMode, network string, extraGrants string)
 	if err := os.WriteFile(secretPath, []byte("top-secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	home, _ := os.UserHomeDir()
-	hostHomeFile := filepath.Join(home, ".clawpatrol")
+	// A deterministic marker in the gateway user's real home. The
+	// plugin's HOME env points at its private tmp, so it can only
+	// reach this via the baked-in absolute path — which the sandbox
+	// must block. Created in $HOME (not a temp dir) precisely so the
+	// home-isolation assertion is meaningful.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	hostHomeFile := filepath.Join(home, fmt.Sprintf(".cp-sandbox-probe-%d", nosyInstance.Add(1)))
+	if err := os.WriteFile(hostHomeFile, []byte("home-secret"), 0o600); err != nil {
+		t.Fatalf("write host-home marker: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(hostHomeFile) })
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -154,19 +167,32 @@ func TestNosyPluginBlockedUnderSandbox(t *testing.T) {
 				t.Error("plugin read the gateway's secret-marker file")
 			}
 			if r.HostHome {
-				t.Error("plugin read the host home directory")
+				t.Error("plugin read the host home marker")
 			}
 			if r.OutboundOK {
 				t.Error("plugin made an outbound connection under network=none")
 			}
-			if r.LoopbackOK {
-				t.Error("plugin reached a host-network loopback listener under network=none")
-			}
-			// Landlock can restrict TCP only at ABI >= 4; below that
-			// the dial probes may succeed. The filesystem assertions
+			// The loopback target is the test's own in-process
+			// listener (deterministic, firewall-independent), so this
+			// is the load-bearing network-isolation assertion.
+			// Landlock restricts TCP only at ABI >= 4; below that the
+			// dial may succeed, so gate it. The filesystem assertions
 			// above always hold.
-			if mode == string(sandbox.ModeLandlock) && av.LandlockABI < 4 {
-				t.Logf("Landlock ABI %d < 4: network restriction not asserted", av.LandlockABI)
+			assertNet := mode != string(sandbox.ModeLandlock) || av.LandlockABI >= 4
+			if assertNet {
+				if r.LoopbackOK {
+					t.Error("plugin reached a host-network loopback listener under network=none")
+				}
+			} else {
+				t.Logf("Landlock ABI %d < 4: TCP restriction not asserted", av.LandlockABI)
+			}
+			// /proc/1/cmdline: under namespaces the plugin is pid 1 of
+			// its own pid namespace reading its own cmdline (benign).
+			// Under Landlock there is no pid namespace, so reading host
+			// /proc/1 must be blocked by the absence of a filesystem
+			// grant (ABI-independent).
+			if mode == string(sandbox.ModeLandlock) && r.ProcInitOK {
+				t.Error("plugin read host /proc/1/cmdline under Landlock")
 			}
 		})
 	}
@@ -174,7 +200,9 @@ func TestNosyPluginBlockedUnderSandbox(t *testing.T) {
 
 // TestNosyPluginUnsandboxedProbesSucceed guards against vacuous
 // passes: with sandbox = "off" the probes must actually succeed, so a
-// blocked result under enforcement is meaningful.
+// blocked result under enforcement is meaningful. The loopback dial
+// and the host-home read are deterministic; the public outbound dial
+// is not asserted (CI egress may block it).
 func TestNosyPluginUnsandboxedProbesSucceed(t *testing.T) {
 	r, mode := runNosyProbe(t, "off", "outbound", "")
 	if mode != string(sandbox.ModeOff) {
@@ -184,7 +212,49 @@ func TestNosyPluginUnsandboxedProbesSucceed(t *testing.T) {
 		t.Error("unsandboxed plugin could not read the secret file (probe is broken)")
 	}
 	if !r.HostHome {
-		t.Log("host home marker absent; skipping host-home positive assertion")
+		t.Error("unsandboxed plugin could not read the host-home marker (probe is broken)")
+	}
+	if !r.LoopbackOK {
+		t.Error("unsandboxed plugin could not reach the loopback listener (network probe is broken)")
+	}
+}
+
+// TestSandboxFailClosed verifies the headline property: when no
+// sandbox backend can be established and the operator did not opt
+// out, the plugin block fails config load with a diagnostic that
+// names the cause and the sandbox = "off" escape hatch. An unknown
+// forced backend stands in for "no backend works" on any host.
+func TestSandboxFailClosed(t *testing.T) {
+	t.Setenv(sandbox.EnvBackend, "frobnicate")
+
+	pluginPath, pluginName := buildNosyPlugin(t, filepath.Join(t.TempDir(), "x"), filepath.Join(t.TempDir(), "y"), "127.0.0.1:1")
+
+	mgr := extplugin.New(nil)
+	config.SetPluginLoader(mgr)
+	t.Cleanup(func() {
+		mgr.Stop()
+		config.SetPluginLoader(nil)
+	})
+
+	hcl := fmt.Sprintf(`
+plugin %q { source = %q }
+
+gateway {
+  state_dir  = "/tmp/clawpatrol-test"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+`, pluginName, pluginPath)
+
+	_, diags := config.LoadBytes([]byte(hcl), "fail-closed-test.hcl")
+	if !diags.HasErrors() {
+		t.Fatal("config load succeeded despite no available sandbox backend")
+	}
+	msg := diags.Error()
+	for _, want := range []string{"cannot establish a sandbox", `sandbox = "off"`, pluginName} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("diagnostic %q does not contain %q", msg, want)
+		}
 	}
 }
 
