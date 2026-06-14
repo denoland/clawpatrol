@@ -94,6 +94,34 @@ func TestDashboardLoginGetDoesNotMintSession(t *testing.T) {
 	}
 }
 
+func TestDashboardLoginUsesConfiguredBranding(t *testing.T) {
+	cfg := &config.Gateway{Settings: &config.GatewaySettings{
+		DashboardName:    "Acme Gateway",
+		DashboardLogoURL: "https://assets.example.test/acme-logo.svg",
+		DashboardIconURL: "https://assets.example.test/acme-icon.svg",
+	}}
+	w := newDashboardTestMux(t, cfg, "correct-horse-battery-staple")
+
+	r := httptest.NewRequest(http.MethodGet, "/__login", nil)
+	rw := httptest.NewRecorder()
+	w.apiDashboardLogin(rw, r)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rw.Code, http.StatusOK)
+	}
+	body := rw.Body.String()
+	for _, want := range []string{
+		"Log in — Acme Gateway",
+		`href="https://assets.example.test/acme-icon.svg"`,
+		`src="https://assets.example.test/acme-logo.svg"`,
+		`alt="Acme Gateway"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestDashboardLoginRejectsProtocolRelativeNext(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -57,6 +57,12 @@ type webMux struct {
 	stateCache   map[string]stateCacheEntry
 }
 
+type dashboardBranding struct {
+	Name    string `json:"name"`
+	LogoURL string `json:"logo_url"`
+	IconURL string `json:"icon_url"`
+}
+
 type authRequirement int
 
 const (
@@ -322,6 +328,22 @@ func (w *webMux) dashboardSessionTTL() time.Duration {
 	return d
 }
 
+func (w *webMux) dashboardBranding() dashboardBranding {
+	cfg := w.g.cfg.Load()
+	if cfg == nil {
+		return dashboardBranding{
+			Name:    config.DefaultDashboardName,
+			LogoURL: config.DefaultDashboardLogoURL,
+			IconURL: config.DefaultDashboardIconURL,
+		}
+	}
+	return dashboardBranding{
+		Name:    cfg.DashboardName(),
+		LogoURL: cfg.DashboardLogoURL(),
+		IconURL: cfg.DashboardIconURL(),
+	}
+}
+
 func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -446,11 +468,11 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 		if !rootExists {
 			confirm := r.PostFormValue("confirm")
 			if len(password) < dashboardMinPasswordLen {
-				renderLogin(rw, next, fmt.Sprintf("password must be at least %d characters", dashboardMinPasswordLen), true, http.StatusBadRequest)
+				w.renderLogin(rw, next, fmt.Sprintf("password must be at least %d characters", dashboardMinPasswordLen), true, http.StatusBadRequest)
 				return
 			}
 			if password != confirm {
-				renderLogin(rw, next, "passwords do not match", true, http.StatusBadRequest)
+				w.renderLogin(rw, next, "passwords do not match", true, http.StatusBadRequest)
 				return
 			}
 			if err := setDashboardUser(w.g.db, dashboardRootUsername, password); err != nil {
@@ -472,7 +494,7 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !ok {
-			renderLogin(rw, next, "wrong password", false, http.StatusUnauthorized)
+			w.renderLogin(rw, next, "wrong password", false, http.StatusUnauthorized)
 			return
 		}
 		if err := w.mintAndSetSessionCookie(rw, dashboardRootUsername); err != nil {
@@ -482,7 +504,7 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
-	renderLogin(rw, next, "", !rootExists, http.StatusOK)
+	w.renderLogin(rw, next, "", !rootExists, http.StatusOK)
 }
 
 // apiDashboardLogout revokes the cp_session cookie (server- and
@@ -541,14 +563,15 @@ func (w *webMux) mintAndSetSessionCookie(rw http.ResponseWriter, username string
 	return nil
 }
 
-func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, status int) {
+func (w *webMux) renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, status int) {
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(status)
 	_ = loginTpl.Execute(rw, struct {
 		Next     string
 		Error    string
 		FirstRun bool
-	}{next, errMsg, firstRun})
+		Branding dashboardBranding
+	}{next, errMsg, firstRun, w.dashboardBranding()})
 }
 
 // tailnetGate runs downstream of dashboardAuthGate. Three jobs:
@@ -1158,6 +1181,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"update":                  currentUpdateBanner.Load(),
 		"config_file":             filepath.Base(w.g.cfgPath),
 		"dashboard_config_writes": w.g.cfg.Load().DashboardConfigWrites(),
+		"branding":                w.dashboardBranding(),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {

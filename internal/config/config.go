@@ -29,6 +29,10 @@ const (
 	// declaring a higher version are rejected with an "upgrade
 	// clawpatrol" error rather than a wall of decode noise.
 	MaxSchemaVersion = 1
+
+	DefaultDashboardName    = "Claw Patrol"
+	DefaultDashboardLogoURL = "/claw-patrol-logo.svg"
+	DefaultDashboardIconURL = "/claw-patrol-icon.svg"
 )
 
 // schemaVersionSchema matches just the top-level `schema_version`
@@ -162,6 +166,20 @@ type GatewaySettings struct {
 	// append generated config snippets to the gateway HCL. Default
 	// false: config remains read-only and changes happen out-of-band.
 	DashboardConfigWrites bool `hcl:"dashboard_config_writes,optional"`
+
+	// DashboardName customizes the product name shown in dashboard UI.
+	// Empty uses DefaultDashboardName.
+	DashboardName string `hcl:"dashboard_name,optional"`
+
+	// DashboardLogoURL customizes the logo image shown in dashboard UI.
+	// Absolute URLs, data URLs, and same-origin paths are accepted.
+	// Empty uses DefaultDashboardLogoURL.
+	DashboardLogoURL string `hcl:"dashboard_logo_url,optional"`
+
+	// DashboardIconURL customizes the compact logo / favicon used by
+	// the dashboard. Empty falls back to DashboardLogoURL when set, then
+	// DefaultDashboardIconURL.
+	DashboardIconURL string `hcl:"dashboard_icon_url,optional"`
 
 	// Resolver is the DNS resolver address the gateway uses for
 	// upstream lookups when the runtime needs an explicit resolver.
@@ -358,6 +376,37 @@ func (g *Gateway) DashboardListen() string { return g.settings().DashboardListen
 // mutations are enabled for this gateway.
 func (g *Gateway) DashboardConfigWrites() bool {
 	return g != nil && g.Settings != nil && g.Settings.DashboardConfigWrites
+}
+
+// DashboardName returns the configured dashboard display name, or the
+// built-in product name when unset.
+func (g *Gateway) DashboardName() string {
+	if v := strings.TrimSpace(g.settings().DashboardName); v != "" {
+		return v
+	}
+	return DefaultDashboardName
+}
+
+// DashboardLogoURL returns the configured dashboard logo URL, or the
+// bundled logo when unset.
+func (g *Gateway) DashboardLogoURL() string {
+	if v := strings.TrimSpace(g.settings().DashboardLogoURL); v != "" {
+		return v
+	}
+	return DefaultDashboardLogoURL
+}
+
+// DashboardIconURL returns the configured compact logo URL. When the
+// operator configured only a full logo, reuse it so custom branding
+// doesn't fall back to the bundled claw icon on narrow screens.
+func (g *Gateway) DashboardIconURL() string {
+	if v := strings.TrimSpace(g.settings().DashboardIconURL); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(g.settings().DashboardLogoURL); v != "" {
+		return v
+	}
+	return DefaultDashboardIconURL
 }
 
 // StateDir returns the configured state directory, or empty string.

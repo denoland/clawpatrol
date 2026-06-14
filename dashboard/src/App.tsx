@@ -13,7 +13,14 @@ import { OnboardPage } from "./components/OnboardPage";
 import { PageTitle } from "./components/PageTitle";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
-import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
+import {
+  getState,
+  type Agent,
+  type DashboardBranding,
+  type Integration,
+  type UpdateBanner,
+  type Whoami,
+} from "./lib/api";
 
 type Route =
   | { name: "main" }
@@ -55,6 +62,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
+  const [branding, setBranding] = useState<DashboardBranding | null>(null);
   const [configFile, setConfigFile] = useState<string>("gateway.hcl");
   const [connectId, setConnectId] = useState<string | null>(null);
   const [route, setRoute] = useState(parseRoute());
@@ -75,6 +83,7 @@ export default function App() {
       setAgents(s.agents || []);
       setWhoami(s.whoami);
       setUpdate(s.update ?? null);
+      setBranding(s.branding ?? null);
       if (s.config_file) setConfigFile(s.config_file);
     } catch {
       /* swallow */
@@ -87,6 +96,12 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    document.title = branding?.name?.trim() || "Claw Patrol";
+  }, [branding]);
+
+  const productName = branding?.name?.trim() || "Claw Patrol";
+
   function navigate(hash: string) {
     window.location.hash = hash;
     setRoute(parseRoute());
@@ -94,8 +109,8 @@ export default function App() {
 
   return (
     <div className="flex flex-col min-h-screen bg-canvas">
-      <UpdateNotice update={update} />
-      <Header whoami={whoami} currentRoute={route.name} />
+      <UpdateNotice update={update} productName={productName} />
+      <Header branding={branding} whoami={whoami} currentRoute={route.name} />
       {route.name === "main" ? (
         <Main>
           <PageTitle trail={[{ label: "Live overview" }]} />
@@ -117,7 +132,7 @@ export default function App() {
       ) : route.name === "analytics" ? (
         <AnalyticsPage ip={route.ip} agents={agents} />
       ) : route.name === "request" ? (
-        <RequestDetailPage id={route.id} agents={agents} />
+        <RequestDetailPage id={route.id} agents={agents} productName={productName} />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} />
       ) : route.name === "settings" ? (
@@ -134,6 +149,7 @@ export default function App() {
           agents={agents}
           integrations={integrations}
           configFile={configFile}
+          productName={productName}
           onBack={() => navigate("")}
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
@@ -197,7 +213,13 @@ function HomeAgents({
   );
 }
 
-function UpdateNotice({ update }: { update: UpdateBanner | null }) {
+function UpdateNotice({
+  update,
+  productName,
+}: {
+  update: UpdateBanner | null;
+  productName: string;
+}) {
   if (!update?.update_available) return null;
   const dismissKey = "clawpatrol:update-dismissed:" + update.latest;
   const [dismissed, setDismissed] = useState(
@@ -207,7 +229,9 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   return (
     <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-4 py-2 text-xs text-text flex items-center justify-between gap-3">
       <div className="flex-1">
-        <span className="font-semibold">Claw Patrol {update.latest}</span>
+        <span className="font-semibold">
+          {productName} {update.latest}
+        </span>
         {" available — "}
         <a
           href={update.url}
