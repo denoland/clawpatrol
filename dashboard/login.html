@@ -67,9 +67,23 @@
         padding: 24px;
       }
 
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
       .logo {
         height: 48px;
         width: auto;
+        max-width: 160px;
+      }
+
+      .brand-name {
+        color: var(--color-text);
+        font-family: var(--font-display);
+        font-size: 28px;
+        line-height: 1;
       }
 
       form {
@@ -154,7 +168,10 @@
   </head>
 
   <body>
-    <img src="{{.Branding.LogoURL}}" alt="{{.Branding.Name}}" class="logo" />
+    <div class="brand">
+      <img src="{{.Branding.LogoURL}}" alt="" class="logo" />
+      <span class="brand-name">{{.Branding.Name}}</span>
+    </div>
     <form method="POST" action="/__login?next={{.Next}}">
       {{if .FirstRun}}
       <h1>Set dashboard password</h1>

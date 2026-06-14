@@ -24,14 +24,14 @@ export function Header({
   const devicesActive = currentRoute === "devices" || currentRoute === "device";
   const name = branding?.name?.trim() || "Claw Patrol";
   const logoURL = branding?.logo_url || import.meta.env.BASE_URL + "claw-patrol-logo.svg";
-  const iconURL =
-    branding?.icon_url || branding?.logo_url || import.meta.env.BASE_URL + "claw-patrol-icon.svg";
   return (
     <header className="border-b-1.5 border-b-canvas-muted">
       <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 py-3 flex items-center gap-4">
-        <a href="#/" aria-label={`${name} home`} className="shrink-0">
-          <img src={logoURL} alt={name} className="h-8 w-auto hidden xs:block" />
-          <img src={iconURL} alt={name} className="h-8 w-auto max-w-28 xs:hidden" />
+        <a href="#/" aria-label={`${name} home`} className="shrink-0 flex items-center gap-2">
+          <img src={logoURL} alt="" className="h-8 w-auto max-w-24 sm:max-w-36" />
+          <span className="font-display text-lg sm:text-xl leading-none text-text truncate max-w-[12rem]">
+            {name}
+          </span>
         </a>
         <nav className="ml-auto flex items-center gap-1">
           <NavLink href="#/devices" label="Devices" active={devicesActive}>
