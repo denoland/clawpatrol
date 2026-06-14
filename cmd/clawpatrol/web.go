@@ -1005,7 +1005,50 @@ func (w *webMux) staticHandler() http.Handler {
 			http.Error(rw, "dashboard not built (cd dashboard && npm run build)", 500)
 		})
 	}
-	return http.FileServer(http.FS(sub))
+	files := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.serveDashboardIndex(rw, r, sub)
+			return
+		}
+		files.ServeHTTP(rw, r)
+	})
+}
+
+func (w *webMux) serveDashboardIndex(rw http.ResponseWriter, r *http.Request, dist fs.FS) {
+	index, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		http.Error(rw, "dashboard not built (missing index.html)", http.StatusInternalServerError)
+		return
+	}
+	body := w.dashboardIndexWithBranding(index)
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = rw.Write(body)
+}
+
+func (w *webMux) dashboardIndexWithBranding(index []byte) []byte {
+	branding := w.dashboardBranding()
+	body := bytes.Replace(index,
+		[]byte("<title>Claw Patrol</title>"),
+		[]byte("<title>"+template.HTMLEscapeString(branding.Name)+"</title>"),
+		1,
+	)
+	body = bytes.Replace(body,
+		[]byte(`href="/claw-patrol-icon.svg"`),
+		[]byte(`href="`+template.HTMLEscapeString(branding.IconURL)+`"`),
+		1,
+	)
+	brandJSON, err := json.Marshal(branding)
+	if err != nil {
+		return body
+	}
+	script := []byte("\n    <script>window.__CLAWPATROL_INITIAL_BRANDING__ = " + string(brandJSON) + ";</script>\n  </head>")
+	return bytes.Replace(body, []byte("</head>"), script, 1)
 }
 
 func (w *webMux) serveCA(rw http.ResponseWriter, _ *http.Request) {

@@ -114,10 +114,33 @@ func TestDashboardLoginUsesConfiguredBranding(t *testing.T) {
 		"Log in — Acme Gateway",
 		`href="https://assets.example.test/acme-icon.svg"`,
 		`src="https://assets.example.test/acme-logo.svg"`,
-		`alt="Acme Gateway"`,
+		`<span class="brand-name">Acme Gateway</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDashboardIndexInjectsInitialBranding(t *testing.T) {
+	cfg := &config.Gateway{Settings: &config.GatewaySettings{
+		DashboardName:    "Acme Gateway",
+		DashboardLogoURL: "https://assets.example.test/acme-logo.svg",
+		DashboardIconURL: "https://assets.example.test/acme-icon.svg",
+	}}
+	w := newDashboardTestMux(t, cfg, "correct-horse-battery-staple")
+
+	body := string(w.dashboardIndexWithBranding([]byte(`<!doctype html><html><head><title>Claw Patrol</title><link rel="icon" type="image/svg+xml" href="/claw-patrol-icon.svg" /></head><body></body></html>`)))
+	for _, want := range []string{
+		"<title>Acme Gateway</title>",
+		`href="https://assets.example.test/acme-icon.svg"`,
+		"window.__CLAWPATROL_INITIAL_BRANDING__",
+		`"name":"Acme Gateway"`,
+		`"logo_url":"https://assets.example.test/acme-logo.svg"`,
+		`"icon_url":"https://assets.example.test/acme-icon.svg"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("index missing %q:\n%s", want, body)
 		}
 	}
 }

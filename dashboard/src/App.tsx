@@ -22,6 +22,12 @@ import {
   type Whoami,
 } from "./lib/api";
 
+declare global {
+  interface Window {
+    __CLAWPATROL_INITIAL_BRANDING__?: DashboardBranding;
+  }
+}
+
 type Route =
   | { name: "main" }
   | { name: "devices" }
@@ -62,7 +68,9 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
-  const [branding, setBranding] = useState<DashboardBranding | null>(null);
+  const [branding, setBranding] = useState<DashboardBranding | null>(
+    () => window.__CLAWPATROL_INITIAL_BRANDING__ ?? null,
+  );
   const [configFile, setConfigFile] = useState<string>("gateway.hcl");
   const [connectId, setConnectId] = useState<string | null>(null);
   const [route, setRoute] = useState(parseRoute());
