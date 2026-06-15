@@ -137,9 +137,15 @@ function PluginCard({ p }: { p: Plugin }) {
         <Field label="Source">
           <span className="font-mono text-xs text-text-muted break-all">{p.source}</span>
         </Field>
-        {p.approvedHash && (
+        {p.approvedHashes && p.approvedHashes.length > 0 && (
           <Field label="Approved">
-            <span className="font-mono text-2xs text-text-muted break-all">{p.approvedHash}</span>
+            <div className="flex flex-col gap-0.5">
+              {p.approvedHashes.map((h) => (
+                <span key={h} className="font-mono text-2xs text-text-muted break-all">
+                  {h}
+                </span>
+              ))}
+            </div>
           </Field>
         )}
         <TypeGroup label="Credentials" items={p.credentials} />

@@ -20,8 +20,11 @@ func TestLockStoreRoundTrip(t *testing.T) {
 		t.Fatal("empty store returned an entry")
 	}
 
-	s.put("bravo", "sha256:bbb", "none")
-	s.put("alpha", "sha256:aaa", "outbound")
+	s.addHash("bravo", "sha256:bbb", "none")
+	s.addHash("alpha", "sha256:aaa", "outbound")
+	// A second platform build of alpha — both hashes must coexist.
+	s.addHash("alpha", "sha256:aaa2", "outbound")
+	s.addHash("alpha", "sha256:aaa", "outbound") // duplicate is a no-op
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +34,9 @@ func TestLockStoreRoundTrip(t *testing.T) {
 	if i, j := strings.Index(raw, `"alpha"`), strings.Index(raw, `"bravo"`); i < 0 || j < 0 || i > j {
 		t.Fatalf("entries not sorted by name:\n%s", raw)
 	}
-	if !strings.Contains(raw, `"sha256:aaa"`) || !strings.Contains(raw, `"outbound"`) {
-		t.Fatalf("alpha not recorded:\n%s", raw)
+	if !strings.Contains(raw, `"sha256:aaa"`) || !strings.Contains(raw, `"sha256:aaa2"`) ||
+		!strings.Contains(raw, `"outbound"`) {
+		t.Fatalf("alpha hashes not recorded:\n%s", raw)
 	}
 
 	// Reload into a fresh store.
@@ -42,7 +46,8 @@ func TestLockStoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, ok := s2.get("alpha")
-	if !ok || e.Hash != "sha256:aaa" || e.Network != "outbound" {
+	if !ok || e.Network != "outbound" || len(e.Hashes) != 2 ||
+		!e.hasHash("sha256:aaa") || !e.hasHash("sha256:aaa2") {
 		t.Fatalf("reloaded alpha = %+v, ok=%v", e, ok)
 	}
 }
@@ -53,7 +58,7 @@ func TestLockStoreReadOnlyNeverWrites(t *testing.T) {
 	s := newLockStore()
 	s.configure(path, true) // read-only
 	_ = s.load()
-	s.put("x", "sha256:1", "outbound")
+	s.addHash("x", "sha256:1", "outbound")
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +72,7 @@ func TestLockStoreNoPathIsNoOp(t *testing.T) {
 	if s.active() {
 		t.Fatal("store with no path reports active")
 	}
-	s.put("x", "h", "none")
+	s.addHash("x", "h", "none")
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}

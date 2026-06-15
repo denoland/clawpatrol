@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -26,11 +27,21 @@ import (
 // gateway config.
 const LockfileName = "clawpatrol.lock.hcl"
 
-// lockEntry is one plugin's recorded approval.
+// lockEntry is one plugin's recorded approval. Hashes is a set of
+// approved binary hashes — one per platform build of the approved
+// version(s) — so a single committed lockfile covers a team's
+// different OS/arch hosts (and a future distribution system can
+// pre-populate every platform's hash for a release at once). A binary
+// is approved iff its hash is in this set; they all share Network.
 type lockEntry struct {
-	Name    string `hcl:"name,label"`
-	Hash    string `hcl:"hash"`
-	Network string `hcl:"network"`
+	Name    string   `hcl:"name,label"`
+	Network string   `hcl:"network"`
+	Hashes  []string `hcl:"hashes"`
+}
+
+// hasHash reports whether hash is in the entry's approved set.
+func (e lockEntry) hasHash(hash string) bool {
+	return slices.Contains(e.Hashes, hash)
 }
 
 type lockDoc struct {
@@ -104,11 +115,20 @@ func (s *lockStore) get(name string) (lockEntry, bool) {
 	return e, ok
 }
 
-// put records an approval and marks the store dirty.
-func (s *lockStore) put(name, hash, network string) {
+// addHash records an approval: it adds hash to the plugin's approved
+// set (preserving other platforms' hashes) and sets the approved
+// network. Marks the store dirty.
+func (s *lockStore) addHash(name, hash, network string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[name] = lockEntry{Name: name, Hash: hash, Network: network}
+	e := s.entries[name]
+	e.Name = name
+	e.Network = network
+	if !slices.Contains(e.Hashes, hash) {
+		e.Hashes = append(e.Hashes, hash)
+		sort.Strings(e.Hashes) // stable diffs
+	}
+	s.entries[name] = e
 	s.dirty = true
 }
 
@@ -137,16 +157,25 @@ func (s *lockStore) save() error {
 	body := f.Body()
 	body.AppendUnstructuredTokens(commentTokens(
 		"# clawpatrol plugin permission lockfile — generated; commit this file.",
-		"# Each block records a plugin's binary hash and the approved",
-		"# permissions. An upgrade that escalates beyond the recorded set",
-		"# fails closed until re-approved (clawpatrol plugins approve <name>).",
+		"# Each block records a plugin's approved permissions and the set of",
+		"# approved binary hashes (one per platform build). An upgrade that",
+		"# escalates beyond the recorded permissions fails closed until",
+		"# re-approved (clawpatrol plugins approve <name>).",
 	))
 	body.AppendNewline()
 	for _, n := range names {
 		e := s.entries[n]
 		blk := body.AppendNewBlock("plugin", []string{n})
-		blk.Body().SetAttributeValue("hash", cty.StringVal(e.Hash))
 		blk.Body().SetAttributeValue("network", cty.StringVal(e.Network))
+		hashVals := make([]cty.Value, len(e.Hashes))
+		for i, h := range e.Hashes {
+			hashVals[i] = cty.StringVal(h)
+		}
+		if len(hashVals) > 0 {
+			blk.Body().SetAttributeValue("hashes", cty.ListVal(hashVals))
+		} else {
+			blk.Body().SetAttributeValue("hashes", cty.ListValEmpty(cty.String))
+		}
 		body.AppendNewline()
 	}
 

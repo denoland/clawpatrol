@@ -117,14 +117,25 @@ On first load the gateway records the plugin's declared network in
 
 ```hcl
 plugin "ssh_tools" {
-  hash    = "sha256:…"
   network = "outbound"
+  hashes = [
+    "sha256:…", # linux-amd64
+    "sha256:…", # darwin-arm64
+  ]
 }
 ```
 
-This is **trust-on-first-use**. If a later version of the plugin
-escalates — a binary whose hash changed now asks for `outbound` when
-the lockfile recorded `none` — config load **fails closed** with a
+`hashes` is the set of approved binary hashes — one per platform
+build — so a single committed lockfile covers a team's different
+OS/arch hosts (and a future distribution system can record every
+platform's hash for a release at once). A binary is approved iff its
+hash is in the set; they all share the same approved permissions.
+
+This is **trust-on-first-use**. A binary whose hash isn't in the set
+is re-checked: if it requests no more than the recorded permissions
+(a new platform build, or a same-permission version) its hash is
+added; if it escalates — say it now asks for `outbound` when the
+lockfile recorded `none` — config load **fails closed** with a
 loud diagnostic. That is exactly what a compromised plugin update
 trying to open an exfiltration path looks like. After an intentional
 upgrade, re-approve it:

@@ -209,7 +209,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 			return "", "", err
 		}
 		if m.lock.active() {
-			m.lock.put(sp.Name, hash, string(net))
+			m.lock.addHash(sp.Name, hash, string(net))
 		}
 		return net, "", nil
 	}
@@ -221,8 +221,8 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 		return net, "", err
 	}
 
-	if entry, ok := m.lock.get(sp.Name); ok && entry.Hash == hash {
-		// Fast path: same binary, already approved — no probe.
+	if entry, ok := m.lock.get(sp.Name); ok && entry.hasHash(hash) {
+		// Fast path: this binary is in the approved set — no probe.
 		net, err := parseNetwork(entry.Network)
 		if err != nil {
 			return "", "", fmt.Errorf("plugin %q: lockfile network %q: %w", sp.Name, entry.Network, err)
@@ -230,7 +230,8 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 		return net, "", nil
 	}
 
-	// New or changed binary: read what it now declares.
+	// Unknown binary (new plugin, new version, or a platform build not
+	// yet in the set): read what it now declares.
 	declared, err := m.probeNetwork(ctx, sp)
 	if err != nil {
 		return "", "", err
@@ -239,7 +240,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 	entry, recorded := m.lock.get(sp.Name)
 	if !recorded {
 		// Trust on first use: record and proceed.
-		m.lock.put(sp.Name, hash, string(declared))
+		m.lock.addHash(sp.Name, hash, string(declared))
 		return declared, fmt.Sprintf("first load: recorded network=%q in %s", declared, LockfileName), nil
 	}
 
@@ -254,8 +255,10 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 				"If you trust this update, re-approve it: clawpatrol plugins approve %s",
 			sp.Name, declared, rec, sp.Name)
 	}
-	// Same or reduced: update the recorded hash + network and proceed.
-	m.lock.put(sp.Name, hash, string(declared))
+	// Same or reduced permissions: add this binary's hash to the
+	// approved set (a new platform build or a same-perms version) and
+	// proceed.
+	m.lock.addHash(sp.Name, hash, string(declared))
 	return declared, "", nil
 }
 
@@ -336,7 +339,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}
 		}
-		m.lock.put(sp.Name, hash, string(declared))
+		m.lock.addHash(sp.Name, hash, string(declared))
 		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared)})
 	}
 	for n := range want {
@@ -526,7 +529,7 @@ type PluginInfo struct {
 	Network        string   `json:"network,omitempty"`     // approved grant it runs with
 	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
 	SandboxWarning string   `json:"sandboxWarning,omitempty"`
-	ApprovedHash   string   `json:"approvedHash,omitempty"` // lockfile-recorded binary hash
+	ApprovedHashes []string `json:"approvedHashes,omitempty"` // lockfile-approved binary hashes (one per platform build)
 	Credentials    []string `json:"credentials,omitempty"`
 	Tunnels        []string `json:"tunnels,omitempty"`
 	Endpoints      []string `json:"endpoints,omitempty"`
@@ -564,7 +567,7 @@ func (m *Manager) PluginInfos() []PluginInfo {
 			}
 		}
 		if e, ok := m.lock.get(c.Name()); ok {
-			info.ApprovedHash = e.Hash
+			info.ApprovedHashes = e.Hashes
 		}
 		out = append(out, info)
 	}

@@ -222,7 +222,7 @@ export type Plugin = {
   network?: string;
   sandboxMode?: string;
   sandboxWarning?: string;
-  approvedHash?: string;
+  approvedHashes?: string[];
   credentials?: string[];
   tunnels?: string[];
   endpoints?: string[];
