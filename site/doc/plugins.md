@@ -73,24 +73,72 @@ a scrubbed environment — it inherits **none** of the gateway's
 environment, only `PATH`, `HOME`, `TMPDIR` (pointing at a private
 scratch dir) and the plugin socket path.
 
-Grants are declared on the `plugin` block:
+Permissions come from two places, by risk:
+
+- **Network is declared by the plugin** in its manifest (a *leak path*
+  the sandbox keeps bounded — see below). The operator doesn't write
+  it.
+- **Host filesystem access and the sandbox opt-out are operator-only**,
+  declared on the `plugin` block, because they can expose every
+  credential.
 
 ```hcl
 plugin "ssh_tools" {
   source = "./plugins/ssh_tools"
 
-  network     = "outbound"     # "none" (default) | "outbound"
-  sandbox     = "enforce"      # "enforce" (default) | "off"
-  read_paths  = ["~/.ssh"]     # extra recursive read-only grants
+  sandbox    = "enforce"     # "enforce" (default) | "off"
+  read_paths = ["~/.ssh"]    # extra recursive read-only grants
+  # network is NOT written here — the plugin declares it (see below).
+  # network = "outbound"     # optional operator override / veto
 }
 ```
 
-- **`network`** — `"none"` (the default) cuts the plugin off from the
-  network entirely; its only channel is the gateway socket. Endpoint
-  and credential plugins don't need more — their upstream connections
-  go through the gateway's [brokered dial](#brokered-upstream-dial).
-  `"outbound"` lets the plugin dial out itself; **tunnel plugins**
-  (they *are* the upstream transport, e.g. SSH or WireGuard) need it.
+### Network: declared by the plugin, recorded in a lockfile
+
+A plugin states its network need in its manifest:
+
+```go
+pluginsdk.Run(&pluginsdk.Plugin{
+    Name:         "ssh_tools",
+    Capabilities: pluginsdk.Capabilities{Network: pluginsdk.NetworkOutbound},
+    // …
+})
+```
+
+`NetworkNone` (the default) cuts the plugin off from the network — its
+only channel is the gateway socket, and upstream connections go
+through the [brokered dial](#brokered-upstream-dial). `NetworkOutbound`
+lets the plugin dial out itself; **tunnel plugins** (they *are* the
+upstream transport, e.g. SSH or WireGuard) and credential plugins that
+do their own token exchange need it.
+
+On first load the gateway records the plugin's declared network in
+**`clawpatrol.lock.hcl`** next to the config (commit it to VCS):
+
+```hcl
+plugin "ssh_tools" {
+  hash    = "sha256:…"
+  network = "outbound"
+}
+```
+
+This is **trust-on-first-use**. If a later version of the plugin
+escalates — a binary whose hash changed now asks for `outbound` when
+the lockfile recorded `none` — config load **fails closed** with a
+loud diagnostic. That is exactly what a compromised plugin update
+trying to open an exfiltration path looks like. After an intentional
+upgrade, re-approve it:
+
+```
+clawpatrol plugins approve <config.hcl> ssh_tools
+```
+
+An operator can still set `network` on the `plugin` block to override
+the plugin's request (force or veto); the override wins and is what
+gets recorded.
+
+### Filesystem and full-trust grants (operator-only)
+
 - **`read_paths`** — extra host paths the plugin may read recursively,
   for plugins that genuinely need host files (an SSH tunnel reading
   `~/.ssh`). Paths are absolute; a leading `~/` expands to the gateway

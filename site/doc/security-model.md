@@ -300,9 +300,20 @@ only channel is the gateway socket, and its upstream connections are
 opened *by the gateway* through the [brokered
 dial](plugins.md#brokered-upstream-dial), restricted to targets the
 operator's HCL sanctions and audited on every attempt. Tunnel plugins
-are the upstream transport themselves and must be granted
-`network = "outbound"`; that grant is per-plugin, so granting it to a
-tunnel plugin does not loosen the endpoint plugins beside it.
+are the upstream transport themselves and need outbound network; that
+grant is per-plugin, so it does not loosen the endpoint plugins beside
+it.
+
+Network is **declared by the plugin** in its manifest and recorded,
+trust-on-first-use, in a committed lockfile (`clawpatrol.lock.hcl`).
+The threat this addresses is the supply-chain one: a benign plugin's
+next version silently gaining a network leak path. An upgrade (a
+changed binary hash) that requests more than the lockfile recorded
+**fails config load** until an operator re-approves it — the loud,
+reviewable moment a malicious update would otherwise slip through.
+Because the lockfile is committed, the approval is also a diff in code
+review. Filesystem and `sandbox = "off"` grants are never
+plugin-declarable; they are operator-only and explicit (below).
 
 The sandbox is defense-in-depth, not a capability wall around the
 gateway as a whole. The grants form a deliberate risk ladder:
