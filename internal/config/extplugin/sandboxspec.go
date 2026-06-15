@@ -53,10 +53,6 @@ func buildSandboxSpec(sp config.PluginSource) (sandbox.Spec, sandbox.Mode, strin
 	if err != nil {
 		return zero, "", "", fmt.Errorf("read_paths: %w", err)
 	}
-	writePaths, err := resolveGrantPaths(sp.WritePaths)
-	if err != nil {
-		return zero, "", "", fmt.Errorf("write_paths: %w", err)
-	}
 
 	mode := sandbox.Mode("")
 	warning := ""
@@ -87,7 +83,6 @@ func buildSandboxSpec(sp config.PluginSource) (sandbox.Spec, sandbox.Mode, strin
 		TmpDir:     tmpDir,
 		Network:    network,
 		ReadPaths:  readPaths,
-		WritePaths: writePaths,
 	}, mode, warning, nil
 }
 

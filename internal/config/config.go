@@ -554,12 +554,15 @@ type PluginSource struct {
 	// ReadPaths grants the plugin recursive read-only access to
 	// extra host paths (e.g. "~/.ssh" for an SSH tunnel plugin).
 	// Paths must be absolute; a leading "~/" expands to the gateway
-	// user's home directory.
+	// user's home directory. The gateway refuses a path that overlaps
+	// the state dir (the secret store). There is deliberately no
+	// host-write grant: writing an active location (~/.bashrc, cron,
+	// a $PATH dir, ...) is a code-execution-as-the-gateway-user
+	// primitive, and no denylist of such locations can be complete.
+	// A plugin that genuinely needs host writes runs with
+	// sandbox = "off" (the single, explicit full-trust knob);
+	// durable plugin storage goes through the gateway's blob store.
 	ReadPaths []string `hcl:"read_paths,optional"`
-
-	// WritePaths grants the plugin recursive read-write access to
-	// extra host paths. Same path rules as read_paths.
-	WritePaths []string `hcl:"write_paths,optional"`
 }
 
 // PluginLoader is the gateway-side hook the loader calls before

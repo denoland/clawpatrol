@@ -305,10 +305,26 @@ are the upstream transport themselves and must be granted
 tunnel plugin does not loosen the endpoint plugins beside it.
 
 The sandbox is defense-in-depth, not a capability wall around the
-gateway as a whole: a plugin granted `read_paths` / `write_paths` or
-`network = "outbound"` has exactly that access, and `sandbox = "off"`
-removes the OS sandbox entirely (the environment scrub remains). Grant
-the minimum a plugin needs, and prefer the brokered dial over
+gateway as a whole. The grants form a deliberate risk ladder:
+
+- `network = "outbound"` is a bounded *leak path* — a network-enabled
+  plugin can exfiltrate only the secrets it is actually handed,
+  because the sandbox still confines its filesystem.
+- `read_paths` is a *host read hole* — fine for inert files, but
+  catastrophic when pointed at credential-bearing paths, so the
+  gateway refuses any that overlaps the state dir (the secret store).
+- There is **no host-write grant**. Host write is a
+  code-execution-as-the-gateway-user primitive (plant a payload in
+  `~/.bashrc`, cron, a `$PATH` dir; it runs later as the user, reads
+  the state DB, and exfiltrates over the user's own network), and no
+  denylist of active locations can be complete — so the only way to
+  get host write is `sandbox = "off"`.
+- `sandbox = "off"` is the single **full-trust** knob: full host read,
+  write, and exec (the environment scrub still applies). A plugin run
+  this way can read every credential in the state DB; use it only for
+  plugins you fully trust.
+
+Grant the minimum a plugin needs, and prefer the brokered dial over
 `network = "outbound"` for anything that handles secrets.
 
 ## Egress interception is best-effort

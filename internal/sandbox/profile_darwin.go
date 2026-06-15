@@ -59,21 +59,14 @@ func seatbeltProfile(spec Spec) (string, error) {
 (allow file-ioctl (literal "/dev/null"))
 `)
 
-	if len(spec.ReadPaths) > 0 || len(spec.WritePaths) > 0 {
-		b.WriteString("\n; operator-granted extra paths\n")
+	if len(spec.ReadPaths) > 0 {
+		b.WriteString("\n; operator-granted extra read paths\n")
 		for _, p := range spec.ReadPaths {
 			lit, err := sbLiteral(p)
 			if err != nil {
 				return "", err
 			}
 			fmt.Fprintf(&b, "(allow file-read* (subpath %s))\n", lit)
-		}
-		for _, p := range spec.WritePaths {
-			lit, err := sbLiteral(p)
-			if err != nil {
-				return "", err
-			}
-			fmt.Fprintf(&b, "(allow file* (subpath %s))\n", lit)
 		}
 	}
 

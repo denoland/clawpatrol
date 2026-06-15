@@ -82,7 +82,6 @@ plugin "ssh_tools" {
   network     = "outbound"     # "none" (default) | "outbound"
   sandbox     = "enforce"      # "enforce" (default) | "off"
   read_paths  = ["~/.ssh"]     # extra recursive read-only grants
-  write_paths = []             # extra recursive read-write grants
 }
 ```
 
@@ -92,15 +91,23 @@ plugin "ssh_tools" {
   go through the gateway's [brokered dial](#brokered-upstream-dial).
   `"outbound"` lets the plugin dial out itself; **tunnel plugins**
   (they *are* the upstream transport, e.g. SSH or WireGuard) need it.
+- **`read_paths`** — extra host paths the plugin may read recursively,
+  for plugins that genuinely need host files (an SSH tunnel reading
+  `~/.ssh`). Paths are absolute; a leading `~/` expands to the gateway
+  user's home. The gateway refuses a path overlapping the state dir
+  (the secret store). There is **no host-write grant**: writing an
+  active location (`~/.bashrc`, cron, a `$PATH` directory, …) is a
+  code-execution-as-the-gateway-user primitive and no denylist of such
+  locations can be complete, so a plugin that genuinely needs host
+  writes must run with `sandbox = "off"`. Durable plugin storage goes
+  through the gateway's blob store, not host files.
 - **`sandbox`** — `"enforce"` (the default) runs the plugin inside an
   OS sandbox and **fails config load** if none can be established on
-  this host. `"off"` runs the plugin with the gateway user's full
-  privileges (the environment is still scrubbed). Only set `"off"`
-  when you trust the plugin and the platform can't sandbox it.
-- **`read_paths` / `write_paths`** — extra host paths the plugin may
-  read or write recursively, for plugins that genuinely need host
-  files (an SSH tunnel reading `~/.ssh`). Paths are absolute; a
-  leading `~/` expands to the gateway user's home.
+  this host. `"off"` is the single **full-trust** knob: it removes the
+  sandbox entirely (full host read, write, and exec — the plugin can
+  read every credential in the state DB), so only set it for a plugin
+  you fully trust on a host that can't sandbox. The environment is
+  scrubbed either way.
 
 Backends, by platform:
 

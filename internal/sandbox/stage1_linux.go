@@ -276,9 +276,6 @@ func bindPlan(spec Spec) []bind {
 		plan = append(plan, bind{src: p, ro: true})
 	}
 	plan = append(plan, bind{src: spec.SocketDir, ro: false})
-	for _, p := range spec.WritePaths {
-		plan = append(plan, bind{src: p, ro: false})
-	}
 	return plan
 }
 

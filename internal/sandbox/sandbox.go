@@ -70,10 +70,9 @@ type Spec struct {
 	TmpDir string
 	// Network is the granted network capability.
 	Network Network
-	// ReadPaths are extra recursive read-only grants.
+	// ReadPaths are extra recursive read-only grants. There is no
+	// write-grant equivalent: host writes require sandbox = "off".
 	ReadPaths []string
-	// WritePaths are extra recursive read-write grants.
-	WritePaths []string
 }
 
 // Availability is the result of probing this host for a backend.

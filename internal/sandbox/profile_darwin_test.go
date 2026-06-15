@@ -39,7 +39,6 @@ func TestSeatbeltProfileOutboundAndGrants(t *testing.T) {
 		TmpDir:     "/private/tmp/cp-1/tmp",
 		Network:    NetworkOutbound,
 		ReadPaths:  []string{"/Users/me/.ssh"},
-		WritePaths: []string{"/Users/me/scratch"},
 	}
 	p, err := seatbeltProfile(spec)
 	if err != nil {
@@ -48,7 +47,6 @@ func TestSeatbeltProfileOutboundAndGrants(t *testing.T) {
 	for _, want := range []string{
 		"(allow network-outbound)",
 		`(allow file-read* (subpath "/Users/me/.ssh"))`,
-		`(allow file* (subpath "/Users/me/scratch"))`,
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("profile missing %q", want)

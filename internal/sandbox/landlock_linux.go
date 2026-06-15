@@ -112,9 +112,6 @@ func applyLandlock(spec Spec) error {
 	for _, p := range spec.ReadPaths {
 		grants = append(grants, grant{path: p, access: landlockRead})
 	}
-	for _, p := range spec.WritePaths {
-		grants = append(grants, grant{path: p, access: fsMask})
-	}
 
 	for _, g := range grants {
 		if err := landlockAllowPath(int(fd), g.path, g.access&fsMask); err != nil {
