@@ -2949,7 +2949,12 @@ func runGateway(args []string) {
 	cfgPath := rest[0]
 
 	startModelRefresh()
-	config.SetPluginLoader(extplugin.New(log.Default()))
+	pluginMgr := extplugin.New(log.Default())
+	// Record approved plugin permissions in clawpatrol.lock.hcl beside
+	// the config (committed to VCS); trust-on-first-use, fail closed on
+	// escalation.
+	pluginMgr.SetLockfile(extplugin.LockfilePathFor(cfgPath), false)
+	config.SetPluginLoader(pluginMgr)
 	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {

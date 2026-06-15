@@ -37,6 +37,9 @@ func validateCmd(args []string) (string, int) {
 	}
 	mgr := extplugin.New(nil)
 	defer mgr.Stop()
+	// Read-only: report a would-be first-load or an escalation as a
+	// diagnostic, but never write the lockfile from `validate`.
+	mgr.SetLockfile(extplugin.LockfilePathFor(args[0]), true)
 	config.SetPluginLoader(mgr)
 	_, cp, err := loadConfig(args[0])
 	if err != nil {

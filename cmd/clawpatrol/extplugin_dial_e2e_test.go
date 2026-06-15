@@ -78,7 +78,13 @@ func loadDemoPluginPolicy(t *testing.T, dialList string) *config.CompiledPolicy 
 	t.Cleanup(func() { config.SetPluginLoader(nil) })
 
 	gw, diags := config.LoadBytes([]byte(fmt.Sprintf(`
-plugin "example" { source = %q }
+// Force network = "none" (operator override) so this exercises the
+// brokered dial with no plugin-side network, even though the example
+// plugin's manifest declares outbound for its passthrough tunnel.
+plugin "example" {
+  source  = %q
+  network = "none"
+}
 
 gateway {
   state_dir  = "/tmp/clawpatrol-test"

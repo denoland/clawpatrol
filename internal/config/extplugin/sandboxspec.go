@@ -1,7 +1,10 @@
 package extplugin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,24 +20,18 @@ import (
 // the operator didn't opt out, the returned error tells them both
 // the cause and the cost of sandbox = "off".
 //
+// network is the already-resolved network grant (from the manifest +
+// lockfile, or an operator override); see resolveNetwork.
+//
 // The caller owns spec.SocketDir and must remove it when the plugin
 // dies.
-func buildSandboxSpec(sp config.PluginSource) (sandbox.Spec, sandbox.Mode, string, error) {
+func buildSandboxSpec(sp config.PluginSource, network sandbox.Network) (sandbox.Spec, sandbox.Mode, string, error) {
 	var zero sandbox.Spec
 
 	switch sp.Sandbox {
 	case "", "enforce", "off":
 	default:
 		return zero, "", "", fmt.Errorf("invalid sandbox %q: expected \"enforce\" or \"off\"", sp.Sandbox)
-	}
-	var network sandbox.Network
-	switch sp.Network {
-	case "", string(sandbox.NetworkNone):
-		network = sandbox.NetworkNone
-	case string(sandbox.NetworkOutbound):
-		network = sandbox.NetworkOutbound
-	default:
-		return zero, "", "", fmt.Errorf("invalid network %q: expected \"none\" or \"outbound\"", sp.Network)
 	}
 
 	bin, err := resolveSandboxPath(sp.Source)
@@ -84,6 +81,33 @@ func buildSandboxSpec(sp config.PluginSource) (sandbox.Spec, sandbox.Mode, strin
 		Network:    network,
 		ReadPaths:  readPaths,
 	}, mode, warning, nil
+}
+
+// parseNetwork validates an operator-supplied HCL `network` override.
+func parseNetwork(s string) (sandbox.Network, error) {
+	switch s {
+	case "", string(sandbox.NetworkNone):
+		return sandbox.NetworkNone, nil
+	case string(sandbox.NetworkOutbound):
+		return sandbox.NetworkOutbound, nil
+	default:
+		return "", fmt.Errorf("invalid network %q: expected \"none\" or \"outbound\"", s)
+	}
+}
+
+// hashFile returns "sha256:<hex>" of the file at path — the binary
+// identity the lockfile records so an upgrade is detectable.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // makePluginDirs creates the per-plugin socket dir (short path: the
