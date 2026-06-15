@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { getPlugins, type Plugin } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { approvePlugin, getPlugins, type Plugin } from "../lib/api";
+import { Button } from "./Button";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
 
@@ -13,11 +14,15 @@ export function PluginsPage() {
   const [plugins, setPlugins] = useState<Plugin[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getPlugins()
       .then(setPlugins)
       .catch((e: Error) => setErr(String(e.message ?? e)));
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <Main>
@@ -47,7 +52,11 @@ export function PluginsPage() {
 
       <div className="space-y-4">
         {plugins?.map((p) =>
-          p.blocked ? <BlockedCard key={p.name} p={p} /> : <PluginCard key={p.name} p={p} />,
+          p.blocked ? (
+            <BlockedCard key={p.name} p={p} onApproved={load} />
+          ) : (
+            <PluginCard key={p.name} p={p} />
+          ),
         )}
       </div>
     </Main>
@@ -56,15 +65,37 @@ export function PluginsPage() {
 
 // BlockedCard surfaces a plugin the gateway refused to load — almost
 // always a permission escalation across an upgrade. It shows the
-// reason and the command to re-approve.
-function BlockedCard({ p }: { p: Plugin }) {
+// reason, an Approve button (re-records the lockfile and reloads), and
+// the equivalent CLI command.
+function BlockedCard({ p, onApproved }: { p: Plugin; onApproved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function approve() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await approvePlugin(p.name);
+      onApproved();
+    } catch (e) {
+      setErr(String((e as Error).message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="bg-canvas border-1.5 border-danger-500 overflow-hidden">
       <div className="flex items-center gap-3 flex-wrap px-4 py-3 bg-danger-500 border-b border-danger-500">
         <h2 className="font-mono text-sm text-canvas font-bold">{p.name}</h2>
-        <span className="ml-auto font-mono text-2xs uppercase tracking-wider text-canvas bg-danger-500 border border-canvas px-1.5 py-0.5 squircle-md">
-          blocked
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="font-mono text-2xs uppercase tracking-wider text-canvas border border-canvas px-1.5 py-0.5 squircle-md">
+            blocked
+          </span>
+          <Button variant="normal" size="sm" onClick={approve} disabled={busy}>
+            {busy ? "Approving…" : "Approve"}
+          </Button>
+        </div>
       </div>
       <div className="px-4 py-3 space-y-3">
         <Field label="Source">
@@ -73,11 +104,12 @@ function BlockedCard({ p }: { p: Plugin }) {
         <Field label="Reason">
           <span className="text-xs text-danger-500">{p.reason}</span>
         </Field>
-        <Field label="Re-approve">
+        <Field label="Or run">
           <code className="font-mono text-2xs text-text bg-navy-100 px-2 py-1 squircle-md break-all">
             clawpatrol plugins approve &lt;config.hcl&gt; {p.name}
           </code>
         </Field>
+        {err && <div className="text-xs text-danger-500">{err}</div>}
       </div>
     </section>
   );

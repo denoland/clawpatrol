@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"net"
 	"net/http"
@@ -1110,6 +1111,40 @@ func (w *webMux) apiPlugins(rw http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(rw, w.g.pluginMgr.PluginInfos())
+}
+
+// apiPluginApprove re-records the named plugin's current permissions
+// in the lockfile (the dashboard equivalent of `clawpatrol plugins
+// approve`), then reloads so a previously-blocked plugin loads. This
+// writes clawpatrol.lock.hcl, so committing that file still surfaces
+// the approval as a reviewable diff.
+func (w *webMux) apiPluginApprove(rw http.ResponseWriter, r *http.Request) {
+	if w.g.pluginMgr == nil {
+		http.Error(rw, "plugins are not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		http.Error(rw, "a plugin name is required", http.StatusBadRequest)
+		return
+	}
+	specs := w.g.cfg.Load().Plugins
+	if _, err := w.g.pluginMgr.Approve(r.Context(), specs, []string{req.Name}); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Reload so the now-approved plugin starts immediately instead of
+	// waiting for the next file-watch tick.
+	w.g.configMu.Lock()
+	err := w.g.reloadConfigFromFileLocked(w.g.cfgPath)
+	w.g.configMu.Unlock()
+	if err != nil {
+		http.Error(rw, "approved, but reload failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.WriteHeader(http.StatusNoContent)
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.

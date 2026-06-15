@@ -226,6 +226,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/agents/profile", Auth: authDashboard, Handler: w.apiAgentProfile},
 		{Method: http.MethodGet, Path: "/api/profiles", Auth: authDashboard, Handler: w.apiProfiles},
 		{Method: http.MethodGet, Path: "/api/plugins", Auth: authDashboard, Handler: w.apiPlugins},
+		{Method: http.MethodPost, Path: "/api/plugins/approve", Auth: authDashboard, Handler: w.apiPluginApprove},
 		{Method: http.MethodGet, Path: "/api/rules", Auth: authDashboard, Handler: w.apiRules},
 		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
 		{Method: http.MethodPost, Path: "/api/config/apply", Auth: authDashboard, Handler: w.apiConfigApply},

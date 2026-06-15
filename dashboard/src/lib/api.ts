@@ -235,6 +235,18 @@ export async function getPlugins(): Promise<Plugin[]> {
   return r.json();
 }
 
+// approvePlugin records the named plugin's current permissions in the
+// lockfile and reloads so a previously-blocked plugin loads. The
+// dashboard equivalent of `clawpatrol plugins approve`.
+export async function approvePlugin(name: string): Promise<void> {
+  const r = await fetch("/api/plugins/approve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 // Rules API speaks JSON on the wire. The editor pretty-prints the
 // rules array so an operator can see/edit each rule's fields directly.
 // (HCL is the on-disk format; JSON is just the dashboard transport.)
