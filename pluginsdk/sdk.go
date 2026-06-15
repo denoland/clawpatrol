@@ -37,6 +37,18 @@ type Plugin struct {
 	Credentials []CredentialDef
 	Tunnels     []TunnelDef
 	Endpoints   []EndpointDef
+
+	// Capabilities declares the low-risk permissions this plugin
+	// needs. The gateway records the approved set in its lockfile on
+	// first load (the operator no longer hand-writes them) and fails
+	// closed with a loud warning if a later version of the plugin
+	// asks for more. Today the only capability is Network: set it to
+	// NetworkOutbound if the plugin dials out itself (a tunnel
+	// transport, or a credential plugin doing its own token
+	// exchange). High-risk grants — host filesystem access,
+	// sandbox = "off" — are operator-only and are NOT declarable
+	// here.
+	Capabilities Capabilities
 	// Facets is the per-plugin schema list for protocol families the
 	// plugin's endpoints emit actions against. The gateway registers
 	// one facet.Runtime per FacetDef so the dashboard's /api/facets
@@ -45,6 +57,26 @@ type Plugin struct {
 	// namespaced to "<plugin>.<facet>".
 	Facets []FacetDef
 }
+
+// Capabilities is the set of low-risk, plugin-declarable permissions
+// in Plugin.Capabilities.
+type Capabilities struct {
+	// Network is the plugin's network requirement. Defaults to
+	// NetworkNone (the plugin only talks to the gateway over its
+	// socket).
+	Network NetworkAccess
+}
+
+// NetworkAccess is a plugin's declared network requirement.
+type NetworkAccess int
+
+const (
+	// NetworkNone confines the plugin to its gateway socket; upstream
+	// connections go through the gateway's brokered dial.
+	NetworkNone NetworkAccess = iota
+	// NetworkOutbound lets the plugin dial out itself.
+	NetworkOutbound
+)
 
 // FacetDef declares one protocol-family schema. Endpoints bind to a
 // declared facet by setting EndpointDef.Family to the facet's short

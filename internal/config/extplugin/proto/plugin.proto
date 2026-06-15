@@ -45,6 +45,26 @@ message ManifestResponse {
   repeated TunnelDecl tunnels = 4;
   repeated EndpointDecl endpoints = 5;
   repeated FacetDecl facets = 6;
+  // capabilities are the low-risk, plugin-declarable permissions the
+  // plugin needs (currently just network). The gateway records the
+  // approved set in its lockfile (trust-on-first-use) and fails closed
+  // with a loud warning if a later version escalates. High-risk grants
+  // (host filesystem access, sandbox opt-out) are deliberately NOT
+  // declarable here — they are operator-only.
+  PluginCapabilities capabilities = 7;
+}
+
+message PluginCapabilities {
+  NetworkAccess network = 1;
+}
+
+enum NetworkAccess {
+  // The plugin only talks to the gateway over its socket; upstream
+  // connections go through the gateway's brokered dial.
+  NETWORK_NONE = 0;
+  // The plugin dials out itself (tunnel plugins; credential plugins
+  // that do their own token exchange).
+  NETWORK_OUTBOUND = 1;
 }
 
 // FacetDecl describes one protocol-family schema the plugin exports.

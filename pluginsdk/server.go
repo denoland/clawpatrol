@@ -102,6 +102,9 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 	resp := &pb.ManifestResponse{
 		Name:    s.plug.Name,
 		Version: s.plug.Version,
+		Capabilities: &pb.PluginCapabilities{
+			Network: networkAccessToProto(s.plug.Capabilities.Network),
+		},
 	}
 	for _, c := range s.plug.Credentials {
 		resp.Credentials = append(resp.Credentials, &pb.CredentialDecl{
@@ -139,6 +142,13 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
 	}
 	return resp, nil
+}
+
+func networkAccessToProto(n NetworkAccess) pb.NetworkAccess {
+	if n == NetworkOutbound {
+		return pb.NetworkAccess_NETWORK_OUTBOUND
+	}
+	return pb.NetworkAccess_NETWORK_NONE
 }
 
 func schemaToProto(s Schema) *pb.Schema {
