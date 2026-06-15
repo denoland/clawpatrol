@@ -208,34 +208,26 @@ credential "aws_credential" "example" {}
 
 ### `credential "basic_auth" "<name>"`
 
-Injects `Authorization: Basic <base64(username:password)>`. The
-credential secret is the raw password; `username` lives in config.
+Injects `Authorization: Basic <base64(username:password)>`.
 
-Common credential binding fields apply: use `endpoint` or `endpoints`
-to bind the credential to upstreams. When a profile has multiple Basic
-Auth credentials for the same HTTPS endpoint, use the `placeholder`
-disambiguator on the profile entry (or credential block). The HTTPS
-placeholder detector matches that value inside decoded
-`Authorization: Basic <base64(username:placeholder)>` request headers.
+The credential secret is the raw password; `username` lives in
+config. Common credential binding fields apply: use `endpoint` or
+`endpoints` to bind the credential to upstreams.
+
+When a profile has multiple Basic Auth credentials for the same HTTPS
+endpoint, use the `placeholder` disambiguator on the profile entry or
+credential block. The HTTPS placeholder detector matches that value
+inside decoded `Authorization: Basic <base64(username:placeholder)>`
+request headers.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `username` | `string` | yes | The upstream HTTP Basic Auth username. |
 
 ```hcl
-endpoint "https" "api" {
-  hosts = ["api.example.com"]
-}
-
 credential "basic_auth" "example" {
-  endpoint = https.api
+  endpoint = https.example
   username = "example"
-}
-
-profile "default" {
-  credentials = [
-    { credential = basic_auth.example, placeholder = "PH_basic_password" },
-  ]
 }
 ```
 

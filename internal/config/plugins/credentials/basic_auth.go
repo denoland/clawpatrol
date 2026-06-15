@@ -13,7 +13,17 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
-// BasicAuth is part of the clawpatrol plugin API.
+// BasicAuth injects `Authorization: Basic <base64(username:password)>`.
+//
+// The credential secret is the raw password; `username` lives in
+// config. Common credential binding fields apply: use `endpoint` or
+// `endpoints` to bind the credential to upstreams.
+//
+// When a profile has multiple Basic Auth credentials for the same HTTPS
+// endpoint, use the `placeholder` disambiguator on the profile entry or
+// credential block. The HTTPS placeholder detector matches that value
+// inside decoded `Authorization: Basic <base64(username:placeholder)>`
+// request headers.
 type BasicAuth struct {
 	// Username is the upstream HTTP Basic Auth username.
 	Username string `hcl:"username"`
