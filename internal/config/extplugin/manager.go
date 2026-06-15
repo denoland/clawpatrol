@@ -144,6 +144,7 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 		source:         source,
 		sandboxMode:    mode,
 		sandboxWarning: warning,
+		network:        spec.Network,
 		socketDir:      spec.SocketDir,
 		gp:             cli,
 	}
@@ -490,6 +491,57 @@ func (m *Manager) Plugins() []*Client {
 	return out
 }
 
+// PluginInfo is the dashboard-facing summary of one loaded plugin.
+type PluginInfo struct {
+	Name           string   `json:"name"`
+	Source         string   `json:"source"`
+	Version        string   `json:"version,omitempty"`
+	Network        string   `json:"network"`     // approved grant it runs with
+	SandboxMode    string   `json:"sandboxMode"` // namespaces | landlock | seatbelt | off
+	SandboxWarning string   `json:"sandboxWarning,omitempty"`
+	ApprovedHash   string   `json:"approvedHash,omitempty"` // lockfile-recorded binary hash
+	Credentials    []string `json:"credentials,omitempty"`
+	Tunnels        []string `json:"tunnels,omitempty"`
+	Endpoints      []string `json:"endpoints,omitempty"`
+	Facets         []string `json:"facets,omitempty"`
+}
+
+// PluginInfos returns a dashboard summary of every loaded plugin.
+// (Plugins blocked by a permission escalation never load, so they do
+// not appear here.)
+func (m *Manager) PluginInfos() []PluginInfo {
+	out := []PluginInfo{}
+	for _, c := range m.Plugins() {
+		info := PluginInfo{
+			Name:           c.Name(),
+			Source:         c.Source(),
+			Network:        c.Network(),
+			SandboxMode:    c.SandboxMode(),
+			SandboxWarning: c.SandboxWarning(),
+		}
+		if mf := c.Manifest(); mf != nil {
+			info.Version = mf.Version
+			for _, cr := range mf.Credentials {
+				info.Credentials = append(info.Credentials, cr.TypeName)
+			}
+			for _, t := range mf.Tunnels {
+				info.Tunnels = append(info.Tunnels, t.TypeName)
+			}
+			for _, e := range mf.Endpoints {
+				info.Endpoints = append(info.Endpoints, e.TypeName)
+			}
+			for _, f := range mf.Facets {
+				info.Facets = append(info.Facets, f.Name)
+			}
+		}
+		if e, ok := m.lock.get(c.Name()); ok {
+			info.ApprovedHash = e.Hash
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 // Stop tears down every spawned subprocess. Idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
@@ -518,6 +570,7 @@ type Client struct {
 	source         string
 	sandboxMode    sandbox.Mode
 	sandboxWarning string
+	network        sandbox.Network
 	socketDir      string
 	manifest       *pb.ManifestResponse
 	gp             *plugin.Client
@@ -535,6 +588,10 @@ func (c *Client) SandboxMode() string { return string(c.sandboxMode) }
 // SandboxWarning is non-empty when the plugin runs under a degraded
 // fallback backend; it describes what the fallback does not cover.
 func (c *Client) SandboxWarning() string { return c.sandboxWarning }
+
+// Network reports the approved network grant the plugin runs with
+// ("none" or "outbound").
+func (c *Client) Network() string { return string(c.network) }
 
 // Name returns the plugin's manifest name (lower-case identifier).
 func (c *Client) Name() string { return c.name }

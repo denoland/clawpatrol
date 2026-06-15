@@ -20,6 +20,7 @@ import (
 	"tailscale.com/client/local"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
 )
 
@@ -1099,6 +1100,16 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 // render a profile picker per device.
 func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 	writeJSON(rw, orderedProfileNames(w.g.cfg.Load().Policy))
+}
+
+// apiPlugins lists the loaded external plugins with their approved
+// permissions and sandbox state for the dashboard's Plugins page.
+func (w *webMux) apiPlugins(rw http.ResponseWriter, _ *http.Request) {
+	if w.g.pluginMgr == nil {
+		writeJSON(rw, []extplugin.PluginInfo{})
+		return
+	}
+	writeJSON(rw, w.g.pluginMgr.PluginInfos())
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.

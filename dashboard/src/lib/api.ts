@@ -206,6 +206,31 @@ export async function getRules(): Promise<RuleSummary[]> {
   return r.json();
 }
 
+// Plugin mirrors extplugin.PluginInfo: one loaded external plugin and
+// the permissions it runs with. network is the approved grant ("none"
+// | "outbound"); sandboxMode is the OS backend ("namespaces" |
+// "landlock" | "seatbelt" | "off"). Plugins blocked by a permission
+// escalation never load, so they don't appear here.
+export type Plugin = {
+  name: string;
+  source: string;
+  version?: string;
+  network: string;
+  sandboxMode: string;
+  sandboxWarning?: string;
+  approvedHash?: string;
+  credentials?: string[];
+  tunnels?: string[];
+  endpoints?: string[];
+  facets?: string[];
+};
+
+export async function getPlugins(): Promise<Plugin[]> {
+  const r = await api("/api/plugins");
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 // Rules API speaks JSON on the wire. The editor pretty-prints the
 // rules array so an operator can see/edit each rule's fields directly.
 // (HCL is the on-disk format; JSON is just the dashboard transport.)

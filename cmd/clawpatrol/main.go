@@ -353,11 +353,14 @@ type Gateway struct {
 	// Used by endpoint plugins that need per-endpoint persistent
 	// bytes — SSH host keys today, future JWT signing keys.
 	// Exposed to plugins via ConnHandle.Blobs.
-	blobs   runtime.BlobStore
-	oauth   *OAuthRegistry
-	agents  *AgentRegistry
-	hitl    *HITLRegistry
-	onboard *onboardRegistry
+	blobs runtime.BlobStore
+	// pluginMgr supervises the external plugin subprocesses; the
+	// dashboard reads it for the Plugins page.
+	pluginMgr *extplugin.Manager
+	oauth     *OAuthRegistry
+	agents    *AgentRegistry
+	hitl      *HITLRegistry
+	onboard   *onboardRegistry
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
@@ -3001,17 +3004,18 @@ func runGateway(args []string) {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
-		cfgPath:  cfgPath,
-		stateDir: stateDir,
-		db:       db,
-		certs:    certs,
-		dialer:   newUpstreamDialer(cfg.Resolver()),
-		sink:     sink,
-		blobs:    blobs,
-		oauth:    oauthReg,
-		agents:   NewAgentRegistry(),
-		hitl:     newHITLRegistry(sink),
-		onboard:  newOnboardRegistry(),
+		cfgPath:   cfgPath,
+		stateDir:  stateDir,
+		db:        db,
+		certs:     certs,
+		dialer:    newUpstreamDialer(cfg.Resolver()),
+		sink:      sink,
+		blobs:     blobs,
+		pluginMgr: pluginMgr,
+		oauth:     oauthReg,
+		agents:    NewAgentRegistry(),
+		hitl:      newHITLRegistry(sink),
+		onboard:   newOnboardRegistry(),
 	}
 	g.cfg.Store(cfg)
 	if cfg.DashboardConfigWrites() {

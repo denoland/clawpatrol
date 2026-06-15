@@ -112,6 +112,33 @@ func TestPluginPermissionTOFUAndEscalation(t *testing.T) {
 	}
 }
 
+// TestPluginInfosShape checks the data the dashboard's /api/plugins
+// endpoint serves, loading the real example plugin.
+func TestPluginInfosShape(t *testing.T) {
+	sandboxtest.RequireBackend(t)
+	loadDemoPluginPolicy(t, `dial = ["127.0.0.1:8000"]`)
+
+	var ex *extplugin.PluginInfo
+	for _, info := range sharedExampleManager().PluginInfos() {
+		if info.Name == "example" {
+			ex = &info
+			break
+		}
+	}
+	if ex == nil {
+		t.Fatal("example plugin missing from PluginInfos")
+	}
+	if ex.Network != "none" { // forced by the loadDemoPluginPolicy override
+		t.Errorf("network = %q, want none", ex.Network)
+	}
+	if ex.SandboxMode == "" {
+		t.Error("empty sandbox mode")
+	}
+	if len(ex.Credentials) == 0 || len(ex.Tunnels) == 0 || len(ex.Endpoints) == 0 || len(ex.Facets) == 0 {
+		t.Errorf("missing declared types: %+v", ex)
+	}
+}
+
 func readFileString(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
