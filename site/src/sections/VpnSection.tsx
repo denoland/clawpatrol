@@ -89,7 +89,7 @@ export function VpnSection() {
             <p class="text-base text-canvas/70 mb-6 text-pretty">
               Prefix any agent command with{" "}
               <code class="font-mono text-canvas">clawpatrol run</code>. Same
-              workflow, every action gated.
+              workflow; every action gated and tracked.
             </p>
             <div class="font-mono text-sm text-canvas/80">
               <span class="text-canvas/40">$</span> clawpatrol run{" "}

@@ -95,7 +95,7 @@ export function TestSection() {
             <SectionLabel class="ml-0 mb-4!">Regression tests</SectionLabel>
             <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display text-balance mb-6 text-text">
               Test your rules{" "}
-              <span class="text-rust">before you ship them.</span>
+              <span class="text-rust">before you ship them</span>
             </h3>
             <p class="text-base text-text-muted mb-5 max-w-xl">
               Record real actions from the dashboard. Drop the JSON files into a

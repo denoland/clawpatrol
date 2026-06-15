@@ -12,20 +12,22 @@ export function HeroSection() {
   return (
     <section
       class="iso-stack-host max-w-6xl mx-auto px-6 sm:px-8
-      pt-16 sm:pt-28 pb-16"
+      py-16 sm:py-28"
     >
       <div class="grid md:grid-cols-2 gap-12 md:gap-12 lg:gap-16 items-center w-full">
         <div class="order-2 md:order-1 min-w-0 flex flex-col items-center md:items-start text-center md:text-left relative z-10 bg-linear-to-b from-transparent py-16 via-canvas via-35% to-canvas">
-          <h1 class="text-4xl sm:text-5xl md:text-5xl lg:text-6xl lg:text-[4rem] mb-6 font-display text-balance text-text">
-            {HERO_H1}
+          <h1 class="text-4xl sm:text-5xl md:text-5.5xl lg:text-6xl lg:text-[4rem] mb-6 font-display text-balance text-text leading-none">
+            The missing option between babysitting and{" "}
+            <small style="font-size: 0.9em; font-weight: 450;">YOLO</small> mode
           </h1>
-          <p class="text-sm mb-6 max-w-2xl font-sans font-bold uppercase text-text text-balance">
-            Give agents power. Don't give up control.
+          <p class="text-sm md:text-base mb-6 max-w-2xl font-sans font-bold uppercase text-text text-balance">
+            The security firewall for{" "}
+            <span className="text-rust">any agent</span>
           </p>
           <p class="mb-10 max-w-2xl text-text-muted text-balance">
-            Claw Patrol holds credentials, parses traffic at the wire, and gates
-            actions with rules you write—all while keeping an audit log of
-            everything that happens.
+            Claw Patrol guards credentials, parses traffic at the wire, and
+            gates actions according to rules you author—all while keeping an
+            audit log of everything that happens.
           </p>
           <InstallTerminal />
         </div>

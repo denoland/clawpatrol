@@ -208,7 +208,7 @@ export function IsometricStack({ class: cls = "" }: { class?: string }) {
         role="img"
         aria-label="Cluster of isometric panels: four AI agents above Claw Patrol, four downstream tools below it"
         viewBox={`${xMin} ${yMin} ${TOTAL_W} ${TOTAL_H}`}
-        class="iso-stack-svg block h-full w-auto md:h-auto md:w-full"
+        class="iso-stack-svg block h-full w-auto md:h-auto w-full"
       >
         <style>
           {
