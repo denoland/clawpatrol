@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,6 +127,134 @@ func TestPluginPermissionTOFUAndEscalation(t *testing.T) {
 	if lf := readFileString(t, lockPath); !strings.Contains(lf, `network = "outbound"`) {
 		t.Fatalf("lockfile not updated to outbound after approve:\n%s", lf)
 	}
+}
+
+// TestPluginApproveUnblocksLoad covers the dashboard's approve-then-load
+// path: a plugin held back by an escalation is blocked on load, and
+// after Approve records the new permission a reload on the same manager
+// loads it cleanly (the blocked attempt never registered its types, so
+// the reload is the first registration — no global-registry collision).
+func TestPluginApproveUnblocksLoad(t *testing.T) {
+	sandboxtest.RequireBackend(t)
+	name := fmt.Sprintf("captest%d", capInstance.Add(1))
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "plug")
+	lockPath := filepath.Join(dir, extplugin.LockfileName)
+	hcl := capPluginHCL(name, binPath)
+	t.Cleanup(func() { config.SetPluginLoader(nil) })
+
+	// Seed the lockfile with a prior network=none approval (a stand-in
+	// hash) so the outbound binary reads as an escalation on first load.
+	seed := fmt.Sprintf("plugin %q {\n  network = \"none\"\n  hashes = [\"sha256:0000\"]\n}\n", name)
+	if err := os.WriteFile(lockPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buildCapPlugin(t, binPath, name, "outbound")
+	mgr := extplugin.New(nil)
+	mgr.SetLockfile(lockPath, false)
+	config.SetPluginLoader(mgr)
+	defer mgr.Stop()
+
+	// Load 1: blocked by the escalation; types are not registered.
+	if _, diags := config.LoadBytes([]byte(hcl), "h2.hcl"); !diags.HasErrors() {
+		t.Fatal("outbound binary over a none approval was not blocked")
+	}
+	if info := pluginInfoByName(mgr, name); info == nil || !info.Blocked {
+		t.Fatalf("plugin not surfaced as blocked: %+v", info)
+	}
+
+	// Operator approves the current binary (records outbound + its hash).
+	if _, err := mgr.Approve(context.Background(),
+		[]config.PluginSource{{Name: name, Source: binPath}}, []string{name}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	// Load 2 (the reload apiPluginApprove triggers): the fast path now
+	// approves the hash, so the plugin loads and registers.
+	if _, diags := config.LoadBytes([]byte(hcl), "h2.hcl"); diags.HasErrors() {
+		t.Fatalf("post-approve load failed: %v", diags)
+	}
+	info := pluginInfoByName(mgr, name)
+	if info == nil || info.Blocked {
+		t.Fatalf("plugin still blocked after approve: %+v", info)
+	}
+	if info.Network != "outbound" {
+		t.Errorf("post-approve network = %q, want outbound", info.Network)
+	}
+}
+
+// TestApiPluginApproveEndpoint drives the dashboard's POST
+// /api/plugins/approve handler: it approves a plugin held back by an
+// escalation and reloads, so the blocked plugin ends up loaded.
+func TestApiPluginApproveEndpoint(t *testing.T) {
+	sandboxtest.RequireBackend(t)
+	name := fmt.Sprintf("captest%d", capInstance.Add(1))
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "plug")
+	cfgPath := filepath.Join(dir, "gateway.hcl")
+	lockPath := filepath.Join(dir, extplugin.LockfileName)
+	hcl := capPluginHCL(name, binPath)
+	t.Cleanup(func() { config.SetPluginLoader(nil) })
+
+	if err := os.WriteFile(cfgPath, []byte(hcl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a prior network=none approval so the outbound binary loads
+	// blocked until the handler re-approves it.
+	seed := fmt.Sprintf("plugin %q {\n  network = \"none\"\n  hashes = [\"sha256:0000\"]\n}\n", name)
+	if err := os.WriteFile(lockPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildCapPlugin(t, binPath, name, "outbound")
+
+	mgr := extplugin.New(nil)
+	mgr.SetLockfile(lockPath, false)
+	config.SetPluginLoader(mgr)
+	defer mgr.Stop()
+	if _, diags := config.LoadBytes([]byte(hcl), cfgPath); !diags.HasErrors() {
+		t.Fatal("outbound binary over a none approval was not blocked")
+	}
+
+	db := openOnboardAuthTestDB(t)
+	g := &Gateway{db: db, cfgPath: cfgPath, pluginMgr: mgr}
+	g.cfg.Store(&config.Gateway{
+		Plugins: []config.PluginSource{{Name: name, Source: binPath}},
+	})
+	w := &webMux{g: g}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/plugins/approve",
+		strings.NewReader(fmt.Sprintf(`{"name":%q}`, name)))
+	rw := httptest.NewRecorder()
+	w.apiPluginApprove(rw, req)
+
+	if rw.Code != http.StatusNoContent {
+		t.Fatalf("approve endpoint = %d, want 204; body=%s", rw.Code, rw.Body.String())
+	}
+	if lf := readFileString(t, lockPath); !strings.Contains(lf, `network = "outbound"`) {
+		t.Fatalf("lockfile not updated to outbound after approve:\n%s", lf)
+	}
+	info := pluginInfoByName(mgr, name)
+	if info == nil || info.Blocked {
+		t.Fatalf("plugin still blocked after approve endpoint: %+v", info)
+	}
+
+	// Bad request: a missing name is a 400.
+	rw = httptest.NewRecorder()
+	w.apiPluginApprove(rw, httptest.NewRequest(http.MethodPost,
+		"/api/plugins/approve", strings.NewReader(`{}`)))
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("empty-name approve = %d, want 400", rw.Code)
+	}
+}
+
+func pluginInfoByName(mgr *extplugin.Manager, name string) *extplugin.PluginInfo {
+	for _, info := range mgr.PluginInfos() {
+		if info.Name == name {
+			return &info
+		}
+	}
+	return nil
 }
 
 // TestPluginInfosShape checks the data the dashboard's /api/plugins

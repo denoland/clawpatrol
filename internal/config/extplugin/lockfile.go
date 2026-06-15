@@ -117,19 +117,26 @@ func (s *lockStore) get(name string) (lockEntry, bool) {
 
 // addHash records an approval: it adds hash to the plugin's approved
 // set (preserving other platforms' hashes) and sets the approved
-// network. Marks the store dirty.
+// network. The store is marked dirty only when something actually
+// changes, so a steady-state load (operator override or fast-path
+// re-approval of an already-recorded binary) doesn't rewrite the
+// committed lockfile on every reload.
 func (s *lockStore) addHash(name, hash, network string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.entries[name]
+	changed := e.Name != name || e.Network != network
 	e.Name = name
 	e.Network = network
 	if !slices.Contains(e.Hashes, hash) {
 		e.Hashes = append(e.Hashes, hash)
 		sort.Strings(e.Hashes) // stable diffs
+		changed = true
 	}
 	s.entries[name] = e
-	s.dirty = true
+	if changed {
+		s.dirty = true
+	}
 }
 
 // active reports whether a lockfile is in use (a path is configured).
@@ -179,9 +186,31 @@ func (s *lockStore) save() error {
 		body.AppendNewline()
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, f.Bytes(), 0o644); err != nil {
+	// Write to a uniquely-named temp file in the same dir, then rename
+	// over the target. A fixed ".tmp" name would let two concurrent
+	// savers clobber each other's in-progress write before the rename;
+	// CreateTemp gives each its own file so the rename is the only
+	// shared step (and rename is atomic).
+	dir := filepath.Dir(s.path)
+	tmpf, err := os.CreateTemp(dir, LockfileName+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", s.path, err)
+	}
+	tmp := tmpf.Name()
+	if _, err := tmpf.Write(f.Bytes()); err != nil {
+		_ = tmpf.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := tmpf.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	// CreateTemp makes the file 0600; the lockfile is a committed,
+	// non-secret artifact, so match the prior 0644.
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)

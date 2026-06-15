@@ -363,6 +363,24 @@ func (g *Gateway) DashboardConfigWrites() bool {
 // StateDir returns the configured state directory, or empty string.
 func (g *Gateway) StateDir() string { return g.settings().StateDir }
 
+// ResolvedStateDir returns the effective state directory: the
+// configured state_dir, or ${HOME}/.clawpatrol when unset. This is the
+// path the gateway actually uses at runtime, so it is what the plugin
+// loader must guard read_paths against — the raw StateDir() is empty by
+// default, which would let a read_paths grant of the default dir slip
+// past the credential-store overlap check. Returns "" only when
+// state_dir is unset and $HOME is unavailable.
+func (g *Gateway) ResolvedStateDir() string {
+	if d := g.StateDir(); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".clawpatrol")
+}
+
 // Operators returns the tailnet-login allowlist from the `tailscale
 // {}` block. Empty/nil disables the allowlist gate (and is the only
 // value when no tailscale block is declared — without tsnet there's
@@ -861,7 +879,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	// types they declare are visible to pass-1 symbol building. The
 	// loader is package-global; see SetPluginLoader.
 	if len(gw.Plugins) > 0 {
-		d := pluginLoader.LoadPlugins(gw.Plugins, gw.StateDir())
+		d := pluginLoader.LoadPlugins(gw.Plugins, gw.ResolvedStateDir())
 		if d.HasErrors() {
 			return gw, append(diags, d...)
 		}

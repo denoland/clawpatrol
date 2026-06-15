@@ -52,14 +52,11 @@ type JoinConfig = config.JoinConfig
 // (clawpatrol.db) coexists with the client-side ca.crt that lives
 // in the same dir on dev machines.
 func resolveStateDir(cfg *config.Gateway) string {
-	if d := cfg.StateDir(); d != "" {
+	if d := cfg.ResolvedStateDir(); d != "" {
 		return d
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		log.Fatalf("state_dir unset and $HOME unavailable")
-	}
-	return filepath.Join(home, ".clawpatrol")
+	log.Fatalf("state_dir unset and $HOME unavailable")
+	return ""
 }
 
 const hitlOperationTerminalRetention = 7 * 24 * time.Hour

@@ -71,6 +71,23 @@ func (m *Manager) SetLockfile(path string, readOnly bool) {
 	m.lock.configure(path, readOnly)
 }
 
+// setStateDir / stateDirLocked guard m.stateDir behind m.mu. LoadPlugins
+// (startup + reload) writes it; the spawn path (Start, probeNetwork,
+// Approve) reads it via buildSandboxSpec. Callers are already serialized
+// by the gateway's configMu, but guarding here keeps the field
+// memory-safe on its own terms.
+func (m *Manager) setStateDir(d string) {
+	m.mu.Lock()
+	m.stateDir = d
+	m.mu.Unlock()
+}
+
+func (m *Manager) stateDirLocked() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateDir
+}
+
 // Start spawns the plugin binary declared by sp inside the sandbox
 // its grants call for, performs the gRPC handshake, fetches the
 // Manifest, and returns a *Client whose Manifest method exposes the
@@ -101,7 +118,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", warn)
 	}
 
-	spec, mode, sbWarn, err := buildSandboxSpec(sp, network, m.stateDir)
+	spec, mode, sbWarn, err := buildSandboxSpec(sp, network, m.stateDirLocked())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -268,7 +285,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 // this is safe even for a plugin that will ultimately run with
 // outbound access.
 func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource) (sandbox.Network, error) {
-	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone, m.stateDir)
+	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone, m.stateDirLocked())
 	if err != nil {
 		return "", err
 	}
@@ -372,7 +389,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	ctx := context.Background()
-	m.stateDir = stateDir
+	m.setStateDir(stateDir)
 	// Reload the lockfile each pass so manual edits and
 	// `plugins approve` are picked up; write back any
 	// trust-on-first-use records when done.

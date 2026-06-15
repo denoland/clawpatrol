@@ -103,8 +103,8 @@ jobs:
           deno-version: v2.x
       # cmd/clawpatrol go:embed's dashboard/dist; build it first.
       - run: make dashboard
-      - run: go test ./internal/sandbox/... ./internal/config/extplugin/... -run 'Sandbox|Dial|Nosy|ExternalCredential'
-      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|ExternalCredential'
+      - run: go test ./internal/sandbox/... ./internal/config/extplugin/... -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'
+      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'
 
   # Exercise the macOS seatbelt backend.
   test-sandbox-macos:
@@ -130,4 +130,4 @@ jobs:
       # cmd/clawpatrol go:embed's dashboard/dist; build it first.
       - run: make dashboard
       - run: go test ./internal/sandbox/...
-      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|ExternalCredential'
+      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'

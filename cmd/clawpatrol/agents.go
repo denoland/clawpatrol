@@ -1130,6 +1130,13 @@ func (w *webMux) apiPluginApprove(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "a plugin name is required", http.StatusBadRequest)
 		return
 	}
+	// Hold configMu across both the approve and the reload: Approve and
+	// LoadPlugins (run from the reload path and the file watcher) both
+	// touch the shared lock store and the manager's stateDir, so they
+	// must not run concurrently. configMu is the gateway-wide serializer
+	// for plugin (re)load.
+	w.g.configMu.Lock()
+	defer w.g.configMu.Unlock()
 	specs := w.g.cfg.Load().Plugins
 	if _, err := w.g.pluginMgr.Approve(r.Context(), specs, []string{req.Name}); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
@@ -1137,10 +1144,7 @@ func (w *webMux) apiPluginApprove(rw http.ResponseWriter, r *http.Request) {
 	}
 	// Reload so the now-approved plugin starts immediately instead of
 	// waiting for the next file-watch tick.
-	w.g.configMu.Lock()
-	err := w.g.reloadConfigFromFileLocked(w.g.cfgPath)
-	w.g.configMu.Unlock()
-	if err != nil {
+	if err := w.g.reloadConfigFromFileLocked(w.g.cfgPath); err != nil {
 		http.Error(rw, "approved, but reload failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
