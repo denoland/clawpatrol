@@ -118,6 +118,7 @@ how-to-inject parameters.
 
 | Type | Inject shape |
 |------|-------------|
+| `basic_auth` | `Authorization: Basic <base64(username:secret)>` |
 | `bearer_token` | `Authorization: Bearer <secret>` |
 | `cookie_token` | `Cookie: <cookie_name>=<secret>` |
 | `header_token` | `<header>: <prefix><secret>` |

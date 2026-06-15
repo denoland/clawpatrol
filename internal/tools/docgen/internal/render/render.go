@@ -52,7 +52,7 @@ func (r *renderer) run() (string, error) {
 	} {
 		r.writeKind(kind)
 	}
-	return r.out.String(), nil
+	return strings.TrimRight(r.out.String(), "\n") + "\n", nil
 }
 
 func (r *renderer) writeHeader() {
@@ -453,6 +453,11 @@ func exampleBody(kind, typ string, rt reflect.Type) string {
 		// bastion is optional in HCL because it can be replaced by via, but a
 		// standalone generated example needs one or the runtime rejects it.
 		fmt.Fprintln(&sb, `  bastion = "bastion.example:22"`)
+	}
+	if kind == "credential" && typ == "basic_auth" {
+		// The plugin-specific schema only contains username; include the
+		// framework endpoint binding so the generated example is usable.
+		fmt.Fprintln(&sb, "  endpoint = https.example")
 	}
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
