@@ -94,6 +94,21 @@ gateway {
   #   # requires tsnet whois identity.
   #   operators = ["alice@example.com", "*@example.com"]
   # }
+
+  # OpenTelemetry GenAI telemetry. Block presence emits one OTel span
+  # per intercepted LLM turn following the GenAI semantic conventions
+  # (gen_ai.* — system, request/response model, token usage, finish
+  # reason). Requires the OTLP exporter to be configured via the
+  # standard OTEL_EXPORTER_OTLP_ENDPOINT env var; without it there is
+  # nothing to export to. Remove the block to disable (zero overhead).
+  #
+  # include_message_content additionally attaches the prompt and
+  # completion text as GenAI content events. Default false — content can
+  # be large and sensitive, so it ships only when you explicitly opt in.
+  #
+  # genai_telemetry {
+  #   include_message_content = false
+  # }
 }
 
 defaults {

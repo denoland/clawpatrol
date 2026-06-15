@@ -1021,7 +1021,7 @@ func codexRequestModel(body []byte) string {
 // trackLLMUsage parses LLM API request/response bodies for session id,
 // title, model, and token usage. Only fires on actual model-invocation
 // endpoints; ignores heartbeat / event_logging / mcp / oauth probes.
-func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody []byte, sessionHint string) {
+func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody []byte, sessionHint string, reqStart time.Time) {
 	ip := g.agentIPFor(c)
 	switch kind {
 	case "claude_usage":
@@ -1034,6 +1034,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 		if model == "" {
 			model = respModel
 		}
+		g.recordGenAITurn("anthropic", reqInfo.Model, respModel, in, out, reqBody, respBody, reqStart)
 		// Prefer Claude Code's session id from metadata; fall back to
 		// hash of first real user message. Skip if neither.
 		sid := reqInfo.SessionID
@@ -1057,6 +1058,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
+		g.recordGenAITurn("openai", model, model, in, out, reqBody, respBody, reqStart)
 		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	case "codex_ws_usage":
 		// chatgpt.com Codex backend. Two transports:
@@ -1073,6 +1075,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
+		g.recordGenAITurn("openai", model, model, in, out, reqBody, respBody, reqStart)
 		sid := shortHash(sessionHint)
 		if sid == "" {
 			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
@@ -2576,7 +2579,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 					_ = zr.Close()
 				}
 			}
-			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint, rtStart)
 		}
 
 		if hitlRetryConsumedOperation != nil {

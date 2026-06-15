@@ -188,6 +188,14 @@ type GatewaySettings struct {
 	// today's hardcoded behavior.
 	Limits *LimitsBlock `hcl:"limits,block"`
 
+	// GenAITelemetry, if present, enables export of OpenTelemetry GenAI
+	// semantic-convention spans (gen_ai.*) for intercepted LLM
+	// requests. Requires the OTLP exporter to be configured
+	// (OTEL_EXPORTER_OTLP_ENDPOINT); without it there is nothing to
+	// export to. The block is opt-in: when absent, no gen_ai.* spans
+	// are emitted and there is no added per-request overhead.
+	GenAITelemetry *GenAITelemetryBlock `hcl:"genai_telemetry,block"`
+
 	// WireGuard, if present, enables the embedded userspace WireGuard
 	// server. Required block when running WG-mode deployments.
 	WireGuard *WireGuardBlock `hcl:"wireguard,block"`
@@ -196,6 +204,21 @@ type GatewaySettings struct {
 	// Tailscale control plane (OAuth key minting, exit-node routing).
 	// Both transports may be enabled simultaneously.
 	Tailscale *TailscaleBlock `hcl:"tailscale,block"`
+}
+
+// GenAITelemetryBlock is the body of the `genai_telemetry { ... }`
+// sub-block inside `gateway { ... }`. Presence of the block enables
+// emission of OpenTelemetry GenAI semantic-convention spans for
+// intercepted LLM requests (gen_ai.* attributes — semconv v1.27.0).
+type GenAITelemetryBlock struct {
+	// IncludeMessageContent additionally captures and exports the
+	// prompt/completion message content via the GenAI content
+	// convention (span events: gen_ai.{role}.message and
+	// gen_ai.choice). Default false: message content can be large and
+	// sensitive, so it is only captured when an operator explicitly
+	// opts in. Independent of the base span export — the gen_ai.*
+	// attribute span emits regardless of this flag.
+	IncludeMessageContent bool `hcl:"include_message_content,optional"`
 }
 
 // WireGuardBlock is the body of the `wireguard { ... }` sub-block
@@ -385,6 +408,19 @@ func (g *Gateway) LogPath() string { return g.settings().LogPath }
 
 // Telemetry returns the pointer-bool telemetry opt-in. nil = default on.
 func (g *Gateway) Telemetry() *bool { return g.settings().Telemetry }
+
+// GenAITelemetryEnabled reports whether OTel GenAI semantic-convention
+// span export is opted in (the `genai_telemetry {}` block is present).
+func (g *Gateway) GenAITelemetryEnabled() bool {
+	return g != nil && g.Settings != nil && g.Settings.GenAITelemetry != nil
+}
+
+// GenAITelemetryIncludeContent reports whether message content
+// (prompts/completions) should be captured on GenAI spans. Always
+// false unless GenAI telemetry is enabled and the operator opted in.
+func (g *Gateway) GenAITelemetryIncludeContent() bool {
+	return g.GenAITelemetryEnabled() && g.Settings.GenAITelemetry.IncludeMessageContent
+}
 
 // SessionKeep returns the raw session-retention string, or empty.
 func (g *Gateway) SessionKeep() string { return g.settings().SessionKeep }

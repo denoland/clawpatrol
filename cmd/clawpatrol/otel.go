@@ -22,6 +22,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Module-globals so main.go's hooks can call cheap helpers without
@@ -32,6 +33,13 @@ var (
 	mVerdicts    metric.Int64Counter
 	mReqDuration metric.Float64Histogram
 )
+
+// genaiTracer is the tracer used to emit OTel GenAI semantic-convention
+// spans for intercepted LLM turns. Set by StartOtel when the trace
+// exporter is configured; nil otherwise, in which case recordGenAITurn
+// no-ops. Threading a tracer through every call site would be noisier
+// than this module-global, matching the metric handles above.
+var genaiTracer trace.Tracer
 
 func StartOtel(g *Gateway) (func(context.Context) error, error) {
 	noop := func(context.Context) error { return nil }
@@ -92,6 +100,7 @@ func StartOtel(g *Gateway) (func(context.Context) error, error) {
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{},
 		))
+		genaiTracer = tp.Tracer("clawpatrol")
 		tpShutdown = tp.Shutdown
 		_, span := tp.Tracer("clawpatrol").Start(context.Background(), "gateway.boot")
 		span.SetAttributes(attribute.String("event", "startup"))
