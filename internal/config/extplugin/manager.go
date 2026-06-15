@@ -278,6 +278,72 @@ func networkRank(n sandbox.Network) int {
 	return 0
 }
 
+// ApprovedPlugin is one result row from Approve.
+type ApprovedPlugin struct {
+	Name    string
+	Network string
+}
+
+// Approve (re)records the current permissions of the named plugins
+// (or all when names is empty) in the lockfile: it probes each
+// plugin's manifest and writes {hash, declared network}, bypassing the
+// escalation check — this is the operator deliberately accepting the
+// current version. It does not register the plugin's types, so it is
+// safe to call without a full config load.
+func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, names []string) ([]ApprovedPlugin, error) {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	if err := m.lock.load(); err != nil {
+		return nil, err
+	}
+	var out []ApprovedPlugin
+	for _, sp := range specs {
+		if len(want) > 0 && !want[sp.Name] {
+			continue
+		}
+		bin, err := resolveSandboxPath(sp.Source)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		hash, err := hashFile(bin)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		declared := sandbox.Network("")
+		if sp.Network != "" {
+			declared, err = parseNetwork(sp.Network)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+			}
+		} else {
+			declared, err = m.probeNetwork(ctx, sp)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+			}
+		}
+		m.lock.put(sp.Name, hash, string(declared))
+		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared)})
+	}
+	for n := range want {
+		found := false
+		for _, a := range out {
+			if a.Name == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no plugin %q in config", n)
+		}
+	}
+	if err := m.lock.save(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoadPlugins satisfies config.PluginLoader. Called from inside
 // config.Load after the operational decode and before pass-1
 // symbol building. For each plugin source: spawn the

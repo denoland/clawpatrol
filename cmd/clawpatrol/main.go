@@ -2797,6 +2797,8 @@ func main() {
 		runEnv(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "plugins":
+		runPlugins(os.Args[2:])
 	case "test":
 		runTest(os.Args[2:])
 	case "uninstall":
