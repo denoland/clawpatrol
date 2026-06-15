@@ -266,6 +266,78 @@ Default-profile auto-assignment is a UX convenience for fresh
 registrations; the security-relevant property is the scoping rule
 above.
 
+## Plugins are untrusted
+
+External plugins (`plugin "<name>" { source = "..." }`) extend the
+gateway with new credential, endpoint, and tunnel types. They run as
+subprocesses inside the gateway's process tree, and the gateway holds
+the secrets a plugin must never reach: the state database (CA private
+key, stored credential material), the WireGuard / Tailscale keys, and
+the `CLAWPATROL_SECRET_*` environment variables. A planned
+Terraform-style distribution mechanism would let operators fetch
+plugins they did not write — so plugins are treated as a supply-chain
+attack surface, not trusted gateway code.
+
+Two mechanisms contain a malicious or compromised plugin:
+
+- **Scrubbed environment.** A plugin inherits **none** of the
+  gateway's environment — only `PATH`, `HOME` and `TMPDIR` (a private
+  scratch dir) and its gateway socket path. This holds even with
+  `sandbox = "off"`.
+- **OS sandbox, on by default.** Every plugin runs inside an OS
+  sandbox: Linux user/mount/pid (and, with `network = "none"`,
+  network) namespaces over a deny-by-default mount tree; Landlock
+  where unprivileged user namespaces are blocked; macOS seatbelt. The
+  sandbox hides the filesystem (the plugin sees only its own binary,
+  system libraries, and explicitly granted paths) and, by default,
+  the network. If no sandbox can be established the plugin **fails to
+  load** unless the operator explicitly sets `sandbox = "off"`.
+
+Because the default `network = "none"` cuts a plugin off from the
+network entirely, an endpoint plugin that receives credential secrets
+(to inject them into an upstream request) cannot exfiltrate them: its
+only channel is the gateway socket, and its upstream connections are
+opened *by the gateway* through the [brokered
+dial](plugins.md#brokered-upstream-dial), restricted to targets the
+operator's HCL sanctions and audited on every attempt. Tunnel plugins
+are the upstream transport themselves and need outbound network; that
+grant is per-plugin, so it does not loosen the endpoint plugins beside
+it.
+
+Network is **declared by the plugin** in its manifest and recorded,
+trust-on-first-use, in a committed lockfile (`clawpatrol.lock.hcl`).
+The threat this addresses is the supply-chain one: a benign plugin's
+next version silently gaining a network leak path. An upgrade (a
+changed binary hash) that requests more than the lockfile recorded
+**fails config load** until an operator re-approves it — the loud,
+reviewable moment a malicious update would otherwise slip through.
+Because the lockfile is committed, the approval is also a diff in code
+review. Filesystem and `sandbox = "off"` grants are never
+plugin-declarable; they are operator-only and explicit (below).
+
+The sandbox is defense-in-depth, not a capability wall around the
+gateway as a whole. The grants form a deliberate risk ladder:
+
+- `network = "outbound"` is a bounded *leak path* — a network-enabled
+  plugin can exfiltrate only the secrets it is actually handed,
+  because the sandbox still confines its filesystem.
+- `read_paths` is a *host read hole* — fine for inert files, but
+  catastrophic when pointed at credential-bearing paths, so the
+  gateway refuses any that overlaps the state dir (the secret store).
+- There is **no host-write grant**. Host write is a
+  code-execution-as-the-gateway-user primitive (plant a payload in
+  `~/.bashrc`, cron, a `$PATH` dir; it runs later as the user, reads
+  the state DB, and exfiltrates over the user's own network), and no
+  denylist of active locations can be complete — so the only way to
+  get host write is `sandbox = "off"`.
+- `sandbox = "off"` is the single **full-trust** knob: full host read,
+  write, and exec (the environment scrub still applies). A plugin run
+  this way can read every credential in the state DB; use it only for
+  plugins you fully trust.
+
+Grant the minimum a plugin needs, and prefer the brokered dial over
+`network = "outbound"` for anything that handles secrets.
+
 ## Egress interception is best-effort
 
 Routing the agent’s traffic through the gateway is what lets Claw

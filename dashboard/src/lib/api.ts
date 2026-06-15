@@ -206,6 +206,47 @@ export async function getRules(): Promise<RuleSummary[]> {
   return r.json();
 }
 
+// Plugin mirrors extplugin.PluginInfo: one loaded external plugin and
+// the permissions it runs with. network is the approved grant ("none"
+// | "outbound"); sandboxMode is the OS backend ("namespaces" |
+// "landlock" | "seatbelt" | "off"). Plugins blocked by a permission
+// escalation never load, so they don't appear here.
+export type Plugin = {
+  name: string;
+  source: string;
+  // blocked plugins failed to load (chiefly a permission escalation);
+  // they carry name, source, blocked, reason and nothing else.
+  blocked?: boolean;
+  reason?: string;
+  version?: string;
+  network?: string;
+  sandboxMode?: string;
+  sandboxWarning?: string;
+  approvedHashes?: string[];
+  credentials?: string[];
+  tunnels?: string[];
+  endpoints?: string[];
+  facets?: string[];
+};
+
+export async function getPlugins(): Promise<Plugin[]> {
+  const r = await api("/api/plugins");
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// approvePlugin records the named plugin's current permissions in the
+// lockfile and reloads so a previously-blocked plugin loads. The
+// dashboard equivalent of `clawpatrol plugins approve`.
+export async function approvePlugin(name: string): Promise<void> {
+  const r = await fetch("/api/plugins/approve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 // Rules API speaks JSON on the wire. The editor pretty-prints the
 // rules array so an operator can see/edit each rule's fields directly.
 // (HCL is the on-disk format; JSON is just the dashboard transport.)

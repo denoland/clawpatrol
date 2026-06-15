@@ -50,8 +50,12 @@ type dynamicEndpointBody struct {
 	instanceName  string
 	canonicalJSON []byte
 	hosts         []string
-	tlsTerminate  bool
-	wantsVIP      bool
+	// dialTargets is the operator-written `dial = [...]` allow-list
+	// of extra upstream targets brokered dials may open. Gateway
+	// decoded, never forwarded to the plugin.
+	dialTargets  []string
+	tlsTerminate bool
+	wantsVIP     bool
 }
 
 // EndpointHosts is consulted by the loader at compile time
@@ -153,6 +157,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		CredentialExtras:        credExtra,
 		TunnelTypeName:          tunType,
 		TunnelInstance:          tunInst,
+		SupportsDialUpstream:    true,
 	}
 	if err := stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Init{Init: init}}); err != nil {
 		return fmt.Errorf("extplugin: send ConnInit: %w", err)
@@ -205,6 +210,11 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 	streamReply := func(handle string) <-chan *pb.StreamChunk {
 		return getStreamCh(handle)
 	}
+
+	// Brokered upstream dials opened on this stream's behalf. Torn
+	// down with the stream.
+	dials := newDialRegistry()
+	defer dials.closeAll()
 
 	errCh := make(chan error, 2)
 
@@ -281,6 +291,27 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 					// one read per StreamRead; a backed-up channel
 					// here means the caller already gave up on the
 					// stream. Drop the chunk.
+				}
+			case *pb.ConnMessage_DialRequest:
+				// Validate + dial + pump off the recv loop so a slow
+				// upstream connect doesn't stall data flow.
+				go handleDialRequest(ctx, ch, dials, k.DialRequest, doSend)
+			case *pb.ConnMessage_DialData:
+				if d := dials.get(k.DialData.DialId); d != nil {
+					select {
+					case d.writeQ <- k.DialData.Payload:
+						// Bounded backpressure: a full queue blocks
+						// the recv loop the same way a slow agent
+						// conn.Write does for ConnData.
+					case <-d.done:
+					case <-ctx.Done():
+					}
+				}
+				// Unknown dial_id: frames racing our close. Drop.
+			case *pb.ConnMessage_DialClose:
+				if d := dials.get(k.DialClose.DialId); d != nil {
+					dials.remove(k.DialClose.DialId)
+					d.close()
 				}
 			case *pb.ConnMessage_Close:
 				errCh <- nil

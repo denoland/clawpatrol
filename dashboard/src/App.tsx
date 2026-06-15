@@ -11,6 +11,7 @@ import { LiveRequests } from "./components/LiveRequests";
 import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
 import { PageTitle } from "./components/PageTitle";
+import { PluginsPage } from "./components/PluginsPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
@@ -23,6 +24,7 @@ type Route =
   | { name: "onboard"; code: string }
   | { name: "request"; id: string }
   | { name: "settings" }
+  | { name: "plugins" }
   | { name: "account" };
 
 function parseRoute(): Route {
@@ -37,6 +39,7 @@ function parseRoute(): Route {
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   if (h === "#/settings") return { name: "settings" };
+  if (h === "#/plugins") return { name: "plugins" };
   if (h === "#/devices") return { name: "devices" };
   if (h === "#/account") return { name: "account" };
   if (h === "#/analytics") return { name: "analytics" };
@@ -126,6 +129,8 @@ export default function App() {
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
         />
+      ) : route.name === "plugins" ? (
+        <PluginsPage />
       ) : route.name === "account" ? (
         <AccountPage whoami={whoami} />
       ) : (

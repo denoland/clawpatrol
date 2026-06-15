@@ -388,6 +388,13 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 // endpoint's body, regardless of what the plugin declared.
 const (
 	endpointAttrHosts = "hosts"
+	// endpointAttrDial is the operator-written allow-list of extra
+	// upstream targets the gateway will open for this endpoint
+	// instance via the brokered dial. Entries are "host:port" or
+	// "*.suffix.tld:port". Decoded by the gateway and stripped from
+	// the canonical JSON — dial authorization must rest on HCL the
+	// operator wrote, never on plugin-controlled config.
+	endpointAttrDial = "dial"
 )
 
 func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) hcl.Diagnostics {
@@ -426,6 +433,24 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 				for it := hostsV.ElementIterator(); it.Next(); {
 					_, h := it.Element()
 					b.hosts = append(b.hosts, h.AsString())
+				}
+			}
+			if dialV, ok := obj[endpointAttrDial]; ok && !dialV.IsNull() {
+				for it := dialV.ElementIterator(); it.Next(); {
+					_, dv := it.Element()
+					entry := dv.AsString()
+					if err := checkDialTarget(entry); err != nil {
+						d = append(d, &hcl.Diagnostic{
+							Severity: hcl.DiagError,
+							Summary:  fmt.Sprintf("Invalid dial entry %q", entry),
+							Detail:   err.Error(),
+						})
+						continue
+					}
+					b.dialTargets = append(b.dialTargets, entry)
+				}
+				if d.HasErrors() {
+					return d
 				}
 			}
 			// Plugin-only payload — drop the framework attrs.
@@ -530,11 +555,12 @@ func schemaToSpec(s *pb.Schema) (hcldec.Spec, error) {
 func endpointSpec(s *pb.Schema) (hcldec.Spec, []string, error) {
 	out := hcldec.ObjectSpec{
 		endpointAttrHosts: &hcldec.AttrSpec{Name: endpointAttrHosts, Type: cty.List(cty.String), Required: true},
+		endpointAttrDial:  &hcldec.AttrSpec{Name: endpointAttrDial, Type: cty.List(cty.String), Required: false},
 	}
 	var names []string
 	if s != nil {
 		for _, f := range s.Fields {
-			if f.Name == endpointAttrHosts {
+			if f.Name == endpointAttrHosts || f.Name == endpointAttrDial {
 				return nil, nil, fmt.Errorf("plugin declared reserved attribute %q", f.Name)
 			}
 			ty, err := ctyTypeFromString(f.TypeString)

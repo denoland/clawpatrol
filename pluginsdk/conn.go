@@ -26,9 +26,10 @@ type streamConn struct {
 	// closeFn tears down both directions. Idempotent.
 	closeFn func()
 
-	mu      sync.Mutex
-	closed  bool
-	readBuf []byte
+	mu       sync.Mutex
+	closed   bool
+	closedCh chan struct{} // closed by Close; unblocks a parked Write
+	readBuf  []byte
 
 	rdMu       sync.Mutex
 	rdDeadline time.Time
@@ -42,6 +43,7 @@ func newStreamConn(recv <-chan []byte, send chan<- []byte, closeFn func(), local
 		recv:       recv,
 		send:       send,
 		closeFn:    closeFn,
+		closedCh:   make(chan struct{}),
 		localAddr:  local,
 		remoteAddr: remote,
 	}
@@ -101,8 +103,15 @@ func (c *streamConn) Write(p []byte) (int, error) {
 	c.mu.Unlock()
 	// Copy because the gRPC layer holds the slice asynchronously.
 	buf := append([]byte(nil), p...)
-	c.send <- buf
-	return len(p), nil
+	// Select on closedCh so a Write parked on a full send channel is
+	// released when the conn closes (e.g. a brokered dial whose pump
+	// goroutine has already exited), instead of blocking forever.
+	select {
+	case c.send <- buf:
+		return len(p), nil
+	case <-c.closedCh:
+		return 0, io.ErrClosedPipe
+	}
 }
 
 // Close tears down both directions. Safe to call multiple times.
@@ -113,6 +122,7 @@ func (c *streamConn) Close() error {
 		return nil
 	}
 	c.closed = true
+	close(c.closedCh)
 	c.mu.Unlock()
 	if c.closeFn != nil {
 		c.closeFn()

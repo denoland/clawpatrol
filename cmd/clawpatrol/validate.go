@@ -37,6 +37,9 @@ func validateCmd(args []string) (string, int) {
 	}
 	mgr := extplugin.New(nil)
 	defer mgr.Stop()
+	// Read-only: report a would-be first-load or an escalation as a
+	// diagnostic, but never write the lockfile from `validate`.
+	mgr.SetLockfile(extplugin.LockfilePathFor(args[0]), true)
 	config.SetPluginLoader(mgr)
 	_, cp, err := loadConfig(args[0])
 	if err != nil {
@@ -53,9 +56,10 @@ func validateCmd(args []string) (string, int) {
 		if mf == nil {
 			continue
 		}
-		fmt.Fprintf(&b, "\n  plugin %q v%s: %d facet(s), %d credential type(s), %d tunnel type(s), %d endpoint type(s)",
+		fmt.Fprintf(&b, "\n  plugin %q v%s: %d facet(s), %d credential type(s), %d tunnel type(s), %d endpoint type(s) [sandbox: %s]",
 			mf.Name, mf.Version,
-			len(mf.Facets), len(mf.Credentials), len(mf.Tunnels), len(mf.Endpoints))
+			len(mf.Facets), len(mf.Credentials), len(mf.Tunnels), len(mf.Endpoints),
+			c.SandboxMode())
 	}
 	return b.String(), 0
 }

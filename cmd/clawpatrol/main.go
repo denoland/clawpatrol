@@ -36,6 +36,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/sandbox"
 	"github.com/google/uuid"
 	"tailscale.com/client/local"
 )
@@ -51,14 +52,11 @@ type JoinConfig = config.JoinConfig
 // (clawpatrol.db) coexists with the client-side ca.crt that lives
 // in the same dir on dev machines.
 func resolveStateDir(cfg *config.Gateway) string {
-	if d := cfg.StateDir(); d != "" {
+	if d := cfg.ResolvedStateDir(); d != "" {
 		return d
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		log.Fatalf("state_dir unset and $HOME unavailable")
-	}
-	return filepath.Join(home, ".clawpatrol")
+	log.Fatalf("state_dir unset and $HOME unavailable")
+	return ""
 }
 
 const hitlOperationTerminalRetention = 7 * 24 * time.Hour
@@ -352,11 +350,14 @@ type Gateway struct {
 	// Used by endpoint plugins that need per-endpoint persistent
 	// bytes — SSH host keys today, future JWT signing keys.
 	// Exposed to plugins via ConnHandle.Blobs.
-	blobs   runtime.BlobStore
-	oauth   *OAuthRegistry
-	agents  *AgentRegistry
-	hitl    *HITLRegistry
-	onboard *onboardRegistry
+	blobs runtime.BlobStore
+	// pluginMgr supervises the external plugin subprocesses; the
+	// dashboard reads it for the Plugins page.
+	pluginMgr *extplugin.Manager
+	oauth     *OAuthRegistry
+	agents    *AgentRegistry
+	hitl      *HITLRegistry
+	onboard   *onboardRegistry
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
@@ -1774,6 +1775,12 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			}
 			return g.dialThrough(ctx, ep, network, addr)
 		},
+		DialUpstreamTLS: func(ctx context.Context, network, addr, serverName string) (net.Conn, error) {
+			if addr == "" {
+				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
+			}
+			return g.dialUpstream(ctx, network, addr, serverName, ep, profile)
+		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
 				return
@@ -2753,6 +2760,10 @@ func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) str
 }
 
 func main() {
+	// Must run before anything else: when this process is the
+	// re-exec'd sandbox stage-1 child for an external plugin, Stage1
+	// sets the sandbox up and execs the plugin binary in place.
+	sandbox.Stage1()
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -2786,6 +2797,8 @@ func main() {
 		runEnv(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "plugins":
+		runPlugins(os.Args[2:])
 	case "test":
 		runTest(os.Args[2:])
 	case "uninstall":
@@ -2938,7 +2951,12 @@ func runGateway(args []string) {
 	cfgPath := rest[0]
 
 	startModelRefresh()
-	config.SetPluginLoader(extplugin.New(log.Default()))
+	pluginMgr := extplugin.New(log.Default())
+	// Record approved plugin permissions in clawpatrol.lock.hcl beside
+	// the config (committed to VCS); trust-on-first-use, fail closed on
+	// escalation.
+	pluginMgr.SetLockfile(extplugin.LockfilePathFor(cfgPath), false)
+	config.SetPluginLoader(pluginMgr)
 	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
@@ -2983,17 +3001,18 @@ func runGateway(args []string) {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
-		cfgPath:  cfgPath,
-		stateDir: stateDir,
-		db:       db,
-		certs:    certs,
-		dialer:   newUpstreamDialer(cfg.Resolver()),
-		sink:     sink,
-		blobs:    blobs,
-		oauth:    oauthReg,
-		agents:   NewAgentRegistry(),
-		hitl:     newHITLRegistry(sink),
-		onboard:  newOnboardRegistry(),
+		cfgPath:   cfgPath,
+		stateDir:  stateDir,
+		db:        db,
+		certs:     certs,
+		dialer:    newUpstreamDialer(cfg.Resolver()),
+		sink:      sink,
+		blobs:     blobs,
+		pluginMgr: pluginMgr,
+		oauth:     oauthReg,
+		agents:    NewAgentRegistry(),
+		hitl:      newHITLRegistry(sink),
+		onboard:   newOnboardRegistry(),
 	}
 	g.cfg.Store(cfg)
 	if cfg.DashboardConfigWrites() {

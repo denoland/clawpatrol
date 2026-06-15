@@ -24,6 +24,11 @@ gateway {
 
 plugin "example" {
   source = "./pluginsdk/example/example"
+  // No network grant here: the example plugin declares its own
+  // network need (NetworkOutbound, for the passthrough tunnel) in its
+  // manifest. The gateway records the approval in clawpatrol.lock.hcl
+  // on first load. The endpoints don't need it — their upstream
+  // connections go through the gateway's brokered dial.
 }
 
 tunnel "example_passthrough" "passthru" {}
@@ -46,6 +51,11 @@ endpoint "example_https" "demo-site" {
   hosts    = ["demo.invalid"]
   tunnel   = example_passthrough.passthru
   upstream = "http://127.0.0.1:8000"
+  // The plugin reaches the upstream through the gateway's brokered
+  // dial (it has no network access of its own); `dial` is the
+  // operator-sanctioned allow-list of targets the gateway will open
+  // for it beyond the agent's own destination.
+  dial = ["127.0.0.1:8000"]
 }
 
 rule "https-reads" {

@@ -58,6 +58,12 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: enable unprivileged user namespaces
+        # ubuntu-latest (24.04) ships kernel.apparmor_restrict_unprivileged_userns=1,
+        # which blocks the plugin sandbox's namespace backend. Clearing it
+        # exercises the namespace path; the Landlock fallback is covered by
+        # the test-sandbox-landlock job below.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: make dashboard
       - run: make fmt-check
       - run: cd dashboard && deno task lint:github
@@ -69,3 +75,59 @@ jobs:
             echo "validating $f"
             /tmp/clawpatrol validate "$f"
           done
+
+  # Exercise the Landlock fallback backend: keep AppArmor's userns
+  # restriction in place (the runner default) and force the backend so
+  # the namespace path is bypassed.
+  test-sandbox-landlock:
+    runs-on: ubuntu-latest
+    env:
+      CLAWPATROL_SANDBOX_BACKEND: landlock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
+            go-${{ runner.os }}-
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # cmd/clawpatrol go:embed's dashboard/dist; build it first.
+      - run: make dashboard
+      - run: go test ./internal/sandbox/... ./internal/config/extplugin/... -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'
+      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'
+
+  # Exercise the macOS seatbelt backend.
+  test-sandbox-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
+            go-${{ runner.os }}-
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # cmd/clawpatrol go:embed's dashboard/dist; build it first.
+      - run: make dashboard
+      - run: go test ./internal/sandbox/...
+      - run: go test ./cmd/clawpatrol/ -run 'Sandbox|Dial|Nosy|Plugin|ExternalCredential'

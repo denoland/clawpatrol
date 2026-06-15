@@ -14,6 +14,13 @@ func main() {
 	pluginsdk.Run(&pluginsdk.Plugin{
 		Name:    "example",
 		Version: "0.1",
+		// The passthrough tunnel dials upstream itself, so the plugin
+		// declares it needs outbound network. The operator no longer
+		// writes network = "outbound" in the HCL; the gateway records
+		// this on first load.
+		Capabilities: pluginsdk.Capabilities{
+			Network: pluginsdk.NetworkOutbound,
+		},
 		Credentials: []pluginsdk.CredentialDef{
 			magicTokenDef(),
 		},
