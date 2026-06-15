@@ -214,9 +214,13 @@ export async function getRules(): Promise<RuleSummary[]> {
 export type Plugin = {
   name: string;
   source: string;
+  // blocked plugins failed to load (chiefly a permission escalation);
+  // they carry name, source, blocked, reason and nothing else.
+  blocked?: boolean;
+  reason?: string;
   version?: string;
-  network: string;
-  sandboxMode: string;
+  network?: string;
+  sandboxMode?: string;
   sandboxWarning?: string;
   approvedHash?: string;
   credentials?: string[];

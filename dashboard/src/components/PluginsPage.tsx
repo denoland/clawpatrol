@@ -3,11 +3,12 @@ import { getPlugins, type Plugin } from "../lib/api";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
 
-// PluginsPage lists the loaded external plugins and the permissions
-// each runs with. Network is declared by the plugin and approved on
-// first load (recorded in clawpatrol.lock.hcl); a plugin blocked by a
-// permission escalation never loads, so it does not appear here — that
-// failure surfaces at gateway start / `clawpatrol validate`.
+// PluginsPage lists the external plugins and the permissions each
+// runs with. Network is declared by the plugin and approved on first
+// load (recorded in clawpatrol.lock.hcl). A plugin the gateway
+// refused to load — chiefly one whose upgrade escalated its
+// permissions — is shown as a blocked card with the reason and the
+// re-approve command.
 export function PluginsPage() {
   const [plugins, setPlugins] = useState<Plugin[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -25,8 +26,9 @@ export function PluginsPage() {
       <p className="text-sm text-text-muted mb-5 max-w-3xl">
         External plugins run sandboxed. Each declares its own network need; the gateway records the
         approved permissions in <code className="font-mono text-xs">clawpatrol.lock.hcl</code> on
-        first load and refuses to start a plugin whose update asks for more, until you re-approve
-        it. Filesystem access and turning the sandbox off are operator-only.
+        first load and refuses to start a plugin whose update asks for more — shown below as a
+        blocked plugin until you re-approve it. Filesystem access and turning the sandbox off are
+        operator-only.
       </p>
 
       {err && (
@@ -44,11 +46,40 @@ export function PluginsPage() {
       )}
 
       <div className="space-y-4">
-        {plugins?.map((p) => (
-          <PluginCard key={p.name} p={p} />
-        ))}
+        {plugins?.map((p) =>
+          p.blocked ? <BlockedCard key={p.name} p={p} /> : <PluginCard key={p.name} p={p} />,
+        )}
       </div>
     </Main>
+  );
+}
+
+// BlockedCard surfaces a plugin the gateway refused to load — almost
+// always a permission escalation across an upgrade. It shows the
+// reason and the command to re-approve.
+function BlockedCard({ p }: { p: Plugin }) {
+  return (
+    <section className="bg-canvas border-1.5 border-danger-500 overflow-hidden">
+      <div className="flex items-center gap-3 flex-wrap px-4 py-3 bg-danger-500 border-b border-danger-500">
+        <h2 className="font-mono text-sm text-canvas font-bold">{p.name}</h2>
+        <span className="ml-auto font-mono text-2xs uppercase tracking-wider text-canvas bg-danger-500 border border-canvas px-1.5 py-0.5 squircle-md">
+          blocked
+        </span>
+      </div>
+      <div className="px-4 py-3 space-y-3">
+        <Field label="Source">
+          <span className="font-mono text-xs text-text-muted break-all">{p.source}</span>
+        </Field>
+        <Field label="Reason">
+          <span className="text-xs text-danger-500">{p.reason}</span>
+        </Field>
+        <Field label="Re-approve">
+          <code className="font-mono text-2xs text-text bg-navy-100 px-2 py-1 squircle-md break-all">
+            clawpatrol plugins approve &lt;config.hcl&gt; {p.name}
+          </code>
+        </Field>
+      </div>
+    </section>
   );
 }
 
@@ -59,8 +90,8 @@ function PluginCard({ p }: { p: Plugin }) {
         <h2 className="font-mono text-sm text-navy font-bold">{p.name}</h2>
         {p.version && <span className="font-mono text-2xs text-text-muted">v{p.version}</span>}
         <div className="ml-auto flex items-center gap-2">
-          <NetworkBadge network={p.network} />
-          <SandboxBadge mode={p.sandboxMode} />
+          <NetworkBadge network={p.network ?? "none"} />
+          <SandboxBadge mode={p.sandboxMode ?? ""} />
         </div>
       </div>
 

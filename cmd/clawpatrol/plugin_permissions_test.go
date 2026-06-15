@@ -88,6 +88,21 @@ func TestPluginPermissionTOFUAndEscalation(t *testing.T) {
 			t.Errorf("escalation diagnostic %q missing %q", msg, want)
 		}
 	}
+	// The blocked plugin must surface in PluginInfos (the dashboard
+	// /api/plugins feed) with its reason, even though it never loaded.
+	var blocked *extplugin.PluginInfo
+	for _, info := range mgr2.PluginInfos() {
+		if info.Name == name {
+			blocked = &info
+			break
+		}
+	}
+	if blocked == nil || !blocked.Blocked {
+		t.Fatalf("escalation-blocked plugin not surfaced in PluginInfos: %+v", blocked)
+	}
+	if !strings.Contains(blocked.Reason, "escalates permissions") {
+		t.Errorf("blocked reason %q missing escalation text", blocked.Reason)
+	}
 	mgr2.Stop()
 	// The lockfile must still record the old (none) approval — the
 	// escalation must not have been silently written.

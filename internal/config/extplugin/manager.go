@@ -27,11 +27,21 @@ import (
 // pass runs (so the registry has the plugin's types). Call Stop on
 // gateway shutdown.
 type Manager struct {
-	mu       sync.Mutex
-	plugins  map[string]*Client // keyed by plugin name from Manifest
+	mu      sync.Mutex
+	plugins map[string]*Client // keyed by plugin name from Manifest
+	// blocked records plugins that failed to load on the last pass —
+	// most importantly the ones held back by a permission escalation,
+	// which never enter `plugins`. Rebuilt every LoadPlugins pass so
+	// the dashboard reflects the current state. Keyed by HCL name.
+	blocked  map[string]blockedRecord
 	logger   hclog.Logger
 	lock     *lockStore
 	stateDir string // gateway secret-store dir; read_paths may not overlap it
+}
+
+type blockedRecord struct {
+	source string
+	reason string
 }
 
 // New constructs an empty Manager. The logger is wrapped so plugin
@@ -46,6 +56,7 @@ func New(out *log.Logger) *Manager {
 	})
 	return &Manager{
 		plugins: make(map[string]*Client),
+		blocked: make(map[string]blockedRecord),
 		logger:  logger,
 		lock:    newLockStore(),
 	}
@@ -375,12 +386,21 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.
 			m.logger.Error("failed to write plugin lockfile", "err", err)
 		}
 	}()
+	// Rebuild the blocked set from scratch this pass; a plugin that
+	// now loads (or was removed from the config) drops out of it.
+	blocked := map[string]blockedRecord{}
+	defer func() {
+		m.mu.Lock()
+		m.blocked = blocked
+		m.mu.Unlock()
+	}()
 	for _, sp := range specs {
 		if sp.Source == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Plugin %q: source is required", sp.Name),
 			})
+			blocked[sp.Name] = blockedRecord{source: sp.Source, reason: "source is required"}
 			continue
 		}
 		m.mu.Lock()
@@ -396,6 +416,7 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.
 				Summary:  fmt.Sprintf("Plugin %q failed to start", sp.Name),
 				Detail:   err.Error(),
 			})
+			blocked[sp.Name] = blockedRecord{source: sp.Source, reason: err.Error()}
 			continue
 		}
 		if w := client.SandboxWarning(); w != "" {
@@ -491,13 +512,19 @@ func (m *Manager) Plugins() []*Client {
 	return out
 }
 
-// PluginInfo is the dashboard-facing summary of one loaded plugin.
+// PluginInfo is the dashboard-facing summary of one plugin — either
+// loaded (with its permissions and declared types) or blocked (failed
+// to load, with the reason; chiefly a permission escalation).
 type PluginInfo struct {
-	Name           string   `json:"name"`
-	Source         string   `json:"source"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	// Blocked plugins carry only Name, Source, Blocked, Reason.
+	Blocked bool   `json:"blocked,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+
 	Version        string   `json:"version,omitempty"`
-	Network        string   `json:"network"`     // approved grant it runs with
-	SandboxMode    string   `json:"sandboxMode"` // namespaces | landlock | seatbelt | off
+	Network        string   `json:"network,omitempty"`     // approved grant it runs with
+	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
 	SandboxWarning string   `json:"sandboxWarning,omitempty"`
 	ApprovedHash   string   `json:"approvedHash,omitempty"` // lockfile-recorded binary hash
 	Credentials    []string `json:"credentials,omitempty"`
@@ -506,12 +533,14 @@ type PluginInfo struct {
 	Facets         []string `json:"facets,omitempty"`
 }
 
-// PluginInfos returns a dashboard summary of every loaded plugin.
-// (Plugins blocked by a permission escalation never load, so they do
-// not appear here.)
+// PluginInfos returns a dashboard summary of every plugin — loaded
+// ones with their permissions, plus any currently blocked (e.g. a
+// permission escalation) with the failure reason.
 func (m *Manager) PluginInfos() []PluginInfo {
 	out := []PluginInfo{}
+	loaded := map[string]bool{}
 	for _, c := range m.Plugins() {
+		loaded[c.Name()] = true
 		info := PluginInfo{
 			Name:           c.Name(),
 			Source:         c.Source(),
@@ -539,6 +568,15 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		}
 		out = append(out, info)
 	}
+	m.mu.Lock()
+	for name, b := range m.blocked {
+		if loaded[name] {
+			continue
+		}
+		out = append(out, PluginInfo{Name: name, Source: b.source, Blocked: true, Reason: b.reason})
+	}
+	m.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
