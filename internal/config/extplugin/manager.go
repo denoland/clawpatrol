@@ -27,10 +27,11 @@ import (
 // pass runs (so the registry has the plugin's types). Call Stop on
 // gateway shutdown.
 type Manager struct {
-	mu      sync.Mutex
-	plugins map[string]*Client // keyed by plugin name from Manifest
-	logger  hclog.Logger
-	lock    *lockStore
+	mu       sync.Mutex
+	plugins  map[string]*Client // keyed by plugin name from Manifest
+	logger   hclog.Logger
+	lock     *lockStore
+	stateDir string // gateway secret-store dir; read_paths may not overlap it
 }
 
 // New constructs an empty Manager. The logger is wrapped so plugin
@@ -89,7 +90,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", warn)
 	}
 
-	spec, mode, sbWarn, err := buildSandboxSpec(sp, network)
+	spec, mode, sbWarn, err := buildSandboxSpec(sp, network, m.stateDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -252,7 +253,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 // this is safe even for a plugin that will ultimately run with
 // outbound access.
 func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource) (sandbox.Network, error) {
-	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone)
+	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone, m.stateDir)
 	if err != nil {
 		return "", err
 	}
@@ -353,9 +354,10 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 // Already-loaded plugins (matched by manifest name) are skipped so
 // reload-style flows don't re-spawn or trip the "duplicate plugin"
 // panic in config.Register.
-func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
+func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	ctx := context.Background()
+	m.stateDir = stateDir
 	// Reload the lockfile each pass so manual edits and
 	// `plugins approve` are picked up; write back any
 	// trust-on-first-use records when done.

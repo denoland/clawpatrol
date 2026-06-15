@@ -573,7 +573,10 @@ type PluginSource struct {
 // Implemented by *extplugin.Manager — the package-cycle-safe seam
 // (config can't import extplugin since extplugin imports config).
 type PluginLoader interface {
-	LoadPlugins(specs []PluginSource) hcl.Diagnostics
+	// stateDir is the gateway's resolved state directory (where the
+	// secret store lives); the loader refuses a plugin read_paths
+	// grant that overlaps it.
+	LoadPlugins(specs []PluginSource, stateDir string) hcl.Diagnostics
 }
 
 // pluginLoader is the package-global hook every Load call uses.
@@ -600,7 +603,7 @@ func SetPluginLoader(p PluginLoader) {
 // referencing endpoint blocks.
 type noopPluginLoader struct{}
 
-func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil }
+func (noopPluginLoader) LoadPlugins([]PluginSource, string) hcl.Diagnostics { return nil }
 
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Credentials is
@@ -858,7 +861,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	// types they declare are visible to pass-1 symbol building. The
 	// loader is package-global; see SetPluginLoader.
 	if len(gw.Plugins) > 0 {
-		d := pluginLoader.LoadPlugins(gw.Plugins)
+		d := pluginLoader.LoadPlugins(gw.Plugins, gw.StateDir())
 		if d.HasErrors() {
 			return gw, append(diags, d...)
 		}

@@ -10,6 +10,36 @@ import (
 	"github.com/denoland/clawpatrol/internal/sandbox"
 )
 
+func TestCheckReadPathsAgainstStateDir(t *testing.T) {
+	// resolveGrantPaths symlink-resolves read_paths in production, so
+	// resolve here too (macOS /var -> /private/var).
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Overlaps that must be refused: the state dir itself, a child of
+	// it, and a parent of it.
+	for _, p := range []string{
+		state,
+		filepath.Join(state, "sub"),
+		filepath.Dir(state),
+	} {
+		if err := checkReadPathsAgainstStateDir([]string{p}, state); err == nil {
+			t.Errorf("read_path %q overlapping state dir %q was allowed", p, state)
+		}
+	}
+
+	// A sibling/unrelated path is fine.
+	if err := checkReadPathsAgainstStateDir([]string{filepath.Join(filepath.Dir(state), "other")}, state); err != nil {
+		t.Errorf("unrelated read_path refused: %v", err)
+	}
+	// No state dir / no paths => no guard.
+	if err := checkReadPathsAgainstStateDir([]string{state}, ""); err != nil {
+		t.Errorf("empty state dir should not block: %v", err)
+	}
+}
+
 func testPluginBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -55,7 +85,7 @@ func TestBuildSandboxSpecValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := buildSandboxSpec(tc.sp, sandbox.NetworkNone)
+			_, _, _, err := buildSandboxSpec(tc.sp, sandbox.NetworkNone, "")
 			if err == nil {
 				t.Fatalf("buildSandboxSpec accepted %+v", tc.sp)
 			}
@@ -79,7 +109,7 @@ func TestBuildSandboxSpecOff(t *testing.T) {
 	bin := testPluginBinary(t)
 	spec, mode, warning, err := buildSandboxSpec(config.PluginSource{
 		Name: "x", Source: bin, Sandbox: "off",
-	}, sandbox.NetworkNone)
+	}, sandbox.NetworkNone, "")
 	if err != nil {
 		t.Fatal(err)
 	}

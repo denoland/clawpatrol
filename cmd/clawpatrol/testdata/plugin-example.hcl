@@ -24,10 +24,11 @@ gateway {
 
 plugin "example" {
   source = "./pluginsdk/example/example"
-  // The passthrough tunnel dials upstream itself, so the plugin
-  // needs the outbound network grant. The endpoints don't: their
-  // upstream connections go through the gateway's brokered dial.
-  network = "outbound"
+  // No network grant here: the example plugin declares its own
+  // network need (NetworkOutbound, for the passthrough tunnel) in its
+  // manifest. The gateway records the approval in clawpatrol.lock.hcl
+  // on first load. The endpoints don't need it — their upstream
+  // connections go through the gateway's brokered dial.
 }
 
 tunnel "example_passthrough" "passthru" {}

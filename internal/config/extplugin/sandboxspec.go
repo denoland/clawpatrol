@@ -25,7 +25,7 @@ import (
 //
 // The caller owns spec.SocketDir and must remove it when the plugin
 // dies.
-func buildSandboxSpec(sp config.PluginSource, network sandbox.Network) (sandbox.Spec, sandbox.Mode, string, error) {
+func buildSandboxSpec(sp config.PluginSource, network sandbox.Network, stateDir string) (sandbox.Spec, sandbox.Mode, string, error) {
 	var zero sandbox.Spec
 
 	switch sp.Sandbox {
@@ -49,6 +49,12 @@ func buildSandboxSpec(sp config.PluginSource, network sandbox.Network) (sandbox.
 	readPaths, err := resolveGrantPaths(sp.ReadPaths)
 	if err != nil {
 		return zero, "", "", fmt.Errorf("read_paths: %w", err)
+	}
+	// A read_paths grant overlapping the state dir would expose the
+	// secret store (clawpatrol.db — the CA key and every credential).
+	// That is the all-credentials tier; refuse it outright.
+	if err := checkReadPathsAgainstStateDir(readPaths, stateDir); err != nil {
+		return zero, "", "", err
 	}
 
 	mode := sandbox.Mode("")
@@ -81,6 +87,41 @@ func buildSandboxSpec(sp config.PluginSource, network sandbox.Network) (sandbox.
 		Network:    network,
 		ReadPaths:  readPaths,
 	}, mode, warning, nil
+}
+
+// checkReadPathsAgainstStateDir refuses a read grant that would let
+// the plugin read the gateway's secret store. A grant is rejected when
+// it is at, under, or a parent of the resolved state dir.
+func checkReadPathsAgainstStateDir(readPaths []string, stateDir string) error {
+	if stateDir == "" || len(readPaths) == 0 {
+		return nil
+	}
+	sd := stateDir
+	if abs, err := filepath.Abs(sd); err == nil {
+		sd = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(sd); err == nil {
+		sd = resolved
+	}
+	for _, p := range readPaths {
+		if p == sd || pathContains(p, sd) || pathContains(sd, p) {
+			return fmt.Errorf(
+				"read_paths grant %q overlaps the state dir %q, which holds the credential store. "+
+					"A plugin must not be granted read access to clawpatrol's secrets; remove the grant",
+				p, sd)
+		}
+	}
+	return nil
+}
+
+// pathContains reports whether parent is an ancestor of (or equal to)
+// child, comparing cleaned absolute paths by path segment.
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // parseNetwork validates an operator-supplied HCL `network` override.
