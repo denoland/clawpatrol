@@ -56,13 +56,20 @@ func buildNosyPlugin(t *testing.T, secretPath, hostHomeFile, loopbackAddr string
 // runNosyProbe loads the nosy plugin under the given backend/network
 // grants and returns what it observed. The loopback listener stands
 // in for "a gateway-side socket on the host network".
-func runNosyProbe(t *testing.T, sandboxMode, network string, extraGrants string) (nosyReport, string) {
+func runNosyProbe(t *testing.T, sandboxMode, network string, grantSecretRead bool) (nosyReport, string) {
 	t.Helper()
 
 	// A secret the gateway user can read but the plugin must not.
 	secretPath := filepath.Join(t.TempDir(), "secret-marker")
 	if err := os.WriteFile(secretPath, []byte("top-secret"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	// When asked, grant the secret marker's exact directory — not all
+	// of os.TempDir(), which would overlap the gateway state dir and be
+	// refused by the secret-store guard.
+	extraGrants := ""
+	if grantSecretRead {
+		extraGrants = fmt.Sprintf("read_paths = [%q]", filepath.Dir(secretPath))
 	}
 	// A deterministic marker in the gateway user's real home. The
 	// plugin's HOME env points at its private tmp, so it can only
@@ -161,7 +168,7 @@ func TestNosyPluginBlockedUnderSandbox(t *testing.T) {
 			if backend != "" {
 				t.Setenv(sandbox.EnvBackend, backend)
 			}
-			r, mode := runNosyProbe(t, "enforce", "none", "")
+			r, mode := runNosyProbe(t, "enforce", "none", false)
 			t.Logf("backend=%s report=%+v", mode, r)
 			if r.SecretRead {
 				t.Error("plugin read the gateway's secret-marker file")
@@ -204,7 +211,7 @@ func TestNosyPluginBlockedUnderSandbox(t *testing.T) {
 // and the host-home read are deterministic; the public outbound dial
 // is not asserted (CI egress may block it).
 func TestNosyPluginUnsandboxedProbesSucceed(t *testing.T) {
-	r, mode := runNosyProbe(t, "off", "outbound", "")
+	r, mode := runNosyProbe(t, "off", "outbound", false)
 	if mode != string(sandbox.ModeOff) {
 		t.Fatalf("sandbox mode = %q, want off", mode)
 	}
@@ -264,7 +271,7 @@ func TestNosyPluginReadPathGrant(t *testing.T) {
 	sandboxtest.RequireBackend(t)
 	// Grant the whole temp root so the per-run secret-marker path is
 	// covered (its exact path is allocated inside runNosyProbe).
-	r, mode := runNosyProbe(t, "enforce", "none", fmt.Sprintf("read_paths = [%q]", os.TempDir()))
+	r, mode := runNosyProbe(t, "enforce", "none", true)
 	t.Logf("backend=%s report=%+v", mode, r)
 	if !r.SecretRead {
 		t.Error("read_paths grant did not allow reading the secret file")
