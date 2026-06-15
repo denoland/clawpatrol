@@ -49,6 +49,7 @@ The gateway block carries operational settings — listen addresses, the WireGua
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Default 720h (30d), "0" / "off" disables. time.ParseDuration format. |
 | `limits` | `block` | no | Limits, if present, overrides the two gateway-wide body-size limits (rules-engine body buffer and persisted action body storage). nil uses the DefaultBody*Limit constants, which match today's hardcoded behavior. |
+| `genai_telemetry` | `block` | no | GenAITelemetry, if present, enables export of OpenTelemetry GenAI semantic-convention spans (gen_ai.*) for intercepted LLM requests. Requires the OTLP exporter to be configured (OTEL_EXPORTER_OTLP_ENDPOINT); without it there is nothing to export to. The block is opt-in: when absent, no gen_ai.* spans are emitted and there is no added per-request overhead. |
 | `wireguard` | `block` | no | WireGuard, if present, enables the embedded userspace WireGuard server. Required block when running WG-mode deployments. |
 | `tailscale` | `block` | no | Tailscale, if present, enables the embedded tsnet node and the Tailscale control plane (OAuth key minting, exit-node routing). Both transports may be enabled simultaneously. |
 
@@ -72,6 +73,17 @@ constants, which equal today's hardcoded behavior.
 |-----------|------|----------|-------------|
 | `body_buffer` | `string` | no |  |
 | `body_storage` | `string` | no |  |
+
+**Nested block `genai_telemetry {}`:**
+
+The body of the `genai_telemetry { ... }`
+sub-block inside `gateway { ... }`. Presence of the block enables
+emission of OpenTelemetry GenAI semantic-convention spans for
+intercepted LLM requests (gen_ai.* attributes — semconv v1.27.0).
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `include_message_content` | `bool` | no | Additionally captures and exports the prompt/completion message content via the GenAI content convention (span events: gen_ai.{role}.message and gen_ai.choice). Default false: message content can be large and sensitive, so it is only captured when an operator explicitly opts in. Independent of the base span export — the gen_ai.* attribute span emits regardless of this flag. |
 
 **Nested block `wireguard {}`:**
 

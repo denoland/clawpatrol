@@ -119,6 +119,11 @@ func TestEmitGenAISpanWithContent(t *testing.T) {
 }
 
 func TestEmitGenAISpanNilTracerNoPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("emitGenAISpan(nil) panicked: %v", r)
+		}
+	}()
 	emitGenAISpan(nil, genAITurn{System: "anthropic", Operation: "chat"}, true)
 }
 
