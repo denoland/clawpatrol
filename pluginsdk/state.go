@@ -17,10 +17,18 @@ import (
 // remember across boots: an SSH endpoint host key, a signing keypair, a
 // dynamically registered client_id.
 //
-// Obtain it with the package-level State() accessor; it is valid from any
-// plugin callback (Build, HandleConn, OpenTunnel, InjectHTTP). The first
-// call dials the gateway over the go-plugin broker; the connection is
-// cached for the life of the process.
+// Obtain it with the package-level State() accessor. The first call dials
+// the gateway over the go-plugin broker; the connection is cached for the
+// life of the process.
+//
+// Use it from a runtime callback — HandleConn, InjectHTTP, OpenTunnel, or
+// Dial. It is NOT guaranteed during a Build callback on the gateway's
+// first config load: the gateway's state store lives in the state dir,
+// which is itself part of the config being loaded, so it is wired only
+// after that load completes. A Build-time Get on first boot may return an
+// "unavailable" error; persist and read identity from a runtime callback
+// (which is where host keys, signing material, and the like are actually
+// needed) rather than from Build.
 type StateStore struct{}
 
 // State returns the handle to the gateway's per-plugin persistent store.

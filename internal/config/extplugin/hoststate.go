@@ -31,7 +31,11 @@ const HostServicesBrokerID uint32 = 1
 
 // maxStateValueBytes caps a single stored value. The known consumers
 // (host keys, key material, a client_id) are well under a kilobyte; the
-// cap keeps a buggy or hostile plugin from filling the gateway's store.
+// cap bounds any one value so a buggy plugin can't store something huge.
+// Note this is a per-value cap only — it does not bound the number of
+// distinct keys a plugin may write, so it is not a total-storage quota.
+// A per-namespace key/byte quota is a follow-up (the BlobStore contract
+// has no count/list to enforce one against today).
 const maxStateValueBytes = 1 << 20 // 1 MiB
 
 // blobNamespacePrefix isolates external-plugin state from the built-in
@@ -46,10 +50,18 @@ const blobNamespacePrefix = "extplugin:"
 // gateway's blob store isn't ready until after the first config load
 // (the state dir it lives in is itself part of the config), so a plugin
 // spawned during that load must still see the store once it is wired.
+//
+// The namespace is the plugin's HCL block label (the operator-chosen
+// `plugin "<name>"`), set at spawn — the manifest name isn't known yet,
+// since spawning is what fetches the manifest. It matches the key the
+// permission lockfile already uses, and is operator-controlled, never
+// taken from the wire. (Two plugin blocks sharing one label would share
+// state; rejecting duplicate labels is a separate config-validation
+// concern.)
 type hostState struct {
 	pb.UnimplementedHostStateServer
 	blobs  func() runtime.BlobStore
-	plugin string // namespace; never from the wire
+	plugin string // namespace; the HCL block label, never from the wire
 }
 
 func newHostState(blobs func() runtime.BlobStore, pluginName string) *hostState {

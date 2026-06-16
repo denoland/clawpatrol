@@ -712,13 +712,17 @@ func ensureHostKey(ctx context.Context) ([]byte, error) {
 }
 ```
 
-`pluginsdk.State()` is valid from any callback (`Build`, `HandleConn`,
-`OpenTunnel`, `InjectHTTP`). The gateway namespaces every key by the
-plugin, so one plugin can never read another's; values are capped at
-1 MiB (this is for identity, not bulk data) and survive restarts. The
-store is reached over the plugin connection — no network grant and no
-`dial` entry are involved. If the gateway is too old to provide it, the
-calls return an error so the plugin can degrade gracefully.
+Reach for `pluginsdk.State()` from a runtime callback — `HandleConn`,
+`InjectHTTP`, `OpenTunnel`, or `Dial` — which is where identity like a
+host key is actually needed. It is not available during a `Build`
+callback on the gateway's first config load: the store lives in the
+state dir, which is part of the config being loaded, so it is wired only
+once that load finishes. The gateway namespaces every key by the plugin,
+so one plugin can never read another's; values are capped at 1 MiB (this
+is for identity, not bulk data) and survive restarts. The store is
+reached over the plugin connection — no network grant and no `dial`
+entry are involved. If the gateway is too old to provide it, the calls
+return an error so the plugin can degrade gracefully.
 
 ## Validating a plugin config
 

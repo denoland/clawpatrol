@@ -60,7 +60,11 @@ func (p *brokerTestPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBr
 // real go-plugin broker: the SDK's State() dials the reserved stream id
 // the gateway serves HostState on.
 func TestStateBrokerRoundTrip(t *testing.T) {
-	// Reset the package-level state client so the dial runs fresh.
+	// Reset the package-level state client so the dial runs fresh. This
+	// reassigns globals without synchronization, which is safe ONLY
+	// because this is the single test that exercises State(): it runs
+	// before any broker goroutine of its own starts, and no other test in
+	// the package touches these globals concurrently.
 	hostStateOnce = sync.Once{}
 	hostStateCli = nil
 	hostStateErr = nil
