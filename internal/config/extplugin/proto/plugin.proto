@@ -594,3 +594,47 @@ message StatePutRequest {
 }
 
 message StatePutResponse {}
+
+// =====================================================================
+// PROTOTYPE: HostControl — the capability bundle (host-served control
+// plane). See doc/plugin-capability-bundle-prototype.md.
+// =====================================================================
+//
+// Like HostState, HostControl is implemented by the GATEWAY and called by
+// the plugin over the broker — but it carries the *control* callbacks a
+// plugin makes (rule evaluation, brokered dial, ...), which today are
+// hand-rolled as request/reply frames inside the HandleConn stream with
+// manual call_id / dial_id correlation. As ordinary gRPC methods the
+// correlation is free and a new capability (an approver, a HITL prompt)
+// is a new method here, not a new frame.
+//
+// Calls are scoped to a connection by a session token the gateway issues
+// in the session init and the plugin echoes back — the one piece of
+// bookkeeping a separate control channel needs that a multiplexed stream
+// gets implicitly.
+service HostControl {
+  // Evaluate runs the gateway's rule + approve chain for one action and
+  // returns the verdict. Prototype replacement for the
+  // EvaluateAction / ActionVerdict frames (and the inflight call_id map
+  // on both sides of HandleConn).
+  rpc Evaluate(EvaluateRequest) returns (EvaluateVerdict);
+}
+
+message EvaluateRequest {
+  // session_token scopes the call to one connection's evaluation context
+  // (its rules, approve chain, peer info). Issued by the gateway in the
+  // session init; opaque to the plugin.
+  string session_token = 1;
+  // facet_name is the namespaced facet the action conforms to.
+  string facet_name = 2;
+  // action_json is the facet payload (the same bytes EvaluateAction
+  // carries today).
+  bytes action_json = 3;
+  string summary = 4;
+}
+
+message EvaluateVerdict {
+  string action = 1; // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+  string reason = 2;
+  string rule = 3;
+}

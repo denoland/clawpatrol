@@ -747,3 +747,149 @@ var HostState_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "plugin.proto",
 }
+
+const (
+	HostControl_Evaluate_FullMethodName = "/clawpatrol.plugin.v1.HostControl/Evaluate"
+)
+
+// HostControlClient is the client API for HostControl service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// =====================================================================
+// PROTOTYPE: HostControl — the capability bundle (host-served control
+// plane). See doc/plugin-capability-bundle-prototype.md.
+// =====================================================================
+//
+// Like HostState, HostControl is implemented by the GATEWAY and called by
+// the plugin over the broker — but it carries the *control* callbacks a
+// plugin makes (rule evaluation, brokered dial, ...), which today are
+// hand-rolled as request/reply frames inside the HandleConn stream with
+// manual call_id / dial_id correlation. As ordinary gRPC methods the
+// correlation is free and a new capability (an approver, a HITL prompt)
+// is a new method here, not a new frame.
+//
+// Calls are scoped to a connection by a session token the gateway issues
+// in the session init and the plugin echoes back — the one piece of
+// bookkeeping a separate control channel needs that a multiplexed stream
+// gets implicitly.
+type HostControlClient interface {
+	// Evaluate runs the gateway's rule + approve chain for one action and
+	// returns the verdict. Prototype replacement for the
+	// EvaluateAction / ActionVerdict frames (and the inflight call_id map
+	// on both sides of HandleConn).
+	Evaluate(ctx context.Context, in *EvaluateRequest, opts ...grpc.CallOption) (*EvaluateVerdict, error)
+}
+
+type hostControlClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewHostControlClient(cc grpc.ClientConnInterface) HostControlClient {
+	return &hostControlClient{cc}
+}
+
+func (c *hostControlClient) Evaluate(ctx context.Context, in *EvaluateRequest, opts ...grpc.CallOption) (*EvaluateVerdict, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EvaluateVerdict)
+	err := c.cc.Invoke(ctx, HostControl_Evaluate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// HostControlServer is the server API for HostControl service.
+// All implementations must embed UnimplementedHostControlServer
+// for forward compatibility.
+//
+// =====================================================================
+// PROTOTYPE: HostControl — the capability bundle (host-served control
+// plane). See doc/plugin-capability-bundle-prototype.md.
+// =====================================================================
+//
+// Like HostState, HostControl is implemented by the GATEWAY and called by
+// the plugin over the broker — but it carries the *control* callbacks a
+// plugin makes (rule evaluation, brokered dial, ...), which today are
+// hand-rolled as request/reply frames inside the HandleConn stream with
+// manual call_id / dial_id correlation. As ordinary gRPC methods the
+// correlation is free and a new capability (an approver, a HITL prompt)
+// is a new method here, not a new frame.
+//
+// Calls are scoped to a connection by a session token the gateway issues
+// in the session init and the plugin echoes back — the one piece of
+// bookkeeping a separate control channel needs that a multiplexed stream
+// gets implicitly.
+type HostControlServer interface {
+	// Evaluate runs the gateway's rule + approve chain for one action and
+	// returns the verdict. Prototype replacement for the
+	// EvaluateAction / ActionVerdict frames (and the inflight call_id map
+	// on both sides of HandleConn).
+	Evaluate(context.Context, *EvaluateRequest) (*EvaluateVerdict, error)
+	mustEmbedUnimplementedHostControlServer()
+}
+
+// UnimplementedHostControlServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedHostControlServer struct{}
+
+func (UnimplementedHostControlServer) Evaluate(context.Context, *EvaluateRequest) (*EvaluateVerdict, error) {
+	return nil, status.Error(codes.Unimplemented, "method Evaluate not implemented")
+}
+func (UnimplementedHostControlServer) mustEmbedUnimplementedHostControlServer() {}
+func (UnimplementedHostControlServer) testEmbeddedByValue()                     {}
+
+// UnsafeHostControlServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to HostControlServer will
+// result in compilation errors.
+type UnsafeHostControlServer interface {
+	mustEmbedUnimplementedHostControlServer()
+}
+
+func RegisterHostControlServer(s grpc.ServiceRegistrar, srv HostControlServer) {
+	// If the following call panics, it indicates UnimplementedHostControlServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&HostControl_ServiceDesc, srv)
+}
+
+func _HostControl_Evaluate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EvaluateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostControlServer).Evaluate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostControl_Evaluate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostControlServer).Evaluate(ctx, req.(*EvaluateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// HostControl_ServiceDesc is the grpc.ServiceDesc for HostControl service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var HostControl_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "clawpatrol.plugin.v1.HostControl",
+	HandlerType: (*HostControlServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Evaluate",
+			Handler:    _HostControl_Evaluate_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "plugin.proto",
+}

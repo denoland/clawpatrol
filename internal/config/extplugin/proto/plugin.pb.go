@@ -3732,6 +3732,140 @@ func (*StatePutResponse) Descriptor() ([]byte, []int) {
 	return file_plugin_proto_rawDescGZIP(), []int{49}
 }
 
+type EvaluateRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// session_token scopes the call to one connection's evaluation context
+	// (its rules, approve chain, peer info). Issued by the gateway in the
+	// session init; opaque to the plugin.
+	SessionToken string `protobuf:"bytes,1,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	// facet_name is the namespaced facet the action conforms to.
+	FacetName string `protobuf:"bytes,2,opt,name=facet_name,json=facetName,proto3" json:"facet_name,omitempty"`
+	// action_json is the facet payload (the same bytes EvaluateAction
+	// carries today).
+	ActionJson    []byte `protobuf:"bytes,3,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
+	Summary       string `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EvaluateRequest) Reset() {
+	*x = EvaluateRequest{}
+	mi := &file_plugin_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EvaluateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EvaluateRequest) ProtoMessage() {}
+
+func (x *EvaluateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EvaluateRequest.ProtoReflect.Descriptor instead.
+func (*EvaluateRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *EvaluateRequest) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *EvaluateRequest) GetFacetName() string {
+	if x != nil {
+		return x.FacetName
+	}
+	return ""
+}
+
+func (x *EvaluateRequest) GetActionJson() []byte {
+	if x != nil {
+		return x.ActionJson
+	}
+	return nil
+}
+
+func (x *EvaluateRequest) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+type EvaluateVerdict struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Action        string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"` // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Rule          string                 `protobuf:"bytes,3,opt,name=rule,proto3" json:"rule,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EvaluateVerdict) Reset() {
+	*x = EvaluateVerdict{}
+	mi := &file_plugin_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EvaluateVerdict) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EvaluateVerdict) ProtoMessage() {}
+
+func (x *EvaluateVerdict) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EvaluateVerdict.ProtoReflect.Descriptor instead.
+func (*EvaluateVerdict) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *EvaluateVerdict) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *EvaluateVerdict) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *EvaluateVerdict) GetRule() string {
+	if x != nil {
+		return x.Rule
+	}
+	return ""
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -4003,7 +4137,18 @@ const file_plugin_proto_rawDesc = "" +
 	"\x0fStatePutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"\x12\n" +
-	"\x10StatePutResponse*7\n" +
+	"\x10StatePutResponse\"\x90\x01\n" +
+	"\x0fEvaluateRequest\x12#\n" +
+	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1d\n" +
+	"\n" +
+	"facet_name\x18\x02 \x01(\tR\tfacetName\x12\x1f\n" +
+	"\vaction_json\x18\x03 \x01(\fR\n" +
+	"actionJson\x12\x18\n" +
+	"\asummary\x18\x04 \x01(\tR\asummary\"U\n" +
+	"\x0fEvaluateVerdict\x12\x16\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x12\n" +
+	"\x04rule\x18\x03 \x01(\tR\x04rule*7\n" +
 	"\rNetworkAccess\x12\x10\n" +
 	"\fNETWORK_NONE\x10\x00\x12\x14\n" +
 	"\x10NETWORK_OUTBOUND\x10\x01*k\n" +
@@ -4033,7 +4178,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\vCloseTunnel\x12(.clawpatrol.plugin.v1.CloseTunnelRequest\x1a).clawpatrol.plugin.v1.CloseTunnelResponse2\xb7\x01\n" +
 	"\tHostState\x12T\n" +
 	"\x03Get\x12%.clawpatrol.plugin.v1.StateGetRequest\x1a&.clawpatrol.plugin.v1.StateGetResponse\x12T\n" +
-	"\x03Put\x12%.clawpatrol.plugin.v1.StatePutRequest\x1a&.clawpatrol.plugin.v1.StatePutResponseBCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
+	"\x03Put\x12%.clawpatrol.plugin.v1.StatePutRequest\x1a&.clawpatrol.plugin.v1.StatePutResponse2g\n" +
+	"\vHostControl\x12X\n" +
+	"\bEvaluate\x12%.clawpatrol.plugin.v1.EvaluateRequest\x1a%.clawpatrol.plugin.v1.EvaluateVerdictBCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -4048,7 +4195,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
 var file_plugin_proto_goTypes = []any{
 	(NetworkAccess)(0),             // 0: clawpatrol.plugin.v1.NetworkAccess
 	(FacetKind)(0),                 // 1: clawpatrol.plugin.v1.FacetKind
@@ -4105,11 +4252,13 @@ var file_plugin_proto_goTypes = []any{
 	(*StateGetResponse)(nil),       // 52: clawpatrol.plugin.v1.StateGetResponse
 	(*StatePutRequest)(nil),        // 53: clawpatrol.plugin.v1.StatePutRequest
 	(*StatePutResponse)(nil),       // 54: clawpatrol.plugin.v1.StatePutResponse
-	nil,                            // 55: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	nil,                            // 56: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
-	nil,                            // 57: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	nil,                            // 58: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	nil,                            // 59: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	(*EvaluateRequest)(nil),        // 55: clawpatrol.plugin.v1.EvaluateRequest
+	(*EvaluateVerdict)(nil),        // 56: clawpatrol.plugin.v1.EvaluateVerdict
+	nil,                            // 57: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	nil,                            // 58: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	nil,                            // 59: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	nil,                            // 60: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	nil,                            // 61: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	19, // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
@@ -4134,8 +4283,8 @@ var file_plugin_proto_depIdxs = []int32{
 	24, // 19: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
 	18, // 20: clawpatrol.plugin.v1.BuildResponse.credential_metadata:type_name -> clawpatrol.plugin.v1.CredentialMetadata
 	3,  // 21: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
-	55, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	56, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	57, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	58, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
 	4,  // 24: clawpatrol.plugin.v1.HeaderMutation.op:type_name -> clawpatrol.plugin.v1.HeaderMutation.Op
 	27, // 25: clawpatrol.plugin.v1.InjectHTTPResponse.headers:type_name -> clawpatrol.plugin.v1.HeaderMutation
 	39, // 26: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
@@ -4151,9 +4300,9 @@ var file_plugin_proto_depIdxs = []int32{
 	31, // 36: clawpatrol.plugin.v1.ConnMessage.dial_reply:type_name -> clawpatrol.plugin.v1.DialUpstreamReply
 	32, // 37: clawpatrol.plugin.v1.ConnMessage.dial_data:type_name -> clawpatrol.plugin.v1.DialUpstreamData
 	33, // 38: clawpatrol.plugin.v1.ConnMessage.dial_close:type_name -> clawpatrol.plugin.v1.DialUpstreamClose
-	57, // 39: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	58, // 40: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	59, // 41: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	59, // 39: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	60, // 40: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	61, // 41: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 	48, // 42: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
 	49, // 43: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
 	50, // 44: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
@@ -4167,17 +4316,19 @@ var file_plugin_proto_depIdxs = []int32{
 	45, // 52: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
 	51, // 53: clawpatrol.plugin.v1.HostState.Get:input_type -> clawpatrol.plugin.v1.StateGetRequest
 	53, // 54: clawpatrol.plugin.v1.HostState.Put:input_type -> clawpatrol.plugin.v1.StatePutRequest
-	6,  // 55: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	23, // 56: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	28, // 57: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
-	29, // 58: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	44, // 59: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	47, // 60: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	46, // 61: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	52, // 62: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
-	54, // 63: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
-	55, // [55:64] is the sub-list for method output_type
-	46, // [46:55] is the sub-list for method input_type
+	55, // 55: clawpatrol.plugin.v1.HostControl.Evaluate:input_type -> clawpatrol.plugin.v1.EvaluateRequest
+	6,  // 56: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	23, // 57: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	28, // 58: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
+	29, // 59: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	44, // 60: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	47, // 61: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	46, // 62: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	52, // 63: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
+	54, // 64: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
+	56, // 65: clawpatrol.plugin.v1.HostControl.Evaluate:output_type -> clawpatrol.plugin.v1.EvaluateVerdict
+	56, // [56:66] is the sub-list for method output_type
+	46, // [46:56] is the sub-list for method input_type
 	46, // [46:46] is the sub-list for extension type_name
 	46, // [46:46] is the sub-list for extension extendee
 	0,  // [0:46] is the sub-list for field type_name
@@ -4214,9 +4365,9 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   55,
+			NumMessages:   57,
 			NumExtensions: 0,
-			NumServices:   5,
+			NumServices:   6,
 		},
 		GoTypes:           file_plugin_proto_goTypes,
 		DependencyIndexes: file_plugin_proto_depIdxs,
