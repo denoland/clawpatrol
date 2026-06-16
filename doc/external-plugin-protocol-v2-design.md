@@ -30,9 +30,11 @@ built-in side of the line:
 * **Non-header credential injection** — telegram (URL/body), discord
   (body/WebSocket), AWS SigV4 (full-body signing), mTLS (upstream
   client cert).
-* **The shared facet vocabulary** — `sql.*`, `k8s.*`, `ssh.*` matchers
-  are gateway-only; an external endpoint can only emit to a namespaced
-  `<plugin>.<facet>`, forking the policy vocabulary.
+* **The shared `sql` vocabulary** — the `sql.*` matcher is gateway-only,
+  so an external SQL endpoint forks to a namespaced `<plugin>.<facet>`
+  and operators rewrite every rule. (k8s/ssh have one implementation
+  each, so a plugin-private facet is fine there — this is only a problem
+  for SQL, which has many engines.)
 * **Process-spawning tunnels** — `kubectl port-forward`, `local_command`
   — the sandbox forbids exec of anything but the plugin's own binary.
 
@@ -82,7 +84,7 @@ forcing the built-ins out of tree — the built-ins stay where they are.
 | Persistent identity (ssh host key, codex jwt, tailscale, notion-mcp) | **State service** (BlobStore over gRPC) | low (quota'd) |
 | URL/body/SigV4/mTLS credential injection | **TransformRequest** + typed `Secret` passthrough + brokered client cert | low |
 | Approvers (dashboard/human/llm), slack notifier | **Approver service** + **HITL** (notify / decide / webhook ingress) | low (sync) / operator (webhook ingress) |
-| sql/k8s/ssh endpoints lose shared rules | **Built-in family action mapping** + facet `extends` | low |
+| SQL endpoints want shared `sql.*` rules | **`sql` built-in family** (opt-in); k8s/ssh/other stay plugin-defined | low |
 | kubectl / local_command tunnels | **`exec` capability** | operator-only |
 | Chained `via` tunnels | **`via` on tunnel dial** | low |
 | Dashboard credential-location hint | **Static placeholder declaration** | low |
@@ -255,38 +257,61 @@ chains gateway-resolved?
 
 ---
 
-## 4. Shared facet vocabulary for external endpoints
+## 4. Shared `sql` family for external endpoints (opt-in)
 
-**Unblocks:** sql / k8s / ssh / postgres / clickhouse endpoints keeping
-the operator's existing `sql.*` / `k8s.*` / `ssh.*` rules instead of
-forking to `<plugin>.<facet>.*`.
+**Unblocks:** external SQL endpoints (postgres / mysql / clickhouse /
+cockroach / ...) reusing the operator's existing `sql.*` rules instead
+of forking to a per-plugin vocabulary.
 
-**Problem.** An external endpoint emits an action via `EvaluateAction`
-against a facet. Today the gateway's `builtinRequestFor` maps the action
-onto a typed `match.Request` **only for `family = "http"`**; `sql` /
-`k8s` / `ssh` fall back to an unmatched meta-bag, so rules don't fire.
-An external SQL endpoint must therefore declare its own namespaced
-facet, and operators rewrite every rule.
+### Default: plugins define their own facet
 
-### 4a. Bind to a built-in family
+A plugin-declared facet is already a first-class, working path —
+`registerFacet` + `newPluginFacetMatcher` build the CEL env from the
+declared fields, and `EvaluateAction` routes through it. So "every
+plugin ships its own vocabulary" needs **no new machinery**; it is the
+expected default for k8s, ssh, and any bespoke protocol.
 
-Define a **stable, versioned action JSON schema per built-in family**
-(the wire form of `sql.Meta`, `k8s.Meta`, `ssh.Meta`) that an external
-endpoint emits in `EvaluateAction.action_json`, and extend
-`builtinRequestFor` to map those onto the typed `match.Request` for
-`sql` / `k8s` / `ssh`. A plugin that speaks postgres can then declare
-`family = "sql"` and reuse the shared `sql.*` rule vocabulary verbatim.
+We deliberately do **not** add shared `k8s` / `ssh` families. There is
+realistically one implementation of each, so a shared vocabulary buys
+nothing but a frozen compatibility surface the gateway must maintain
+forever (YAGNI). A shared vocabulary does not even reduce plugin work —
+the plugin still produces the parse either way; it only buys *rule
+portability across multiple implementations of one family*, which those
+families don't have.
 
-### 4b. Facet composition (phase 2)
+### The one exception: `sql`
 
-Let a `FacetDecl` declare `extends = "<builtin>"` so a plugin facet
-inherits the built-in's fields (the way `k8s` composes `http`). Lets a
-plugin add fields to a known family without redefining it. Lower
-priority than 4a.
+Unlike k8s/ssh, there are many SQL-ish engines, and the *coarse* layer
+of SQL policy genuinely generalizes: `verb`, `tables`, `functions`, raw
+`statement`. An operator's "no `DROP`, no unscoped `DELETE`, these
+tables are off-limits" ruleset should hold against any SQL endpoint
+regardless of which plugin backs it. So `sql` — and only `sql` — is
+exposed as a built-in family an external endpoint may **opt into**:
 
-**Open question:** the per-family action schema is a new compatibility
-surface — version it independently of the gateway (so a plugin built
-against `sql/v1` keeps working), or tie it to the protocol version?
+* A plugin declares `family = "sql"` and emits the standard coarse
+  action schema (the wire form of `sql.Meta`: verb / tables / functions
+  / statement / database) in `EvaluateAction.action_json`. The gateway
+  maps it onto the typed `match.Request` (extending today's http-only
+  `builtinRequestFor`), so the endpoint reuses `sql.*` rules verbatim.
+* Keep the shared schema **deliberately minimal** — only the fields that
+  truly transfer across engines. It is a coarse guardrail surface, not a
+  comprehensive one. Pretending otherwise would silently under-match
+  engine-specific semantics and give operators false confidence.
+* An engine that needs more (ClickHouse `SYSTEM`, BigQuery scripting,
+  stored procedures) declares its own facet instead — or, phase 2,
+  `extends = "sql"` to inherit the coarse fields and add its own.
+
+This saves no *parsing* work; it buys rule portability and zero-rewrite
+parity with the built-in SQL endpoints — worth it only because SQL has
+many implementations, which is why the line is drawn here and nowhere
+else.
+
+**Resolved** (was an open design question): only `sql` gets a shared
+built-in family; k8s, ssh, and everything else are plugin-defined.
+
+**Open question:** version the `sql` action schema independently of the
+gateway (so a plugin built against `sql/v1` keeps working across gateway
+upgrades), or tie it to the protocol version?
 
 ---
 
@@ -363,13 +388,14 @@ runtime hook — the dashboard renders it directly. Cheapest possible fix.
    four built-ins and is a prerequisite for stateful endpoints.
 2. **Generalized credential injection** (§2) — `TransformRequest`, typed
    `Secret` passthrough, brokered client cert.
-3. **Built-in family action mapping** (§4a) — the shared-vocabulary fix;
-   unblocks every protocol endpoint's rules.
+3. **`sql` built-in family** (§4) — opt-in coarse SQL vocabulary, the
+   only shared family. k8s/ssh/other endpoints use plugin-defined facets
+   (already supported, no work).
 4. **Approver plugins, synchronous** (§3a) — the LLM judge.
 5. **HITL** (§3b) — notify / decide / webhook ingress. The big one;
    gated on the §3 open questions.
 6. **Cleanup** — `exec` grant (§5), tunnel `via` (§6), placeholder
-   hints (§7), facet `extends` (§4b).
+   hints (§7), facet `extends = "sql"` (§4 phase 2).
 
 ## Out of scope
 
@@ -390,8 +416,8 @@ runtime hook — the dashboard renders it directly. Cheapest possible fix.
 | `DialUpstreamRequest.client_cert` | upstream mTLS | `Secret.Extras` |
 | `ApproverDecl` + `Approver.Approve` | approver plugins | `runtime.ApproverRuntime` |
 | HITL `Notify` / `Decide` / webhook ingress | human approval | `HITLNotifier` / `HITLPool` |
-| built-in family action schemas | reuse `sql.*`/`k8s.*`/`ssh.*` rules | `match.Request` mapping |
-| `FacetDecl.extends` | facet composition | built-in facet composition |
+| `sql` built-in family (opt-in) | reuse shared `sql.*` rules | `match.Request` mapping |
+| `FacetDecl.extends = "sql"` | facet composition (phase 2) | built-in facet composition |
 | `exec` capability (operator-only) | spawn host binaries | sandbox profile |
 | `via_tunnel_handle` | chained tunnels | built-in `via` |
 | `CredentialMetadata` placeholder decl | dashboard hint | `PlaceholderDetector` |
