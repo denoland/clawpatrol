@@ -62,6 +62,25 @@ func TestPluginSourceForRejectsVersionOnLocal(t *testing.T) {
 	}
 }
 
+func TestProvenanceModeValidation(t *testing.T) {
+	for _, s := range []string{"", "warn", "require", "off"} {
+		if _, err := parseProvenanceMode(s); err != nil {
+			t.Errorf("parseProvenanceMode(%q) errored: %v", s, err)
+		}
+	}
+	if _, err := parseProvenanceMode("bogus"); err == nil {
+		t.Error("parseProvenanceMode(bogus) should error")
+	}
+	// provenance only valid on a remote source.
+	if _, err := pluginSourceFor(config.PluginSource{Name: "x", Source: "./local", Provenance: "require"}); err == nil ||
+		!strings.Contains(err.Error(), "only valid for a github") {
+		t.Fatalf("provenance on local should error, got %v", err)
+	}
+	if _, err := pluginSourceFor(config.PluginSource{Name: "x", Source: "github.com/o/r", Provenance: "bogus"}); err == nil {
+		t.Error("invalid provenance value should be rejected")
+	}
+}
+
 func rel(tag string, opts ...func(*ghRelease)) ghRelease {
 	r := ghRelease{TagName: tag}
 	for _, o := range opts {

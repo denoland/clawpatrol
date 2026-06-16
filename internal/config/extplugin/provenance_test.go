@@ -184,6 +184,40 @@ func TestProvenanceRecordsAndPinsCommit(t *testing.T) {
 	}
 }
 
+// TestProvenanceModes covers the per-plugin `provenance` policy: require
+// fails closed on a missing attestation; off skips the check entirely.
+func TestProvenanceModes(t *testing.T) {
+	owner, repo := "acme", "myplugin"
+	plat := platformToken()
+	archive := tarGz(t, map[string][]byte{repo: []byte("payload")}, repo)
+	archiveName := fmt.Sprintf("%s_1.0.0_%s.tar.gz", repo, plat)
+	sumsName := fmt.Sprintf("%s_1.0.0_SHA256SUMS", repo)
+	sums := fmt.Sprintf("%s  %s\n", sha256hex(archive), archiveName)
+	mkSrv := func() string {
+		return newReleaseServer(t, owner, repo, []relSpec{{
+			tag:    "v1.0.0",
+			assets: map[string][]byte{archiveName: archive, sumsName: []byte(sums)},
+		}}).URL
+	}
+
+	// require + no attestation -> fail closed.
+	m, _ := newFetchTestManager(t, mkSrv())
+	m.prov = stubProv{err: errNoAttestation}
+	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin", Provenance: "require"}
+	if _, err := m.resolvePluginBinary(context.Background(), sp); err == nil ||
+		!strings.Contains(err.Error(), "provenance is required") {
+		t.Fatalf("require + no attestation should fail closed, got: %v", err)
+	}
+
+	// off + an erroring verifier -> the verifier is never consulted, install ok.
+	m2, _ := newFetchTestManager(t, mkSrv())
+	m2.prov = stubProv{err: errors.New("should not be called")}
+	sp.Provenance = "off"
+	if _, err := m2.resolvePluginBinary(context.Background(), sp); err != nil {
+		t.Fatalf("off should skip provenance entirely, got: %v", err)
+	}
+}
+
 type stubProv struct {
 	commit string
 	err    error

@@ -75,9 +75,40 @@ func parseSource(s string) (parsedSource, error) {
 	return parsedSource{Kind: sourceGitHub, Raw: raw, Owner: parts[0], Repo: parts[1]}, nil
 }
 
-// pluginSourceFor classifies sp.Source and enforces that a version
-// constraint is only set on a remote (GitHub) source — a constraint on a
-// local path is a config error.
+// provenanceMode is how a GitHub release's build-provenance attestation
+// is enforced (the HCL `provenance` field).
+type provenanceMode int
+
+const (
+	provWarn    provenanceMode = iota // verify when present, else warn (default)
+	provRequire                       // an attestation is mandatory
+	provOff                           // skip the attestation check entirely
+)
+
+// parseProvenanceMode validates the HCL `provenance` value.
+func parseProvenanceMode(s string) (provenanceMode, error) {
+	switch strings.TrimSpace(s) {
+	case "", "warn":
+		return provWarn, nil
+	case "require":
+		return provRequire, nil
+	case "off":
+		return provOff, nil
+	default:
+		return 0, fmt.Errorf("invalid provenance %q: expected \"warn\", \"require\", or \"off\"", s)
+	}
+}
+
+// provenanceModeOf returns the validated provenance mode for sp; callers
+// reach it only after pluginSourceFor has already validated the value.
+func provenanceModeOf(sp config.PluginSource) provenanceMode {
+	m, _ := parseProvenanceMode(sp.Provenance)
+	return m
+}
+
+// pluginSourceFor classifies sp.Source and enforces that the version
+// constraint and provenance mode are only set on a remote (GitHub)
+// source — either on a local path is a config error.
 func pluginSourceFor(sp config.PluginSource) (parsedSource, error) {
 	p, err := parseSource(sp.Source)
 	if err != nil {
@@ -87,6 +118,14 @@ func pluginSourceFor(sp config.PluginSource) (parsedSource, error) {
 		return parsedSource{}, fmt.Errorf(
 			"version constraint %q is only valid for a github.com/<owner>/<repo> source, not a local path %q",
 			sp.Version, sp.Source)
+	}
+	if _, err := parseProvenanceMode(sp.Provenance); err != nil {
+		return parsedSource{}, err
+	}
+	if strings.TrimSpace(sp.Provenance) != "" && !p.IsRemote() {
+		return parsedSource{}, fmt.Errorf(
+			"provenance %q is only valid for a github.com/<owner>/<repo> source, not a local path %q",
+			sp.Provenance, sp.Source)
 	}
 	return p, nil
 }

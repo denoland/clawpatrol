@@ -170,10 +170,29 @@ Three layers gate a downloaded binary, from least to most powerful:
    source **commit** the binary was built from; clawpatrol records it in
    the lockfile (`commit = "..."`) — an immutable reference, since tags
    are mutable — and on a later re-download of the pinned version rejects
-   an attestation that names a different commit (a re-pointed tag). A
-   repo that publishes no attestation still installs, verified by
-   checksum, with a warning; a present-but-invalid attestation always
-   fails closed.
+   an attestation that names a different commit (a re-pointed tag).
+
+   How a *missing* attestation is treated is set per plugin by
+   `provenance`:
+
+   ```hcl
+   plugin "customerio" {
+     source     = "github.com/denoland/clawpatrol-customerio-plugin"
+     version    = "~> 1.2"
+     provenance = "require"   # "warn" (default) | "require" | "off"
+   }
+   ```
+
+   - `"warn"` (default) — verify an attestation when present, else
+     install checksum-only with a warning, so plugins that have not
+     adopted attestations still install.
+   - `"require"` — refuse a release that carries no attestation; use it
+     for plugins you hold to the higher bar.
+   - `"off"` — skip the attestation check (checksum + lockfile pinning
+     still apply).
+
+   A present-but-**invalid** attestation always fails closed (every mode
+   but `"off"`).
 
 [att]: https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
 

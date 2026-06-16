@@ -76,7 +76,7 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
 
-		res, err := f.ensure(ctx, p, r)
+		res, err := f.ensure(ctx, p, r, provenanceModeOf(sp))
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
@@ -150,9 +150,10 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 			return nil, err
 		}
 		defer func() { _ = os.RemoveAll(tmp) }() // backstop; also removed promptly below
+		mode := provenanceModeOf(sp)
 		commit := entry.Commit
 		for _, plat := range plats {
-			res, err := f.fetchTo(ctx, p, r, plat, tmp, "bin")
+			res, err := f.fetchTo(ctx, p, r, plat, tmp, "bin", mode)
 			if err != nil {
 				_ = os.RemoveAll(tmp)
 				return nil, fmt.Errorf("plugin %q (%s): %w", sp.Name, plat, err)

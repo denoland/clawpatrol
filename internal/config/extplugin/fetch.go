@@ -339,8 +339,8 @@ func (f *fetcher) binPath(p parsedSource, tag string) string {
 // release r, verifying the archive against SHA256SUMS and the provenance
 // attestation, and returns the cached binary path and its "sha256:..."
 // (the extracted binary's hash — the lockfile load-time identity).
-func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease) (fetchResult, error) {
-	return f.fetchTo(ctx, p, r, platformToken(), f.platDir(p, r.TagName), p.Repo)
+func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease, mode provenanceMode) (fetchResult, error) {
+	return f.fetchTo(ctx, p, r, platformToken(), f.platDir(p, r.TagName), p.Repo, mode)
 }
 
 // fetchTo downloads the archive for the given platform token from release
@@ -348,7 +348,7 @@ func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease) (fetc
 // configured), and extracts the binary to destDir/destName. ensure
 // caches at the host platform path; the lock command points it at a temp
 // dir to hash other platforms' builds without caching them.
-func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat, destDir, destName string) (fetchResult, error) {
+func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat, destDir, destName string, mode provenanceMode) (fetchResult, error) {
 	var zero fetchResult
 	sumsAsset, ok := findSumsAsset(r)
 	if !ok {
@@ -372,15 +372,14 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 		return zero, fmt.Errorf("SHA256SUMS lists %q but the release has no such asset", archiveName)
 	}
 
-	// Provenance gate (skipped when no verifier is configured): the
-	// archive's sha256 must be covered by a build-provenance attestation
-	// from owner/repo, which also vouches the source commit. Verify-if-
-	// present — a repo that publishes no attestation falls back to the
-	// checksum + lockfile-TOFU floor with a warning, so plugins that have
-	// not adopted attestations still install; a present-but-invalid
-	// attestation always fails closed.
+	// Provenance gate: the archive's sha256 must be covered by a build-
+	// provenance attestation from owner/repo, which also vouches the
+	// source commit. A present-but-invalid attestation always fails
+	// closed. A missing attestation is governed by `mode`: "require"
+	// fails closed, "warn" (default) falls back to the checksum +
+	// lockfile-TOFU floor with a warning, "off" skips the check entirely.
 	commit := ""
-	if f.prov != nil {
+	if f.prov != nil && mode != provOff {
 		c, err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA)
 		switch {
 		case err == nil:
@@ -390,6 +389,12 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 					"plugin", p.slug(), "version", r.TagName)
 			}
 		case errors.Is(err, errNoAttestation):
+			if mode == provRequire {
+				return zero, fmt.Errorf(
+					"%s %s has no build-provenance attestation but provenance is required; "+
+						"set provenance = \"warn\" to allow checksum-only, or have the plugin publish one",
+					p.slug(), r.TagName)
+			}
 			if f.logger != nil {
 				f.logger.Warn("plugin has no build-provenance attestation; verified by checksum only",
 					"plugin", p.slug(), "version", r.TagName)
@@ -478,6 +483,7 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 	if !p.IsRemote() {
 		return sp.Source, nil // local path: existing behavior
 	}
+	mode := provenanceModeOf(sp)
 	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
 
 	entry, have := m.lock.get(sp.Name)
@@ -520,7 +526,7 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 		if err != nil {
 			return "", err
 		}
-		res, err := f.ensure(ctx, p, r)
+		res, err := f.ensure(ctx, p, r, mode)
 		if err != nil {
 			return "", err
 		}
@@ -549,7 +555,7 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 	if err != nil {
 		return "", err
 	}
-	res, err := f.ensure(ctx, p, r)
+	res, err := f.ensure(ctx, p, r, mode)
 	if err != nil {
 		return "", err
 	}

@@ -569,6 +569,15 @@ type PluginSource struct {
 	// on a local-path source.
 	Version string `hcl:"version,optional"`
 
+	// Provenance controls how a GitHub release's build-provenance
+	// attestation is treated. "warn" (the default) verifies an
+	// attestation when present and falls back to checksum-only with a
+	// warning when absent; "require" refuses a release that carries no
+	// (or an invalid) attestation; "off" skips the attestation check
+	// (checksum + lockfile pinning still apply). Only valid on a GitHub
+	// source. A present-but-invalid attestation always fails closed.
+	Provenance string `hcl:"provenance,optional"`
+
 	// Network grants the plugin direct network access. "none" (the
 	// default) confines the plugin to its gateway socket — endpoint
 	// and credential plugins don't need more: upstream connections
