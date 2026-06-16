@@ -1149,8 +1149,12 @@ type CredentialMetadata struct {
 	EnvVars        []*EnvVarDecl          `protobuf:"bytes,3,rep,name=env_vars,json=envVars,proto3" json:"env_vars,omitempty"`
 	Oauth          *OAuthIntegrationDecl  `protobuf:"bytes,4,opt,name=oauth,proto3" json:"oauth,omitempty"`
 	HttpInject     bool                   `protobuf:"varint,5,opt,name=http_inject,json=httpInject,proto3" json:"http_inject,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// http_transform: the credential rewrites the request method / URL /
+	// body via the streaming TransformHTTP RPC, not just headers. Implies
+	// http_inject.
+	HttpTransform bool `protobuf:"varint,6,opt,name=http_transform,json=httpTransform,proto3" json:"http_transform,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CredentialMetadata) Reset() {
@@ -1218,6 +1222,13 @@ func (x *CredentialMetadata) GetHttpInject() bool {
 	return false
 }
 
+func (x *CredentialMetadata) GetHttpTransform() bool {
+	if x != nil {
+		return x.HttpTransform
+	}
+	return false
+}
+
 type CredentialDecl struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	TypeName string                 `protobuf:"bytes,1,opt,name=type_name,json=typeName,proto3" json:"type_name,omitempty"`
@@ -1228,8 +1239,13 @@ type CredentialDecl struct {
 	// disambiguators are authoritative for validation.
 	Disambiguators []string `protobuf:"bytes,3,rep,name=disambiguators,proto3" json:"disambiguators,omitempty"`
 	HttpInject     bool     `protobuf:"varint,4,opt,name=http_inject,json=httpInject,proto3" json:"http_inject,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// http_transform: the credential rewrites the request method / URL /
+	// body via the streaming TransformHTTP RPC. Implies http_inject. Used
+	// by credentials that sign over the body (AWS SigV4) or carry the
+	// secret in the URL/body (telegram, discord).
+	HttpTransform bool `protobuf:"varint,5,opt,name=http_transform,json=httpTransform,proto3" json:"http_transform,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CredentialDecl) Reset() {
@@ -1286,6 +1302,13 @@ func (x *CredentialDecl) GetDisambiguators() []string {
 func (x *CredentialDecl) GetHttpInject() bool {
 	if x != nil {
 		return x.HttpInject
+	}
+	return false
+}
+
+func (x *CredentialDecl) GetHttpTransform() bool {
+	if x != nil {
+		return x.HttpTransform
 	}
 	return false
 }
@@ -1902,6 +1925,417 @@ func (x *InjectHTTPResponse) GetRedactions() []string {
 	return nil
 }
 
+// HTTPBodyChunk carries one slice of a request body in either direction
+// of TransformHTTP. eof marks the final frame (it may carry data too).
+type HTTPBodyChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Data  []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Eof   bool                   `protobuf:"varint,2,opt,name=eof,proto3" json:"eof,omitempty"`
+	// trailers ride on the eof frame: the HTTP trailers that follow the
+	// body (e.g. gRPC's grpc-status / grpc-message). They are conveyed so
+	// the transform never drops them — empty leaves the request's original
+	// trailers in place.
+	Trailers      map[string]*HTTPHeaderValues `protobuf:"bytes,3,rep,name=trailers,proto3" json:"trailers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HTTPBodyChunk) Reset() {
+	*x = HTTPBodyChunk{}
+	mi := &file_plugin_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HTTPBodyChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HTTPBodyChunk) ProtoMessage() {}
+
+func (x *HTTPBodyChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HTTPBodyChunk.ProtoReflect.Descriptor instead.
+func (*HTTPBodyChunk) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *HTTPBodyChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *HTTPBodyChunk) GetEof() bool {
+	if x != nil {
+		return x.Eof
+	}
+	return false
+}
+
+func (x *HTTPBodyChunk) GetTrailers() map[string]*HTTPHeaderValues {
+	if x != nil {
+		return x.Trailers
+	}
+	return nil
+}
+
+// TransformHTTPUp is gateway -> plugin: the init, then the request body.
+type TransformHTTPUp struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*TransformHTTPUp_Init
+	//	*TransformHTTPUp_Body
+	Kind          isTransformHTTPUp_Kind `protobuf_oneof:"kind"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransformHTTPUp) Reset() {
+	*x = TransformHTTPUp{}
+	mi := &file_plugin_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformHTTPUp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformHTTPUp) ProtoMessage() {}
+
+func (x *TransformHTTPUp) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformHTTPUp.ProtoReflect.Descriptor instead.
+func (*TransformHTTPUp) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *TransformHTTPUp) GetKind() isTransformHTTPUp_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *TransformHTTPUp) GetInit() *TransformHTTPInit {
+	if x != nil {
+		if x, ok := x.Kind.(*TransformHTTPUp_Init); ok {
+			return x.Init
+		}
+	}
+	return nil
+}
+
+func (x *TransformHTTPUp) GetBody() *HTTPBodyChunk {
+	if x != nil {
+		if x, ok := x.Kind.(*TransformHTTPUp_Body); ok {
+			return x.Body
+		}
+	}
+	return nil
+}
+
+type isTransformHTTPUp_Kind interface {
+	isTransformHTTPUp_Kind()
+}
+
+type TransformHTTPUp_Init struct {
+	Init *TransformHTTPInit `protobuf:"bytes,1,opt,name=init,proto3,oneof"`
+}
+
+type TransformHTTPUp_Body struct {
+	Body *HTTPBodyChunk `protobuf:"bytes,2,opt,name=body,proto3,oneof"`
+}
+
+func (*TransformHTTPUp_Init) isTransformHTTPUp_Kind() {}
+
+func (*TransformHTTPUp_Body) isTransformHTTPUp_Kind() {}
+
+type TransformHTTPInit struct {
+	state                   protoimpl.MessageState       `protogen:"open.v1"`
+	CredentialTypeName      string                       `protobuf:"bytes,1,opt,name=credential_type_name,json=credentialTypeName,proto3" json:"credential_type_name,omitempty"`
+	CredentialInstance      string                       `protobuf:"bytes,2,opt,name=credential_instance,json=credentialInstance,proto3" json:"credential_instance,omitempty"`
+	CredentialCanonicalJson []byte                       `protobuf:"bytes,3,opt,name=credential_canonical_json,json=credentialCanonicalJson,proto3" json:"credential_canonical_json,omitempty"`
+	CredentialSecret        []byte                       `protobuf:"bytes,4,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
+	CredentialExtras        map[string]string            `protobuf:"bytes,5,rep,name=credential_extras,json=credentialExtras,proto3" json:"credential_extras,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Method                  string                       `protobuf:"bytes,6,opt,name=method,proto3" json:"method,omitempty"`
+	Url                     string                       `protobuf:"bytes,7,opt,name=url,proto3" json:"url,omitempty"`
+	Host                    string                       `protobuf:"bytes,8,opt,name=host,proto3" json:"host,omitempty"`
+	Headers                 map[string]*HTTPHeaderValues `protobuf:"bytes,9,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *TransformHTTPInit) Reset() {
+	*x = TransformHTTPInit{}
+	mi := &file_plugin_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformHTTPInit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformHTTPInit) ProtoMessage() {}
+
+func (x *TransformHTTPInit) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformHTTPInit.ProtoReflect.Descriptor instead.
+func (*TransformHTTPInit) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *TransformHTTPInit) GetCredentialTypeName() string {
+	if x != nil {
+		return x.CredentialTypeName
+	}
+	return ""
+}
+
+func (x *TransformHTTPInit) GetCredentialInstance() string {
+	if x != nil {
+		return x.CredentialInstance
+	}
+	return ""
+}
+
+func (x *TransformHTTPInit) GetCredentialCanonicalJson() []byte {
+	if x != nil {
+		return x.CredentialCanonicalJson
+	}
+	return nil
+}
+
+func (x *TransformHTTPInit) GetCredentialSecret() []byte {
+	if x != nil {
+		return x.CredentialSecret
+	}
+	return nil
+}
+
+func (x *TransformHTTPInit) GetCredentialExtras() map[string]string {
+	if x != nil {
+		return x.CredentialExtras
+	}
+	return nil
+}
+
+func (x *TransformHTTPInit) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *TransformHTTPInit) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *TransformHTTPInit) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *TransformHTTPInit) GetHeaders() map[string]*HTTPHeaderValues {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+// TransformHTTPDown is plugin -> gateway: exactly one head, then the
+// transformed request body.
+type TransformHTTPDown struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*TransformHTTPDown_Head
+	//	*TransformHTTPDown_Body
+	Kind          isTransformHTTPDown_Kind `protobuf_oneof:"kind"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransformHTTPDown) Reset() {
+	*x = TransformHTTPDown{}
+	mi := &file_plugin_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformHTTPDown) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformHTTPDown) ProtoMessage() {}
+
+func (x *TransformHTTPDown) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformHTTPDown.ProtoReflect.Descriptor instead.
+func (*TransformHTTPDown) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *TransformHTTPDown) GetKind() isTransformHTTPDown_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *TransformHTTPDown) GetHead() *TransformHTTPHead {
+	if x != nil {
+		if x, ok := x.Kind.(*TransformHTTPDown_Head); ok {
+			return x.Head
+		}
+	}
+	return nil
+}
+
+func (x *TransformHTTPDown) GetBody() *HTTPBodyChunk {
+	if x != nil {
+		if x, ok := x.Kind.(*TransformHTTPDown_Body); ok {
+			return x.Body
+		}
+	}
+	return nil
+}
+
+type isTransformHTTPDown_Kind interface {
+	isTransformHTTPDown_Kind()
+}
+
+type TransformHTTPDown_Head struct {
+	Head *TransformHTTPHead `protobuf:"bytes,1,opt,name=head,proto3,oneof"`
+}
+
+type TransformHTTPDown_Body struct {
+	Body *HTTPBodyChunk `protobuf:"bytes,2,opt,name=body,proto3,oneof"`
+}
+
+func (*TransformHTTPDown_Head) isTransformHTTPDown_Kind() {}
+
+func (*TransformHTTPDown_Body) isTransformHTTPDown_Kind() {}
+
+type TransformHTTPHead struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// headers / method / url rewrite the request before it is forwarded.
+	Headers []*HeaderMutation `protobuf:"bytes,1,rep,name=headers,proto3" json:"headers,omitempty"`
+	Method  *string           `protobuf:"bytes,2,opt,name=method,proto3,oneof" json:"method,omitempty"`
+	Url     *string           `protobuf:"bytes,3,opt,name=url,proto3,oneof" json:"url,omitempty"`
+	// redactions: exact derived secret strings to mask from audit samples.
+	Redactions    []string `protobuf:"bytes,4,rep,name=redactions,proto3" json:"redactions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransformHTTPHead) Reset() {
+	*x = TransformHTTPHead{}
+	mi := &file_plugin_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformHTTPHead) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformHTTPHead) ProtoMessage() {}
+
+func (x *TransformHTTPHead) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformHTTPHead.ProtoReflect.Descriptor instead.
+func (*TransformHTTPHead) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *TransformHTTPHead) GetHeaders() []*HeaderMutation {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *TransformHTTPHead) GetMethod() string {
+	if x != nil && x.Method != nil {
+		return *x.Method
+	}
+	return ""
+}
+
+func (x *TransformHTTPHead) GetUrl() string {
+	if x != nil && x.Url != nil {
+		return *x.Url
+	}
+	return ""
+}
+
+func (x *TransformHTTPHead) GetRedactions() []string {
+	if x != nil {
+		return x.Redactions
+	}
+	return nil
+}
+
 type ConnMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:
@@ -1926,7 +2360,7 @@ type ConnMessage struct {
 
 func (x *ConnMessage) Reset() {
 	*x = ConnMessage{}
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1938,7 +2372,7 @@ func (x *ConnMessage) String() string {
 func (*ConnMessage) ProtoMessage() {}
 
 func (x *ConnMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1951,7 +2385,7 @@ func (x *ConnMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnMessage.ProtoReflect.Descriptor instead.
 func (*ConnMessage) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{24}
+	return file_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ConnMessage) GetKind() isConnMessage_Kind {
@@ -2194,7 +2628,7 @@ type DialUpstreamRequest struct {
 
 func (x *DialUpstreamRequest) Reset() {
 	*x = DialUpstreamRequest{}
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2206,7 +2640,7 @@ func (x *DialUpstreamRequest) String() string {
 func (*DialUpstreamRequest) ProtoMessage() {}
 
 func (x *DialUpstreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2219,7 +2653,7 @@ func (x *DialUpstreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialUpstreamRequest.ProtoReflect.Descriptor instead.
 func (*DialUpstreamRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{25}
+	return file_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *DialUpstreamRequest) GetDialId() string {
@@ -2269,7 +2703,7 @@ type DialUpstreamReply struct {
 
 func (x *DialUpstreamReply) Reset() {
 	*x = DialUpstreamReply{}
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2281,7 +2715,7 @@ func (x *DialUpstreamReply) String() string {
 func (*DialUpstreamReply) ProtoMessage() {}
 
 func (x *DialUpstreamReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2294,7 +2728,7 @@ func (x *DialUpstreamReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialUpstreamReply.ProtoReflect.Descriptor instead.
 func (*DialUpstreamReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{26}
+	return file_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DialUpstreamReply) GetDialId() string {
@@ -2321,7 +2755,7 @@ type DialUpstreamData struct {
 
 func (x *DialUpstreamData) Reset() {
 	*x = DialUpstreamData{}
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2333,7 +2767,7 @@ func (x *DialUpstreamData) String() string {
 func (*DialUpstreamData) ProtoMessage() {}
 
 func (x *DialUpstreamData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2346,7 +2780,7 @@ func (x *DialUpstreamData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialUpstreamData.ProtoReflect.Descriptor instead.
 func (*DialUpstreamData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{27}
+	return file_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *DialUpstreamData) GetDialId() string {
@@ -2373,7 +2807,7 @@ type DialUpstreamClose struct {
 
 func (x *DialUpstreamClose) Reset() {
 	*x = DialUpstreamClose{}
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2385,7 +2819,7 @@ func (x *DialUpstreamClose) String() string {
 func (*DialUpstreamClose) ProtoMessage() {}
 
 func (x *DialUpstreamClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2398,7 +2832,7 @@ func (x *DialUpstreamClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialUpstreamClose.ProtoReflect.Descriptor instead.
 func (*DialUpstreamClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{28}
+	return file_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DialUpstreamClose) GetDialId() string {
@@ -2427,7 +2861,7 @@ type StreamRead struct {
 
 func (x *StreamRead) Reset() {
 	*x = StreamRead{}
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2439,7 +2873,7 @@ func (x *StreamRead) String() string {
 func (*StreamRead) ProtoMessage() {}
 
 func (x *StreamRead) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2452,7 +2886,7 @@ func (x *StreamRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamRead.ProtoReflect.Descriptor instead.
 func (*StreamRead) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{29}
+	return file_plugin_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *StreamRead) GetHandle() string {
@@ -2483,7 +2917,7 @@ type StreamChunk struct {
 
 func (x *StreamChunk) Reset() {
 	*x = StreamChunk{}
-	mi := &file_plugin_proto_msgTypes[30]
+	mi := &file_plugin_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2495,7 +2929,7 @@ func (x *StreamChunk) String() string {
 func (*StreamChunk) ProtoMessage() {}
 
 func (x *StreamChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[30]
+	mi := &file_plugin_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2508,7 +2942,7 @@ func (x *StreamChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamChunk.ProtoReflect.Descriptor instead.
 func (*StreamChunk) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{30}
+	return file_plugin_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *StreamChunk) GetHandle() string {
@@ -2544,7 +2978,7 @@ type StreamCancel struct {
 
 func (x *StreamCancel) Reset() {
 	*x = StreamCancel{}
-	mi := &file_plugin_proto_msgTypes[31]
+	mi := &file_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2556,7 +2990,7 @@ func (x *StreamCancel) String() string {
 func (*StreamCancel) ProtoMessage() {}
 
 func (x *StreamCancel) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[31]
+	mi := &file_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2569,7 +3003,7 @@ func (x *StreamCancel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamCancel.ProtoReflect.Descriptor instead.
 func (*StreamCancel) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{31}
+	return file_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *StreamCancel) GetHandle() string {
@@ -2613,7 +3047,7 @@ type EvaluateAction struct {
 
 func (x *EvaluateAction) Reset() {
 	*x = EvaluateAction{}
-	mi := &file_plugin_proto_msgTypes[32]
+	mi := &file_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2625,7 +3059,7 @@ func (x *EvaluateAction) String() string {
 func (*EvaluateAction) ProtoMessage() {}
 
 func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[32]
+	mi := &file_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2638,7 +3072,7 @@ func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvaluateAction.ProtoReflect.Descriptor instead.
 func (*EvaluateAction) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{32}
+	return file_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *EvaluateAction) GetCallId() string {
@@ -2688,7 +3122,7 @@ type ActionVerdict struct {
 
 func (x *ActionVerdict) Reset() {
 	*x = ActionVerdict{}
-	mi := &file_plugin_proto_msgTypes[33]
+	mi := &file_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2700,7 +3134,7 @@ func (x *ActionVerdict) String() string {
 func (*ActionVerdict) ProtoMessage() {}
 
 func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[33]
+	mi := &file_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2713,7 +3147,7 @@ func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionVerdict.ProtoReflect.Descriptor instead.
 func (*ActionVerdict) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{33}
+	return file_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ActionVerdict) GetCallId() string {
@@ -2781,7 +3215,7 @@ type ConnInit struct {
 
 func (x *ConnInit) Reset() {
 	*x = ConnInit{}
-	mi := &file_plugin_proto_msgTypes[34]
+	mi := &file_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2793,7 +3227,7 @@ func (x *ConnInit) String() string {
 func (*ConnInit) ProtoMessage() {}
 
 func (x *ConnInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[34]
+	mi := &file_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2806,7 +3240,7 @@ func (x *ConnInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnInit.ProtoReflect.Descriptor instead.
 func (*ConnInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{34}
+	return file_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ConnInit) GetEndpointTypeName() string {
@@ -2923,7 +3357,7 @@ type ConnData struct {
 
 func (x *ConnData) Reset() {
 	*x = ConnData{}
-	mi := &file_plugin_proto_msgTypes[35]
+	mi := &file_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2935,7 +3369,7 @@ func (x *ConnData) String() string {
 func (*ConnData) ProtoMessage() {}
 
 func (x *ConnData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[35]
+	mi := &file_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2948,7 +3382,7 @@ func (x *ConnData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnData.ProtoReflect.Descriptor instead.
 func (*ConnData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{35}
+	return file_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ConnData) GetPayload() []byte {
@@ -2968,7 +3402,7 @@ type ConnClose struct {
 
 func (x *ConnClose) Reset() {
 	*x = ConnClose{}
-	mi := &file_plugin_proto_msgTypes[36]
+	mi := &file_plugin_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2980,7 +3414,7 @@ func (x *ConnClose) String() string {
 func (*ConnClose) ProtoMessage() {}
 
 func (x *ConnClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[36]
+	mi := &file_plugin_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2993,7 +3427,7 @@ func (x *ConnClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnClose.ProtoReflect.Descriptor instead.
 func (*ConnClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{36}
+	return file_plugin_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ConnClose) GetReason() string {
@@ -3024,7 +3458,7 @@ type ConnEvent struct {
 
 func (x *ConnEvent) Reset() {
 	*x = ConnEvent{}
-	mi := &file_plugin_proto_msgTypes[37]
+	mi := &file_plugin_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3036,7 +3470,7 @@ func (x *ConnEvent) String() string {
 func (*ConnEvent) ProtoMessage() {}
 
 func (x *ConnEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[37]
+	mi := &file_plugin_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3049,7 +3483,7 @@ func (x *ConnEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnEvent.ProtoReflect.Descriptor instead.
 func (*ConnEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{37}
+	return file_plugin_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ConnEvent) GetAction() string {
@@ -3115,7 +3549,7 @@ type OpenTunnelRequest struct {
 
 func (x *OpenTunnelRequest) Reset() {
 	*x = OpenTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[38]
+	mi := &file_plugin_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3127,7 +3561,7 @@ func (x *OpenTunnelRequest) String() string {
 func (*OpenTunnelRequest) ProtoMessage() {}
 
 func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[38]
+	mi := &file_plugin_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3140,7 +3574,7 @@ func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelRequest.ProtoReflect.Descriptor instead.
 func (*OpenTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{38}
+	return file_plugin_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *OpenTunnelRequest) GetTunnelTypeName() string {
@@ -3187,7 +3621,7 @@ type OpenTunnelResponse struct {
 
 func (x *OpenTunnelResponse) Reset() {
 	*x = OpenTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[39]
+	mi := &file_plugin_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3199,7 +3633,7 @@ func (x *OpenTunnelResponse) String() string {
 func (*OpenTunnelResponse) ProtoMessage() {}
 
 func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[39]
+	mi := &file_plugin_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3212,7 +3646,7 @@ func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelResponse.ProtoReflect.Descriptor instead.
 func (*OpenTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{39}
+	return file_plugin_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *OpenTunnelResponse) GetHandle() string {
@@ -3231,7 +3665,7 @@ type CloseTunnelRequest struct {
 
 func (x *CloseTunnelRequest) Reset() {
 	*x = CloseTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[40]
+	mi := &file_plugin_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3243,7 +3677,7 @@ func (x *CloseTunnelRequest) String() string {
 func (*CloseTunnelRequest) ProtoMessage() {}
 
 func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[40]
+	mi := &file_plugin_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3256,7 +3690,7 @@ func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelRequest.ProtoReflect.Descriptor instead.
 func (*CloseTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{40}
+	return file_plugin_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CloseTunnelRequest) GetHandle() string {
@@ -3274,7 +3708,7 @@ type CloseTunnelResponse struct {
 
 func (x *CloseTunnelResponse) Reset() {
 	*x = CloseTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[41]
+	mi := &file_plugin_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3286,7 +3720,7 @@ func (x *CloseTunnelResponse) String() string {
 func (*CloseTunnelResponse) ProtoMessage() {}
 
 func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[41]
+	mi := &file_plugin_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3299,7 +3733,7 @@ func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelResponse.ProtoReflect.Descriptor instead.
 func (*CloseTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{41}
+	return file_plugin_proto_rawDescGZIP(), []int{46}
 }
 
 type DialMessage struct {
@@ -3316,7 +3750,7 @@ type DialMessage struct {
 
 func (x *DialMessage) Reset() {
 	*x = DialMessage{}
-	mi := &file_plugin_proto_msgTypes[42]
+	mi := &file_plugin_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3328,7 +3762,7 @@ func (x *DialMessage) String() string {
 func (*DialMessage) ProtoMessage() {}
 
 func (x *DialMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[42]
+	mi := &file_plugin_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3341,7 +3775,7 @@ func (x *DialMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialMessage.ProtoReflect.Descriptor instead.
 func (*DialMessage) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{42}
+	return file_plugin_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *DialMessage) GetKind() isDialMessage_Kind {
@@ -3411,7 +3845,7 @@ type DialInit struct {
 
 func (x *DialInit) Reset() {
 	*x = DialInit{}
-	mi := &file_plugin_proto_msgTypes[43]
+	mi := &file_plugin_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3423,7 +3857,7 @@ func (x *DialInit) String() string {
 func (*DialInit) ProtoMessage() {}
 
 func (x *DialInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[43]
+	mi := &file_plugin_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3436,7 +3870,7 @@ func (x *DialInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialInit.ProtoReflect.Descriptor instead.
 func (*DialInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{43}
+	return file_plugin_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *DialInit) GetTunnelHandle() string {
@@ -3469,7 +3903,7 @@ type DialData struct {
 
 func (x *DialData) Reset() {
 	*x = DialData{}
-	mi := &file_plugin_proto_msgTypes[44]
+	mi := &file_plugin_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3481,7 +3915,7 @@ func (x *DialData) String() string {
 func (*DialData) ProtoMessage() {}
 
 func (x *DialData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[44]
+	mi := &file_plugin_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3494,7 +3928,7 @@ func (x *DialData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialData.ProtoReflect.Descriptor instead.
 func (*DialData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{44}
+	return file_plugin_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *DialData) GetPayload() []byte {
@@ -3513,7 +3947,7 @@ type DialClose struct {
 
 func (x *DialClose) Reset() {
 	*x = DialClose{}
-	mi := &file_plugin_proto_msgTypes[45]
+	mi := &file_plugin_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3525,7 +3959,7 @@ func (x *DialClose) String() string {
 func (*DialClose) ProtoMessage() {}
 
 func (x *DialClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[45]
+	mi := &file_plugin_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3538,7 +3972,7 @@ func (x *DialClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialClose.ProtoReflect.Descriptor instead.
 func (*DialClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{45}
+	return file_plugin_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *DialClose) GetReason() string {
@@ -3557,7 +3991,7 @@ type StateGetRequest struct {
 
 func (x *StateGetRequest) Reset() {
 	*x = StateGetRequest{}
-	mi := &file_plugin_proto_msgTypes[46]
+	mi := &file_plugin_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3569,7 +4003,7 @@ func (x *StateGetRequest) String() string {
 func (*StateGetRequest) ProtoMessage() {}
 
 func (x *StateGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[46]
+	mi := &file_plugin_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3582,7 +4016,7 @@ func (x *StateGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateGetRequest.ProtoReflect.Descriptor instead.
 func (*StateGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{46}
+	return file_plugin_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *StateGetRequest) GetKey() string {
@@ -3602,7 +4036,7 @@ type StateGetResponse struct {
 
 func (x *StateGetResponse) Reset() {
 	*x = StateGetResponse{}
-	mi := &file_plugin_proto_msgTypes[47]
+	mi := &file_plugin_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3614,7 +4048,7 @@ func (x *StateGetResponse) String() string {
 func (*StateGetResponse) ProtoMessage() {}
 
 func (x *StateGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[47]
+	mi := &file_plugin_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3627,7 +4061,7 @@ func (x *StateGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateGetResponse.ProtoReflect.Descriptor instead.
 func (*StateGetResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{47}
+	return file_plugin_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *StateGetResponse) GetValue() []byte {
@@ -3654,7 +4088,7 @@ type StatePutRequest struct {
 
 func (x *StatePutRequest) Reset() {
 	*x = StatePutRequest{}
-	mi := &file_plugin_proto_msgTypes[48]
+	mi := &file_plugin_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3666,7 +4100,7 @@ func (x *StatePutRequest) String() string {
 func (*StatePutRequest) ProtoMessage() {}
 
 func (x *StatePutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[48]
+	mi := &file_plugin_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3679,7 +4113,7 @@ func (x *StatePutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatePutRequest.ProtoReflect.Descriptor instead.
 func (*StatePutRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{48}
+	return file_plugin_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *StatePutRequest) GetKey() string {
@@ -3704,7 +4138,7 @@ type StatePutResponse struct {
 
 func (x *StatePutResponse) Reset() {
 	*x = StatePutResponse{}
-	mi := &file_plugin_proto_msgTypes[49]
+	mi := &file_plugin_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3716,7 +4150,7 @@ func (x *StatePutResponse) String() string {
 func (*StatePutResponse) ProtoMessage() {}
 
 func (x *StatePutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[49]
+	mi := &file_plugin_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3729,7 +4163,7 @@ func (x *StatePutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatePutResponse.ProtoReflect.Descriptor instead.
 func (*StatePutResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{49}
+	return file_plugin_proto_rawDescGZIP(), []int{54}
 }
 
 var File_plugin_proto protoreflect.FileDescriptor
@@ -3797,20 +4231,22 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06prefix\x18\x03 \x01(\tR\x06prefix\x12\x12\n" +
 	"\x04flow\x18\x04 \x01(\tR\x04flow\x12;\n" +
 	"\x05oauth\x18\x05 \x01(\v2%.clawpatrol.plugin.v1.OAuthConfigDeclR\x05oauth\x12U\n" +
-	"\x0foptional_scopes\x18\x06 \x03(\v2,.clawpatrol.plugin.v1.OptionalScopeGroupDeclR\x0eoptionalScopes\"\xa5\x02\n" +
+	"\x0foptional_scopes\x18\x06 \x03(\v2,.clawpatrol.plugin.v1.OptionalScopeGroupDeclR\x0eoptionalScopes\"\xcc\x02\n" +
 	"\x12CredentialMetadata\x12&\n" +
 	"\x0edisambiguators\x18\x01 \x03(\tR\x0edisambiguators\x12G\n" +
 	"\fsecret_slots\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.SecretSlotDeclR\vsecretSlots\x12;\n" +
 	"\benv_vars\x18\x03 \x03(\v2 .clawpatrol.plugin.v1.EnvVarDeclR\aenvVars\x12@\n" +
 	"\x05oauth\x18\x04 \x01(\v2*.clawpatrol.plugin.v1.OAuthIntegrationDeclR\x05oauth\x12\x1f\n" +
 	"\vhttp_inject\x18\x05 \x01(\bR\n" +
-	"httpInject\"\xac\x01\n" +
+	"httpInject\x12%\n" +
+	"\x0ehttp_transform\x18\x06 \x01(\bR\rhttpTransform\"\xd3\x01\n" +
 	"\x0eCredentialDecl\x12\x1b\n" +
 	"\ttype_name\x18\x01 \x01(\tR\btypeName\x124\n" +
 	"\x06schema\x18\x02 \x01(\v2\x1c.clawpatrol.plugin.v1.SchemaR\x06schema\x12&\n" +
 	"\x0edisambiguators\x18\x03 \x03(\tR\x0edisambiguators\x12\x1f\n" +
 	"\vhttp_inject\x18\x04 \x01(\bR\n" +
-	"httpInject\"_\n" +
+	"httpInject\x12%\n" +
+	"\x0ehttp_transform\x18\x05 \x01(\bR\rhttpTransform\"_\n" +
 	"\n" +
 	"TunnelDecl\x12\x1b\n" +
 	"\ttype_name\x18\x01 \x01(\tR\btypeName\x124\n" +
@@ -3873,7 +4309,47 @@ const file_plugin_proto_rawDesc = "" +
 	"\aheaders\x18\x01 \x03(\v2$.clawpatrol.plugin.v1.HeaderMutationR\aheaders\x12\x1e\n" +
 	"\n" +
 	"redactions\x18\x02 \x03(\tR\n" +
-	"redactions\"\xfb\x06\n" +
+	"redactions\"\xe9\x01\n" +
+	"\rHTTPBodyChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x10\n" +
+	"\x03eof\x18\x02 \x01(\bR\x03eof\x12M\n" +
+	"\btrailers\x18\x03 \x03(\v21.clawpatrol.plugin.v1.HTTPBodyChunk.TrailersEntryR\btrailers\x1ac\n" +
+	"\rTrailersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12<\n" +
+	"\x05value\x18\x02 \x01(\v2&.clawpatrol.plugin.v1.HTTPHeaderValuesR\x05value:\x028\x01\"\x93\x01\n" +
+	"\x0fTransformHTTPUp\x12=\n" +
+	"\x04init\x18\x01 \x01(\v2'.clawpatrol.plugin.v1.TransformHTTPInitH\x00R\x04init\x129\n" +
+	"\x04body\x18\x02 \x01(\v2#.clawpatrol.plugin.v1.HTTPBodyChunkH\x00R\x04bodyB\x06\n" +
+	"\x04kind\"\x82\x05\n" +
+	"\x11TransformHTTPInit\x120\n" +
+	"\x14credential_type_name\x18\x01 \x01(\tR\x12credentialTypeName\x12/\n" +
+	"\x13credential_instance\x18\x02 \x01(\tR\x12credentialInstance\x12:\n" +
+	"\x19credential_canonical_json\x18\x03 \x01(\fR\x17credentialCanonicalJson\x12+\n" +
+	"\x11credential_secret\x18\x04 \x01(\fR\x10credentialSecret\x12j\n" +
+	"\x11credential_extras\x18\x05 \x03(\v2=.clawpatrol.plugin.v1.TransformHTTPInit.CredentialExtrasEntryR\x10credentialExtras\x12\x16\n" +
+	"\x06method\x18\x06 \x01(\tR\x06method\x12\x10\n" +
+	"\x03url\x18\a \x01(\tR\x03url\x12\x12\n" +
+	"\x04host\x18\b \x01(\tR\x04host\x12N\n" +
+	"\aheaders\x18\t \x03(\v24.clawpatrol.plugin.v1.TransformHTTPInit.HeadersEntryR\aheaders\x1aC\n" +
+	"\x15CredentialExtrasEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1ab\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12<\n" +
+	"\x05value\x18\x02 \x01(\v2&.clawpatrol.plugin.v1.HTTPHeaderValuesR\x05value:\x028\x01\"\x95\x01\n" +
+	"\x11TransformHTTPDown\x12=\n" +
+	"\x04head\x18\x01 \x01(\v2'.clawpatrol.plugin.v1.TransformHTTPHeadH\x00R\x04head\x129\n" +
+	"\x04body\x18\x02 \x01(\v2#.clawpatrol.plugin.v1.HTTPBodyChunkH\x00R\x04bodyB\x06\n" +
+	"\x04kind\"\xba\x01\n" +
+	"\x11TransformHTTPHead\x12>\n" +
+	"\aheaders\x18\x01 \x03(\v2$.clawpatrol.plugin.v1.HeaderMutationR\aheaders\x12\x1b\n" +
+	"\x06method\x18\x02 \x01(\tH\x00R\x06method\x88\x01\x01\x12\x15\n" +
+	"\x03url\x18\x03 \x01(\tH\x01R\x03url\x88\x01\x01\x12\x1e\n" +
+	"\n" +
+	"redactions\x18\x04 \x03(\tR\n" +
+	"redactionsB\t\n" +
+	"\a_methodB\x06\n" +
+	"\x04_url\"\xfb\x06\n" +
 	"\vConnMessage\x124\n" +
 	"\x04init\x18\x01 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnInitH\x00R\x04init\x124\n" +
 	"\x04data\x18\x02 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnDataH\x00R\x04data\x127\n" +
@@ -4018,11 +4494,12 @@ const file_plugin_proto_rawDesc = "" +
 	"\rTLS_TERMINATE\x10\x012\xb5\x01\n" +
 	"\x06Plugin\x12Y\n" +
 	"\bManifest\x12%.clawpatrol.plugin.v1.ManifestRequest\x1a&.clawpatrol.plugin.v1.ManifestResponse\x12P\n" +
-	"\x05Build\x12\".clawpatrol.plugin.v1.BuildRequest\x1a#.clawpatrol.plugin.v1.BuildResponse2m\n" +
+	"\x05Build\x12\".clawpatrol.plugin.v1.BuildRequest\x1a#.clawpatrol.plugin.v1.BuildResponse2\xd2\x01\n" +
 	"\n" +
 	"Credential\x12_\n" +
 	"\n" +
-	"InjectHTTP\x12'.clawpatrol.plugin.v1.InjectHTTPRequest\x1a(.clawpatrol.plugin.v1.InjectHTTPResponse2b\n" +
+	"InjectHTTP\x12'.clawpatrol.plugin.v1.InjectHTTPRequest\x1a(.clawpatrol.plugin.v1.InjectHTTPResponse\x12c\n" +
+	"\rTransformHTTP\x12%.clawpatrol.plugin.v1.TransformHTTPUp\x1a'.clawpatrol.plugin.v1.TransformHTTPDown(\x010\x012b\n" +
 	"\bEndpoint\x12V\n" +
 	"\n" +
 	"HandleConn\x12!.clawpatrol.plugin.v1.ConnMessage\x1a!.clawpatrol.plugin.v1.ConnMessage(\x010\x012\x9f\x02\n" +
@@ -4048,7 +4525,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_plugin_proto_goTypes = []any{
 	(NetworkAccess)(0),             // 0: clawpatrol.plugin.v1.NetworkAccess
 	(FacetKind)(0),                 // 1: clawpatrol.plugin.v1.FacetKind
@@ -4079,37 +4556,45 @@ var file_plugin_proto_goTypes = []any{
 	(*InjectHTTPRequest)(nil),      // 26: clawpatrol.plugin.v1.InjectHTTPRequest
 	(*HeaderMutation)(nil),         // 27: clawpatrol.plugin.v1.HeaderMutation
 	(*InjectHTTPResponse)(nil),     // 28: clawpatrol.plugin.v1.InjectHTTPResponse
-	(*ConnMessage)(nil),            // 29: clawpatrol.plugin.v1.ConnMessage
-	(*DialUpstreamRequest)(nil),    // 30: clawpatrol.plugin.v1.DialUpstreamRequest
-	(*DialUpstreamReply)(nil),      // 31: clawpatrol.plugin.v1.DialUpstreamReply
-	(*DialUpstreamData)(nil),       // 32: clawpatrol.plugin.v1.DialUpstreamData
-	(*DialUpstreamClose)(nil),      // 33: clawpatrol.plugin.v1.DialUpstreamClose
-	(*StreamRead)(nil),             // 34: clawpatrol.plugin.v1.StreamRead
-	(*StreamChunk)(nil),            // 35: clawpatrol.plugin.v1.StreamChunk
-	(*StreamCancel)(nil),           // 36: clawpatrol.plugin.v1.StreamCancel
-	(*EvaluateAction)(nil),         // 37: clawpatrol.plugin.v1.EvaluateAction
-	(*ActionVerdict)(nil),          // 38: clawpatrol.plugin.v1.ActionVerdict
-	(*ConnInit)(nil),               // 39: clawpatrol.plugin.v1.ConnInit
-	(*ConnData)(nil),               // 40: clawpatrol.plugin.v1.ConnData
-	(*ConnClose)(nil),              // 41: clawpatrol.plugin.v1.ConnClose
-	(*ConnEvent)(nil),              // 42: clawpatrol.plugin.v1.ConnEvent
-	(*OpenTunnelRequest)(nil),      // 43: clawpatrol.plugin.v1.OpenTunnelRequest
-	(*OpenTunnelResponse)(nil),     // 44: clawpatrol.plugin.v1.OpenTunnelResponse
-	(*CloseTunnelRequest)(nil),     // 45: clawpatrol.plugin.v1.CloseTunnelRequest
-	(*CloseTunnelResponse)(nil),    // 46: clawpatrol.plugin.v1.CloseTunnelResponse
-	(*DialMessage)(nil),            // 47: clawpatrol.plugin.v1.DialMessage
-	(*DialInit)(nil),               // 48: clawpatrol.plugin.v1.DialInit
-	(*DialData)(nil),               // 49: clawpatrol.plugin.v1.DialData
-	(*DialClose)(nil),              // 50: clawpatrol.plugin.v1.DialClose
-	(*StateGetRequest)(nil),        // 51: clawpatrol.plugin.v1.StateGetRequest
-	(*StateGetResponse)(nil),       // 52: clawpatrol.plugin.v1.StateGetResponse
-	(*StatePutRequest)(nil),        // 53: clawpatrol.plugin.v1.StatePutRequest
-	(*StatePutResponse)(nil),       // 54: clawpatrol.plugin.v1.StatePutResponse
-	nil,                            // 55: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	nil,                            // 56: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
-	nil,                            // 57: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	nil,                            // 58: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	nil,                            // 59: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	(*HTTPBodyChunk)(nil),          // 29: clawpatrol.plugin.v1.HTTPBodyChunk
+	(*TransformHTTPUp)(nil),        // 30: clawpatrol.plugin.v1.TransformHTTPUp
+	(*TransformHTTPInit)(nil),      // 31: clawpatrol.plugin.v1.TransformHTTPInit
+	(*TransformHTTPDown)(nil),      // 32: clawpatrol.plugin.v1.TransformHTTPDown
+	(*TransformHTTPHead)(nil),      // 33: clawpatrol.plugin.v1.TransformHTTPHead
+	(*ConnMessage)(nil),            // 34: clawpatrol.plugin.v1.ConnMessage
+	(*DialUpstreamRequest)(nil),    // 35: clawpatrol.plugin.v1.DialUpstreamRequest
+	(*DialUpstreamReply)(nil),      // 36: clawpatrol.plugin.v1.DialUpstreamReply
+	(*DialUpstreamData)(nil),       // 37: clawpatrol.plugin.v1.DialUpstreamData
+	(*DialUpstreamClose)(nil),      // 38: clawpatrol.plugin.v1.DialUpstreamClose
+	(*StreamRead)(nil),             // 39: clawpatrol.plugin.v1.StreamRead
+	(*StreamChunk)(nil),            // 40: clawpatrol.plugin.v1.StreamChunk
+	(*StreamCancel)(nil),           // 41: clawpatrol.plugin.v1.StreamCancel
+	(*EvaluateAction)(nil),         // 42: clawpatrol.plugin.v1.EvaluateAction
+	(*ActionVerdict)(nil),          // 43: clawpatrol.plugin.v1.ActionVerdict
+	(*ConnInit)(nil),               // 44: clawpatrol.plugin.v1.ConnInit
+	(*ConnData)(nil),               // 45: clawpatrol.plugin.v1.ConnData
+	(*ConnClose)(nil),              // 46: clawpatrol.plugin.v1.ConnClose
+	(*ConnEvent)(nil),              // 47: clawpatrol.plugin.v1.ConnEvent
+	(*OpenTunnelRequest)(nil),      // 48: clawpatrol.plugin.v1.OpenTunnelRequest
+	(*OpenTunnelResponse)(nil),     // 49: clawpatrol.plugin.v1.OpenTunnelResponse
+	(*CloseTunnelRequest)(nil),     // 50: clawpatrol.plugin.v1.CloseTunnelRequest
+	(*CloseTunnelResponse)(nil),    // 51: clawpatrol.plugin.v1.CloseTunnelResponse
+	(*DialMessage)(nil),            // 52: clawpatrol.plugin.v1.DialMessage
+	(*DialInit)(nil),               // 53: clawpatrol.plugin.v1.DialInit
+	(*DialData)(nil),               // 54: clawpatrol.plugin.v1.DialData
+	(*DialClose)(nil),              // 55: clawpatrol.plugin.v1.DialClose
+	(*StateGetRequest)(nil),        // 56: clawpatrol.plugin.v1.StateGetRequest
+	(*StateGetResponse)(nil),       // 57: clawpatrol.plugin.v1.StateGetResponse
+	(*StatePutRequest)(nil),        // 58: clawpatrol.plugin.v1.StatePutRequest
+	(*StatePutResponse)(nil),       // 59: clawpatrol.plugin.v1.StatePutResponse
+	nil,                            // 60: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	nil,                            // 61: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	nil,                            // 62: clawpatrol.plugin.v1.HTTPBodyChunk.TrailersEntry
+	nil,                            // 63: clawpatrol.plugin.v1.TransformHTTPInit.CredentialExtrasEntry
+	nil,                            // 64: clawpatrol.plugin.v1.TransformHTTPInit.HeadersEntry
+	nil,                            // 65: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	nil,                            // 66: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	nil,                            // 67: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	19, // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
@@ -4134,53 +4619,65 @@ var file_plugin_proto_depIdxs = []int32{
 	24, // 19: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
 	18, // 20: clawpatrol.plugin.v1.BuildResponse.credential_metadata:type_name -> clawpatrol.plugin.v1.CredentialMetadata
 	3,  // 21: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
-	55, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	56, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	60, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	61, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
 	4,  // 24: clawpatrol.plugin.v1.HeaderMutation.op:type_name -> clawpatrol.plugin.v1.HeaderMutation.Op
 	27, // 25: clawpatrol.plugin.v1.InjectHTTPResponse.headers:type_name -> clawpatrol.plugin.v1.HeaderMutation
-	39, // 26: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
-	40, // 27: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
-	41, // 28: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
-	42, // 29: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
-	37, // 30: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
-	38, // 31: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
-	34, // 32: clawpatrol.plugin.v1.ConnMessage.stream_read:type_name -> clawpatrol.plugin.v1.StreamRead
-	35, // 33: clawpatrol.plugin.v1.ConnMessage.stream_chunk:type_name -> clawpatrol.plugin.v1.StreamChunk
-	36, // 34: clawpatrol.plugin.v1.ConnMessage.stream_cancel:type_name -> clawpatrol.plugin.v1.StreamCancel
-	30, // 35: clawpatrol.plugin.v1.ConnMessage.dial_request:type_name -> clawpatrol.plugin.v1.DialUpstreamRequest
-	31, // 36: clawpatrol.plugin.v1.ConnMessage.dial_reply:type_name -> clawpatrol.plugin.v1.DialUpstreamReply
-	32, // 37: clawpatrol.plugin.v1.ConnMessage.dial_data:type_name -> clawpatrol.plugin.v1.DialUpstreamData
-	33, // 38: clawpatrol.plugin.v1.ConnMessage.dial_close:type_name -> clawpatrol.plugin.v1.DialUpstreamClose
-	57, // 39: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	58, // 40: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	59, // 41: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
-	48, // 42: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
-	49, // 43: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
-	50, // 44: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
-	25, // 45: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry.value:type_name -> clawpatrol.plugin.v1.HTTPHeaderValues
-	5,  // 46: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
-	22, // 47: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
-	26, // 48: clawpatrol.plugin.v1.Credential.InjectHTTP:input_type -> clawpatrol.plugin.v1.InjectHTTPRequest
-	29, // 49: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
-	43, // 50: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
-	47, // 51: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
-	45, // 52: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
-	51, // 53: clawpatrol.plugin.v1.HostState.Get:input_type -> clawpatrol.plugin.v1.StateGetRequest
-	53, // 54: clawpatrol.plugin.v1.HostState.Put:input_type -> clawpatrol.plugin.v1.StatePutRequest
-	6,  // 55: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	23, // 56: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	28, // 57: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
-	29, // 58: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	44, // 59: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	47, // 60: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	46, // 61: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	52, // 62: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
-	54, // 63: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
-	55, // [55:64] is the sub-list for method output_type
-	46, // [46:55] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	62, // 26: clawpatrol.plugin.v1.HTTPBodyChunk.trailers:type_name -> clawpatrol.plugin.v1.HTTPBodyChunk.TrailersEntry
+	31, // 27: clawpatrol.plugin.v1.TransformHTTPUp.init:type_name -> clawpatrol.plugin.v1.TransformHTTPInit
+	29, // 28: clawpatrol.plugin.v1.TransformHTTPUp.body:type_name -> clawpatrol.plugin.v1.HTTPBodyChunk
+	63, // 29: clawpatrol.plugin.v1.TransformHTTPInit.credential_extras:type_name -> clawpatrol.plugin.v1.TransformHTTPInit.CredentialExtrasEntry
+	64, // 30: clawpatrol.plugin.v1.TransformHTTPInit.headers:type_name -> clawpatrol.plugin.v1.TransformHTTPInit.HeadersEntry
+	33, // 31: clawpatrol.plugin.v1.TransformHTTPDown.head:type_name -> clawpatrol.plugin.v1.TransformHTTPHead
+	29, // 32: clawpatrol.plugin.v1.TransformHTTPDown.body:type_name -> clawpatrol.plugin.v1.HTTPBodyChunk
+	27, // 33: clawpatrol.plugin.v1.TransformHTTPHead.headers:type_name -> clawpatrol.plugin.v1.HeaderMutation
+	44, // 34: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
+	45, // 35: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
+	46, // 36: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
+	47, // 37: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
+	42, // 38: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
+	43, // 39: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
+	39, // 40: clawpatrol.plugin.v1.ConnMessage.stream_read:type_name -> clawpatrol.plugin.v1.StreamRead
+	40, // 41: clawpatrol.plugin.v1.ConnMessage.stream_chunk:type_name -> clawpatrol.plugin.v1.StreamChunk
+	41, // 42: clawpatrol.plugin.v1.ConnMessage.stream_cancel:type_name -> clawpatrol.plugin.v1.StreamCancel
+	35, // 43: clawpatrol.plugin.v1.ConnMessage.dial_request:type_name -> clawpatrol.plugin.v1.DialUpstreamRequest
+	36, // 44: clawpatrol.plugin.v1.ConnMessage.dial_reply:type_name -> clawpatrol.plugin.v1.DialUpstreamReply
+	37, // 45: clawpatrol.plugin.v1.ConnMessage.dial_data:type_name -> clawpatrol.plugin.v1.DialUpstreamData
+	38, // 46: clawpatrol.plugin.v1.ConnMessage.dial_close:type_name -> clawpatrol.plugin.v1.DialUpstreamClose
+	65, // 47: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	66, // 48: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	67, // 49: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	53, // 50: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
+	54, // 51: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
+	55, // 52: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
+	25, // 53: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry.value:type_name -> clawpatrol.plugin.v1.HTTPHeaderValues
+	25, // 54: clawpatrol.plugin.v1.HTTPBodyChunk.TrailersEntry.value:type_name -> clawpatrol.plugin.v1.HTTPHeaderValues
+	25, // 55: clawpatrol.plugin.v1.TransformHTTPInit.HeadersEntry.value:type_name -> clawpatrol.plugin.v1.HTTPHeaderValues
+	5,  // 56: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
+	22, // 57: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
+	26, // 58: clawpatrol.plugin.v1.Credential.InjectHTTP:input_type -> clawpatrol.plugin.v1.InjectHTTPRequest
+	30, // 59: clawpatrol.plugin.v1.Credential.TransformHTTP:input_type -> clawpatrol.plugin.v1.TransformHTTPUp
+	34, // 60: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
+	48, // 61: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
+	52, // 62: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
+	50, // 63: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
+	56, // 64: clawpatrol.plugin.v1.HostState.Get:input_type -> clawpatrol.plugin.v1.StateGetRequest
+	58, // 65: clawpatrol.plugin.v1.HostState.Put:input_type -> clawpatrol.plugin.v1.StatePutRequest
+	6,  // 66: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	23, // 67: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	28, // 68: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
+	32, // 69: clawpatrol.plugin.v1.Credential.TransformHTTP:output_type -> clawpatrol.plugin.v1.TransformHTTPDown
+	34, // 70: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	49, // 71: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	52, // 72: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	51, // 73: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	57, // 74: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
+	59, // 75: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
+	66, // [66:76] is the sub-list for method output_type
+	56, // [56:66] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -4188,7 +4685,16 @@ func file_plugin_proto_init() {
 	if File_plugin_proto != nil {
 		return
 	}
-	file_plugin_proto_msgTypes[24].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[25].OneofWrappers = []any{
+		(*TransformHTTPUp_Init)(nil),
+		(*TransformHTTPUp_Body)(nil),
+	}
+	file_plugin_proto_msgTypes[27].OneofWrappers = []any{
+		(*TransformHTTPDown_Head)(nil),
+		(*TransformHTTPDown_Body)(nil),
+	}
+	file_plugin_proto_msgTypes[28].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[29].OneofWrappers = []any{
 		(*ConnMessage_Init)(nil),
 		(*ConnMessage_Data)(nil),
 		(*ConnMessage_Close)(nil),
@@ -4203,7 +4709,7 @@ func file_plugin_proto_init() {
 		(*ConnMessage_DialData)(nil),
 		(*ConnMessage_DialClose)(nil),
 	}
-	file_plugin_proto_msgTypes[42].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[47].OneofWrappers = []any{
 		(*DialMessage_Init)(nil),
 		(*DialMessage_Data)(nil),
 		(*DialMessage_Close)(nil),
@@ -4214,7 +4720,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   55,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

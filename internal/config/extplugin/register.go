@@ -151,8 +151,11 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 				if d := validateBuildDisambiguators(pluginName, decl.TypeName, decl.Disambiguators, resp.CredentialMetadata.Disambiguators); d.HasErrors() {
 					return nil, d
 				}
-				if resp.CredentialMetadata.HttpInject && !decl.HttpInject {
+				if resp.CredentialMetadata.HttpInject && !decl.HttpInject && !decl.HttpTransform {
 					return nil, fail("plugin %q credential %q: build metadata declared HTTP injection but manifest did not", pluginName, decl.TypeName)
+				}
+				if resp.CredentialMetadata.HttpTransform && !decl.HttpTransform {
+					return nil, fail("plugin %q credential %q: build metadata declared HTTP transform but manifest did not", pluginName, decl.TypeName)
 				}
 				instanceMeta := credentialMetadataFromProto(resp.CredentialMetadata)
 				if d := validateCredentialMetadataShape(pluginName, decl.TypeName, instanceMeta); d.HasErrors() {
@@ -177,7 +180,8 @@ func credentialMetadataFromDecl(decl *pb.CredentialDecl) credentialMetadata {
 	}
 	return credentialMetadata{
 		disambiguators: append([]string(nil), decl.Disambiguators...),
-		httpInject:     decl.HttpInject,
+		httpInject:     decl.HttpInject || decl.HttpTransform,
+		httpTransform:  decl.HttpTransform,
 	}
 }
 
@@ -187,7 +191,8 @@ func credentialMetadataFromProto(in *pb.CredentialMetadata) credentialMetadata {
 	}
 	out := credentialMetadata{
 		disambiguators: append([]string(nil), in.Disambiguators...),
-		httpInject:     in.HttpInject,
+		httpInject:     in.HttpInject || in.HttpTransform,
+		httpTransform:  in.HttpTransform,
 	}
 	for _, s := range in.SecretSlots {
 		if s == nil {
@@ -268,10 +273,11 @@ func mergeCredentialMetadata(base, instance credentialMetadata) credentialMetada
 	// OAuth is intentionally instance-scoped Build metadata: region, scopes,
 	// URLs, and flow can differ across two HCL blocks of the same type.
 	out.oauth = instance.oauth
-	// HTTP injection is a registration-time capability. Build metadata
-	// can restate it but cannot enable it for a type whose manifest did
-	// not declare it.
+	// HTTP injection / transform are registration-time capabilities. Build
+	// metadata can restate them but cannot enable them for a type whose
+	// manifest did not declare them.
 	out.httpInject = base.httpInject
+	out.httpTransform = base.httpTransform
 	return out
 }
 

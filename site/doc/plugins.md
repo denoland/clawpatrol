@@ -514,11 +514,51 @@ pluginsdk.CredentialDef{
 for multi-credential dispatch. For HTTP credentials the conventional
 field is `placeholder`: the agent sends a placeholder-looking token,
 and the built-in HTTPS endpoint selects the matching credential
-before calling `InjectHTTP`. `InjectHTTP` is intentionally
-header-only; external credentials cannot rewrite the destination URL
-or request body through this hook. Use `HeaderSet` for auth headers
-such as `Authorization`; `HeaderAdd` appends and may leave the
-agent's placeholder value in place.
+before calling `InjectHTTP`. `InjectHTTP` is header-only by design —
+the request body never flows through the plugin — so it stays cheap
+for the common case. Use `HeaderSet` for auth headers such as
+`Authorization`; `HeaderAdd` appends and may leave the agent's
+placeholder value in place. A credential that must rewrite the URL or
+body uses `TransformHTTP` instead (below).
+
+#### Rewriting the URL or body: `TransformHTTP`
+
+A credential that signs over the request body (AWS SigV4) or carries
+its secret in the URL or body (telegram, discord) sets
+`HTTPTransform: true` and implements `TransformHTTP`. The request body
+is streamed to the plugin as an `io.Reader`, and the plugin returns the
+header/method/URL mutations plus the outgoing body — so **buffering is
+the plugin's choice**: read a prefix and stream the rest, or read it
+all to sign.
+
+```go
+pluginsdk.CredentialDef{
+    TypeName:      "example_sigv4",
+    HTTPTransform: true,
+    TransformHTTP: func(ctx context.Context, req pluginsdk.HTTPTransformRequest) (*pluginsdk.HTTPTransformResponse, error) {
+        body, err := io.ReadAll(req.Body) // SigV4 needs the whole body to hash
+        if err != nil {
+            return nil, err
+        }
+        sig := sign(req.Method, req.URL, req.Headers, body, req.CredentialSecret)
+        return &pluginsdk.HTTPTransformResponse{
+            Headers: []pluginsdk.HeaderMutation{
+                {Op: pluginsdk.HeaderSet, Name: "Authorization", Values: []string{sig}},
+            },
+            Redactions: []string{sig},
+            Body:       bytes.NewReader(body), // forward the body unchanged
+        }, nil
+    },
+}
+```
+
+Set `Response.Body = req.Body` to pass the input straight through (no
+buffering — right for a URL-only rewrite). The gateway applies the
+returned mutations **before** forwarding, so a body-derived signature
+header is finalized first, then pipes the plugin's body upstream. If you
+change the body length, set a `Content-Length` header mutation. HTTP
+trailers (e.g. gRPC's) are conveyed to the plugin and pass through to
+the upstream unchanged.
 
 At runtime the built-in HTTPS endpoint keeps the privilege split:
 

@@ -152,7 +152,8 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 			TypeName:       c.TypeName,
 			Schema:         schemaToProto(c.Schema),
 			Disambiguators: append([]string(nil), c.Disambiguators...),
-			HttpInject:     c.HTTPInject,
+			HttpInject:     c.HTTPInject || c.HTTPTransform,
+			HttpTransform:  c.HTTPTransform,
 		})
 	}
 	for _, t := range s.plug.Tunnels {
@@ -304,7 +305,8 @@ func invokeBuild(kind, typeName, instanceName string, fn func(BuildRequest) (any
 func credentialMetadataToProto(m CredentialMetadata) *pb.CredentialMetadata {
 	out := &pb.CredentialMetadata{
 		Disambiguators: append([]string(nil), m.Disambiguators...),
-		HttpInject:     m.HTTPInject,
+		HttpInject:     m.HTTPInject || m.HTTPTransform,
+		HttpTransform:  m.HTTPTransform,
 	}
 	for _, s := range m.SecretSlots {
 		out.SecretSlots = append(out.SecretSlots, &pb.SecretSlotDecl{

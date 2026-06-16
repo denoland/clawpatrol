@@ -213,6 +213,9 @@ type CredentialMetadata struct {
 	EnvVars        []EnvVar
 	OAuth          *OAuthIntegration
 	HTTPInject     bool
+	// HTTPTransform mirrors CredentialDef.HTTPTransform (the credential
+	// rewrites method/URL/body via TransformHTTP). Registration-time only.
+	HTTPTransform bool
 }
 
 // CredentialBuildResult lets a Build callback return both canonical
@@ -299,8 +302,73 @@ type CredentialDef struct {
 	Build func(req BuildRequest) (any, error)
 
 	// InjectHTTP is called for credentials bound to a built-in HTTPS
-	// endpoint when HTTPInject is true.
+	// endpoint when HTTPInject is true. Header-only: the request body does
+	// not flow through the plugin.
 	InjectHTTP func(ctx context.Context, req HTTPInjectRequest) (*HTTPInjectResponse, error)
+
+	// HTTPTransform declares that this credential rewrites more than
+	// headers — the request method / URL / body — via TransformHTTP.
+	// Implies HTTPInject. Use for credentials that sign over the body (AWS
+	// SigV4) or carry the secret in the URL/body (telegram, discord).
+	HTTPTransform bool
+
+	// TransformHTTP is called for HTTPTransform credentials. It receives
+	// the request body as a stream (req.Body) and returns the mutations
+	// plus the transformed body. Buffering is the plugin's choice: read
+	// only what you need and stream the rest, or read it all to sign. See
+	// HTTPTransformRequest / HTTPTransformResponse.
+	TransformHTTP func(ctx context.Context, req HTTPTransformRequest) (*HTTPTransformResponse, error)
+}
+
+// HTTPTransformRequest is delivered to a credential's TransformHTTP
+// callback before the built-in HTTPS endpoint forwards a request upstream.
+type HTTPTransformRequest struct {
+	CredentialTypeName        string
+	CredentialInstance        string
+	CredentialCanonicalConfig []byte
+	CredentialSecret          []byte
+	CredentialExtras          map[string]string
+
+	Method  string
+	URL     string
+	Host    string
+	Headers http.Header
+
+	// Body is the request body, streamed from the gateway. Read as much
+	// as you need — the plugin controls buffering. Reading to EOF is fine
+	// (the gateway streams the whole body); reading a prefix and returning
+	// a Body that copies the rest through is also fine.
+	Body io.Reader
+
+	// Trailers are the HTTP trailers that follow the body (e.g. gRPC
+	// request trailers). HTTP semantics: they are only fully populated
+	// once Body has been read to EOF. Most credentials can ignore them;
+	// they are preserved across the transform by default.
+	Trailers http.Header
+}
+
+// HTTPTransformResponse is what a TransformHTTP callback returns.
+type HTTPTransformResponse struct {
+	// Headers / Method / URL rewrite the request line and headers; applied
+	// by the gateway before the request is forwarded. A credential that
+	// signs over the body sets the signature header here (and a
+	// Content-Length header if it changed the body length).
+	Headers []HeaderMutation
+	Method  string
+	URL     string
+	// Redactions are exact derived secret strings to mask from audit
+	// samples (a computed signature, an exchanged token).
+	Redactions []string
+
+	// Body is the outgoing request body the gateway forwards upstream. To
+	// pass the input through unchanged, set Body = req.Body. To replace it,
+	// return any io.Reader (e.g. bytes.NewReader). nil sends an empty body.
+	Body io.Reader
+
+	// Trailers are HTTP trailers to send after the body. Leave nil to pass
+	// the request's original trailers (req.Trailers) through unchanged —
+	// the common case, and what preserves gRPC trailers.
+	Trailers http.Header
 }
 
 // TunnelDef declares one tunnel type. Open returns an opaque handle

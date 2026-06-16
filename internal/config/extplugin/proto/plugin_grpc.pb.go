@@ -190,7 +190,8 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	Credential_InjectHTTP_FullMethodName = "/clawpatrol.plugin.v1.Credential/InjectHTTP"
+	Credential_InjectHTTP_FullMethodName    = "/clawpatrol.plugin.v1.Credential/InjectHTTP"
+	Credential_TransformHTTP_FullMethodName = "/clawpatrol.plugin.v1.Credential/TransformHTTP"
 )
 
 // CredentialClient is the client API for Credential service.
@@ -199,7 +200,23 @@ const (
 type CredentialClient interface {
 	// InjectHTTP lets an external credential type participate in the
 	// built-in HTTPS endpoint's request-time credential injection path.
+	// Header-only: the request body never flows through the plugin.
 	InjectHTTP(ctx context.Context, in *InjectHTTPRequest, opts ...grpc.CallOption) (*InjectHTTPResponse, error)
+	// TransformHTTP is the streaming superset for credentials that declared
+	// http_transform: ones that rewrite the request method / URL / body,
+	// not just headers (AWS SigV4 over the body, telegram/discord secrets
+	// carried in the URL or body).
+	//
+	// The gateway sends a TransformHTTPInit, then streams the request body
+	// as HTTPBodyChunk frames (ending eof=true). The plugin reads as much
+	// as it needs — buffering is the plugin's choice — then sends exactly
+	// one TransformHTTPHead (header / method / URL mutations) followed by
+	// the transformed body as HTTPBodyChunk frames. The gateway applies the
+	// head before forwarding upstream (a body-derived header like a SigV4
+	// signature is finalized first), then pipes the plugin's body chunks on
+	// to the upstream. A plugin that doesn't touch the body just copies the
+	// input chunks straight to its output (no buffering).
+	TransformHTTP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[TransformHTTPUp, TransformHTTPDown], error)
 }
 
 type credentialClient struct {
@@ -220,13 +237,42 @@ func (c *credentialClient) InjectHTTP(ctx context.Context, in *InjectHTTPRequest
 	return out, nil
 }
 
+func (c *credentialClient) TransformHTTP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[TransformHTTPUp, TransformHTTPDown], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Credential_ServiceDesc.Streams[0], Credential_TransformHTTP_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[TransformHTTPUp, TransformHTTPDown]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Credential_TransformHTTPClient = grpc.BidiStreamingClient[TransformHTTPUp, TransformHTTPDown]
+
 // CredentialServer is the server API for Credential service.
 // All implementations must embed UnimplementedCredentialServer
 // for forward compatibility.
 type CredentialServer interface {
 	// InjectHTTP lets an external credential type participate in the
 	// built-in HTTPS endpoint's request-time credential injection path.
+	// Header-only: the request body never flows through the plugin.
 	InjectHTTP(context.Context, *InjectHTTPRequest) (*InjectHTTPResponse, error)
+	// TransformHTTP is the streaming superset for credentials that declared
+	// http_transform: ones that rewrite the request method / URL / body,
+	// not just headers (AWS SigV4 over the body, telegram/discord secrets
+	// carried in the URL or body).
+	//
+	// The gateway sends a TransformHTTPInit, then streams the request body
+	// as HTTPBodyChunk frames (ending eof=true). The plugin reads as much
+	// as it needs — buffering is the plugin's choice — then sends exactly
+	// one TransformHTTPHead (header / method / URL mutations) followed by
+	// the transformed body as HTTPBodyChunk frames. The gateway applies the
+	// head before forwarding upstream (a body-derived header like a SigV4
+	// signature is finalized first), then pipes the plugin's body chunks on
+	// to the upstream. A plugin that doesn't touch the body just copies the
+	// input chunks straight to its output (no buffering).
+	TransformHTTP(grpc.BidiStreamingServer[TransformHTTPUp, TransformHTTPDown]) error
 	mustEmbedUnimplementedCredentialServer()
 }
 
@@ -239,6 +285,9 @@ type UnimplementedCredentialServer struct{}
 
 func (UnimplementedCredentialServer) InjectHTTP(context.Context, *InjectHTTPRequest) (*InjectHTTPResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InjectHTTP not implemented")
+}
+func (UnimplementedCredentialServer) TransformHTTP(grpc.BidiStreamingServer[TransformHTTPUp, TransformHTTPDown]) error {
+	return status.Error(codes.Unimplemented, "method TransformHTTP not implemented")
 }
 func (UnimplementedCredentialServer) mustEmbedUnimplementedCredentialServer() {}
 func (UnimplementedCredentialServer) testEmbeddedByValue()                    {}
@@ -279,6 +328,13 @@ func _Credential_InjectHTTP_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Credential_TransformHTTP_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(CredentialServer).TransformHTTP(&grpc.GenericServerStream[TransformHTTPUp, TransformHTTPDown]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Credential_TransformHTTPServer = grpc.BidiStreamingServer[TransformHTTPUp, TransformHTTPDown]
+
 // Credential_ServiceDesc is the grpc.ServiceDesc for Credential service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -291,7 +347,14 @@ var Credential_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Credential_InjectHTTP_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "TransformHTTP",
+			Handler:       _Credential_TransformHTTP_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "plugin.proto",
 }
 

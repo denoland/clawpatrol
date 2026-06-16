@@ -172,6 +172,10 @@ message CredentialMetadata {
   repeated EnvVarDecl env_vars = 3;
   OAuthIntegrationDecl oauth = 4;
   bool http_inject = 5;
+  // http_transform: the credential rewrites the request method / URL /
+  // body via the streaming TransformHTTP RPC, not just headers. Implies
+  // http_inject.
+  bool http_transform = 6;
 }
 
 message CredentialDecl {
@@ -184,6 +188,11 @@ message CredentialDecl {
   // disambiguators are authoritative for validation.
   repeated string disambiguators = 3;
   bool http_inject = 4;
+  // http_transform: the credential rewrites the request method / URL /
+  // body via the streaming TransformHTTP RPC. Implies http_inject. Used
+  // by credentials that sign over the body (AWS SigV4) or carry the
+  // secret in the URL/body (telegram, discord).
+  bool http_transform = 5;
 }
 
 message TunnelDecl {
@@ -250,7 +259,24 @@ message Diagnostic {
 service Credential {
   // InjectHTTP lets an external credential type participate in the
   // built-in HTTPS endpoint's request-time credential injection path.
+  // Header-only: the request body never flows through the plugin.
   rpc InjectHTTP(InjectHTTPRequest) returns (InjectHTTPResponse);
+
+  // TransformHTTP is the streaming superset for credentials that declared
+  // http_transform: ones that rewrite the request method / URL / body,
+  // not just headers (AWS SigV4 over the body, telegram/discord secrets
+  // carried in the URL or body).
+  //
+  // The gateway sends a TransformHTTPInit, then streams the request body
+  // as HTTPBodyChunk frames (ending eof=true). The plugin reads as much
+  // as it needs — buffering is the plugin's choice — then sends exactly
+  // one TransformHTTPHead (header / method / URL mutations) followed by
+  // the transformed body as HTTPBodyChunk frames. The gateway applies the
+  // head before forwarding upstream (a body-derived header like a SigV4
+  // signature is finalized first), then pipes the plugin's body chunks on
+  // to the upstream. A plugin that doesn't touch the body just copies the
+  // input chunks straight to its output (no buffering).
+  rpc TransformHTTP(stream TransformHTTPUp) returns (stream TransformHTTPDown);
 }
 
 message HTTPHeaderValues {
@@ -294,6 +320,56 @@ message InjectHTTPResponse {
   // short-lived bearer token, that should be redacted from logs if
   // encountered.
   repeated string redactions = 2;
+}
+
+// HTTPBodyChunk carries one slice of a request body in either direction
+// of TransformHTTP. eof marks the final frame (it may carry data too).
+message HTTPBodyChunk {
+  bytes data = 1;
+  bool eof = 2;
+  // trailers ride on the eof frame: the HTTP trailers that follow the
+  // body (e.g. gRPC's grpc-status / grpc-message). They are conveyed so
+  // the transform never drops them — empty leaves the request's original
+  // trailers in place.
+  map<string, HTTPHeaderValues> trailers = 3;
+}
+
+// TransformHTTPUp is gateway -> plugin: the init, then the request body.
+message TransformHTTPUp {
+  oneof kind {
+    TransformHTTPInit init = 1;
+    HTTPBodyChunk body = 2;
+  }
+}
+
+message TransformHTTPInit {
+  string credential_type_name = 1;
+  string credential_instance = 2;
+  bytes credential_canonical_json = 3;
+  bytes credential_secret = 4;
+  map<string, string> credential_extras = 5;
+  string method = 6;
+  string url = 7;
+  string host = 8;
+  map<string, HTTPHeaderValues> headers = 9;
+}
+
+// TransformHTTPDown is plugin -> gateway: exactly one head, then the
+// transformed request body.
+message TransformHTTPDown {
+  oneof kind {
+    TransformHTTPHead head = 1;
+    HTTPBodyChunk body = 2;
+  }
+}
+
+message TransformHTTPHead {
+  // headers / method / url rewrite the request before it is forwarded.
+  repeated HeaderMutation headers = 1;
+  optional string method = 2;
+  optional string url = 3;
+  // redactions: exact derived secret strings to mask from audit samples.
+  repeated string redactions = 4;
 }
 
 // =====================================================================
