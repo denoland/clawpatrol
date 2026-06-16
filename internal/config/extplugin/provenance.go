@@ -64,56 +64,80 @@ func (g *githubProvenance) trustedMaterial() (root.TrustedMaterial, error) {
 
 // verify checks that the archive with sha256 archiveSHA256 is covered by
 // a build-provenance attestation from owner/repo's GitHub Actions
-// workflow. Returns nil on success, errNoAttestation when the repo
-// published none, or a verification error when an attestation exists but
-// does not validate.
-func (g *githubProvenance) verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) error {
+// workflow, and returns the source commit the attestation vouches the
+// binary was built from (empty if the predicate omits it). Returns
+// errNoAttestation when the repo published none, or a verification error
+// when an attestation exists but does not validate.
+func (g *githubProvenance) verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) (string, error) {
 	bundles, err := g.gh.attestations(ctx, owner, repo, "sha256:"+archiveSHA256)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(bundles) == 0 {
-		return errNoAttestation
+		return "", errNoAttestation
 	}
 
 	tm, err := g.trustedMaterial()
 	if err != nil {
-		return fmt.Errorf("load sigstore trust root: %w", err)
+		return "", fmt.Errorf("load sigstore trust root: %w", err)
 	}
 	v, err := verify.NewVerifier(tm, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var lastErr error
 	for _, b := range bundles {
-		lastErr = checkProvenance(v, b, owner, repo, archiveSHA256)
-		if lastErr == nil {
-			return nil // one valid attestation is enough
+		res, err := checkProvenance(v, b, owner, repo, archiveSHA256)
+		if err == nil {
+			return sourceCommit(res), nil // one valid attestation is enough
 		}
+		lastErr = err
 	}
-	return fmt.Errorf("attestation present but unverified for %s/%s@%s: %w", owner, repo, tag, lastErr)
+	return "", fmt.Errorf("attestation present but unverified for %s/%s@%s: %w", owner, repo, tag, lastErr)
 }
 
 // checkProvenance verifies a single signed entity (a parsed bundle, or a
 // test entity) against the policy: the artifact digest must match and the
 // signing identity must be a GitHub Actions workflow in owner/repo.
-func checkProvenance(v *verify.Verifier, entity verify.SignedEntity, owner, repo, archiveSHA256 string) error {
+func checkProvenance(v *verify.Verifier, entity verify.SignedEntity, owner, repo, archiveSHA256 string) (*verify.VerificationResult, error) {
 	digest, err := hex.DecodeString(archiveSHA256)
 	if err != nil {
-		return fmt.Errorf("bad artifact digest: %w", err)
+		return nil, fmt.Errorf("bad artifact digest: %w", err)
 	}
 	// The signing certificate's SAN must be a GitHub Actions workflow in
-	// this exact repo; the issuer must be GitHub's Actions OIDC.
+	// this exact repo; the issuer must be GitHub's Actions OIDC. The ref
+	// in the SAN is deliberately not pinned — it reflects the triggering
+	// event (a tag push, a release, or workflow_dispatch), which varies
+	// by plugin; the source commit is bound separately, below.
 	sanRegex := fmt.Sprintf(`^https://github\.com/%s/%s/\.github/workflows/.+`,
 		regexp.QuoteMeta(owner), regexp.QuoteMeta(repo))
 	certID, err := verify.NewShortCertificateIdentity(githubActionsOIDCIssuer, "", "", sanRegex)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	policy := verify.NewPolicy(verify.WithArtifactDigest("sha256", digest), verify.WithCertificateIdentity(certID))
-	_, err = v.Verify(entity, policy)
-	return err
+	return v.Verify(entity, policy)
+}
+
+// sourceCommit pulls the git commit the build-provenance predicate
+// records as the build's source — buildDefinition.resolvedDependencies[]
+// .digest.gitCommit in the SLSA v1 predicate. Empty if absent.
+func sourceCommit(res *verify.VerificationResult) string {
+	if res == nil || res.Statement == nil || res.Statement.Predicate == nil {
+		return ""
+	}
+	m := res.Statement.Predicate.AsMap()
+	bd, _ := m["buildDefinition"].(map[string]any)
+	deps, _ := bd["resolvedDependencies"].([]any)
+	for _, d := range deps {
+		dm, _ := d.(map[string]any)
+		dig, _ := dm["digest"].(map[string]any)
+		if gc, ok := dig["gitCommit"].(string); ok && gc != "" {
+			return gc
+		}
+	}
+	return ""
 }
 
 // attestations fetches the Sigstore build-provenance bundles GitHub

@@ -44,7 +44,7 @@ func TestInstallUpdateLock(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed a pin at v1.2.0 on disk; install (no upgrade) must keep it.
-	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.2.0", "~> 1.2")
+	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.2.0", "~> 1.2", "")
 	if err := m.lock.save(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestCheckUpdates(t *testing.T) {
 	specs := []config.PluginSource{sp}
 
 	// Pin v1.2.0, then check: the newest in-range is v1.4.0.
-	m.lock.setSource(repo, "github.com/o/p", "v1.2.0", "~> 1.2")
+	m.lock.setSource(repo, "github.com/o/p", "v1.2.0", "~> 1.2", "")
 	if err := m.lock.save(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestCheckUpdates(t *testing.T) {
 	_ = infos
 
 	// Pin to the newest in range: no update reported.
-	m.lock.setSource(repo, "github.com/o/p", "v1.4.0", "~> 1.2")
+	m.lock.setSource(repo, "github.com/o/p", "v1.4.0", "~> 1.2", "")
 	if err := m.lock.save(); err != nil {
 		t.Fatal(err)
 	}

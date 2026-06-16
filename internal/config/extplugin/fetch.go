@@ -41,9 +41,18 @@ func platformToken() string { return runtime.GOOS + "_" + runtime.GOARCH }
 
 // provenanceVerifier asserts that the archive with the given sha256 was
 // built by owner/repo at tag, per its GitHub build-provenance
-// attestation. nil verifier means "skip" (wired in a later milestone).
+// attestation, and returns the source commit it vouches for ("" if the
+// predicate omits it). nil verifier means "skip".
 type provenanceVerifier interface {
-	verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) error
+	verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) (commit string, err error)
+}
+
+// fetchResult is the outcome of downloading + extracting one platform's
+// plugin binary.
+type fetchResult struct {
+	path   string // extracted binary path
+	binSHA string // "sha256:..." of the extracted binary (load-time identity)
+	commit string // attested source commit ("" when unattested)
 }
 
 // shaSums maps an asset filename to its lowercase-hex sha256, parsed
@@ -317,78 +326,82 @@ func (f *fetcher) binPath(p parsedSource, tag string) string {
 // release r, verifying the archive against SHA256SUMS and the provenance
 // attestation, and returns the cached binary path and its "sha256:..."
 // (the extracted binary's hash — the lockfile load-time identity).
-func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease) (string, string, error) {
+func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease) (fetchResult, error) {
 	return f.fetchTo(ctx, p, r, platformToken(), f.platDir(p, r.TagName), p.Repo)
 }
 
 // fetchTo downloads the archive for the given platform token from release
 // r, verifies it against SHA256SUMS (and the provenance attestation when
-// configured), and extracts the binary to destDir/destName, returning
-// the binary path and its "sha256:..." hash. ensure caches at the host
-// platform path; the lock command points it at a temp dir to hash other
-// platforms' builds without caching them.
-func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat, destDir, destName string) (string, string, error) {
+// configured), and extracts the binary to destDir/destName. ensure
+// caches at the host platform path; the lock command points it at a temp
+// dir to hash other platforms' builds without caching them.
+func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat, destDir, destName string) (fetchResult, error) {
+	var zero fetchResult
 	sumsAsset, ok := findSumsAsset(r)
 	if !ok {
-		return "", "", fmt.Errorf("release %s of %s has no SHA256SUMS asset", r.TagName, p.slug())
+		return zero, fmt.Errorf("release %s of %s has no SHA256SUMS asset", r.TagName, p.slug())
 	}
 	sumsBytes, err := f.gh.getBytes(ctx, f.gh.assetURL(sumsAsset), maxSumsBytes)
 	if err != nil {
-		return "", "", err
+		return zero, err
 	}
 	sums, err := parseShaSums(sumsBytes)
 	if err != nil {
-		return "", "", err
+		return zero, err
 	}
 	archiveName, err := sums.pickAsset(plat)
 	if err != nil {
-		return "", "", err
+		return zero, err
 	}
 	wantSHA := sums[archiveName]
 	archive, ok := r.asset(archiveName)
 	if !ok {
-		return "", "", fmt.Errorf("SHA256SUMS lists %q but the release has no such asset", archiveName)
+		return zero, fmt.Errorf("SHA256SUMS lists %q but the release has no such asset", archiveName)
 	}
 
 	// Provenance gate (skipped when no verifier is configured): the
 	// archive's sha256 must be covered by a build-provenance attestation
-	// from owner/repo. Verify-if-present — a repo that publishes no
-	// attestation falls back to the checksum + lockfile-TOFU floor with a
-	// warning, so plugins that have not adopted attestations still
-	// install; a present-but-invalid attestation always fails closed.
+	// from owner/repo, which also vouches the source commit. Verify-if-
+	// present — a repo that publishes no attestation falls back to the
+	// checksum + lockfile-TOFU floor with a warning, so plugins that have
+	// not adopted attestations still install; a present-but-invalid
+	// attestation always fails closed.
+	commit := ""
 	if f.prov != nil {
-		switch err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA); {
+		c, err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA)
+		switch {
 		case err == nil:
+			commit = c
 		case errors.Is(err, errNoAttestation):
 			if f.logger != nil {
 				f.logger.Warn("plugin has no build-provenance attestation; verified by checksum only",
 					"plugin", p.slug(), "version", r.TagName)
 			}
 		default:
-			return "", "", fmt.Errorf("provenance verification failed for %s %s: %w", p.slug(), r.TagName, err)
+			return zero, fmt.Errorf("provenance verification failed for %s %s: %w", p.slug(), r.TagName, err)
 		}
 	}
 
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
-		return "", "", err
+		return zero, err
 	}
 	tmpArchive, gotSHA, err := f.gh.downloadToTemp(ctx, f.gh.assetURL(archive), destDir)
 	if err != nil {
-		return "", "", err
+		return zero, err
 	}
 	defer func() { _ = os.Remove(tmpArchive) }()
 	if gotSHA != wantSHA {
-		return "", "", fmt.Errorf("archive %s sha256 mismatch: got %s, SHA256SUMS says %s", archiveName, gotSHA, wantSHA)
+		return zero, fmt.Errorf("archive %s sha256 mismatch: got %s, SHA256SUMS says %s", archiveName, gotSHA, wantSHA)
 	}
 	dest := filepath.Join(destDir, destName)
 	if err := extractBinary(tmpArchive, dest); err != nil {
-		return "", "", err
+		return zero, err
 	}
 	binSHA, err := hashFile(dest)
 	if err != nil {
-		return "", "", err
+		return zero, err
 	}
-	return dest, binSHA, nil
+	return fetchResult{path: dest, binSHA: binSHA, commit: commit}, nil
 }
 
 // platformsInRelease lists the "<os>_<arch>" tokens for every archive in
@@ -479,32 +492,41 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 		if err != nil {
 			return "", err
 		}
-		path, binSHA, err := f.ensure(ctx, p, r)
+		res, err := f.ensure(ctx, p, r)
 		if err != nil {
 			return "", err
 		}
-		if len(entry.Hashes) > 0 && !entry.hasHash(binSHA) {
-			_ = os.Remove(path)
+		if len(entry.Hashes) > 0 && !entry.hasHash(res.binSHA) {
+			_ = os.Remove(res.path)
 			return "", fmt.Errorf(
-				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", binSHA, entry.Hashes)
+				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", res.binSHA, entry.Hashes)
 		}
-		return path, nil
+		// When both the lockfile and the fresh attestation name a source
+		// commit, they must agree: a re-pointed tag built from a different
+		// commit is rejected before the binary is used.
+		if entry.Commit != "" && res.commit != "" && res.commit != entry.Commit {
+			_ = os.Remove(res.path)
+			return "", fmt.Errorf(
+				"attested source commit %s does not match the locked commit %s; run `clawpatrol plugins update %s`",
+				res.commit, entry.Commit, sp.Name)
+		}
+		return res.path, nil
 	}
 
 	// First use: resolve the constraint to the newest release, download,
-	// and trust-on-first-use record the source + resolved tag. The binary
-	// hash + network grant are recorded by the existing resolveNetwork
-	// pass that runs next.
+	// and trust-on-first-use record the source + resolved tag + attested
+	// commit. The binary hash + network grant are recorded by the existing
+	// resolveNetwork pass that runs next.
 	r, _, err := f.gh.resolveVersion(ctx, p, sp.Version)
 	if err != nil {
 		return "", err
 	}
-	path, _, err := f.ensure(ctx, p, r)
+	res, err := f.ensure(ctx, p, r)
 	if err != nil {
 		return "", err
 	}
-	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version))
-	return path, nil
+	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit)
+	return res.path, nil
 }
 
 // constraintHolds reports whether the locked tag still satisfies the

@@ -16,15 +16,26 @@ import (
 	"github.com/denoland/clawpatrol/internal/config"
 )
 
+const testGitCommit = "2a6fb83e91633ab8a606f306f609f2fbfc8154f4"
+
 // inTotoStatement builds the DSSE payload a build-provenance attestation
-// signs: an in-toto statement whose subject digest is the artifact's.
+// signs: an in-toto SLSA statement whose subject digest is the artifact's
+// and whose buildDefinition resolves a source commit (as GitHub's
+// attestations do).
 func inTotoStatement(t *testing.T, name, sha256hex string) []byte {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
 		"_type":         "https://in-toto.io/Statement/v1",
 		"predicateType": "https://slsa.dev/provenance/v1",
 		"subject":       []map[string]any{{"name": name, "digest": map[string]string{"sha256": sha256hex}}},
-		"predicate":     map[string]any{"buildType": "test"},
+		"predicate": map[string]any{
+			"buildDefinition": map[string]any{
+				"resolvedDependencies": []map[string]any{
+					{"uri": "git+https://github.com/acme/myplugin@refs/tags/v1.0.0",
+						"digest": map[string]any{"gitCommit": testGitCommit}},
+				},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -49,17 +60,22 @@ func TestCheckProvenanceIdentityAndDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Correct repo identity + matching artifact digest -> verified.
-	if err := checkProvenance(v, entity, "acme", "myplugin", digest); err != nil {
+	// Correct repo identity + matching artifact digest -> verified, and
+	// the verified statement yields the attested source commit.
+	res, err := checkProvenance(v, entity, "acme", "myplugin", digest)
+	if err != nil {
 		t.Fatalf("valid attestation rejected: %v", err)
 	}
+	if got := sourceCommit(res); got != testGitCommit {
+		t.Errorf("sourceCommit = %q, want %q", got, testGitCommit)
+	}
 	// Wrong repo: the SAN identity policy must reject it.
-	if err := checkProvenance(v, entity, "evil", "myplugin", digest); err == nil {
+	if _, err := checkProvenance(v, entity, "evil", "myplugin", digest); err == nil {
 		t.Error("attestation from a different repo identity was accepted")
 	}
 	// Wrong artifact digest: the artifact policy must reject it.
 	const other = "2222222222222222222222222222222222222222222222222222222222222222"
-	if err := checkProvenance(v, entity, "acme", "myplugin", other); err == nil {
+	if _, err := checkProvenance(v, entity, "acme", "myplugin", other); err == nil {
 		t.Error("attestation for a different artifact digest was accepted")
 	}
 	// Wrong OIDC issuer is rejected too: re-attest under a bogus issuer.
@@ -68,7 +84,7 @@ func TestCheckProvenanceIdentityAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkProvenance(v, bad, "acme", "myplugin", digest); err == nil {
+	if _, err := checkProvenance(v, bad, "acme", "myplugin", digest); err == nil {
 		t.Error("attestation from a non-GitHub-Actions issuer was accepted")
 	}
 }
@@ -128,6 +144,51 @@ func TestProvenanceVerifyIfPresentFallback(t *testing.T) {
 	}
 }
 
-type stubProv struct{ err error }
+// TestProvenanceRecordsAndPinsCommit covers recording the attested source
+// commit and rejecting a pinned re-download whose attestation names a
+// different commit (a re-pointed tag).
+func TestProvenanceRecordsAndPinsCommit(t *testing.T) {
+	owner, repo := "acme", "myplugin"
+	plat := platformToken()
+	payload := []byte("payload")
+	archive := tarGz(t, map[string][]byte{repo: payload}, repo)
+	archiveName := fmt.Sprintf("%s_1.0.0_%s.tar.gz", repo, plat)
+	sumsName := fmt.Sprintf("%s_1.0.0_SHA256SUMS", repo)
+	sums := fmt.Sprintf("%s  %s\n", sha256hex(archive), archiveName)
+	srv := newReleaseServer(t, owner, repo, []relSpec{{
+		tag:    "v1.0.0",
+		assets: map[string][]byte{archiveName: archive, sumsName: []byte(sums)},
+	}})
+	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin"}
+	binSHA := "sha256:" + sha256hex(payload) // extracted binary's hash
 
-func (s stubProv) verify(_ context.Context, _, _, _, _ string) error { return s.err }
+	// First use records the attested commit in the lockfile.
+	m, _ := newFetchTestManager(t, srv.URL)
+	m.prov = stubProv{commit: "commit-aaa"}
+	if _, err := m.resolvePluginBinary(context.Background(), sp); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if e, _ := m.lock.get(repo); e.Commit != "commit-aaa" {
+		t.Fatalf("lockfile commit = %q, want commit-aaa", e.Commit)
+	}
+
+	// Fresh host (no cache), lock pinned to commit-aaa + the real hash, but
+	// the attestation now vouches a different commit -> fail closed.
+	m2, _ := newFetchTestManager(t, srv.URL)
+	m2.prov = stubProv{commit: "commit-bbb"}
+	m2.lock.setSource(repo, "github.com/acme/myplugin", "v1.0.0", "", "commit-aaa")
+	m2.lock.addHash(repo, binSHA, "none")
+	_, err := m2.resolvePluginBinary(context.Background(), sp)
+	if err == nil || !strings.Contains(err.Error(), "does not match the locked commit") {
+		t.Fatalf("commit mismatch should fail closed, got: %v", err)
+	}
+}
+
+type stubProv struct {
+	commit string
+	err    error
+}
+
+func (s stubProv) verify(_ context.Context, _, _, _, _ string) (string, error) {
+	return s.commit, s.err
+}

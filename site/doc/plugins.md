@@ -163,9 +163,14 @@ Three layers gate a downloaded binary, from least to most powerful:
    Sigstore) that the binary was built by *that repo's* GitHub Actions
    workflow — the `github.com/owner/repo` you already named is the trust
    anchor, so there is no key to manage. This closes the first-download
-   gap that checksums alone leave open. A repo that publishes no
-   attestation still installs, verified by checksum, with a warning; a
-   present-but-invalid attestation always fails closed.
+   gap that checksums alone leave open. The attestation also names the
+   source **commit** the binary was built from; clawpatrol records it in
+   the lockfile (`commit = "..."`) — an immutable reference, since tags
+   are mutable — and on a later re-download of the pinned version rejects
+   an attestation that names a different commit (a re-pointed tag). A
+   repo that publishes no attestation still installs, verified by
+   checksum, with a warning; a present-but-invalid attestation always
+   fails closed.
 
 [att]: https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
 

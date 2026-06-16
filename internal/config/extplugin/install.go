@@ -76,17 +76,17 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
 
-		binPath, binSHA, err := f.ensure(ctx, p, r)
+		res, err := f.ensure(ctx, p, r)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
-		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version))
+		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit)
 
-		network, err := m.declaredNetwork(ctx, sp, binPath)
+		network, err := m.declaredNetwork(ctx, sp, res.path)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
-		m.lock.addHash(sp.Name, binSHA, network)
+		m.lock.addHash(sp.Name, res.binSHA, network)
 
 		out = append(out, InstalledPlugin{
 			Name:      sp.Name,
@@ -149,15 +149,24 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 		if err != nil {
 			return nil, err
 		}
+		commit := entry.Commit
 		for _, plat := range plats {
-			_, binSHA, err := f.fetchTo(ctx, p, r, plat, tmp, "bin")
+			res, err := f.fetchTo(ctx, p, r, plat, tmp, "bin")
 			if err != nil {
 				_ = os.RemoveAll(tmp)
 				return nil, fmt.Errorf("plugin %q (%s): %w", sp.Name, plat, err)
 			}
-			m.lock.addHash(sp.Name, binSHA, entry.Network)
+			m.lock.addHash(sp.Name, res.binSHA, entry.Network)
+			if commit == "" {
+				commit = res.commit
+			}
 		}
 		_ = os.RemoveAll(tmp)
+		// Record the attested commit if install hadn't (e.g. a hand-seeded
+		// pin); keeps lock idempotent when it already matches.
+		if commit != "" && commit != entry.Commit {
+			m.lock.setSource(sp.Name, p.slug(), entry.Version, entry.Constraints, commit)
+		}
 		out = append(out, InstalledPlugin{Name: sp.Name, Source: p.slug(), Version: entry.Version, Network: entry.Network})
 	}
 	if err := unknownNames(want, matched); err != nil {

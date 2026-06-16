@@ -210,7 +210,7 @@ func TestResolvePluginBinaryDownloadCacheAndPin(t *testing.T) {
 func TestResolvePluginBinaryConstraintDriftFailsClosed(t *testing.T) {
 	m, dir := newFetchTestManager(t, "http://127.0.0.1:0") // never dialed
 	// Seed a lock entry pinned to v1.2.0.
-	m.lock.setSource("p", "github.com/acme/myplugin", "v1.2.0", "~> 1.2")
+	m.lock.setSource("p", "github.com/acme/myplugin", "v1.2.0", "~> 1.2", "")
 	// Pretend the binary is cached so a cache hit would otherwise return.
 	plat := platformToken()
 	cached := filepath.Join(dir, "plugins", "github.com", "acme", "myplugin", "v1.2.0", plat, "myplugin")

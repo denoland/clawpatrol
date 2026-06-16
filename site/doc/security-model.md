@@ -323,9 +323,13 @@ on every later load; and, when the release carries a [GitHub
 build-provenance attestation](plugins.md#verification-and-trust),
 clawpatrol verifies through Sigstore that the binary was built by *that
 repo's* Actions workflow — the `github.com/owner/repo` named in the
-config is the trust anchor, closing the first-download gap. The gateway
-loads only the locked version and never upgrades on its own; moving to a
-newer release is the operator's explicit `clawpatrol plugins update`.
+config is the trust anchor, closing the first-download gap. The
+attestation also binds the binary to the source commit it was built
+from, which the lockfile pins (`commit`) as an immutable reference; a
+re-pointed tag whose attestation names a different commit is rejected.
+The gateway loads only the locked version and never upgrades on its own;
+moving to a newer release is the operator's explicit `clawpatrol plugins
+update`.
 
 The sandbox is defense-in-depth, not a capability wall around the
 gateway as a whole. The grants form a deliberate risk ladder:

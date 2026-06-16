@@ -47,6 +47,12 @@ type lockEntry struct {
 	Source      string `hcl:"source,optional"`
 	Version     string `hcl:"version,optional"`
 	Constraints string `hcl:"constraints,optional"`
+	// Commit is the source git commit the version's build-provenance
+	// attestation vouches the binary was built from — an immutable
+	// reference (release tags are mutable). Empty when the release
+	// carries no attestation. On a pinned re-download the attested commit
+	// must match this.
+	Commit string `hcl:"commit,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -149,14 +155,16 @@ func (s *lockStore) addHash(name, hash, network string) {
 	}
 }
 
-// setSource records the resolved GitHub source/version/constraints for a
-// plugin (the binary hashes are recorded separately by addHash at load,
-// or by an all-platform `plugins lock`). Marks dirty only on change.
-func (s *lockStore) setSource(name, source, version, constraints string) {
+// setSource records the resolved GitHub source/version/constraints/commit
+// for a plugin (the binary hashes are recorded separately by addHash at
+// load, or by an all-platform `plugins lock`). Marks dirty only on
+// change.
+func (s *lockStore) setSource(name, source, version, constraints, commit string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.entries[name]
-	if e.Name == name && e.Source == source && e.Version == version && e.Constraints == constraints {
+	if e.Name == name && e.Source == source && e.Version == version &&
+		e.Constraints == constraints && e.Commit == commit {
 		return
 	}
 	// A version change re-pins the plugin: the recorded hashes belonged
@@ -169,6 +177,7 @@ func (s *lockStore) setSource(name, source, version, constraints string) {
 	e.Source = source
 	e.Version = version
 	e.Constraints = constraints
+	e.Commit = commit
 	s.entries[name] = e
 	s.dirty = true
 }
@@ -215,6 +224,9 @@ func (s *lockStore) save() error {
 		}
 		if e.Version != "" {
 			blk.Body().SetAttributeValue("version", cty.StringVal(e.Version))
+		}
+		if e.Commit != "" {
+			blk.Body().SetAttributeValue("commit", cty.StringVal(e.Commit))
 		}
 		if e.Constraints != "" {
 			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))
