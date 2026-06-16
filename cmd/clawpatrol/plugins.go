@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/extplugin"
@@ -21,6 +22,9 @@ commands:
   lock      For each pinned plugin, record the binary hash of every
             platform build the release ships, so one committed lockfile
             verifies the plugin across a mixed-OS team.
+  info      Show a GitHub-sourced plugin's metadata and required
+            privileges from its signed static manifest, without
+            downloading the binary.
   approve   Re-approve a plugin after an intentional permission change,
             clearing the escalation block so the gateway will load it.
 
@@ -42,6 +46,8 @@ func runPlugins(args []string) {
 		runPluginsInstall(args[1:], true)
 	case "lock":
 		runPluginsLock(args[1:])
+	case "info":
+		runPluginsInfo(args[1:])
 	case "approve":
 		runPluginsApprove(args[1:])
 	default:
@@ -120,6 +126,49 @@ func runPluginsLock(args []string) {
 	}
 	if len(locked) == 0 {
 		fmt.Println("no GitHub-sourced plugins to lock")
+	}
+}
+
+func runPluginsInfo(args []string) {
+	mgr, specs, names := pluginsManager(args)
+	defer mgr.Stop()
+
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	shown := 0
+	for _, sp := range specs {
+		if len(want) > 0 && !want[sp.Name] {
+			continue
+		}
+		shown++
+		pv, err := mgr.PreviewSource(context.Background(), sp)
+		if err != nil {
+			fmt.Printf("%s  %s\n  (no preview: %v)\n\n", sp.Name, sp.Source, err)
+			continue
+		}
+		fmt.Printf("%s  %s\n", pv.Name, pv.Source)
+		if pv.Locked != "" && pv.Locked != pv.Version {
+			fmt.Printf("  version:   %s available (locked %s)\n", pv.Version, pv.Locked)
+		} else {
+			fmt.Printf("  version:   %s\n", pv.Version)
+		}
+		fmt.Printf("  requires:  network = %s\n", pv.Network)
+		printTypes("credentials", pv.Credentials)
+		printTypes("endpoints", pv.Endpoints)
+		printTypes("tunnels", pv.Tunnels)
+		printTypes("facets", pv.Facets)
+		fmt.Println()
+	}
+	if shown == 0 {
+		fmt.Println("no plugins to show")
+	}
+}
+
+func printTypes(label string, items []string) {
+	if len(items) > 0 {
+		fmt.Printf("  provides:  %s [%s]\n", label, strings.Join(items, ", "))
 	}
 }
 

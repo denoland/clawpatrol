@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -374,37 +373,16 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 	}
 
 	// Provenance gate: the archive's sha256 must be covered by a build-
-	// provenance attestation from owner/repo, which also vouches the
-	// source commit. A present-but-invalid attestation always fails
-	// closed. A missing attestation is governed by `mode`: "require"
-	// fails closed, "warn" (default) falls back to the checksum +
-	// lockfile-TOFU floor with a warning, "off" skips the check entirely.
-	commit := ""
-	attested := false
-	if f.prov != nil && mode != provOff {
-		c, err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA)
-		switch {
-		case err == nil:
-			commit = c
-			attested = true
-			if commit == "" && f.logger != nil {
-				f.logger.Warn("plugin attestation verified but names no source commit; commit pinning disabled",
-					"plugin", p.slug(), "version", r.TagName)
-			}
-		case errors.Is(err, errNoAttestation):
-			if mode == provRequire {
-				return zero, fmt.Errorf(
-					"%s %s has no build-provenance attestation but provenance is required; "+
-						"set provenance = \"warn\" to allow checksum-only, or have the plugin publish one",
-					p.slug(), r.TagName)
-			}
-			if f.logger != nil {
-				f.logger.Warn("plugin has no build-provenance attestation; verified by checksum only",
-					"plugin", p.slug(), "version", r.TagName)
-			}
-		default:
-			return zero, fmt.Errorf("provenance verification failed for %s %s: %w", p.slug(), r.TagName, err)
-		}
+	// provenance attestation from owner/repo (which also vouches the
+	// source commit), governed by the per-plugin `mode`. See
+	// gateProvenance.
+	attested, commit, err := f.gateProvenance(ctx, p, r.TagName, wantSHA, mode)
+	if err != nil {
+		return zero, err
+	}
+	if attested && commit == "" && f.logger != nil {
+		f.logger.Warn("plugin attestation verified but names no source commit; commit pinning disabled",
+			"plugin", p.slug(), "version", r.TagName)
 	}
 
 	if err := os.MkdirAll(destDir, 0o700); err != nil {

@@ -94,7 +94,13 @@ ever loads the **locked** version, and never upgrades on its own:
 clawpatrol plugins install <config.hcl> [name...]   # download + pin
 clawpatrol plugins update  <config.hcl> [name...]   # re-pin to the newest match
 clawpatrol plugins lock    <config.hcl> [name...]   # record all platforms' hashes
+clawpatrol plugins info    <config.hcl> [name...]   # required privileges, no download
 ```
+
+`plugins info` reads each GitHub plugin's signed static manifest for the
+newest release satisfying its constraint and prints the metadata and the
+privileges it requires — **without downloading the binary** — so you can
+review what an install or upgrade would grant before it happens.
 
 - **install** resolves the constraint (keeping any already-pinned
   version), downloads, caches under `<state_dir>/plugins/…`, and records
@@ -124,15 +130,23 @@ release must contain, per platform, an archive named with the Go
 
 ```
 <repo>_<version>_<os>_<arch>.tar.gz   # one per platform, holds the binary
-<repo>_<version>_SHA256SUMS           # sha256 of each archive
+<repo>_<version>_SHA256SUMS           # sha256 of each archive (+ manifest)
+<repo>_<version>_manifest.json        # static manifest (optional)
 ```
 
-This is the default [GoReleaser][gr] layout. Only the trailing
-`_<os>_<arch>.tar.gz` is load-bearing — clawpatrol selects the archive
-by that suffix and reads its checksum from `SHA256SUMS` — so the prefix
-is convention, not a hard requirement. Add a build-provenance
-attestation with one workflow line so clawpatrol can verify the binary
-was built by your repo (see the trust model below):
+Only the trailing `_<os>_<arch>.tar.gz` is load-bearing — clawpatrol
+selects the archive by that suffix and reads its checksum from
+`SHA256SUMS` — so the prefix is convention, not a hard requirement.
+
+The optional **static manifest** is the plugin's own manifest emitted by
+its `--print-manifest` mode (the SDK's `pluginsdk.Run` handles the flag).
+Publishing it as a release asset — listed in `SHA256SUMS` and covered by
+the attestation — lets `clawpatrol plugins info` show a plugin's
+metadata and **required privileges before downloading the binary**.
+
+Add a build-provenance attestation with one workflow step so clawpatrol
+can verify the binary (and the manifest) was built by your repo (see the
+trust model below):
 
 ```yaml
 # .github/workflows/release.yml (excerpt)
@@ -141,11 +155,25 @@ permissions:
   id-token: write       # for keyless signing
   attestations: write
 steps:
-  - uses: goreleaser/goreleaser-action@v6
-    with: { args: release --clean }
+  - run: |
+      VER="${GITHUB_REF_NAME#v}"; REPO="${GITHUB_REPOSITORY##*/}"
+      mkdir -p dist
+      for pl in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        GOOS="${pl%_*}" GOARCH="${pl#*_}" CGO_ENABLED=0 \
+          go build -trimpath -ldflags "-s -w" -o "$REPO" .
+        tar -czf "dist/${REPO}_${VER}_${pl}.tar.gz" "$REPO"; rm "$REPO"
+      done
+      go build -o "$REPO" . && ./"$REPO" --print-manifest \
+        > "dist/${REPO}_${VER}_manifest.json" && rm "$REPO"
+      ( cd dist && shasum -a 256 *.tar.gz *_manifest.json \
+          > "${REPO}_${VER}_SHA256SUMS" )
   - uses: actions/attest-build-provenance@v2
     with:
-      subject-path: "dist/*.tar.gz"
+      subject-path: |
+        dist/*.tar.gz
+        dist/*_manifest.json
+  - uses: softprops/action-gh-release@v2
+    with: { files: dist/* }
 ```
 
 [gr]: https://goreleaser.com
