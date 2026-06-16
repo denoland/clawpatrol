@@ -84,7 +84,11 @@ type grpcServer struct {
 	srv *server
 }
 
-func (g *grpcServer) GRPCServer(_ *plugin.GRPCBroker, s *grpc.Server) error {
+func (g *grpcServer) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
+	// Capture the broker so plugin code can reach the gateway's HostState
+	// service (the persistent state store) via the package-level State()
+	// accessor. The gateway serves it on a reserved broker stream id.
+	setHostBroker(broker)
 	pb.RegisterPluginServer(s, g.srv)
 	pb.RegisterCredentialServer(s, g.srv)
 	pb.RegisterEndpointServer(s, g.srv)

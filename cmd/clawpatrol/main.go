@@ -3013,6 +3013,11 @@ func runGateway(args []string) {
 	logDashboardAuthState(db, cfg)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
+	// Back the external-plugin HostState service with the same sqlite blob
+	// store. Wired after the first config load (the state dir it lives in
+	// is part of that config); the service resolves the store lazily, so
+	// plugins spawned during that load still get state at request time.
+	pluginMgr.SetBlobStore(blobs)
 	certs, err := loadOrMintCA(db)
 	if err != nil {
 		log.Fatalf("ca: %v", err)

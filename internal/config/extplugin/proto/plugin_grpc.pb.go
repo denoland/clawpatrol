@@ -589,3 +589,161 @@ var Tunnel_ServiceDesc = grpc.ServiceDesc{
 	},
 	Metadata: "plugin.proto",
 }
+
+const (
+	HostState_Get_FullMethodName = "/clawpatrol.plugin.v1.HostState/Get"
+	HostState_Put_FullMethodName = "/clawpatrol.plugin.v1.HostState/Put"
+)
+
+// HostStateClient is the client API for HostState service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// HostState is a persistent, per-plugin byte store. It lets a sandboxed
+// plugin remember opaque bytes across restarts (SSH host keys, signing
+// material, a dynamic client_id) without a writable filesystem. The
+// gateway namespaces every entry by the calling plugin, so one plugin
+// can never read or write another's keys; the namespace is gateway-
+// assigned, never sent by the plugin.
+type HostStateClient interface {
+	// Get returns the stored value for key, or found=false.
+	Get(ctx context.Context, in *StateGetRequest, opts ...grpc.CallOption) (*StateGetResponse, error)
+	// Put stores value under key, overwriting any previous value.
+	Put(ctx context.Context, in *StatePutRequest, opts ...grpc.CallOption) (*StatePutResponse, error)
+}
+
+type hostStateClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewHostStateClient(cc grpc.ClientConnInterface) HostStateClient {
+	return &hostStateClient{cc}
+}
+
+func (c *hostStateClient) Get(ctx context.Context, in *StateGetRequest, opts ...grpc.CallOption) (*StateGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StateGetResponse)
+	err := c.cc.Invoke(ctx, HostState_Get_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostStateClient) Put(ctx context.Context, in *StatePutRequest, opts ...grpc.CallOption) (*StatePutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatePutResponse)
+	err := c.cc.Invoke(ctx, HostState_Put_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// HostStateServer is the server API for HostState service.
+// All implementations must embed UnimplementedHostStateServer
+// for forward compatibility.
+//
+// HostState is a persistent, per-plugin byte store. It lets a sandboxed
+// plugin remember opaque bytes across restarts (SSH host keys, signing
+// material, a dynamic client_id) without a writable filesystem. The
+// gateway namespaces every entry by the calling plugin, so one plugin
+// can never read or write another's keys; the namespace is gateway-
+// assigned, never sent by the plugin.
+type HostStateServer interface {
+	// Get returns the stored value for key, or found=false.
+	Get(context.Context, *StateGetRequest) (*StateGetResponse, error)
+	// Put stores value under key, overwriting any previous value.
+	Put(context.Context, *StatePutRequest) (*StatePutResponse, error)
+	mustEmbedUnimplementedHostStateServer()
+}
+
+// UnimplementedHostStateServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedHostStateServer struct{}
+
+func (UnimplementedHostStateServer) Get(context.Context, *StateGetRequest) (*StateGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedHostStateServer) Put(context.Context, *StatePutRequest) (*StatePutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Put not implemented")
+}
+func (UnimplementedHostStateServer) mustEmbedUnimplementedHostStateServer() {}
+func (UnimplementedHostStateServer) testEmbeddedByValue()                   {}
+
+// UnsafeHostStateServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to HostStateServer will
+// result in compilation errors.
+type UnsafeHostStateServer interface {
+	mustEmbedUnimplementedHostStateServer()
+}
+
+func RegisterHostStateServer(s grpc.ServiceRegistrar, srv HostStateServer) {
+	// If the following call panics, it indicates UnimplementedHostStateServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&HostState_ServiceDesc, srv)
+}
+
+func _HostState_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StateGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostStateServer).Get(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostState_Get_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostStateServer).Get(ctx, req.(*StateGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostState_Put_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StatePutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostStateServer).Put(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostState_Put_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostStateServer).Put(ctx, req.(*StatePutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// HostState_ServiceDesc is the grpc.ServiceDesc for HostState service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var HostState_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "clawpatrol.plugin.v1.HostState",
+	HandlerType: (*HostStateServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Get",
+			Handler:    _HostState_Get_Handler,
+		},
+		{
+			MethodName: "Put",
+			Handler:    _HostState_Put_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "plugin.proto",
+}

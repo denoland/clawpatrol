@@ -14,6 +14,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 	"github.com/denoland/clawpatrol/internal/sandbox"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
@@ -39,6 +40,12 @@ type Manager struct {
 	logger   hclog.Logger
 	lock     *lockStore
 	stateDir string // gateway secret-store dir; read_paths may not overlap it
+
+	// blobs backs the per-plugin HostState service (the v2 state service):
+	// a plugin calls into the gateway over the go-plugin broker to persist
+	// opaque bytes across restarts. nil disables state (plugins that try to
+	// use it get an error); the gateway wires its BlobStore here.
+	blobs runtime.BlobStore
 
 	// ghBase overrides the GitHub API base URL (tests point it at an
 	// httptest server); empty means api.github.com. prov gates a
@@ -110,6 +117,22 @@ func (m *Manager) setStateDir(d string) {
 // it via LoadPlugins; the `plugins install|update|lock` commands set it
 // from the resolved config so the cache lands in the same place.
 func (m *Manager) SetStateDir(d string) { m.setStateDir(d) }
+
+// SetBlobStore wires the persistent byte store that backs the per-plugin
+// HostState service. Without it, a plugin that calls State gets an error
+// (the gateway main provides one; the CLI install/probe paths leave it
+// nil — they never run a plugin long enough to need state).
+func (m *Manager) SetBlobStore(b runtime.BlobStore) {
+	m.mu.Lock()
+	m.blobs = b
+	m.mu.Unlock()
+}
+
+func (m *Manager) blobStore() runtime.BlobStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.blobs
+}
 
 // VerifyProvenance turns on GitHub build-provenance attestation checks
 // for downloaded plugins. When enabled, an archive that carries an
@@ -184,7 +207,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		m.logger.Warn("plugin sandbox degraded", "plugin", sp.Name, "warning", sbWarn)
 	}
 
-	c, manifest, err := m.spawnClient(ctx, source, spec, mode, sbWarn)
+	c, manifest, err := m.spawnClient(ctx, source, spec, mode, sbWarn, sp.Name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -230,16 +253,25 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 // *Client owns its socket dir; call c.kill() to tear it down. Used by
 // both Start (the real, capability-approved spawn) and the throwaway
 // capability probe.
-func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.Spec, mode sandbox.Mode, warning string) (*Client, *pb.ManifestResponse, error) {
+func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.Spec, mode sandbox.Mode, warning, stateNS string) (*Client, *pb.ManifestResponse, error) {
 	cmd, err := sandbox.Command(spec, mode)
 	if err != nil {
 		_ = os.RemoveAll(spec.SocketDir)
 		return nil, nil, fmt.Errorf("plugin %q: %w", source, err)
 	}
+	// Wire the per-plugin HostState service for a real load (a state
+	// namespace is given; throwaway probes pass ""). The store is resolved
+	// lazily per call, so it works even though the gateway's blob store is
+	// wired only after the first config load. The gateway serves it over
+	// the broker; the plugin dials it.
+	gc := &grpcClient{}
+	if stateNS != "" {
+		gc.hostState = newHostState(m.blobStore, stateNS)
+	}
 	cli := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
 		Plugins: map[string]plugin.Plugin{
-			PluginName: &grpcClient{},
+			PluginName: gc,
 		},
 		Cmd: cmd,
 		// The plugin's environment is exactly what sandbox.Command
@@ -436,7 +468,9 @@ func (m *Manager) probeManifest(ctx context.Context, sp config.PluginSource, bin
 	if err != nil {
 		return nil, err
 	}
-	c, manifest, err := m.spawnClient(ctx, sp.Source, spec, mode, "")
+	// Throwaway probe: no state namespace, so the broker host service is
+	// not wired (the probe never runs plugin logic that would use it).
+	c, manifest, err := m.spawnClient(ctx, sp.Source, spec, mode, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -955,18 +989,32 @@ func (c *Client) TunnelRPC() pb.TunnelClient { return c.tunnel }
 // plugin.Plugin implementation (client side)
 // =====================================================================
 
-// grpcClient satisfies plugin.GRPCPlugin on the gateway side. We don't
-// need the broker indirection — Dispense returns the raw
-// *grpc.ClientConn and we instantiate stubs ourselves on Client.
+// grpcClient satisfies plugin.GRPCPlugin on the gateway side. Dispense
+// returns the raw *grpc.ClientConn and we instantiate the plugin stubs
+// ourselves on Client. When hostState is set, the gateway also serves
+// the HostState service to the plugin over the broker.
 type grpcClient struct {
 	plugin.NetRPCUnsupportedPlugin
+	hostState pb.HostStateServer // nil = state service disabled
 }
 
 func (g *grpcClient) GRPCServer(_ *plugin.GRPCBroker, _ *grpc.Server) error {
 	return errors.New("extplugin: gateway does not implement the gRPC server side")
 }
 
-func (g *grpcClient) GRPCClient(_ context.Context, _ *plugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
+func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
+	// Serve HostState on the reserved broker stream id. AcceptAndServe
+	// blocks until the plugin dials, so run it in the background; the
+	// plugin only dials lazily on its first State call. When the client
+	// tears down, the broker closes and AcceptAndServe returns.
+	if g.hostState != nil && broker != nil {
+		hs := g.hostState
+		go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
+			s := grpc.NewServer(opts...)
+			pb.RegisterHostStateServer(s, hs)
+			return s
+		})
+	}
 	return conn, nil
 }
 

@@ -554,3 +554,43 @@ message DialData {
 message DialClose {
   string reason = 1;
 }
+
+// =====================================================================
+// Host services (gateway-served; the plugin is the client)
+// =====================================================================
+//
+// Unlike every other service here, HostState is implemented by the
+// GATEWAY and called by the plugin. The plugin reaches it over the
+// go-plugin broker (a side stream of the main connection) on a fixed
+// reserved stream id, so it is available to every plugin RPC — unary
+// Build / InjectHTTP as well as the HandleConn / Dial streams — not
+// just to one connection.
+
+// HostState is a persistent, per-plugin byte store. It lets a sandboxed
+// plugin remember opaque bytes across restarts (SSH host keys, signing
+// material, a dynamic client_id) without a writable filesystem. The
+// gateway namespaces every entry by the calling plugin, so one plugin
+// can never read or write another's keys; the namespace is gateway-
+// assigned, never sent by the plugin.
+service HostState {
+  // Get returns the stored value for key, or found=false.
+  rpc Get(StateGetRequest) returns (StateGetResponse);
+  // Put stores value under key, overwriting any previous value.
+  rpc Put(StatePutRequest) returns (StatePutResponse);
+}
+
+message StateGetRequest {
+  string key = 1;
+}
+
+message StateGetResponse {
+  bytes value = 1;
+  bool found = 2;
+}
+
+message StatePutRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message StatePutResponse {}

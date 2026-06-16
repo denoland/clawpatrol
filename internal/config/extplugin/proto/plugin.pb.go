@@ -3548,6 +3548,190 @@ func (x *DialClose) GetReason() string {
 	return ""
 }
 
+type StateGetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StateGetRequest) Reset() {
+	*x = StateGetRequest{}
+	mi := &file_plugin_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StateGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StateGetRequest) ProtoMessage() {}
+
+func (x *StateGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StateGetRequest.ProtoReflect.Descriptor instead.
+func (*StateGetRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *StateGetRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type StateGetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	Found         bool                   `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StateGetResponse) Reset() {
+	*x = StateGetResponse{}
+	mi := &file_plugin_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StateGetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StateGetResponse) ProtoMessage() {}
+
+func (x *StateGetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StateGetResponse.ProtoReflect.Descriptor instead.
+func (*StateGetResponse) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *StateGetResponse) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *StateGetResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+type StatePutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StatePutRequest) Reset() {
+	*x = StatePutRequest{}
+	mi := &file_plugin_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StatePutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StatePutRequest) ProtoMessage() {}
+
+func (x *StatePutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StatePutRequest.ProtoReflect.Descriptor instead.
+func (*StatePutRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *StatePutRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *StatePutRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type StatePutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StatePutResponse) Reset() {
+	*x = StatePutResponse{}
+	mi := &file_plugin_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StatePutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StatePutResponse) ProtoMessage() {}
+
+func (x *StatePutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StatePutResponse.ProtoReflect.Descriptor instead.
+func (*StatePutResponse) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{49}
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -3810,7 +3994,16 @@ const file_plugin_proto_rawDesc = "" +
 	"\bDialData\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload\"#\n" +
 	"\tDialClose\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason*7\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"#\n" +
+	"\x0fStateGetRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\">\n" +
+	"\x10StateGetResponse\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12\x14\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found\"9\n" +
+	"\x0fStatePutRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"\x12\n" +
+	"\x10StatePutResponse*7\n" +
 	"\rNetworkAccess\x12\x10\n" +
 	"\fNETWORK_NONE\x10\x00\x12\x14\n" +
 	"\x10NETWORK_OUTBOUND\x10\x01*k\n" +
@@ -3837,7 +4030,10 @@ const file_plugin_proto_rawDesc = "" +
 	"\n" +
 	"OpenTunnel\x12'.clawpatrol.plugin.v1.OpenTunnelRequest\x1a(.clawpatrol.plugin.v1.OpenTunnelResponse\x12P\n" +
 	"\x04Dial\x12!.clawpatrol.plugin.v1.DialMessage\x1a!.clawpatrol.plugin.v1.DialMessage(\x010\x01\x12b\n" +
-	"\vCloseTunnel\x12(.clawpatrol.plugin.v1.CloseTunnelRequest\x1a).clawpatrol.plugin.v1.CloseTunnelResponseBCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
+	"\vCloseTunnel\x12(.clawpatrol.plugin.v1.CloseTunnelRequest\x1a).clawpatrol.plugin.v1.CloseTunnelResponse2\xb7\x01\n" +
+	"\tHostState\x12T\n" +
+	"\x03Get\x12%.clawpatrol.plugin.v1.StateGetRequest\x1a&.clawpatrol.plugin.v1.StateGetResponse\x12T\n" +
+	"\x03Put\x12%.clawpatrol.plugin.v1.StatePutRequest\x1a&.clawpatrol.plugin.v1.StatePutResponseBCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -3852,7 +4048,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_plugin_proto_goTypes = []any{
 	(NetworkAccess)(0),             // 0: clawpatrol.plugin.v1.NetworkAccess
 	(FacetKind)(0),                 // 1: clawpatrol.plugin.v1.FacetKind
@@ -3905,11 +4101,15 @@ var file_plugin_proto_goTypes = []any{
 	(*DialInit)(nil),               // 48: clawpatrol.plugin.v1.DialInit
 	(*DialData)(nil),               // 49: clawpatrol.plugin.v1.DialData
 	(*DialClose)(nil),              // 50: clawpatrol.plugin.v1.DialClose
-	nil,                            // 51: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	nil,                            // 52: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
-	nil,                            // 53: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	nil,                            // 54: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	nil,                            // 55: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	(*StateGetRequest)(nil),        // 51: clawpatrol.plugin.v1.StateGetRequest
+	(*StateGetResponse)(nil),       // 52: clawpatrol.plugin.v1.StateGetResponse
+	(*StatePutRequest)(nil),        // 53: clawpatrol.plugin.v1.StatePutRequest
+	(*StatePutResponse)(nil),       // 54: clawpatrol.plugin.v1.StatePutResponse
+	nil,                            // 55: clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	nil,                            // 56: clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	nil,                            // 57: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	nil,                            // 58: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	nil,                            // 59: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	19, // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
@@ -3934,8 +4134,8 @@ var file_plugin_proto_depIdxs = []int32{
 	24, // 19: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
 	18, // 20: clawpatrol.plugin.v1.BuildResponse.credential_metadata:type_name -> clawpatrol.plugin.v1.CredentialMetadata
 	3,  // 21: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
-	51, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
-	52, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
+	55, // 22: clawpatrol.plugin.v1.InjectHTTPRequest.credential_extras:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.CredentialExtrasEntry
+	56, // 23: clawpatrol.plugin.v1.InjectHTTPRequest.headers:type_name -> clawpatrol.plugin.v1.InjectHTTPRequest.HeadersEntry
 	4,  // 24: clawpatrol.plugin.v1.HeaderMutation.op:type_name -> clawpatrol.plugin.v1.HeaderMutation.Op
 	27, // 25: clawpatrol.plugin.v1.InjectHTTPResponse.headers:type_name -> clawpatrol.plugin.v1.HeaderMutation
 	39, // 26: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
@@ -3951,9 +4151,9 @@ var file_plugin_proto_depIdxs = []int32{
 	31, // 36: clawpatrol.plugin.v1.ConnMessage.dial_reply:type_name -> clawpatrol.plugin.v1.DialUpstreamReply
 	32, // 37: clawpatrol.plugin.v1.ConnMessage.dial_data:type_name -> clawpatrol.plugin.v1.DialUpstreamData
 	33, // 38: clawpatrol.plugin.v1.ConnMessage.dial_close:type_name -> clawpatrol.plugin.v1.DialUpstreamClose
-	53, // 39: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
-	54, // 40: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	55, // 41: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	57, // 39: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	58, // 40: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	59, // 41: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 	48, // 42: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
 	49, // 43: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
 	50, // 44: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
@@ -3965,15 +4165,19 @@ var file_plugin_proto_depIdxs = []int32{
 	43, // 50: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
 	47, // 51: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
 	45, // 52: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
-	6,  // 53: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	23, // 54: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	28, // 55: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
-	29, // 56: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	44, // 57: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	47, // 58: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	46, // 59: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	53, // [53:60] is the sub-list for method output_type
-	46, // [46:53] is the sub-list for method input_type
+	51, // 53: clawpatrol.plugin.v1.HostState.Get:input_type -> clawpatrol.plugin.v1.StateGetRequest
+	53, // 54: clawpatrol.plugin.v1.HostState.Put:input_type -> clawpatrol.plugin.v1.StatePutRequest
+	6,  // 55: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	23, // 56: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	28, // 57: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
+	29, // 58: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	44, // 59: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	47, // 60: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	46, // 61: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	52, // 62: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
+	54, // 63: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
+	55, // [55:64] is the sub-list for method output_type
+	46, // [46:55] is the sub-list for method input_type
 	46, // [46:46] is the sub-list for extension type_name
 	46, // [46:46] is the sub-list for extension extendee
 	0,  // [0:46] is the sub-list for field type_name
@@ -4010,9 +4214,9 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   51,
+			NumMessages:   55,
 			NumExtensions: 0,
-			NumServices:   4,
+			NumServices:   5,
 		},
 		GoTypes:           file_plugin_proto_goTypes,
 		DependencyIndexes: file_plugin_proto_depIdxs,
