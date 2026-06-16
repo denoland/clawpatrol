@@ -194,6 +194,15 @@ Three layers gate a downloaded binary, from least to most powerful:
    A present-but-**invalid** attestation always fails closed (every mode
    but `"off"`).
 
+   Provenance is also tracked trust-on-first-use, like the network
+   grant: the lockfile records whether the pinned version was attested,
+   and a later binary that **loses** provenance — attested before, not
+   now — is **blocked** (a re-pointed tag, or an upgrade that drops its
+   attestation, looks exactly like a supply-chain attack) until you
+   accept it with `clawpatrol plugins approve <name>`. A plugin that was
+   never attested keeps installing with a warning; only a *downgrade* is
+   blocked.
+
 [att]: https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
 
 ## Sandbox and capability grants

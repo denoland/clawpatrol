@@ -143,9 +143,10 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 
 	// Resolve the source to a local binary path first: a GitHub source is
 	// downloaded to (or read from) the cache here; a local path passes
-	// through unchanged. Everything downstream — hashing, the manifest
+	// through unchanged. accept=false enforces the pinned version, hashes,
+	// and provenance level. Everything downstream — hashing, the manifest
 	// probe, the real spawn — operates on this resolved path.
-	local, err := m.resolvePluginBinary(ctx, sp)
+	local, err := m.resolvePluginBinary(ctx, sp, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
@@ -366,11 +367,13 @@ type ApprovedPlugin struct {
 }
 
 // Approve (re)records the current permissions of the named plugins
-// (or all when names is empty) in the lockfile: it probes each
-// plugin's manifest and writes {hash, declared network}, bypassing the
-// escalation check — this is the operator deliberately accepting the
-// current version. It does not register the plugin's types, so it is
-// safe to call without a full config load.
+// (or all when names is empty) in the lockfile: for a GitHub source it
+// re-resolves the constraint's newest release and downloads it, then
+// writes {source, version, commit, attested, hash, declared network},
+// bypassing both the network-escalation and the provenance-downgrade
+// check — this is the operator deliberately accepting the current
+// version. It does not register the plugin's types, so it is safe to
+// call without a full config load.
 func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, names []string) ([]ApprovedPlugin, error) {
 	want := map[string]bool{}
 	for _, n := range names {
@@ -384,7 +387,10 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 		if len(want) > 0 && !want[sp.Name] {
 			continue
 		}
-		local, err := m.resolvePluginBinary(ctx, sp)
+		// accept=true: re-resolve the constraint's newest, download, and
+		// re-record the source/version/commit/provenance, deliberately
+		// accepting it (clears a provenance-downgrade or escalation block).
+		local, err := m.resolvePluginBinary(ctx, sp, true)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}

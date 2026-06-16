@@ -54,9 +54,10 @@ type provenanceVerifier interface {
 // fetchResult is the outcome of downloading + extracting one platform's
 // plugin binary.
 type fetchResult struct {
-	path   string // extracted binary path
-	binSHA string // "sha256:..." of the extracted binary (load-time identity)
-	commit string // attested source commit ("" when unattested)
+	path     string // extracted binary path
+	binSHA   string // "sha256:..." of the extracted binary (load-time identity)
+	commit   string // attested source commit ("" when unattested)
+	attested bool   // a build-provenance attestation verified
 }
 
 // shaSums maps an asset filename to its lowercase-hex sha256, parsed
@@ -379,11 +380,13 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 	// fails closed, "warn" (default) falls back to the checksum +
 	// lockfile-TOFU floor with a warning, "off" skips the check entirely.
 	commit := ""
+	attested := false
 	if f.prov != nil && mode != provOff {
 		c, err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA)
 		switch {
 		case err == nil:
 			commit = c
+			attested = true
 			if commit == "" && f.logger != nil {
 				f.logger.Warn("plugin attestation verified but names no source commit; commit pinning disabled",
 					"plugin", p.slug(), "version", r.TagName)
@@ -423,7 +426,7 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 	if err != nil {
 		return zero, err
 	}
-	return fetchResult{path: dest, binSHA: binSHA, commit: commit}, nil
+	return fetchResult{path: dest, binSHA: binSHA, commit: commit, attested: attested}, nil
 }
 
 // platformsInRelease lists the "<os>_<arch>" tokens for every archive in
@@ -475,7 +478,13 @@ func platformFromArchive(name string) string {
 // to the newest release, downloads it, and records the source + resolved
 // version in the lockfile (trust on first use). It never silently moves
 // to a newer version once pinned — that is `clawpatrol plugins update`.
-func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSource) (string, error) {
+//
+// accept distinguishes the two callers: the gateway load (accept=false)
+// enforces the pinned hashes, the attested commit, and the provenance
+// level — a re-download that loses provenance fails closed. Approve
+// (accept=true) instead re-records the binary's current provenance level,
+// the operator deliberately accepting it (e.g. a downgrade).
+func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSource, accept bool) (string, error) {
 	p, err := pluginSourceFor(sp)
 	if err != nil {
 		return "", err
@@ -488,17 +497,23 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 
 	entry, have := m.lock.get(sp.Name)
 
+	// The pinned (enforcing) path applies to a normal gateway load of an
+	// already-locked plugin. Approve (accept=true) skips it: it re-resolves
+	// the constraint's newest release and re-records, deliberately
+	// accepting the result.
+	pinned := !accept && have && entry.Source != "" && entry.Version != ""
+
 	// A lockfile entry that names a version but no source is malformed (a
 	// hand-edit or a partial write). Refuse it rather than fall through to
 	// the first-use branch, which would silently re-resolve the constraint
 	// and auto-upgrade — the one thing the running gateway must never do.
-	if have && entry.Version != "" && entry.Source == "" {
+	if !accept && have && entry.Version != "" && entry.Source == "" {
 		return "", fmt.Errorf(
 			"lockfile entry for %q has a version but no source; fix or remove it, then run `clawpatrol plugins install`",
 			sp.Name)
 	}
 
-	if have && entry.Source != "" && entry.Version != "" {
+	if pinned {
 		if entry.Source != p.slug() {
 			return "", fmt.Errorf(
 				"source changed from %q to %q since it was locked; run `clawpatrol plugins update %s`",
@@ -535,22 +550,18 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 			return "", fmt.Errorf(
 				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", res.binSHA, entry.Hashes)
 		}
-		// When both the lockfile and the fresh attestation name a source
-		// commit, they must agree: a re-pointed tag built from a different
-		// commit is rejected before the binary is used.
-		if entry.Commit != "" && res.commit != "" && res.commit != entry.Commit {
+		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
 			_ = os.Remove(res.path)
-			return "", fmt.Errorf(
-				"attested source commit %s does not match the locked commit %s; run `clawpatrol plugins update %s`",
-				res.commit, entry.Commit, sp.Name)
+			return "", err
 		}
 		return res.path, nil
 	}
 
-	// First use: resolve the constraint to the newest release, download,
-	// and trust-on-first-use record the source + resolved tag + attested
-	// commit. The binary hash + network grant are recorded by the existing
-	// resolveNetwork pass that runs next.
+	// First use, or Approve: resolve the constraint to the newest release,
+	// download, and (trust-on-first-use / operator-accept) record the
+	// source + resolved tag + attested commit + provenance level. The
+	// binary hash + network grant are recorded by the resolveNetwork pass
+	// that runs next.
 	r, _, err := f.gh.resolveVersion(ctx, p, sp.Version)
 	if err != nil {
 		return "", err
@@ -559,8 +570,31 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 	if err != nil {
 		return "", err
 	}
-	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit)
+	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)
 	return res.path, nil
+}
+
+// checkProvenanceNotDowngraded fails closed when a freshly-fetched binary
+// has weaker provenance than the lockfile recorded: it lost the
+// attestation entirely, or its attestation now names a different source
+// commit (a re-pointed tag). Skipped when the operator set provenance =
+// "off". The fix is `clawpatrol plugins approve`.
+func checkProvenanceNotDowngraded(name string, mode provenanceMode, entry lockEntry, res fetchResult) error {
+	if mode == provOff {
+		return nil
+	}
+	if entry.Attested && !res.attested {
+		return fmt.Errorf(
+			"plugin %q lost its build-provenance attestation since it was approved; "+
+				"a benign plugin's build dropping provenance looks exactly like this. "+
+				"If you trust it, re-approve: clawpatrol plugins approve %s", name, name)
+	}
+	if entry.Commit != "" && res.commit != "" && res.commit != entry.Commit {
+		return fmt.Errorf(
+			"plugin %q: attested source commit %s does not match the locked commit %s (a re-pointed tag); "+
+				"run `clawpatrol plugins update %s` or re-approve it", name, res.commit, entry.Commit, name)
+	}
+	return nil
 }
 
 // constraintHolds reports whether the locked tag still satisfies the

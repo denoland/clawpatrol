@@ -327,6 +327,13 @@ config is the trust anchor, closing the first-download gap. The
 attestation also binds the binary to the source commit it was built
 from, which the lockfile pins (`commit`) as an immutable reference; a
 re-pointed tag whose attestation names a different commit is rejected.
+Provenance is tracked trust-on-first-use like the network grant: the
+lockfile records whether the pinned version was attested, and a binary
+that loses provenance across a re-download or upgrade fails closed until
+the operator re-approves it — the loud, reviewable moment a malicious
+update that strips its attestation would otherwise slip through. The
+per-plugin `provenance` field (`warn` default, `require`, `off`) sets
+how a *first*, never-attested release is treated.
 The gateway loads only the locked version and never upgrades on its own;
 moving to a newer release is the operator's explicit `clawpatrol plugins
 update`.

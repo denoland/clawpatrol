@@ -76,11 +76,17 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
 
-		res, err := f.ensure(ctx, p, r, provenanceModeOf(sp))
+		mode := provenanceModeOf(sp)
+		res, err := f.ensure(ctx, p, r, mode)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
-		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit)
+		// A version (or re-download) that loses provenance is blocked until
+		// the operator accepts it with `clawpatrol plugins approve`.
+		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
+			return nil, err
+		}
+		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)
 
 		network, err := m.declaredNetwork(ctx, sp, res.path)
 		if err != nil {
@@ -165,9 +171,10 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 		}
 		_ = os.RemoveAll(tmp)
 		// Record the attested commit if install hadn't (e.g. a hand-seeded
-		// pin); keeps lock idempotent when it already matches.
+		// pin); keeps lock idempotent when it already matches. The
+		// provenance level (entry.Attested) is unchanged by a lock pass.
 		if commit != "" && commit != entry.Commit {
-			m.lock.setSource(sp.Name, p.slug(), entry.Version, entry.Constraints, commit)
+			m.lock.setSource(sp.Name, p.slug(), entry.Version, entry.Constraints, commit, entry.Attested)
 		}
 		out = append(out, InstalledPlugin{Name: sp.Name, Source: p.slug(), Version: entry.Version, Network: entry.Network})
 	}

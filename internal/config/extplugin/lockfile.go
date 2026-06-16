@@ -53,6 +53,11 @@ type lockEntry struct {
 	// carries no attestation. On a pinned re-download the attested commit
 	// must match this.
 	Commit string `hcl:"commit,optional"`
+	// Attested records whether the pinned version was build-provenance
+	// verified. A later binary (a re-download or an upgrade) that loses
+	// provenance — attested here, unattested now — is blocked until
+	// reapproved, the same trust-on-first-use model as the network grant.
+	Attested bool `hcl:"attested,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -159,12 +164,12 @@ func (s *lockStore) addHash(name, hash, network string) {
 // for a plugin (the binary hashes are recorded separately by addHash at
 // load, or by an all-platform `plugins lock`). Marks dirty only on
 // change.
-func (s *lockStore) setSource(name, source, version, constraints, commit string) {
+func (s *lockStore) setSource(name, source, version, constraints, commit string, attested bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.entries[name]
 	if e.Name == name && e.Source == source && e.Version == version &&
-		e.Constraints == constraints && e.Commit == commit {
+		e.Constraints == constraints && e.Commit == commit && e.Attested == attested {
 		return
 	}
 	// A version change re-pins the plugin: the recorded hashes belonged
@@ -178,6 +183,7 @@ func (s *lockStore) setSource(name, source, version, constraints, commit string)
 	e.Version = version
 	e.Constraints = constraints
 	e.Commit = commit
+	e.Attested = attested
 	s.entries[name] = e
 	s.dirty = true
 }
@@ -227,6 +233,9 @@ func (s *lockStore) save() error {
 		}
 		if e.Commit != "" {
 			blk.Body().SetAttributeValue("commit", cty.StringVal(e.Commit))
+		}
+		if e.Attested {
+			blk.Body().SetAttributeValue("attested", cty.BoolVal(true))
 		}
 		if e.Constraints != "" {
 			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))

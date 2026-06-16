@@ -60,13 +60,13 @@ func TestLockStoreSourceRoundTrip(t *testing.T) {
 	if err := s.load(); err != nil {
 		t.Fatal(err)
 	}
-	s.setSource("gh", "github.com/acme/p", "v1.2.3", "~> 1.2", "abcdef123456")
+	s.setSource("gh", "github.com/acme/p", "v1.2.3", "~> 1.2", "abcdef123456", true)
 	s.addHash("gh", "sha256:abc", "outbound")
 	if err := s.save(); err != nil {
 		t.Fatal(err)
 	}
 	raw := readString(t, path)
-	for _, want := range []string{`source      = "github.com/acme/p"`, `version     = "v1.2.3"`, `commit      = "abcdef123456"`, `constraints = "~> 1.2"`} {
+	for _, want := range []string{`source      = "github.com/acme/p"`, `version     = "v1.2.3"`, `commit      = "abcdef123456"`, `attested    = true`, `constraints = "~> 1.2"`} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("lockfile missing %q:\n%s", want, raw)
 		}
@@ -79,7 +79,8 @@ func TestLockStoreSourceRoundTrip(t *testing.T) {
 	}
 	e, ok := s2.get("gh")
 	if !ok || e.Source != "github.com/acme/p" || e.Version != "v1.2.3" ||
-		e.Constraints != "~> 1.2" || e.Commit != "abcdef123456" || e.Network != "outbound" || !e.hasHash("sha256:abc") {
+		e.Constraints != "~> 1.2" || e.Commit != "abcdef123456" || !e.Attested ||
+		e.Network != "outbound" || !e.hasHash("sha256:abc") {
 		t.Fatalf("reloaded entry = %+v ok=%v", e, ok)
 	}
 
