@@ -46,6 +46,18 @@ type HTTPCredentialRedactionProvider interface {
 	ConsumeHTTPRedactions(req *http.Request) []string
 }
 
+// HTTPRequestRewriter is an optional marker on an HTTPCredentialRuntime
+// whose InjectHTTP may rewrite the request beyond headers — its URL or
+// body — and, in doing so, consume the request body. When such an
+// injector's InjectHTTP returns an error the request is left unusable
+// (the body was streamed away), so the gateway MUST fail closed rather
+// than forward it. Header-only injectors do not implement this; their
+// failed injection leaves the request untouched and forwarding the
+// agent's placeholder is safe.
+type HTTPRequestRewriter interface {
+	RewritesHTTPRequest() bool
+}
+
 // HTTPRequestSigner is the credential-plugin contract for HTTP auth
 // shapes whose signature spans the *whole request* (method, URL,
 // headers, body) and need parameters that live on the endpoint, not

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 )
@@ -38,12 +37,9 @@ func (s *server) TransformHTTP(stream pb.Credential_TransformHTTPServer) error {
 	}
 
 	// A goroutine receives the request body chunks into a pipe the plugin
-	// reads as req.Body. Request trailers arrive on the eof frame; they
-	// are filled into reqTrailers before the pipe is closed, so a plugin
-	// that reads them after Body hits EOF sees them (the pipe's close /
-	// read ordering provides the happens-before).
+	// reads as req.Body. Trailers on the eof frame (e.g. gRPC's) are
+	// preserved by the gateway, not surfaced to the plugin.
 	pr, pw := io.Pipe()
-	reqTrailers := http.Header{}
 	go func() {
 		for {
 			msg, rerr := stream.Recv()
@@ -61,7 +57,6 @@ func (s *server) TransformHTTP(stream pb.Credential_TransformHTTPServer) error {
 				}
 			}
 			if b.Body.Eof {
-				copyHeader(reqTrailers, headersFromProto(b.Body.Trailers))
 				_ = pw.Close()
 				return
 			}
@@ -79,7 +74,6 @@ func (s *server) TransformHTTP(stream pb.Credential_TransformHTTPServer) error {
 		Host:                      in.Host,
 		Headers:                   headersFromProto(in.Headers),
 		Body:                      pr,
-		Trailers:                  reqTrailers,
 	}
 
 	resp, err := invokeTransformHTTP(ctx, in.CredentialTypeName, in.CredentialInstance, def.TransformHTTP, req)
@@ -127,20 +121,7 @@ func (s *server) TransformHTTP(stream pb.Credential_TransformHTTPServer) error {
 			return fmt.Errorf("pluginsdk TransformHTTP: read transformed body: %w", rerr)
 		}
 	}
-
-	// Outgoing trailers: the plugin's explicit set, else the request's
-	// trailers passed through. reqTrailers is safe to read here — the body
-	// loop above drained the input pipe to EOF, which is ordered after the
-	// recv goroutine filled the trailers and closed the pipe.
-	outT := resp.Trailers
-	if outT == nil {
-		outT = reqTrailers
-	}
-	eof := &pb.HTTPBodyChunk{Eof: true}
-	if len(outT) > 0 {
-		eof.Trailers = headersToProtoMap(outT)
-	}
-	return stream.Send(&pb.TransformHTTPDown{Kind: &pb.TransformHTTPDown_Body{Body: eof}})
+	return stream.Send(&pb.TransformHTTPDown{Kind: &pb.TransformHTTPDown_Body{Body: &pb.HTTPBodyChunk{Eof: true}}})
 }
 
 func invokeTransformHTTP(ctx context.Context, typeName, instanceName string, fn func(context.Context, HTTPTransformRequest) (*HTTPTransformResponse, error), req HTTPTransformRequest) (out *HTTPTransformResponse, err error) {
@@ -150,24 +131,6 @@ func invokeTransformHTTP(ctx context.Context, typeName, instanceName string, fn 
 		}
 	}()
 	return fn(ctx, req)
-}
-
-// copyHeader merges src into dst in place.
-func copyHeader(dst, src http.Header) {
-	for k, vs := range src {
-		dst[k] = append([]string(nil), vs...)
-	}
-}
-
-func headersToProtoMap(in http.Header) map[string]*pb.HTTPHeaderValues {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]*pb.HTTPHeaderValues, len(in))
-	for k, vs := range in {
-		out[k] = &pb.HTTPHeaderValues{Values: append([]string(nil), vs...)}
-	}
-	return out
 }
 
 func headerMutationsToProto(in []HeaderMutation) []*pb.HeaderMutation {

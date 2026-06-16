@@ -887,6 +887,15 @@ func (b *dynamicOAuthHTTPCredentialBody) InjectHTTP(ctx context.Context, req *ht
 	return injectHTTPWithExternalCredential(ctx, b.dynamicCredentialBody, req, sec)
 }
 
+// RewritesHTTPRequest reports whether InjectHTTP rewrites more than
+// headers (a transform credential). The gateway fails closed on its
+// inject error since the request body was streamed to the plugin. The
+// method is promoted to the HTTP body wrappers that embed
+// *dynamicCredentialBody.
+func (b *dynamicCredentialBody) RewritesHTTPRequest() bool {
+	return b != nil && b.metadata.httpTransform
+}
+
 func (b *dynamicHTTPCredentialBody) ConsumeHTTPRedactions(req *http.Request) []string {
 	if b == nil {
 		return nil

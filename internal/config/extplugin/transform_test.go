@@ -3,6 +3,7 @@ package extplugin
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -149,6 +150,51 @@ func TestTransformHTTPPassThrough(t *testing.T) {
 	got, _ := io.ReadAll(req.Body)
 	if string(got) != "the body streams through" {
 		t.Fatalf("body = %q, want unchanged", got)
+	}
+}
+
+// errBeforeHeadServer reads the init then closes the stream with an error
+// without ever sending a head — modeling a buggy plugin.
+type errBeforeHeadServer struct {
+	pb.UnimplementedCredentialServer
+}
+
+func (errBeforeHeadServer) TransformHTTP(stream pb.Credential_TransformHTTPServer) error {
+	_, _ = stream.Recv()
+	return fmt.Errorf("plugin boom")
+}
+
+// TestTransformHTTPErrorFailsClosed confirms a plugin error surfaces as an
+// error from the transform call (so the gateway fails closed) rather than
+// hanging or silently forwarding.
+func TestTransformHTTPErrorFailsClosed(t *testing.T) {
+	cli := transformTestClient(t, errBeforeHeadServer{})
+	body := &dynamicCredentialBody{
+		adapter:      &credentialAdapter{client: &Client{credential: cli}, typeName: "x"},
+		instanceName: "i",
+		metadata:     credentialMetadata{httpTransform: true},
+	}
+	u, _ := url.Parse("https://api.example.com/x")
+	req := &http.Request{
+		Method: "POST", URL: u, Host: "api.example.com", Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader("data")),
+	}
+	err := transformHTTPWithExternalCredential(context.Background(), body, req, runtime.Secret{})
+	if err == nil {
+		t.Fatal("expected an error so the caller fails closed")
+	}
+}
+
+// TestRewritesHTTPRequestMarker confirms only transform credentials report
+// as request rewriters (the gateway uses this to fail closed on error).
+func TestRewritesHTTPRequestMarker(t *testing.T) {
+	transform := &dynamicCredentialBody{metadata: credentialMetadata{httpTransform: true}}
+	headerOnly := &dynamicCredentialBody{metadata: credentialMetadata{httpInject: true}}
+	if !transform.RewritesHTTPRequest() {
+		t.Fatal("transform credential should report RewritesHTTPRequest")
+	}
+	if headerOnly.RewritesHTTPRequest() {
+		t.Fatal("header-only credential must not report RewritesHTTPRequest")
 	}
 }
 

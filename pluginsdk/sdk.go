@@ -339,12 +339,6 @@ type HTTPTransformRequest struct {
 	// (the gateway streams the whole body); reading a prefix and returning
 	// a Body that copies the rest through is also fine.
 	Body io.Reader
-
-	// Trailers are the HTTP trailers that follow the body (e.g. gRPC
-	// request trailers). HTTP semantics: they are only fully populated
-	// once Body has been read to EOF. Most credentials can ignore them;
-	// they are preserved across the transform by default.
-	Trailers http.Header
 }
 
 // HTTPTransformResponse is what a TransformHTTP callback returns.
@@ -363,12 +357,11 @@ type HTTPTransformResponse struct {
 	// Body is the outgoing request body the gateway forwards upstream. To
 	// pass the input through unchanged, set Body = req.Body. To replace it,
 	// return any io.Reader (e.g. bytes.NewReader). nil sends an empty body.
+	//
+	// HTTP trailers that follow the request body (e.g. gRPC's) are
+	// preserved by the gateway across the transform; the plugin does not
+	// handle them.
 	Body io.Reader
-
-	// Trailers are HTTP trailers to send after the body. Leave nil to pass
-	// the request's original trailers (req.Trailers) through unchanged —
-	// the common case, and what preserves gRPC trailers.
-	Trailers http.Header
 }
 
 // TunnelDef declares one tunnel type. Open returns an opaque handle

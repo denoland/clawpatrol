@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
@@ -18,21 +19,37 @@ import (
 // mutations) before the request is forwarded, and replaces the request
 // body with the plugin's transformed stream.
 //
+// On any error it returns without leaving a usable request: the body has
+// been streamed to the plugin (consumed), so the caller must fail closed
+// rather than forward a half-transformed request — see
+// dynamicCredentialBody.RewritesHTTPRequest and the gateway call site.
+//
 // Trailers: the request's trailers (e.g. gRPC's) are conveyed to the
 // plugin for inspection and pass through to the upstream unchanged
-// (req.Trailer is left in place). Plugin-rewritten request trailers are a
-// follow-up — rewriting them safely across the body swap is non-trivial
-// (Go populates req.Trailer from the original body read).
-func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) error {
+// (req.Trailer is left in place).
+func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCredentialBody, req *http.Request, sec runtime.Secret) (err error) {
 	if body.adapter == nil || body.adapter.client == nil || body.adapter.client.credential == nil {
 		return fmt.Errorf("extplugin: credential %q TransformHTTP unavailable: plugin client is not connected", body.instanceName)
 	}
-	stream, err := body.adapter.client.credential.TransformHTTP(ctx)
-	if err != nil {
-		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP: %w", body.adapter.typeName, body.instanceName, err)
-	}
 
-	if err := stream.Send(&pb.TransformHTTPUp{Kind: &pb.TransformHTTPUp_Init{Init: &pb.TransformHTTPInit{
+	// The stream runs under a cancelable context. On any error return we
+	// cancel — tearing down the gRPC stream and the up-pump goroutine. On
+	// success the down-pump goroutine owns the context and cancels once the
+	// transformed body is fully delivered (or the stream errors), which
+	// also stops the up-pump. Without this a stuck plugin would leak both
+	// goroutines and the stream (the request context is never canceled).
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
+
+	stream, serr := body.adapter.client.credential.TransformHTTP(streamCtx)
+	if serr != nil {
+		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP: %w", body.adapter.typeName, body.instanceName, serr)
+	}
+	if serr := stream.Send(&pb.TransformHTTPUp{Kind: &pb.TransformHTTPUp_Init{Init: &pb.TransformHTTPInit{
 		CredentialTypeName:      body.adapter.typeName,
 		CredentialInstance:      body.instanceName,
 		CredentialCanonicalJson: body.canonicalJSON,
@@ -42,17 +59,22 @@ func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCrede
 		Url:                     req.URL.String(),
 		Host:                    req.Host,
 		Headers:                 headersToProto(req.Header),
-	}}}); err != nil {
-		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP send init: %w", body.adapter.typeName, body.instanceName, err)
+	}}}); serr != nil {
+		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP send init: %w", body.adapter.typeName, body.instanceName, serr)
 	}
 
 	// Up-pump: stream the request body to the plugin, then an eof frame
 	// carrying the request trailers (populated once the body is fully
-	// read). req.Trailer is read here, by this goroutine, right after the
-	// body EOFs — and otherwise only by the forwarder after the swapped
-	// body EOFs (which is strictly later), so no concurrent access.
+	// read). Closes the original body and half-closes the send direction
+	// when done; exits if the stream is canceled mid-send.
 	origBody := req.Body
 	go func() {
+		defer func() {
+			if origBody != nil {
+				_ = origBody.Close()
+			}
+			_ = stream.CloseSend()
+		}()
 		if origBody != nil {
 			buf := make([]byte, brokeredDialChunk)
 			for {
@@ -68,7 +90,6 @@ func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCrede
 					break
 				}
 			}
-			_ = origBody.Close()
 		}
 		eof := &pb.HTTPBodyChunk{Eof: true}
 		if len(req.Trailer) > 0 {
@@ -77,11 +98,15 @@ func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCrede
 		_ = stream.Send(&pb.TransformHTTPUp{Kind: &pb.TransformHTTPUp_Body{Body: eof}})
 	}()
 
-	// Receive the head — it must arrive before we forward, since a
-	// body-derived header (a SigV4 signature) is finalized here.
-	first, err := stream.Recv()
-	if err != nil {
-		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP recv head: %w", body.adapter.typeName, body.instanceName, err)
+	// The head must arrive before we forward — a body-derived header (a
+	// SigV4 signature) is finalized here. Bound the wait: a buggy plugin
+	// that never sends the head must not hang the request. The timer fires
+	// cancel(), which unblocks the Recv with a context error.
+	headTimer := time.AfterFunc(injectHTTPTimeout, cancel)
+	first, rerr := stream.Recv()
+	headTimer.Stop()
+	if rerr != nil {
+		return fmt.Errorf("extplugin: credential %s.%s TransformHTTP recv head: %w", body.adapter.typeName, body.instanceName, rerr)
 	}
 	headMsg, ok := first.GetKind().(*pb.TransformHTTPDown_Head)
 	if !ok || headMsg.Head == nil {
@@ -102,16 +127,20 @@ func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCrede
 	body.recordHTTPRedactions(req, head.Redactions)
 	syncTransformContentLength(req)
 
-	// Down-pump: feed the plugin's transformed body chunks into a pipe
-	// that becomes the new req.Body. Trailers on the plugin's eof frame
-	// are accepted but not applied to req in v1 (see the doc comment).
+	// Down-pump owns the stream now: feed the plugin's transformed body
+	// chunks into the pipe that becomes the new req.Body, and cancel() when
+	// done (eof, stream error, or the forwarder closing pr) so the up-pump
+	// and stream are torn down. Trailers on the plugin's eof frame are
+	// accepted but not applied to req in v1 (request trailers pass through
+	// unchanged); see the doc comment.
 	pr, pw := io.Pipe()
 	req.Body = pr
 	go func() {
+		defer cancel()
 		for {
-			msg, rerr := stream.Recv()
-			if rerr != nil {
-				_ = pw.CloseWithError(rerr)
+			msg, mrerr := stream.Recv()
+			if mrerr != nil {
+				_ = pw.CloseWithError(mrerr)
 				return
 			}
 			b, ok := msg.GetKind().(*pb.TransformHTTPDown_Body)
@@ -134,7 +163,9 @@ func transformHTTPWithExternalCredential(ctx context.Context, body *dynamicCrede
 
 // syncTransformContentLength sets req.ContentLength from a Content-Length
 // header the transform credential supplied (it knows the new body length),
-// or marks the length unknown so the forwarder uses chunked transfer.
+// or marks the length unknown so the forwarder uses chunked transfer. A
+// credential that changes the body length but leaves a stale Content-Length
+// would corrupt the upstream write — it must update or drop the header.
 func syncTransformContentLength(req *http.Request) {
 	if cl := req.Header.Get("Content-Length"); cl != "" {
 		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n >= 0 {

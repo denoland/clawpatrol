@@ -556,9 +556,12 @@ Set `Response.Body = req.Body` to pass the input straight through (no
 buffering — right for a URL-only rewrite). The gateway applies the
 returned mutations **before** forwarding, so a body-derived signature
 header is finalized first, then pipes the plugin's body upstream. If you
-change the body length, set a `Content-Length` header mutation. HTTP
-trailers (e.g. gRPC's) are conveyed to the plugin and pass through to
-the upstream unchanged.
+change the body length, set a `Content-Length` header mutation (or leave
+it unset to forward with chunked transfer). HTTP trailers (e.g. gRPC's)
+are preserved by the gateway across the transform — the plugin does not
+handle them. If the plugin fails, the gateway fails the request closed
+(the body was already streamed away), rather than forwarding a
+half-transformed request.
 
 At runtime the built-in HTTPS endpoint keeps the privilege split:
 
