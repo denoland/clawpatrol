@@ -276,7 +276,19 @@ func runRelaySupervisor(_ []string) {
 			if errors.Is(err, unix.ENOENT) {
 				return
 			}
-			relayDebugf("[clawpatrol relay] notif_recv: %v\n", err)
+			// Transient: a signal or spurious wakeup interrupted the ioctl.
+			// Keep serving notifications instead of tearing the whole relay
+			// down; a single EINTR must not strand the agent netns.
+			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
+				continue
+			}
+			// Anything else means we can no longer service notifications.
+			// Surface it unconditionally (not just under CLAWPATROL_DEBUG):
+			// the worker will now fail the REDIRECT open and host-loopback
+			// forwarding stops, so operators can see why telemetry/webhooks
+			// to host services went quiet.
+			fmt.Fprintf(os.Stderr, "⚠ clawpatrol relay: notification channel failed (%v); "+
+				"host-loopback forwarding disabled, reverting wrapped process to direct loopback\n", err)
 			return
 		}
 
@@ -751,8 +763,31 @@ func runRelayWorker(_ []string) {
 	// iptables NAT REDIRECT that captures every 127.0.0.0/8:* connect()
 	// from the wrapped command and routes it here. Failure is logged but
 	// non-fatal — the auto-expose reverse direction is independent.
-	if err := setupHostLoopbackForwarder(lbRC); err != nil {
+	fwdPort, err := setupHostLoopbackForwarder(lbRC)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠ host-loopback forwarder: %v (services on host 127.0.0.1 won't be reachable from wrapped cmd)\n", err)
+	}
+
+	// Fail open: the moment this worker stops forwarding - supervisor
+	// gone, EOF on the control sock, or a termination signal - remove the
+	// REDIRECT so the wrapped process's loopback reverts to direct,
+	// in-netns behaviour. Without this the rule outlives the forwarder and
+	// black-holes every 127.0.0.0/8 connect (including the wrapped process
+	// reaching its own listeners) to a now-dead port.
+	if fwdPort != 0 {
+		var once sync.Once
+		cleanup := func() { once.Do(func() { _ = uninstallLoopbackRedirectRules(fwdPort) }) }
+		defer cleanup()
+		// Pdeathsig delivers SIGTERM when the agent exits, which would
+		// otherwise skip the deferred cleanup; trap it so the rule is
+		// always removed before we exit.
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			<-sigCh
+			cleanup()
+			os.Exit(0)
+		}()
 	}
 
 	// Signal the agent child that REDIRECT is in place so it can exec the
@@ -987,22 +1022,25 @@ const soOriginalDst = 80
 //     loopback; the supervisor re-checks IsLoopback before dialing.
 //   - Host-loopback services are therefore reachable only by the wrapped
 //     command, never by anything routed via the gateway/tailnet.
-func setupHostLoopbackForwarder(lbRC syscall.RawConn) error {
+func setupHostLoopbackForwarder(lbRC syscall.RawConn) (uint16, error) {
 	if _, err := exec.LookPath("iptables"); err != nil {
-		return fmt.Errorf("iptables not available: %w", err)
+		return 0, fmt.Errorf("iptables not available: %w", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("listen 127.0.0.1:0: %w", err)
+		return 0, fmt.Errorf("listen 127.0.0.1:0: %w", err)
 	}
 	fwdPort := uint16(ln.Addr().(*net.TCPAddr).Port)
 	if err := installLoopbackRedirectRules(fwdPort); err != nil {
+		// Roll back any partially-installed rule so we never leave a
+		// REDIRECT pointing at a port we're about to close.
+		_ = uninstallLoopbackRedirectRules(fwdPort)
 		_ = ln.Close()
-		return fmt.Errorf("install REDIRECT rules: %w", err)
+		return 0, fmt.Errorf("install REDIRECT rules: %w", err)
 	}
 	relayDebugf("[clawpatrol relay-worker] host-loopback forwarder on 127.0.0.1:%d (REDIRECT installed)\n", fwdPort)
 	go loopbackAcceptLoop(ln, lbRC)
-	return nil
+	return fwdPort, nil
 }
 
 // installLoopbackRedirectRules shells out to iptables to install the two
@@ -1048,6 +1086,41 @@ func loopbackRedirectRuleArgs(fwdPort uint16) [][]string {
 		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8",
 			"-m", "tcp", "!", "--dport", fwd, "-j", "REDIRECT", "--to-ports", fwd},
 	}
+}
+
+// loopbackRedirectDeleteArgs returns the iptables argv slices that REMOVE
+// the rules installed by loopbackRedirectRuleArgs, by swapping the append
+// (-A) verb for delete (-D). iptables -D matches on the full rule spec, so
+// the delete args are otherwise byte-identical to the install args. Split
+// out so it can be unit-tested without shelling out to iptables.
+func loopbackRedirectDeleteArgs(fwdPort uint16) [][]string {
+	args := loopbackRedirectRuleArgs(fwdPort)
+	for _, a := range args {
+		for i, tok := range a {
+			if tok == "-A" {
+				a[i] = "-D"
+			}
+		}
+	}
+	return args
+}
+
+// uninstallLoopbackRedirectRules removes the agent-netns NAT REDIRECT that
+// the host-loopback forwarder installed. Called when the worker stops
+// forwarding so loopback fails open (direct, in-netns) rather than closed
+// (black-holed to a dead forwarder port). Best-effort: a rule that was
+// never installed yields a non-zero iptables exit, which we treat as
+// already-clean and ignore beyond the first real error.
+func uninstallLoopbackRedirectRules(fwdPort uint16) error {
+	var firstErr error
+	for _, r := range loopbackRedirectDeleteArgs(fwdPort) {
+		c := exec.Command("iptables", r...)
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("iptables %s: %w", strings.Join(r, " "), err)
+		}
+	}
+	return firstErr
 }
 
 // loopbackFrameLen is the size of a host-loopback job frame: 4-byte
