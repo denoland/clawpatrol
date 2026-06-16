@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -590,6 +591,26 @@ func TestPeekAgentListenerSkipsProcFallbackForUnix(t *testing.T) {
 	_, _, _, err := peekAgentListener(os.Getpid(), fd)
 	if !errors.Is(err, errNotIPListener) {
 		t.Fatalf("peekAgentListener AF_UNIX = %v, want errNotIPListener", err)
+	}
+}
+
+func TestRelayPeekErrorKeyDedupsProcFDFailures(t *testing.T) {
+	errForFD := func(fd int) error {
+		return errors.Join(
+			errors.New("pidfd_getfd: operation not permitted"),
+			&os.PathError{Op: "readlink", Path: "/proc/102/fd/" + strconv.Itoa(fd), Err: os.ErrPermission},
+		)
+	}
+
+	key3 := relayPeekErrorKey(errForFD(3))
+	key4 := relayPeekErrorKey(errForFD(4))
+	if key3 != key4 {
+		t.Fatalf("keys for /proc fd permission failures differ: %q vs %q", key3, key4)
+	}
+
+	other := errors.New("pidfd_getfd: operation not permitted")
+	if got := relayPeekErrorKey(other); got != other.Error() {
+		t.Fatalf("unrelated key = %q, want %q", got, other.Error())
 	}
 }
 
