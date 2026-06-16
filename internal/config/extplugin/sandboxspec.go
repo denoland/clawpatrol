@@ -25,7 +25,7 @@ import (
 //
 // The caller owns spec.SocketDir and must remove it when the plugin
 // dies.
-func buildSandboxSpec(sp config.PluginSource, network sandbox.Network, stateDir string) (sandbox.Spec, sandbox.Mode, string, error) {
+func buildSandboxSpec(sp config.PluginSource, binSource string, network sandbox.Network, stateDir string) (sandbox.Spec, sandbox.Mode, string, error) {
 	var zero sandbox.Spec
 
 	switch sp.Sandbox {
@@ -34,7 +34,7 @@ func buildSandboxSpec(sp config.PluginSource, network sandbox.Network, stateDir 
 		return zero, "", "", fmt.Errorf("invalid sandbox %q: expected \"enforce\" or \"off\"", sp.Sandbox)
 	}
 
-	bin, err := resolveSandboxPath(sp.Source)
+	bin, err := resolveSandboxPath(binSource)
 	if err != nil {
 		return zero, "", "", fmt.Errorf("plugin source %q: %w", sp.Source, err)
 	}

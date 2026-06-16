@@ -271,7 +271,7 @@ func handleDialRequest(ctx context.Context, ch *runtime.ConnHandle, reg *dialReg
 	}
 	var hosts, dialTargets []string
 	if body, ok := ch.Endpoint.Body.(*dynamicEndpointBody); ok {
-		hosts, dialTargets = body.hosts, body.dialTargets
+		hosts, dialTargets = body.hosts, body.dialAllowList()
 	}
 	if err := validateBrokeredDialTarget(ch, hosts, dialTargets, req.Addr); err != nil {
 		refuse("deny", err.Error())

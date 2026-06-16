@@ -58,6 +58,26 @@ type dynamicEndpointBody struct {
 	wantsVIP     bool
 }
 
+// dialAllowList returns the endpoint's effective brokered-dial allow-list:
+// the operator-written `dial` entries plus the plugin's manifest-approved
+// egress set. Both are consumed identically by validateBrokeredDialTarget
+// (exact "host:port" or "*.suffix:port"), so a plugin reaches its declared
+// destinations without the operator hand-writing them into every
+// endpoint's `dial`.
+func (b *dynamicEndpointBody) dialAllowList() []string {
+	var egress []string
+	if b.adapter != nil && b.adapter.client != nil {
+		egress = b.adapter.client.egress
+	}
+	if len(egress) == 0 {
+		return b.dialTargets
+	}
+	out := make([]string, 0, len(b.dialTargets)+len(egress))
+	out = append(out, b.dialTargets...)
+	out = append(out, egress...)
+	return out
+}
+
 // EndpointHosts is consulted by the loader at compile time
 // (config/compile.go reads it via reflection) and by the dispatch
 // layer for SNI / VIP routing.

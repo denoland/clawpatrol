@@ -52,6 +52,49 @@ func TestLockStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLockStoreSourceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, LockfileName)
+	s := newLockStore()
+	s.configure(path, false)
+	if err := s.load(); err != nil {
+		t.Fatal(err)
+	}
+	s.setSource("gh", "github.com/acme/p", "v1.2.3", "~> 1.2", "abcdef123456", true)
+	s.addHash("gh", "sha256:abc", "outbound")
+	if err := s.save(); err != nil {
+		t.Fatal(err)
+	}
+	raw := readString(t, path)
+	for _, want := range []string{`source      = "github.com/acme/p"`, `version     = "v1.2.3"`, `commit      = "abcdef123456"`, `attested    = true`, `constraints = "~> 1.2"`} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("lockfile missing %q:\n%s", want, raw)
+		}
+	}
+
+	s2 := newLockStore()
+	s2.configure(path, false)
+	if err := s2.load(); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := s2.get("gh")
+	if !ok || e.Source != "github.com/acme/p" || e.Version != "v1.2.3" ||
+		e.Constraints != "~> 1.2" || e.Commit != "abcdef123456" || !e.Attested ||
+		e.Network != "outbound" || !e.hasHash("sha256:abc") {
+		t.Fatalf("reloaded entry = %+v ok=%v", e, ok)
+	}
+
+	// A local-path plugin records no source/version (omitempty).
+	s2.addHash("local", "sha256:zzz", "none")
+	if err := s2.save(); err != nil {
+		t.Fatal(err)
+	}
+	raw2 := readString(t, path)
+	if strings.Contains(raw2, `source      = ""`) {
+		t.Errorf("local plugin wrote an empty source attr:\n%s", raw2)
+	}
+}
+
 func TestLockStoreReadOnlyNeverWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, LockfileName)

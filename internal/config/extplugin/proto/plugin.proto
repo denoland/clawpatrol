@@ -56,6 +56,11 @@ message ManifestResponse {
 
 message PluginCapabilities {
   NetworkAccess network = 1;
+  // egress is the set of upstream targets this plugin needs to dial via
+  // the gateway's brokered dial, each "host:port" or "*.suffix.tld:port".
+  // Declared by the plugin; the gateway records the approved set in the
+  // lockfile (trust-on-first-use) and blocks an upgrade that broadens it.
+  repeated string egress = 2;
 }
 
 enum NetworkAccess {

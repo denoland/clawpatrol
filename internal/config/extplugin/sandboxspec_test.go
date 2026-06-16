@@ -85,7 +85,7 @@ func TestBuildSandboxSpecValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := buildSandboxSpec(tc.sp, sandbox.NetworkNone, "")
+			_, _, _, err := buildSandboxSpec(tc.sp, tc.sp.Source, sandbox.NetworkNone, "")
 			if err == nil {
 				t.Fatalf("buildSandboxSpec accepted %+v", tc.sp)
 			}
@@ -109,7 +109,7 @@ func TestBuildSandboxSpecOff(t *testing.T) {
 	bin := testPluginBinary(t)
 	spec, mode, warning, err := buildSandboxSpec(config.PluginSource{
 		Name: "x", Source: bin, Sandbox: "off",
-	}, sandbox.NetworkNone, "")
+	}, bin, sandbox.NetworkNone, "")
 	if err != nil {
 		t.Fatal(err)
 	}

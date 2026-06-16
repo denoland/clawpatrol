@@ -425,8 +425,13 @@ func (x *ManifestResponse) GetCapabilities() *PluginCapabilities {
 }
 
 type PluginCapabilities struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Network       NetworkAccess          `protobuf:"varint,1,opt,name=network,proto3,enum=clawpatrol.plugin.v1.NetworkAccess" json:"network,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Network NetworkAccess          `protobuf:"varint,1,opt,name=network,proto3,enum=clawpatrol.plugin.v1.NetworkAccess" json:"network,omitempty"`
+	// egress is the set of upstream targets this plugin needs to dial via
+	// the gateway's brokered dial, each "host:port" or "*.suffix.tld:port".
+	// Declared by the plugin; the gateway records the approved set in the
+	// lockfile (trust-on-first-use) and blocks an upgrade that broadens it.
+	Egress        []string `protobuf:"bytes,2,rep,name=egress,proto3" json:"egress,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -466,6 +471,13 @@ func (x *PluginCapabilities) GetNetwork() NetworkAccess {
 		return x.Network
 	}
 	return NetworkAccess_NETWORK_NONE
+}
+
+func (x *PluginCapabilities) GetEgress() []string {
+	if x != nil {
+		return x.Egress
+	}
+	return nil
 }
 
 // FacetDecl describes one protocol-family schema the plugin exports.
@@ -3549,9 +3561,10 @@ const file_plugin_proto_rawDesc = "" +
 	"\atunnels\x18\x04 \x03(\v2 .clawpatrol.plugin.v1.TunnelDeclR\atunnels\x12@\n" +
 	"\tendpoints\x18\x05 \x03(\v2\".clawpatrol.plugin.v1.EndpointDeclR\tendpoints\x127\n" +
 	"\x06facets\x18\x06 \x03(\v2\x1f.clawpatrol.plugin.v1.FacetDeclR\x06facets\x12L\n" +
-	"\fcapabilities\x18\a \x01(\v2(.clawpatrol.plugin.v1.PluginCapabilitiesR\fcapabilities\"S\n" +
+	"\fcapabilities\x18\a \x01(\v2(.clawpatrol.plugin.v1.PluginCapabilitiesR\fcapabilities\"k\n" +
 	"\x12PluginCapabilities\x12=\n" +
-	"\anetwork\x18\x01 \x01(\x0e2#.clawpatrol.plugin.v1.NetworkAccessR\anetwork\"]\n" +
+	"\anetwork\x18\x01 \x01(\x0e2#.clawpatrol.plugin.v1.NetworkAccessR\anetwork\x12\x16\n" +
+	"\x06egress\x18\x02 \x03(\tR\x06egress\"]\n" +
 	"\tFacetDecl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
 	"\x06fields\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.FacetFieldDeclR\x06fields\"\x8b\x01\n" +

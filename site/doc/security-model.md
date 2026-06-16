@@ -298,8 +298,11 @@ network entirely, an endpoint plugin that receives credential secrets
 (to inject them into an upstream request) cannot exfiltrate them: its
 only channel is the gateway socket, and its upstream connections are
 opened *by the gateway* through the [brokered
-dial](plugins.md#brokered-upstream-dial), restricted to targets the
-operator's HCL sanctions and audited on every attempt. Tunnel plugins
+dial](plugins.md#brokered-upstream-dial), restricted to the targets the
+endpoint's `hosts`/`dial` HCL or the plugin's manifest-declared egress
+set sanctions and audited on every attempt. That egress set is recorded
+trust-on-first-use like the network grant, and an upgrade that broadens
+it fails closed until re-approved. Tunnel plugins
 are the upstream transport themselves and need outbound network; that
 grant is per-plugin, so it does not loosen the endpoint plugins beside
 it.
@@ -314,6 +317,39 @@ reviewable moment a malicious update would otherwise slip through.
 Because the lockfile is committed, the approval is also a diff in code
 review. Filesystem and `sandbox = "off"` grants are never
 plugin-declarable; they are operator-only and explicit (below).
+
+For a GitHub-distributed plugin the declared capability comes from the
+release's **signed static manifest** — verified (checksum + provenance)
+before the binary is downloaded — so the gateway never runs the
+unapproved binary to discover what it wants. When the binary then runs,
+its manifest is cross-checked against that signed declaration and the
+load **fails closed** if they disagree: the binary must do what its
+published manifest claims. A local plugin, or a release that ships no
+static manifest, falls back to reading the manifest from a throwaway,
+network-denied probe spawn.
+
+When a plugin's `source` is a GitHub repo, the same lockfile pins the
+resolved release version and the binary's hash, and distribution is
+gated three ways: the download must match the release's `SHA256SUMS`;
+the binary's hash is trusted-on-first-use and re-checked (fail-closed)
+on every later load; and, when the release carries a [GitHub
+build-provenance attestation](plugins.md#verification-and-trust),
+clawpatrol verifies through Sigstore that the binary was built by *that
+repo's* Actions workflow — the `github.com/owner/repo` named in the
+config is the trust anchor, closing the first-download gap. The
+attestation also binds the binary to the source commit it was built
+from, which the lockfile pins (`commit`) as an immutable reference; a
+re-pointed tag whose attestation names a different commit is rejected.
+Provenance is tracked trust-on-first-use like the network grant: the
+lockfile records whether the pinned version was attested, and a binary
+that loses provenance across a re-download or upgrade fails closed until
+the operator re-approves it — the loud, reviewable moment a malicious
+update that strips its attestation would otherwise slip through. The
+per-plugin `provenance` field (`warn` default, `require`, `off`) sets
+how a *first*, never-attested release is treated.
+The gateway loads only the locked version and never upgrades on its own;
+moving to a newer release is the operator's explicit `clawpatrol plugins
+update`.
 
 The sandbox is defense-in-depth, not a capability wall around the
 gateway as a whole. The grants form a deliberate risk ladder:

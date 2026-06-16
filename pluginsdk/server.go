@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Run blocks the caller's goroutine, serving the plugin's gRPC
@@ -31,6 +33,18 @@ func Run(p *Plugin) {
 		panic("pluginsdk.Run: Plugin.Name is required")
 	}
 	srv := newServer(p)
+	// `<plugin> --print-manifest` prints the plugin's manifest (the same
+	// one served over gRPC) as JSON and exits, without starting the gRPC
+	// server. A release publishes this as a static asset so the gateway
+	// can show a plugin's metadata and required privileges before it
+	// downloads or runs the binary.
+	if printManifestRequested() {
+		if err := printManifest(os.Stdout, srv); err != nil {
+			fmt.Fprintln(os.Stderr, "print-manifest:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: extplugin.HandshakeConfig,
 		Plugins: map[string]plugin.Plugin{
@@ -38,6 +52,28 @@ func Run(p *Plugin) {
 		},
 		GRPCServer: plugin.DefaultGRPCServer,
 	})
+}
+
+func printManifestRequested() bool {
+	for _, a := range os.Args[1:] {
+		if a == "--print-manifest" || a == "-print-manifest" {
+			return true
+		}
+	}
+	return false
+}
+
+func printManifest(w io.Writer, srv *server) error {
+	resp, err := srv.Manifest(context.Background(), &pb.ManifestRequest{})
+	if err != nil {
+		return err
+	}
+	b, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
 }
 
 // grpcServer satisfies plugin.GRPCPlugin so go-plugin registers our
@@ -104,6 +140,7 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		Version: s.plug.Version,
 		Capabilities: &pb.PluginCapabilities{
 			Network: networkAccessToProto(s.plug.Capabilities.Network),
+			Egress:  append([]string(nil), s.plug.Capabilities.Egress...),
 		},
 	}
 	for _, c := range s.plug.Credentials {

@@ -59,6 +59,50 @@ func TestValidateBrokeredDialTarget(t *testing.T) {
 	}
 }
 
+func TestDialAllowListMergesManifestEgress(t *testing.T) {
+	// An endpoint with one operator `dial` entry, bound to a plugin whose
+	// manifest declared egress to "*.amazonaws.com:443".
+	client := &Client{egress: []string{"*.amazonaws.com:443"}}
+	body := &dynamicEndpointBody{
+		adapter:     &endpointAdapter{client: client},
+		dialTargets: []string{"upstream.test:8000"},
+	}
+	got := body.dialAllowList()
+	want := []string{"upstream.test:8000", "*.amazonaws.com:443"}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("dialAllowList = %v, missing %q", got, w)
+		}
+	}
+
+	// The merged list is what validateBrokeredDialTarget enforces: a
+	// manifest-declared wildcard target is now permitted; an unrelated one
+	// is still refused.
+	ch := &runtime.ConnHandle{UpstreamHost: "api.example.com", DstPort: 8443}
+	if err := validateBrokeredDialTarget(ch, body.hosts, got, "s3.us-east-1.amazonaws.com:443"); err != nil {
+		t.Errorf("manifest egress target refused: %v", err)
+	}
+	if err := validateBrokeredDialTarget(ch, body.hosts, got, "evil.com:443"); err == nil {
+		t.Error("unrelated target allowed")
+	}
+
+	// A plugin with no declared egress: the allow-list is just the
+	// operator's dial entries (same slice, no allocation).
+	plain := &dynamicEndpointBody{
+		adapter:     &endpointAdapter{client: &Client{}},
+		dialTargets: []string{"upstream.test:8000"},
+	}
+	if got := plain.dialAllowList(); len(got) != 1 || got[0] != "upstream.test:8000" {
+		t.Fatalf("plain dialAllowList = %v", got)
+	}
+}
+
 func TestCheckDialTarget(t *testing.T) {
 	good := []string{"host.tld:443", "*.svc.tld:8080", "10.0.0.1:9000", "[::1]:80"}
 	for _, e := range good {

@@ -37,6 +37,33 @@ type lockEntry struct {
 	Name    string   `hcl:"name,label"`
 	Network string   `hcl:"network"`
 	Hashes  []string `hcl:"hashes"`
+
+	// Source/Version/Constraints are set for plugins fetched from a
+	// GitHub release (empty for local-path plugins). Source is the
+	// canonical "github.com/<owner>/<repo>"; Version is the resolved
+	// release tag the gateway is pinned to; Constraints echoes the
+	// operator's version constraint for review. The running gateway
+	// loads exactly Version; `clawpatrol plugins update` rewrites it.
+	Source      string `hcl:"source,optional"`
+	Version     string `hcl:"version,optional"`
+	Constraints string `hcl:"constraints,optional"`
+	// Commit is the source git commit the version's build-provenance
+	// attestation vouches the binary was built from — an immutable
+	// reference (release tags are mutable). Empty when the release
+	// carries no attestation. On a pinned re-download the attested commit
+	// must match this.
+	Commit string `hcl:"commit,optional"`
+	// Attested records whether the pinned version was build-provenance
+	// verified. A later binary (a re-download or an upgrade) that loses
+	// provenance — attested here, unattested now — is blocked until
+	// reapproved, the same trust-on-first-use model as the network grant.
+	Attested bool `hcl:"attested,optional"`
+	// Egress is the approved set of brokered-dial upstream targets the
+	// plugin's manifest declared, recorded trust-on-first-use. Each entry
+	// is "host:port" or "*.suffix.tld:port". An upgrade that broadens this
+	// set — wants a destination none of these entries cover — fails closed
+	// until reapproved. Shared across the entry's Hashes, like Network.
+	Egress []string `hcl:"egress,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -139,6 +166,54 @@ func (s *lockStore) addHash(name, hash, network string) {
 	}
 }
 
+// setSource records the resolved GitHub source/version/constraints/commit
+// for a plugin (the binary hashes are recorded separately by addHash at
+// load, or by an all-platform `plugins lock`). Marks dirty only on
+// change.
+func (s *lockStore) setSource(name, source, version, constraints, commit string, attested bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[name]
+	if e.Name == name && e.Source == source && e.Version == version &&
+		e.Constraints == constraints && e.Commit == commit && e.Attested == attested {
+		return
+	}
+	// A version change re-pins the plugin: the recorded hashes belonged
+	// to the old version's platform builds, so drop them — the new
+	// version's hashes are recorded fresh by the caller (addHash / lock).
+	if e.Version != version {
+		e.Hashes = nil
+	}
+	e.Name = name
+	e.Source = source
+	e.Version = version
+	e.Constraints = constraints
+	e.Commit = commit
+	e.Attested = attested
+	s.entries[name] = e
+	s.dirty = true
+}
+
+// setEgress records the approved brokered-dial egress set for a plugin
+// (shared across its platform hashes, like Network). Marks dirty only on
+// change. A nil/empty set is recorded as "no egress".
+func (s *lockStore) setEgress(name string, egress []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[name]
+	if e.Name == name && slices.Equal(e.Egress, egress) {
+		return
+	}
+	e.Name = name
+	if len(egress) == 0 {
+		e.Egress = nil
+	} else {
+		e.Egress = egress
+	}
+	s.entries[name] = e
+	s.dirty = true
+}
+
 // active reports whether a lockfile is in use (a path is configured).
 func (s *lockStore) active() bool {
 	s.mu.Lock()
@@ -173,7 +248,32 @@ func (s *lockStore) save() error {
 	for _, n := range names {
 		e := s.entries[n]
 		blk := body.AppendNewBlock("plugin", []string{n})
+		// Distribution provenance first (when set), then the permission
+		// record, so a GitHub-sourced block reads source -> version ->
+		// network -> hashes top to bottom.
+		if e.Source != "" {
+			blk.Body().SetAttributeValue("source", cty.StringVal(e.Source))
+		}
+		if e.Version != "" {
+			blk.Body().SetAttributeValue("version", cty.StringVal(e.Version))
+		}
+		if e.Commit != "" {
+			blk.Body().SetAttributeValue("commit", cty.StringVal(e.Commit))
+		}
+		if e.Attested {
+			blk.Body().SetAttributeValue("attested", cty.BoolVal(true))
+		}
+		if e.Constraints != "" {
+			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))
+		}
 		blk.Body().SetAttributeValue("network", cty.StringVal(e.Network))
+		if len(e.Egress) > 0 {
+			egVals := make([]cty.Value, len(e.Egress))
+			for i, eg := range e.Egress {
+				egVals[i] = cty.StringVal(eg)
+			}
+			blk.Body().SetAttributeValue("egress", cty.ListVal(egVals))
+		}
 		hashVals := make([]cty.Value, len(e.Hashes))
 		for i, h := range e.Hashes {
 			hashVals[i] = cty.StringVal(h)

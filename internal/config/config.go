@@ -545,12 +545,38 @@ func (f FrameworkAttrs) Str(name string) string {
 
 // PluginSource is a top-level `plugin "<name>" { source = "..." }`
 // declaration. Name is informational (the manifest name from the
-// subprocess wins for type namespacing); Source is a path to the
-// plugin binary. v1 only supports literal local paths; future
-// versions will add git-based fetching with a lockfile.
+// subprocess wins for type namespacing).
+//
+// Source is either a local path to the plugin binary or a GitHub
+// repository to fetch it from:
+//
+//   - A local path ("/abs/path", "./rel", "~/p") runs that binary
+//     directly.
+//   - "github.com/<owner>/<repo>" downloads the binary from the repo's
+//     GitHub releases, selecting the newest release tag that satisfies
+//     Version, then caches it under the state dir and pins the resolved
+//     version + per-platform hashes in clawpatrol.lock.hcl. The running
+//     gateway only ever loads the locked version; `clawpatrol plugins
+//     update` is the explicit upgrade.
 type PluginSource struct {
 	Name   string `hcl:"name,label"`
 	Source string `hcl:"source"`
+
+	// Version is a semver constraint (hashicorp/go-version syntax,
+	// e.g. "~> 1.2", ">= 1.0, < 2.0") applied to a GitHub source's
+	// release tags; the newest satisfying tag is selected. Empty
+	// selects the newest non-prerelease. It is an error to set Version
+	// on a local-path source.
+	Version string `hcl:"version,optional"`
+
+	// Provenance controls how a GitHub release's build-provenance
+	// attestation is treated. "warn" (the default) verifies an
+	// attestation when present and falls back to checksum-only with a
+	// warning when absent; "require" refuses a release that carries no
+	// (or an invalid) attestation; "off" skips the attestation check
+	// (checksum + lockfile pinning still apply). Only valid on a GitHub
+	// source. A present-but-invalid attestation always fails closed.
+	Provenance string `hcl:"provenance,optional"`
 
 	// Network grants the plugin direct network access. "none" (the
 	// default) confines the plugin to its gateway socket — endpoint

@@ -62,6 +62,177 @@ registry — with a built-in (e.g. `https` endpoint type, `http`
 facet) or another plugin — fails at validate time with a clear
 diagnostic.
 
+## Installing a plugin from GitHub
+
+`source` can be a local path (above) or a GitHub repository. With a
+repository, clawpatrol resolves a semver constraint against the repo's
+release tags, downloads the build for this host's OS/arch, verifies it,
+caches it, and pins the resolved version in the lockfile — the same
+model Terraform uses for providers:
+
+```hcl
+plugin "customerio" {
+  source  = "github.com/denoland/clawpatrol-customerio-plugin"
+  version = "~> 1.2"   # newest 1.x ≥ 1.2 ; omit for the newest stable
+}
+```
+
+`version` is a [`hashicorp/go-version`][gv] constraint (`>= 1.2.0`,
+`~> 1.2`, `~> 1.2.0`, `>= 1.0, < 2.0`, an exact `1.2.3`). `~> 1.2`
+allows `1.x ≥ 1.2`; `~> 1.2.0` allows `1.2.x`. Pre-release tags are
+excluded unless you pin one exactly. `version` is only valid on a
+GitHub source.
+
+[gv]: https://github.com/hashicorp/go-version
+
+### install, update, lock
+
+The download is an explicit, reviewable step — the running gateway only
+ever loads the **locked** version, and never upgrades on its own:
+
+```
+clawpatrol plugins install <config.hcl> [name...]   # download + pin
+clawpatrol plugins update  <config.hcl> [name...]   # re-pin to the newest match
+clawpatrol plugins lock    <config.hcl> [name...]   # record all platforms' hashes
+clawpatrol plugins info    <config.hcl> [name...]   # required privileges, no download
+```
+
+`plugins info` reads each GitHub plugin's signed static manifest for the
+newest release satisfying its constraint and prints the metadata and the
+privileges it requires — **without downloading the binary** — so you can
+review what an install or upgrade would grant before it happens.
+
+- **install** resolves the constraint (keeping any already-pinned
+  version), downloads, caches under `<state_dir>/plugins/…`, and records
+  the resolved version, the declared network, and the binary hash in
+  `clawpatrol.lock.hcl` beside the config.
+- **update** re-resolves to the newest release tag satisfying the
+  constraint and re-pins it — the one place an upgrade happens. The new
+  version shows up as a lockfile diff for review.
+- **lock** records the binary hash of *every* platform build a release
+  ships, so one committed lockfile verifies the plugin across a
+  mixed-OS team.
+
+The gateway checks GitHub for newer matching releases in the background
+and surfaces "update available" on the dashboard's Plugins page, but
+**never downloads or upgrades automatically** — you run `update`.
+
+Commit `clawpatrol.lock.hcl`. On a fresh host the gateway downloads
+exactly the locked version (verifying it) on first load; if the locked
+version no longer satisfies the constraint, or the source changed, it
+fails closed and tells you to run `install` / `update`.
+
+### How a plugin must package its releases
+
+So clawpatrol can find and verify the right binary, a plugin's GitHub
+release must contain, per platform, an archive named with the Go
+`GOOS`/`GOARCH` tokens, plus a checksums file:
+
+```
+<repo>_<version>_<os>_<arch>.tar.gz   # one per platform, holds the binary
+<repo>_<version>_SHA256SUMS           # sha256 of each archive (+ manifest)
+<repo>_<version>_manifest.json        # static manifest (optional)
+```
+
+Only the trailing `_<os>_<arch>.tar.gz` is load-bearing — clawpatrol
+selects the archive by that suffix and reads its checksum from
+`SHA256SUMS` — so the prefix is convention, not a hard requirement.
+
+The optional **static manifest** is the plugin's own manifest emitted by
+its `--print-manifest` mode (the SDK's `pluginsdk.Run` handles the flag).
+Publishing it as a release asset — listed in `SHA256SUMS` and covered by
+the attestation — lets `clawpatrol plugins info` show a plugin's
+metadata and **required privileges before downloading the binary**.
+
+Add a build-provenance attestation with one workflow step so clawpatrol
+can verify the binary (and the manifest) was built by your repo (see the
+trust model below):
+
+```yaml
+# .github/workflows/release.yml (excerpt)
+permissions:
+  contents: write
+  id-token: write       # for keyless signing
+  attestations: write
+steps:
+  - run: |
+      VER="${GITHUB_REF_NAME#v}"; REPO="${GITHUB_REPOSITORY##*/}"
+      mkdir -p dist
+      for pl in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        GOOS="${pl%_*}" GOARCH="${pl#*_}" CGO_ENABLED=0 \
+          go build -trimpath -ldflags "-s -w" -o "$REPO" .
+        tar -czf "dist/${REPO}_${VER}_${pl}.tar.gz" "$REPO"; rm "$REPO"
+      done
+      go build -o "$REPO" . && ./"$REPO" --print-manifest \
+        > "dist/${REPO}_${VER}_manifest.json" && rm "$REPO"
+      ( cd dist && shasum -a 256 *.tar.gz *_manifest.json \
+          > "${REPO}_${VER}_SHA256SUMS" )
+  - uses: actions/attest-build-provenance@v2
+    with:
+      subject-path: |
+        dist/*.tar.gz
+        dist/*_manifest.json
+  - uses: softprops/action-gh-release@v2
+    with: { files: dist/* }
+```
+
+[gr]: https://goreleaser.com
+
+### Verification and trust
+
+Three layers gate a downloaded binary, from least to most powerful:
+
+1. **Checksum.** The archive's sha256 must match the release's
+   `SHA256SUMS`.
+2. **Trust on first use.** The extracted binary's hash is recorded in
+   `clawpatrol.lock.hcl`; every later load re-hashes the cached binary
+   and **fails closed** on any mismatch — and a version bump re-runs the
+   permission-escalation check (a new release that newly wants `network`
+   is blocked until you re-approve it).
+3. **Build provenance.** If the release carries a GitHub
+   [build-provenance attestation][att], clawpatrol verifies (via
+   Sigstore) that the binary was built by *that repo's* GitHub Actions
+   workflow — the `github.com/owner/repo` you already named is the trust
+   anchor, so there is no key to manage. This closes the first-download
+   gap that checksums alone leave open. The attestation also names the
+   source **commit** the binary was built from; clawpatrol records it in
+   the lockfile (`commit = "..."`) — an immutable reference, since tags
+   are mutable — and on a later re-download of the pinned version rejects
+   an attestation that names a different commit (a re-pointed tag).
+
+   How a *missing* attestation is treated is set per plugin by
+   `provenance`:
+
+   ```hcl
+   plugin "customerio" {
+     source     = "github.com/denoland/clawpatrol-customerio-plugin"
+     version    = "~> 1.2"
+     provenance = "require"   # "warn" (default) | "require" | "off"
+   }
+   ```
+
+   - `"warn"` (default) — verify an attestation when present, else
+     install checksum-only with a warning, so plugins that have not
+     adopted attestations still install.
+   - `"require"` — refuse a release that carries no attestation; use it
+     for plugins you hold to the higher bar.
+   - `"off"` — skip the attestation check (checksum + lockfile pinning
+     still apply).
+
+   A present-but-**invalid** attestation always fails closed (every mode
+   but `"off"`).
+
+   Provenance is also tracked trust-on-first-use, like the network
+   grant: the lockfile records whether the pinned version was attested,
+   and a later binary that **loses** provenance — attested before, not
+   now — is **blocked** (a re-pointed tag, or an upgrade that drops its
+   attestation, looks exactly like a supply-chain attack) until you
+   accept it with `clawpatrol plugins approve <name>`. A plugin that was
+   never attested keeps installing with a warning; only a *downgrade* is
+   blocked.
+
+[att]: https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
+
 ## Sandbox and capability grants
 
 Plugins are **untrusted**. A plugin runs in the gateway process tree
@@ -205,12 +376,12 @@ is what lets endpoint plugins run with `network = "none"`: they
 receive credential secrets but cannot exfiltrate them, because they
 have no socket of their own.
 
-The gateway only dials targets the operator's HCL sanctions for that
-endpoint instance:
+The gateway only dials targets sanctioned for that endpoint instance:
 
 1. the exact host:port the agent originally dialed,
-2. an entry of the endpoint's `hosts` list, or
-3. an entry of the endpoint's `dial` allow-list:
+2. an entry of the endpoint's `hosts` list,
+3. an entry of the plugin's **manifest-declared egress** set, or
+4. an entry of the endpoint's `dial` allow-list:
 
 ```hcl
 endpoint "example_https" "demo-site" {
@@ -221,8 +392,34 @@ endpoint "example_https" "demo-site" {
 ```
 
 Any other target is refused and audited (a `dial` / `deny` event on
-the dashboard). Plugin-supplied config is never consulted for dial
-authorization — only HCL the operator wrote.
+the dashboard). Plugin-supplied *config* is never consulted for dial
+authorization.
+
+#### Manifest-declared egress
+
+A plugin that always needs to reach the same upstreams — an AWS plugin
+talking to `*.amazonaws.com`, say — declares them in its manifest
+rather than making every operator hand-write a `dial` list:
+
+```go
+Capabilities: pluginsdk.Capabilities{
+    Egress: []string{"*.amazonaws.com:443"},
+},
+```
+
+Each entry is `host:port` or `*.suffix.tld:port` (the same shape as
+`dial`). The gateway records the approved set in `clawpatrol.lock.hcl`
+on first load (trust-on-first-use, alongside the network grant) and
+merges it into every one of the plugin's endpoints' dial allow-list.
+An upgrade that **broadens** egress — a new version that wants a
+destination none of the approved entries cover — fails closed until
+the operator re-approves it (`clawpatrol plugins approve`), exactly
+like a network-grant escalation; a narrower or equal set loads
+unchanged. The declared set is verified against the signed static
+manifest, so `clawpatrol plugins info` shows a plugin's egress before
+any binary is downloaded. The operator's `dial` list still works and
+composes with the manifest set — use it for site-specific upstreams
+the plugin author can't know.
 
 `DialUpstream` requires a gateway that supports the brokered-dial
 protocol; against an older gateway it returns

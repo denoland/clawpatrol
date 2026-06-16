@@ -104,6 +104,23 @@ function BlockedCard({ p, onApproved }: { p: Plugin; onApproved: () => void }) {
         <Field label="Reason">
           <span className="text-xs text-danger-500">{p.reason}</span>
         </Field>
+        {p.requested && (
+          <Field label="Requires">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                {p.requested.version && (
+                  <span className="font-mono text-2xs text-text-muted">{p.requested.version}</span>
+                )}
+                <NetworkBadge network={p.requested.network} />
+              </div>
+              <RequestedTypes label="egress" items={p.requested.egress} />
+              <RequestedTypes label="credentials" items={p.requested.credentials} />
+              <RequestedTypes label="endpoints" items={p.requested.endpoints} />
+              <RequestedTypes label="tunnels" items={p.requested.tunnels} />
+              <RequestedTypes label="facets" items={p.requested.facets} />
+            </div>
+          </Field>
+        )}
         <Field label="Or run">
           <code className="font-mono text-2xs text-text bg-navy-100 px-2 py-1 squircle-md break-all">
             clawpatrol plugins approve &lt;config.hcl&gt; {p.name}
@@ -133,6 +150,15 @@ function PluginCard({ p }: { p: Plugin }) {
         </div>
       )}
 
+      {p.updateAvailable && (
+        <div className="px-4 py-2 bg-navy-100 border-b border-navy text-xs text-navy">
+          Update available: <span className="font-mono font-bold">{p.updateAvailable}</span> — run{" "}
+          <code className="font-mono text-2xs bg-canvas px-1 py-0.5 squircle-md">
+            clawpatrol plugins update
+          </code>
+        </div>
+      )}
+
       <div className="px-4 py-3 space-y-3">
         <Field label="Source">
           <span className="font-mono text-xs text-text-muted break-all">{p.source}</span>
@@ -148,6 +174,7 @@ function PluginCard({ p }: { p: Plugin }) {
             </div>
           </Field>
         )}
+        <TypeGroup label="Egress" items={p.egress} />
         <TypeGroup label="Credentials" items={p.credentials} />
         <TypeGroup label="Tunnels" items={p.tunnels} />
         <TypeGroup label="Endpoints" items={p.endpoints} />
@@ -164,6 +191,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </span>
       {children}
+    </div>
+  );
+}
+
+function RequestedTypes({ label, items }: { label: string; items?: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="flex items-baseline gap-2 flex-wrap">
+      <span className="font-mono text-2xs text-text-muted">{label}:</span>
+      {items.map((t) => (
+        <span
+          key={t}
+          className="font-mono text-2xs text-navy bg-navy-100 px-1.5 py-0.5 squircle-md"
+        >
+          {t}
+        </span>
+      ))}
     </div>
   );
 }

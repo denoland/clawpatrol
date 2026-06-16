@@ -1,0 +1,281 @@
+package extplugin
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	version "github.com/hashicorp/go-version"
+
+	"github.com/denoland/clawpatrol/internal/config"
+	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+)
+
+// This file backs the `clawpatrol plugins install|update|lock`
+// subcommands: the operator-driven, network-touching half of the
+// distribution flow. The running gateway never resolves or upgrades —
+// it only loads the version these commands pin into the lockfile.
+
+// InstalledPlugin reports the outcome of installing/updating one plugin.
+type InstalledPlugin struct {
+	Name      string
+	Source    string
+	Version   string
+	Network   string
+	Updated   bool   // version changed from what was previously locked
+	WasLocked string // the previously-locked version ("" if new)
+}
+
+// Install downloads and caches each named GitHub-sourced plugin (all
+// when names is empty), recording the resolved source/version, the
+// declared network, and the binary hash in the lockfile. Local-path
+// plugins are skipped (nothing to fetch). When upgrade is true it
+// re-resolves to the newest release tag satisfying the constraint — the
+// explicit upgrade; otherwise it keeps any already-pinned version and
+// just ensures it is downloaded.
+//
+// Install probes each downloaded plugin's manifest (a throwaway
+// network-denied spawn) to record its declared network, so it requires a
+// working sandbox backend just like a normal load.
+func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, names []string, upgrade bool) ([]InstalledPlugin, error) {
+	want := nameSet(names)
+	if err := m.lock.load(); err != nil {
+		return nil, err
+	}
+	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+
+	var out []InstalledPlugin
+	matched := map[string]bool{}
+	for _, sp := range specs {
+		if len(want) > 0 && !want[sp.Name] {
+			continue
+		}
+		p, err := pluginSourceFor(sp)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		matched[sp.Name] = true
+		if !p.IsRemote() {
+			continue // local path: nothing to install
+		}
+
+		entry, have := m.lock.get(sp.Name)
+		prev := ""
+		if have {
+			prev = entry.Version
+		}
+
+		var r ghRelease
+		if have && entry.Version != "" && !upgrade {
+			// Keep the pinned version; just make sure it's downloaded.
+			r, err = f.gh.releaseByTag(ctx, p.Owner, p.Repo, entry.Version)
+		} else {
+			r, _, err = f.gh.resolveVersion(ctx, p, sp.Version)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+
+		mode := provenanceModeOf(sp)
+		res, err := f.ensure(ctx, p, r, mode)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		// A version (or re-download) that loses provenance is blocked until
+		// the operator accepts it with `clawpatrol plugins approve`.
+		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
+			return nil, err
+		}
+		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)
+
+		// Read the network grant from the signed static manifest (no
+		// spawn); fall back to a probe only for a release without one.
+		staticMf, err := f.staticManifest(ctx, p, r, mode)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		network, err := m.declaredNetwork(ctx, sp, res.path, staticMf)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		m.lock.addHash(sp.Name, res.binSHA, network)
+
+		// Record the manifest-declared brokered-dial egress set when the
+		// release ships a signed static manifest (no spawn). install /
+		// update is the operator's explicit accept, so a broadened set is
+		// recorded rather than blocked. A release without a static manifest
+		// has its egress recorded trust-on-first-use at the first real load.
+		if staticMf != nil {
+			m.lock.setEgress(sp.Name, egressFromManifest(staticMf))
+		}
+
+		out = append(out, InstalledPlugin{
+			Name:      sp.Name,
+			Source:    p.slug(),
+			Version:   r.TagName,
+			Network:   network,
+			Updated:   prev != r.TagName,
+			WasLocked: prev,
+		})
+	}
+	if err := unknownNames(want, matched); err != nil {
+		return nil, err
+	}
+	if err := m.lock.save(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// LockPlatforms records, for each named GitHub-sourced plugin at its
+// pinned version, the binary hash of every platform build the release
+// ships — so one committed lockfile verifies the plugin on a mixed-OS
+// team. It downloads and extracts each platform's archive to a temp dir
+// (only the host platform's binary is cached) and adds every hash to the
+// lockfile. A plugin must already be pinned (run `install` first).
+func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource, names []string) ([]InstalledPlugin, error) {
+	want := nameSet(names)
+	if err := m.lock.load(); err != nil {
+		return nil, err
+	}
+	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+
+	var out []InstalledPlugin
+	matched := map[string]bool{}
+	for _, sp := range specs {
+		if len(want) > 0 && !want[sp.Name] {
+			continue
+		}
+		p, err := pluginSourceFor(sp)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		matched[sp.Name] = true
+		if !p.IsRemote() {
+			continue
+		}
+		entry, have := m.lock.get(sp.Name)
+		if !have || entry.Version == "" {
+			return nil, fmt.Errorf("plugin %q is not pinned; run `clawpatrol plugins install` first", sp.Name)
+		}
+		r, err := f.gh.releaseByTag(ctx, p.Owner, p.Repo, entry.Version)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		plats, err := f.platformsInRelease(ctx, p, r)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		tmp, err := os.MkdirTemp(m.stateDirLocked(), "lock-")
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = os.RemoveAll(tmp) }() // backstop; also removed promptly below
+		mode := provenanceModeOf(sp)
+		commit := entry.Commit
+		for _, plat := range plats {
+			res, err := f.fetchTo(ctx, p, r, plat, tmp, "bin", mode)
+			if err != nil {
+				_ = os.RemoveAll(tmp)
+				return nil, fmt.Errorf("plugin %q (%s): %w", sp.Name, plat, err)
+			}
+			m.lock.addHash(sp.Name, res.binSHA, entry.Network)
+			if commit == "" {
+				commit = res.commit
+			}
+		}
+		_ = os.RemoveAll(tmp)
+		// Record the attested commit if install hadn't (e.g. a hand-seeded
+		// pin); keeps lock idempotent when it already matches. The
+		// provenance level (entry.Attested) is unchanged by a lock pass.
+		if commit != "" && commit != entry.Commit {
+			m.lock.setSource(sp.Name, p.slug(), entry.Version, entry.Constraints, commit, entry.Attested)
+		}
+		out = append(out, InstalledPlugin{Name: sp.Name, Source: p.slug(), Version: entry.Version, Network: entry.Network})
+	}
+	if err := unknownNames(want, matched); err != nil {
+		return nil, err
+	}
+	if err := m.lock.save(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CheckUpdates queries GitHub for each pinned GitHub-sourced plugin and
+// records whether a newer release tag satisfying its constraint exists,
+// so the dashboard can surface "update available". It never downloads or
+// re-pins — applying an update is the operator's explicit `plugins
+// update`. Per-plugin lookup errors are logged and skipped so one
+// unreachable repo doesn't blank the whole set.
+func (m *Manager) CheckUpdates(ctx context.Context, specs []config.PluginSource) {
+	if err := m.lock.load(); err != nil {
+		m.logger.Warn("plugin update check: read lockfile", "err", err)
+		return
+	}
+	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	updates := map[string]string{}
+	for _, sp := range specs {
+		p, err := pluginSourceFor(sp)
+		if err != nil || !p.IsRemote() {
+			continue
+		}
+		entry, have := m.lock.get(sp.Name)
+		if !have || entry.Version == "" {
+			continue // not yet installed; nothing to compare against
+		}
+		r, newest, err := f.gh.resolveVersion(ctx, p, sp.Version)
+		if err != nil {
+			m.logger.Warn("plugin update check", "plugin", sp.Name, "err", err)
+			continue
+		}
+		locked, err := version.NewVersion(entry.Version)
+		if err != nil {
+			continue
+		}
+		if newest.GreaterThan(locked) {
+			updates[sp.Source] = r.TagName
+		}
+	}
+	m.mu.Lock()
+	m.updates = updates
+	m.mu.Unlock()
+	if len(updates) > 0 {
+		m.logger.Info("plugin updates available", "count", len(updates))
+	}
+}
+
+// declaredNetwork resolves the network grant to record at install time:
+// an operator HCL override wins, else the plugin's declared capability
+// (signed static manifest, or a probe fallback).
+func (m *Manager) declaredNetwork(ctx context.Context, sp config.PluginSource, binPath string, staticMf *pb.ManifestResponse) (string, error) {
+	if sp.Network != "" {
+		net, err := parseNetwork(sp.Network)
+		return string(net), err
+	}
+	net, err := m.pluginDeclaredNetwork(ctx, sp, binPath, staticMf)
+	return string(net), err
+}
+
+func nameSet(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	s := map[string]bool{}
+	for _, n := range names {
+		s[n] = true
+	}
+	return s
+}
+
+// unknownNames errors if the operator named a plugin that isn't in the
+// config.
+func unknownNames(want, matched map[string]bool) error {
+	for n := range want {
+		if !matched[n] {
+			return fmt.Errorf("no plugin %q in config", n)
+		}
+	}
+	return nil
+}
