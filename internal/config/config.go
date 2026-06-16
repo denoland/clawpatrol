@@ -30,8 +30,14 @@ const (
 	// clawpatrol" error rather than a wall of decode noise.
 	MaxSchemaVersion = 1
 
-	DefaultDashboardName    = "Claw Patrol"
+	// DefaultDashboardName is the display name used when the gateway
+	// config does not customize dashboard branding.
+	DefaultDashboardName = "Claw Patrol"
+
+	// DefaultDashboardLogoURL is the bundled full dashboard logo path.
 	DefaultDashboardLogoURL = "/claw-patrol-logo.svg"
+
+	// DefaultDashboardIconURL is the bundled compact dashboard icon path.
 	DefaultDashboardIconURL = "/claw-patrol-icon.svg"
 )
 
