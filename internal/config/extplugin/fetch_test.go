@@ -198,6 +198,9 @@ func TestResolvePluginBinaryDownloadCacheAndPin(t *testing.T) {
 	if !ok || e.Source != "github.com/acme/myplugin" || e.Version != "v1.2.0" || e.Constraints != "~> 1.2" {
 		t.Fatalf("lockfile not TOFU-recorded: %+v ok=%v", e, ok)
 	}
+	// The real Start pass records the binary hash via resolveNetwork right
+	// after resolvePluginBinary; do the same so the entry is fully pinned.
+	m.lock.addHash(repo, "sha256:"+sha256hex(payload), "none")
 
 	// Second resolve is offline (cache hit): close the server first.
 	srv.Close()
@@ -209,9 +212,8 @@ func TestResolvePluginBinaryDownloadCacheAndPin(t *testing.T) {
 
 func TestResolvePluginBinaryConstraintDriftFailsClosed(t *testing.T) {
 	m, dir := newFetchTestManager(t, "http://127.0.0.1:0") // never dialed
-	// Seed a lock entry pinned to v1.2.0.
-	m.lock.setSource("p", "github.com/acme/myplugin", "v1.2.0", "~> 1.2", "")
-	// Pretend the binary is cached so a cache hit would otherwise return.
+	// Seed a fully-pinned lock entry (source/version + the cached binary's
+	// hash) so the offline cache-hit path is taken.
 	plat := platformToken()
 	cached := filepath.Join(dir, "plugins", "github.com", "acme", "myplugin", "v1.2.0", plat, "myplugin")
 	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
@@ -220,6 +222,8 @@ func TestResolvePluginBinaryConstraintDriftFailsClosed(t *testing.T) {
 	if err := os.WriteFile(cached, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	m.lock.setSource("p", "github.com/acme/myplugin", "v1.2.0", "~> 1.2", "")
+	m.lock.addHash("p", "sha256:"+sha256hex([]byte("x")), "none")
 
 	// Operator tightened the constraint so the locked version no longer fits.
 	sp := config.PluginSource{Name: "p", Source: "github.com/acme/myplugin", Version: "~> 2.0"}
@@ -232,6 +236,57 @@ func TestResolvePluginBinaryConstraintDriftFailsClosed(t *testing.T) {
 	sp.Version = "~> 1.2"
 	if got, err := m.resolvePluginBinary(context.Background(), sp); err != nil || got != cached {
 		t.Fatalf("pinned cache hit failed: %v (got %q)", err, got)
+	}
+}
+
+// TestPinnedEmptyHashesReDownloads covers the C1 fix: a pinned entry with
+// no recorded hashes (e.g. a first-load probe failed mid-way) must NOT be
+// served from the cache unverified — it re-downloads and re-verifies.
+func TestPinnedEmptyHashesReDownloads(t *testing.T) {
+	owner, repo := "acme", "myplugin"
+	plat := platformToken()
+	realBin := []byte("the-real-verified-binary")
+	archive := tarGz(t, map[string][]byte{repo: realBin}, repo)
+	archiveName := fmt.Sprintf("%s_1.0.0_%s.tar.gz", repo, plat)
+	sumsName := fmt.Sprintf("%s_1.0.0_SHA256SUMS", repo)
+	sums := fmt.Sprintf("%s  %s\n", sha256hex(archive), archiveName)
+	srv := newReleaseServer(t, owner, repo, []relSpec{{
+		tag:    "v1.0.0",
+		assets: map[string][]byte{archiveName: archive, sumsName: []byte(sums)},
+	}})
+	m, dir := newFetchTestManager(t, srv.URL)
+	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin"}
+
+	// Pinned source/version but NO hashes, plus a bogus cached binary.
+	cached := filepath.Join(dir, "plugins", "github.com", owner, repo, "v1.0.0", plat, repo)
+	if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, []byte("BOGUS-UNVERIFIED"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.0.0", "", "")
+
+	path, err := m.resolvePluginBinary(context.Background(), sp)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, realBin) {
+		t.Fatalf("empty-hashes pinned entry served an unverified cache (%q); must re-download+verify", got)
+	}
+}
+
+// TestPinnedVersionWithoutSourceFailsClosed covers the H3 fix: a lockfile
+// entry with a version but no source must not silently re-resolve/auto-
+// upgrade; it fails closed.
+func TestPinnedVersionWithoutSourceFailsClosed(t *testing.T) {
+	m, _ := newFetchTestManager(t, "http://127.0.0.1:0") // must never dial
+	m.lock.setSource("p", "", "v1.0.0", "", "")          // malformed: version, no source
+	sp := config.PluginSource{Name: "p", Source: "github.com/acme/myplugin", Version: "~> 1.0"}
+	_, err := m.resolvePluginBinary(context.Background(), sp)
+	if err == nil || !strings.Contains(err.Error(), "version but no source") {
+		t.Fatalf("want version-without-source fail-closed, got %v", err)
 	}
 }
 

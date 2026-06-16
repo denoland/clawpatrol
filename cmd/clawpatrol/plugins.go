@@ -27,7 +27,11 @@ commands:
 With no name arguments a command applies to every plugin in the config.`
 
 func runPlugins(args []string) {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println(pluginsHelp)
+		os.Exit(0)
+	}
+	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, pluginsHelp)
 		os.Exit(2)
 	}

@@ -590,7 +590,12 @@ func (g *Gateway) watchPluginUpdates() {
 	for {
 		specs := g.cfg.Load().Plugins
 		if len(specs) > 0 {
+			// CheckUpdates reloads the shared lockfile store, so it must
+			// not interleave with a config-reload's LoadPlugins (which does
+			// its own load -> TOFU -> save). configMu serializes them.
+			g.configMu.Lock()
 			g.pluginMgr.CheckUpdates(context.Background(), specs)
+			g.configMu.Unlock()
 		}
 		time.Sleep(24 * time.Hour)
 	}

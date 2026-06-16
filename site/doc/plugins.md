@@ -127,7 +127,10 @@ release must contain, per platform, an archive named with the Go
 <repo>_<version>_SHA256SUMS           # sha256 of each archive
 ```
 
-This is the default [GoReleaser][gr] layout. Add a build-provenance
+This is the default [GoReleaser][gr] layout. Only the trailing
+`_<os>_<arch>.tar.gz` is load-bearing — clawpatrol selects the archive
+by that suffix and reads its checksum from `SHA256SUMS` — so the prefix
+is convention, not a hard requirement. Add a build-provenance
 attestation with one workflow line so clawpatrol can verify the binary
 was built by your repo (see the trust model below):
 

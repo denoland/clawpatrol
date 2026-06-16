@@ -149,6 +149,7 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 		if err != nil {
 			return nil, err
 		}
+		defer func() { _ = os.RemoveAll(tmp) }() // backstop; also removed promptly below
 		commit := entry.Commit
 		for _, plat := range plats {
 			res, err := f.fetchTo(ctx, p, r, plat, tmp, "bin")

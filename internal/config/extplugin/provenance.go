@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,6 +28,19 @@ import (
 
 // githubActionsOIDCIssuer is the OIDC issuer GitHub Actions signs with.
 const githubActionsOIDCIssuer = "https://token.actions.githubusercontent.com"
+
+// isHex64 reports whether s is exactly 64 lowercase hex chars (a sha256).
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 // errNoAttestation means the repo published no build-provenance
 // attestation for the artifact. The fetcher treats this as a soft miss
@@ -69,6 +83,9 @@ func (g *githubProvenance) trustedMaterial() (root.TrustedMaterial, error) {
 // errNoAttestation when the repo published none, or a verification error
 // when an attestation exists but does not validate.
 func (g *githubProvenance) verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) (string, error) {
+	if !isHex64(archiveSHA256) {
+		return "", fmt.Errorf("invalid artifact digest %q", archiveSHA256)
+	}
 	bundles, err := g.gh.attestations(ctx, owner, repo, "sha256:"+archiveSHA256)
 	if err != nil {
 		return "", err
@@ -144,7 +161,8 @@ func sourceCommit(res *verify.VerificationResult) string {
 // stores for an artifact's subject digest ("sha256:<hex>"). A 404 means
 // no attestation exists (returns nil, nil).
 func (c *ghClient) attestations(ctx context.Context, owner, repo, digest string) ([]*bundle.Bundle, error) {
-	u := fmt.Sprintf("%s/repos/%s/%s/attestations/%s", c.base, owner, repo, digest)
+	u := fmt.Sprintf("%s/repos/%s/%s/attestations/%s",
+		c.base, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(digest))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

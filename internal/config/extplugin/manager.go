@@ -45,10 +45,12 @@ type Manager struct {
 	ghBase string
 	prov   provenanceVerifier
 
-	// updates records, per plugin source slug, the newest release tag
-	// satisfying its constraint that is newer than the locked version —
-	// surfaced on the dashboard. Populated by the background CheckUpdates
-	// pass; never triggers a download.
+	// updates records the newest release tag satisfying a plugin's
+	// constraint that is newer than the locked version, keyed by the
+	// plugin's raw `source` string (which is what PluginInfo.Source
+	// carries, so the dashboard can join them). Two plugin blocks sharing
+	// one source collide on the key — an unusual config. Populated by the
+	// background CheckUpdates pass; never triggers a download.
 	updates map[string]string
 }
 

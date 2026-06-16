@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,8 +32,11 @@ import (
 //	<state_dir>/plugins/github.com/<owner>/<repo>/<tag>/<os>_<arch>/<repo>
 
 const (
-	maxArchiveBytes = 256 << 20 // ceiling on a downloaded release archive
-	maxSumsBytes    = 1 << 20   // ceiling on a SHA256SUMS / metadata file
+	maxArchiveBytes      = 256 << 20 // ceiling on a downloaded release archive
+	maxSumsBytes         = 1 << 20   // ceiling on a SHA256SUMS / metadata file
+	maxReleaseJSONBytes  = 16 << 20  // ceiling on a release's JSON (many assets)
+	maxDecompressedBytes = 512 << 20 // ceiling on total inflated archive bytes
+	maxArchiveEntries    = 4096      // ceiling on tar entries (decompression bomb)
 )
 
 // platformToken is "<goos>_<goarch>" for the running host — the token a
@@ -118,7 +122,8 @@ func findSumsAsset(r ghRelease) (ghAsset, bool) {
 // releaseByTag fetches a single release by its tag (used to re-download a
 // lockfile-pinned version without listing every release).
 func (c *ghClient) releaseByTag(ctx context.Context, owner, repo, tag string) (ghRelease, error) {
-	u := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", c.base, owner, repo, tag)
+	u := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s",
+		c.base, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(tag))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return ghRelease{}, err
@@ -128,7 +133,7 @@ func (c *ghClient) releaseByTag(ctx context.Context, owner, repo, tag string) (g
 	if err != nil {
 		return ghRelease{}, fmt.Errorf("github: get release %s/%s@%s: %w", owner, repo, tag, err)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSumsBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseJSONBytes))
 	_ = resp.Body.Close()
 	if err != nil {
 		return ghRelease{}, err
@@ -235,7 +240,10 @@ func extractBinary(src, dest string) error {
 		return fmt.Errorf("gunzip: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
+	// Bound total inflated bytes so a decompression bomb (the on-disk
+	// archive is only capped while compressed) can't exhaust CPU/disk as
+	// the tar reader advances through entries.
+	tr := tar.NewReader(io.LimitReader(gz, maxDecompressedBytes))
 
 	tmp, err := os.CreateTemp(filepath.Dir(dest), "ex-*")
 	if err != nil {
@@ -245,6 +253,7 @@ func extractBinary(src, dest string) error {
 	defer func() { _ = os.Remove(tmpName) }()
 
 	found, executable := false, false
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -253,6 +262,10 @@ func extractBinary(src, dest string) error {
 		if err != nil {
 			_ = tmp.Close()
 			return fmt.Errorf("read archive: %w", err)
+		}
+		if entries++; entries > maxArchiveEntries {
+			_ = tmp.Close()
+			return fmt.Errorf("archive %s has too many entries (>%d)", filepath.Base(src), maxArchiveEntries)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
@@ -372,6 +385,10 @@ func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat
 		switch {
 		case err == nil:
 			commit = c
+			if commit == "" && f.logger != nil {
+				f.logger.Warn("plugin attestation verified but names no source commit; commit pinning disabled",
+					"plugin", p.slug(), "version", r.TagName)
+			}
 		case errors.Is(err, errNoAttestation):
 			if f.logger != nil {
 				f.logger.Warn("plugin has no build-provenance attestation; verified by checksum only",
@@ -464,6 +481,17 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
 
 	entry, have := m.lock.get(sp.Name)
+
+	// A lockfile entry that names a version but no source is malformed (a
+	// hand-edit or a partial write). Refuse it rather than fall through to
+	// the first-use branch, which would silently re-resolve the constraint
+	// and auto-upgrade — the one thing the running gateway must never do.
+	if have && entry.Version != "" && entry.Source == "" {
+		return "", fmt.Errorf(
+			"lockfile entry for %q has a version but no source; fix or remove it, then run `clawpatrol plugins install`",
+			sp.Name)
+	}
+
 	if have && entry.Source != "" && entry.Version != "" {
 		if entry.Source != p.slug() {
 			return "", fmt.Errorf(
@@ -475,18 +503,18 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 				"locked version %s no longer satisfies %q; run `clawpatrol plugins update %s` (%w)",
 				entry.Version, sp.Version, sp.Name, err)
 		}
-		// Pinned. Use the cache if the binary is present (and, when the
-		// lockfile already records hashes, matches one); otherwise
-		// re-download exactly the locked tag.
+		// Offline fast path: trust the cache only when the lockfile records
+		// at least one approved hash AND the cached binary matches it. An
+		// entry with no hashes was never fully verified (e.g. a first-load
+		// probe failed after the source/version was recorded), so fall
+		// through to a fresh, provenance- and checksum-verified download
+		// rather than load an unchecked binary.
 		path := f.binPath(p, entry.Version)
-		if fileExists(path) {
-			if len(entry.Hashes) > 0 {
-				if h, err := hashFile(path); err == nil && !entry.hasHash(h) {
-					return "", fmt.Errorf(
-						"cached binary hash %s is not in the lockfile; delete %s to re-download", h, path)
-				}
+		if len(entry.Hashes) > 0 && fileExists(path) {
+			if h, err := hashFile(path); err == nil && entry.hasHash(h) {
+				return path, nil
 			}
-			return path, nil
+			// Hash mismatch or unreadable: re-download and re-verify below.
 		}
 		r, err := f.gh.releaseByTag(ctx, p.Owner, p.Repo, entry.Version)
 		if err != nil {
