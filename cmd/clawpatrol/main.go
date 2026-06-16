@@ -577,6 +577,25 @@ func defaultProfileName(p *config.Policy) string {
 // re-decodes the HCL and atomically swaps in the new rules + admin_email
 // + integrations list. Listen ports / CA dir / OAuth dir / Tailscale
 // block changes still require a restart (logged but not applied).
+// watchPluginUpdates periodically checks GitHub for newer releases of
+// pinned plugins and records "update available" for the dashboard. It
+// never downloads or applies anything — upgrading is the operator's
+// explicit `clawpatrol plugins update`. The first check runs shortly
+// after startup, then daily.
+func (g *Gateway) watchPluginUpdates() {
+	if g.pluginMgr == nil {
+		return
+	}
+	time.Sleep(30 * time.Second)
+	for {
+		specs := g.cfg.Load().Plugins
+		if len(specs) > 0 {
+			g.pluginMgr.CheckUpdates(context.Background(), specs)
+		}
+		time.Sleep(24 * time.Hour)
+	}
+}
+
 func (g *Gateway) watchConfig(path string) {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -2891,6 +2910,7 @@ usage:
   clawpatrol env                         print shell exports for sourcing
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
+  clawpatrol plugins <cmd> <config.hcl>  install / update / lock / approve plugins
   clawpatrol version | -v | --version    print version and exit
 
 Documentation: https://clawpatrol.dev/docs/`)
@@ -2956,6 +2976,10 @@ func runGateway(args []string) {
 	// the config (committed to VCS); trust-on-first-use, fail closed on
 	// escalation.
 	pluginMgr.SetLockfile(extplugin.LockfilePathFor(cfgPath), false)
+	// Verify the GitHub build-provenance attestation of any plugin
+	// downloaded on a cache miss; a plugin with no attestation falls back
+	// to the checksum + lockfile check with a warning.
+	pluginMgr.VerifyProvenance(true)
 	config.SetPluginLoader(pluginMgr)
 	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
@@ -3051,6 +3075,7 @@ func runGateway(args []string) {
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.sweepDashboardSessions()
 	go g.watchConfig(cfgPath)
+	go g.watchPluginUpdates()
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}

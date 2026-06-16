@@ -133,6 +133,15 @@ function PluginCard({ p }: { p: Plugin }) {
         </div>
       )}
 
+      {p.updateAvailable && (
+        <div className="px-4 py-2 bg-navy-100 border-b border-navy text-xs text-navy">
+          Update available: <span className="font-mono font-bold">{p.updateAvailable}</span> — run{" "}
+          <code className="font-mono text-2xs bg-canvas px-1 py-0.5 squircle-md">
+            clawpatrol plugins update
+          </code>
+        </div>
+      )}
+
       <div className="px-4 py-3 space-y-3">
         <Field label="Source">
           <span className="font-mono text-xs text-text-muted break-all">{p.source}</span>

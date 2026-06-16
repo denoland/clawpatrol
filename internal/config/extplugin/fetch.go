@@ -1,0 +1,534 @@
+package extplugin
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+
+	"github.com/hashicorp/go-hclog"
+	version "github.com/hashicorp/go-version"
+
+	"github.com/denoland/clawpatrol/internal/config"
+)
+
+// This file downloads a plugin binary from a GitHub release, verifies it
+// against the release's SHA256SUMS (and, when configured, its build-
+// provenance attestation), extracts it, and caches it under the state
+// dir. The cache layout mirrors Terraform's provider cache:
+//
+//	<state_dir>/plugins/github.com/<owner>/<repo>/<tag>/<os>_<arch>/<repo>
+
+const (
+	maxArchiveBytes = 256 << 20 // ceiling on a downloaded release archive
+	maxSumsBytes    = 1 << 20   // ceiling on a SHA256SUMS / metadata file
+)
+
+// platformToken is "<goos>_<goarch>" for the running host — the token a
+// release archive's name must carry (e.g. "linux_amd64", "darwin_arm64").
+func platformToken() string { return runtime.GOOS + "_" + runtime.GOARCH }
+
+// provenanceVerifier asserts that the archive with the given sha256 was
+// built by owner/repo at tag, per its GitHub build-provenance
+// attestation. nil verifier means "skip" (wired in a later milestone).
+type provenanceVerifier interface {
+	verify(ctx context.Context, owner, repo, tag, archiveSHA256 string) error
+}
+
+// shaSums maps an asset filename to its lowercase-hex sha256, parsed
+// from a SHA256SUMS file.
+type shaSums map[string]string
+
+func parseShaSums(b []byte) (shaSums, error) {
+	out := shaSums{}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 {
+			continue
+		}
+		sum := strings.ToLower(fields[0])
+		name := strings.TrimPrefix(fields[1], "*") // coreutils binary marker
+		if len(sum) != 64 {
+			continue
+		}
+		out[name] = sum
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no SHA256SUMS entries parsed")
+	}
+	return out, nil
+}
+
+func isTarGz(name string) bool {
+	return strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")
+}
+
+// pickAsset returns the archive filename for the given "<os>_<arch>"
+// token. The convention is "..._<os>_<arch>.tar.gz", matched on the full
+// token suffix so "linux_arm" never matches "linux_arm64". Exactly one
+// archive must match.
+func (s shaSums) pickAsset(plat string) (string, error) {
+	var matches []string
+	for name := range s {
+		if isTarGz(name) && (strings.HasSuffix(name, "_"+plat+".tar.gz") || strings.HasSuffix(name, "_"+plat+".tgz")) {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no release archive named *_%s.tar.gz in SHA256SUMS", plat)
+	default:
+		return "", fmt.Errorf("ambiguous release archives for %s: %s", plat, strings.Join(matches, ", "))
+	}
+}
+
+// findSumsAsset returns the release's SHA256SUMS asset.
+func findSumsAsset(r ghRelease) (ghAsset, bool) {
+	for _, a := range r.Assets {
+		if strings.HasSuffix(a.Name, "SHA256SUMS") {
+			return a, true
+		}
+	}
+	return ghAsset{}, false
+}
+
+// releaseByTag fetches a single release by its tag (used to re-download a
+// lockfile-pinned version without listing every release).
+func (c *ghClient) releaseByTag(ctx context.Context, owner, repo, tag string) (ghRelease, error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", c.base, owner, repo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ghRelease{}, err
+	}
+	c.authHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return ghRelease{}, fmt.Errorf("github: get release %s/%s@%s: %w", owner, repo, tag, err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSumsBytes))
+	_ = resp.Body.Close()
+	if err != nil {
+		return ghRelease{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ghRelease{}, fmt.Errorf("github: get release %s/%s@%s: HTTP %d: %s",
+			owner, repo, tag, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var r ghRelease
+	if err := json.Unmarshal(body, &r); err != nil {
+		return ghRelease{}, fmt.Errorf("github: decode release %s/%s@%s: %w", owner, repo, tag, err)
+	}
+	return r, nil
+}
+
+// assetURL chooses the download URL for an asset: the api.github.com
+// asset URL when authenticated (works for private repos), else the
+// public browser_download_url.
+func (c *ghClient) assetURL(a ghAsset) string {
+	if c.token != "" && a.APIURL != "" {
+		return a.APIURL
+	}
+	return a.DownloadURL
+}
+
+// getBytes fetches a small asset/file entirely into memory.
+func (c *ghClient) getBytes(ctx context.Context, url string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	return body, nil
+}
+
+// downloadToTemp streams url into a temp file in dir, enforcing a byte
+// ceiling, and returns the temp path plus the content's hex sha256.
+func (c *ghClient) downloadToTemp(ctx context.Context, url, dir string) (path, sum string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	tmp, err := os.CreateTemp(dir, "dl-*")
+	if err != nil {
+		return "", "", err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, maxArchiveBytes+1))
+	cerr := tmp.Close()
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+		return "", "", err
+	}
+	if cerr != nil {
+		_ = os.Remove(tmp.Name())
+		return "", "", cerr
+	}
+	if n > maxArchiveBytes {
+		_ = os.Remove(tmp.Name())
+		return "", "", fmt.Errorf("download %s exceeds %d bytes", url, maxArchiveBytes)
+	}
+	return tmp.Name(), hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// extractBinary unpacks the single executable from a .tar.gz at src and
+// writes it to dest (0700). Output goes to a fixed path, not a tar entry
+// name, so there is no path-traversal surface; a regular file is chosen
+// (preferring the executable one when several exist).
+func extractBinary(src, dest string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gunzip: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	tr := tar.NewReader(gz)
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "ex-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	found, executable := false, false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("read archive: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		isExec := hdr.Mode&0o111 != 0
+		// Keep the first regular file; upgrade to an executable one if a
+		// non-exec was kept first. Reject two executables (ambiguous).
+		if found && executable && isExec {
+			_ = tmp.Close()
+			return fmt.Errorf("archive %s contains multiple executables; expected one plugin binary", filepath.Base(src))
+		}
+		if found && !isExec {
+			continue // already have a candidate, this one is no better
+		}
+		if found && isExec && executable {
+			continue
+		}
+		// (Re)write the candidate.
+		if err := tmp.Truncate(0); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		if _, err := io.Copy(tmp, io.LimitReader(tr, maxArchiveBytes+1)); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("extract %s: %w", hdr.Name, err)
+		}
+		found, executable = true, isExec
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("archive %s contains no regular file", filepath.Base(src))
+	}
+	if err := os.Chmod(tmpName, 0o700); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, dest)
+}
+
+// fetcher downloads and caches GitHub-release plugin binaries.
+type fetcher struct {
+	gh     *ghClient
+	cache  string // <state_dir>/plugins
+	prov   provenanceVerifier
+	logger hclog.Logger
+}
+
+func newFetcher(stateDir, ghBase string, prov provenanceVerifier, logger hclog.Logger) *fetcher {
+	c := newGHClient()
+	if ghBase != "" {
+		c.base = ghBase
+	}
+	return &fetcher{gh: c, cache: filepath.Join(stateDir, "plugins"), prov: prov, logger: logger}
+}
+
+func (f *fetcher) platDir(p parsedSource, tag string) string {
+	return filepath.Join(f.cache, githubHost, p.Owner, p.Repo, tag, platformToken())
+}
+
+// binPath is the cached host-platform binary path for a given tag.
+func (f *fetcher) binPath(p parsedSource, tag string) string {
+	return filepath.Join(f.platDir(p, tag), p.Repo)
+}
+
+// ensure downloads (if not already cached) the host-platform binary for
+// release r, verifying the archive against SHA256SUMS and the provenance
+// attestation, and returns the cached binary path and its "sha256:..."
+// (the extracted binary's hash — the lockfile load-time identity).
+func (f *fetcher) ensure(ctx context.Context, p parsedSource, r ghRelease) (string, string, error) {
+	return f.fetchTo(ctx, p, r, platformToken(), f.platDir(p, r.TagName), p.Repo)
+}
+
+// fetchTo downloads the archive for the given platform token from release
+// r, verifies it against SHA256SUMS (and the provenance attestation when
+// configured), and extracts the binary to destDir/destName, returning
+// the binary path and its "sha256:..." hash. ensure caches at the host
+// platform path; the lock command points it at a temp dir to hash other
+// platforms' builds without caching them.
+func (f *fetcher) fetchTo(ctx context.Context, p parsedSource, r ghRelease, plat, destDir, destName string) (string, string, error) {
+	sumsAsset, ok := findSumsAsset(r)
+	if !ok {
+		return "", "", fmt.Errorf("release %s of %s has no SHA256SUMS asset", r.TagName, p.slug())
+	}
+	sumsBytes, err := f.gh.getBytes(ctx, f.gh.assetURL(sumsAsset), maxSumsBytes)
+	if err != nil {
+		return "", "", err
+	}
+	sums, err := parseShaSums(sumsBytes)
+	if err != nil {
+		return "", "", err
+	}
+	archiveName, err := sums.pickAsset(plat)
+	if err != nil {
+		return "", "", err
+	}
+	wantSHA := sums[archiveName]
+	archive, ok := r.asset(archiveName)
+	if !ok {
+		return "", "", fmt.Errorf("SHA256SUMS lists %q but the release has no such asset", archiveName)
+	}
+
+	// Provenance gate (skipped when no verifier is configured): the
+	// archive's sha256 must be covered by a build-provenance attestation
+	// from owner/repo. Verify-if-present — a repo that publishes no
+	// attestation falls back to the checksum + lockfile-TOFU floor with a
+	// warning, so plugins that have not adopted attestations still
+	// install; a present-but-invalid attestation always fails closed.
+	if f.prov != nil {
+		switch err := f.prov.verify(ctx, p.Owner, p.Repo, r.TagName, wantSHA); {
+		case err == nil:
+		case errors.Is(err, errNoAttestation):
+			if f.logger != nil {
+				f.logger.Warn("plugin has no build-provenance attestation; verified by checksum only",
+					"plugin", p.slug(), "version", r.TagName)
+			}
+		default:
+			return "", "", fmt.Errorf("provenance verification failed for %s %s: %w", p.slug(), r.TagName, err)
+		}
+	}
+
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return "", "", err
+	}
+	tmpArchive, gotSHA, err := f.gh.downloadToTemp(ctx, f.gh.assetURL(archive), destDir)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = os.Remove(tmpArchive) }()
+	if gotSHA != wantSHA {
+		return "", "", fmt.Errorf("archive %s sha256 mismatch: got %s, SHA256SUMS says %s", archiveName, gotSHA, wantSHA)
+	}
+	dest := filepath.Join(destDir, destName)
+	if err := extractBinary(tmpArchive, dest); err != nil {
+		return "", "", err
+	}
+	binSHA, err := hashFile(dest)
+	if err != nil {
+		return "", "", err
+	}
+	return dest, binSHA, nil
+}
+
+// platformsInRelease lists the "<os>_<arch>" tokens for every archive in
+// the release's SHA256SUMS — the set a cross-platform `plugins lock`
+// records hashes for.
+func (f *fetcher) platformsInRelease(ctx context.Context, p parsedSource, r ghRelease) ([]string, error) {
+	sumsAsset, ok := findSumsAsset(r)
+	if !ok {
+		return nil, fmt.Errorf("release %s of %s has no SHA256SUMS asset", r.TagName, p.slug())
+	}
+	sumsBytes, err := f.gh.getBytes(ctx, f.gh.assetURL(sumsAsset), maxSumsBytes)
+	if err != nil {
+		return nil, err
+	}
+	sums, err := parseShaSums(sumsBytes)
+	if err != nil {
+		return nil, err
+	}
+	var plats []string
+	for name := range sums {
+		if tok := platformFromArchive(name); tok != "" {
+			plats = append(plats, tok)
+		}
+	}
+	sort.Strings(plats)
+	return plats, nil
+}
+
+// platformFromArchive extracts the "<os>_<arch>" token from an archive
+// filename "..._<os>_<arch>.tar.gz", or "" if it isn't a platform
+// archive. The os/arch are the last two underscore-separated fields
+// before the extension.
+func platformFromArchive(name string) string {
+	base := strings.TrimSuffix(strings.TrimSuffix(name, ".tar.gz"), ".tgz")
+	if base == name {
+		return "" // not a tar.gz
+	}
+	fields := strings.Split(base, "_")
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[len(fields)-2] + "_" + fields[len(fields)-1]
+}
+
+// resolvePluginBinary turns a plugin source into a local binary path. A
+// local-path source is returned unchanged. A GitHub source resolves to
+// the lockfile's pinned version, downloading it to the cache on a miss;
+// the first time a plugin is seen it resolves the operator's constraint
+// to the newest release, downloads it, and records the source + resolved
+// version in the lockfile (trust on first use). It never silently moves
+// to a newer version once pinned — that is `clawpatrol plugins update`.
+func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSource) (string, error) {
+	p, err := pluginSourceFor(sp)
+	if err != nil {
+		return "", err
+	}
+	if !p.IsRemote() {
+		return sp.Source, nil // local path: existing behavior
+	}
+	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+
+	entry, have := m.lock.get(sp.Name)
+	if have && entry.Source != "" && entry.Version != "" {
+		if entry.Source != p.slug() {
+			return "", fmt.Errorf(
+				"source changed from %q to %q since it was locked; run `clawpatrol plugins update %s`",
+				entry.Source, p.slug(), sp.Name)
+		}
+		if err := constraintHolds(sp.Version, entry.Version); err != nil {
+			return "", fmt.Errorf(
+				"locked version %s no longer satisfies %q; run `clawpatrol plugins update %s` (%w)",
+				entry.Version, sp.Version, sp.Name, err)
+		}
+		// Pinned. Use the cache if the binary is present (and, when the
+		// lockfile already records hashes, matches one); otherwise
+		// re-download exactly the locked tag.
+		path := f.binPath(p, entry.Version)
+		if fileExists(path) {
+			if len(entry.Hashes) > 0 {
+				if h, err := hashFile(path); err == nil && !entry.hasHash(h) {
+					return "", fmt.Errorf(
+						"cached binary hash %s is not in the lockfile; delete %s to re-download", h, path)
+				}
+			}
+			return path, nil
+		}
+		r, err := f.gh.releaseByTag(ctx, p.Owner, p.Repo, entry.Version)
+		if err != nil {
+			return "", err
+		}
+		path, binSHA, err := f.ensure(ctx, p, r)
+		if err != nil {
+			return "", err
+		}
+		if len(entry.Hashes) > 0 && !entry.hasHash(binSHA) {
+			_ = os.Remove(path)
+			return "", fmt.Errorf(
+				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", binSHA, entry.Hashes)
+		}
+		return path, nil
+	}
+
+	// First use: resolve the constraint to the newest release, download,
+	// and trust-on-first-use record the source + resolved tag. The binary
+	// hash + network grant are recorded by the existing resolveNetwork
+	// pass that runs next.
+	r, _, err := f.gh.resolveVersion(ctx, p, sp.Version)
+	if err != nil {
+		return "", err
+	}
+	path, _, err := f.ensure(ctx, p, r)
+	if err != nil {
+		return "", err
+	}
+	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version))
+	return path, nil
+}
+
+// constraintHolds reports whether the locked tag still satisfies the
+// operator's constraint. An empty constraint accepts any pinned version.
+func constraintHolds(constraint, tag string) error {
+	c := strings.TrimSpace(constraint)
+	if c == "" {
+		return nil
+	}
+	cons, err := version.NewConstraint(c)
+	if err != nil {
+		return fmt.Errorf("invalid version constraint %q: %w", constraint, err)
+	}
+	v, err := version.NewVersion(tag)
+	if err != nil {
+		return fmt.Errorf("locked version %q is not valid semver: %w", tag, err)
+	}
+	if !cons.Check(v) {
+		return fmt.Errorf("%s does not satisfy %s", tag, c)
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}

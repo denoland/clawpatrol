@@ -223,6 +223,10 @@ export type Plugin = {
   sandboxMode?: string;
   sandboxWarning?: string;
   approvedHashes?: string[];
+  // updateAvailable is the newest release tag (GitHub sources) that
+  // satisfies the plugin's constraint and is newer than the locked
+  // version; apply it with `clawpatrol plugins update`.
+  updateAvailable?: string;
   credentials?: string[];
   tunnels?: string[];
   endpoints?: string[];

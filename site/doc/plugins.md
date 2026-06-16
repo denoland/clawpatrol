@@ -62,6 +62,113 @@ registry — with a built-in (e.g. `https` endpoint type, `http`
 facet) or another plugin — fails at validate time with a clear
 diagnostic.
 
+## Installing a plugin from GitHub
+
+`source` can be a local path (above) or a GitHub repository. With a
+repository, clawpatrol resolves a semver constraint against the repo's
+release tags, downloads the build for this host's OS/arch, verifies it,
+caches it, and pins the resolved version in the lockfile — the same
+model Terraform uses for providers:
+
+```hcl
+plugin "customerio" {
+  source  = "github.com/denoland/clawpatrol-customerio-plugin"
+  version = "~> 1.2"   # newest 1.x ≥ 1.2 ; omit for the newest stable
+}
+```
+
+`version` is a [`hashicorp/go-version`][gv] constraint (`>= 1.2.0`,
+`~> 1.2`, `~> 1.2.0`, `>= 1.0, < 2.0`, an exact `1.2.3`). `~> 1.2`
+allows `1.x ≥ 1.2`; `~> 1.2.0` allows `1.2.x`. Pre-release tags are
+excluded unless you pin one exactly. `version` is only valid on a
+GitHub source.
+
+[gv]: https://github.com/hashicorp/go-version
+
+### install, update, lock
+
+The download is an explicit, reviewable step — the running gateway only
+ever loads the **locked** version, and never upgrades on its own:
+
+```
+clawpatrol plugins install <config.hcl> [name...]   # download + pin
+clawpatrol plugins update  <config.hcl> [name...]   # re-pin to the newest match
+clawpatrol plugins lock    <config.hcl> [name...]   # record all platforms' hashes
+```
+
+- **install** resolves the constraint (keeping any already-pinned
+  version), downloads, caches under `<state_dir>/plugins/…`, and records
+  the resolved version, the declared network, and the binary hash in
+  `clawpatrol.lock.hcl` beside the config.
+- **update** re-resolves to the newest release tag satisfying the
+  constraint and re-pins it — the one place an upgrade happens. The new
+  version shows up as a lockfile diff for review.
+- **lock** records the binary hash of *every* platform build a release
+  ships, so one committed lockfile verifies the plugin across a
+  mixed-OS team.
+
+The gateway checks GitHub for newer matching releases in the background
+and surfaces "update available" on the dashboard's Plugins page, but
+**never downloads or upgrades automatically** — you run `update`.
+
+Commit `clawpatrol.lock.hcl`. On a fresh host the gateway downloads
+exactly the locked version (verifying it) on first load; if the locked
+version no longer satisfies the constraint, or the source changed, it
+fails closed and tells you to run `install` / `update`.
+
+### How a plugin must package its releases
+
+So clawpatrol can find and verify the right binary, a plugin's GitHub
+release must contain, per platform, an archive named with the Go
+`GOOS`/`GOARCH` tokens, plus a checksums file:
+
+```
+<repo>_<version>_<os>_<arch>.tar.gz   # one per platform, holds the binary
+<repo>_<version>_SHA256SUMS           # sha256 of each archive
+```
+
+This is the default [GoReleaser][gr] layout. Add a build-provenance
+attestation with one workflow line so clawpatrol can verify the binary
+was built by your repo (see the trust model below):
+
+```yaml
+# .github/workflows/release.yml (excerpt)
+permissions:
+  contents: write
+  id-token: write       # for keyless signing
+  attestations: write
+steps:
+  - uses: goreleaser/goreleaser-action@v6
+    with: { args: release --clean }
+  - uses: actions/attest-build-provenance@v2
+    with:
+      subject-path: "dist/*.tar.gz"
+```
+
+[gr]: https://goreleaser.com
+
+### Verification and trust
+
+Three layers gate a downloaded binary, from least to most powerful:
+
+1. **Checksum.** The archive's sha256 must match the release's
+   `SHA256SUMS`.
+2. **Trust on first use.** The extracted binary's hash is recorded in
+   `clawpatrol.lock.hcl`; every later load re-hashes the cached binary
+   and **fails closed** on any mismatch — and a version bump re-runs the
+   permission-escalation check (a new release that newly wants `network`
+   is blocked until you re-approve it).
+3. **Build provenance.** If the release carries a GitHub
+   [build-provenance attestation][att], clawpatrol verifies (via
+   Sigstore) that the binary was built by *that repo's* GitHub Actions
+   workflow — the `github.com/owner/repo` you already named is the trust
+   anchor, so there is no key to manage. This closes the first-download
+   gap that checksums alone leave open. A repo that publishes no
+   attestation still installs, verified by checksum, with a warning; a
+   present-but-invalid attestation always fails closed.
+
+[att]: https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
+
 ## Sandbox and capability grants
 
 Plugins are **untrusted**. A plugin runs in the gateway process tree

@@ -37,6 +37,19 @@ type Manager struct {
 	logger   hclog.Logger
 	lock     *lockStore
 	stateDir string // gateway secret-store dir; read_paths may not overlap it
+
+	// ghBase overrides the GitHub API base URL (tests point it at an
+	// httptest server); empty means api.github.com. prov gates a
+	// downloaded archive on its build-provenance attestation; nil skips
+	// the check.
+	ghBase string
+	prov   provenanceVerifier
+
+	// updates records, per plugin source slug, the newest release tag
+	// satisfying its constraint that is newer than the locked version —
+	// surfaced on the dashboard. Populated by the background CheckUpdates
+	// pass; never triggers a download.
+	updates map[string]string
 }
 
 type blockedRecord struct {
@@ -59,6 +72,7 @@ func New(out *log.Logger) *Manager {
 		blocked: make(map[string]blockedRecord),
 		logger:  logger,
 		lock:    newLockStore(),
+		updates: make(map[string]string),
 	}
 }
 
@@ -82,6 +96,30 @@ func (m *Manager) setStateDir(d string) {
 	m.mu.Unlock()
 }
 
+// SetStateDir sets the gateway state dir — where GitHub-sourced plugins
+// are cached, and the dir read_paths may not overlap. The gateway sets
+// it via LoadPlugins; the `plugins install|update|lock` commands set it
+// from the resolved config so the cache lands in the same place.
+func (m *Manager) SetStateDir(d string) { m.setStateDir(d) }
+
+// VerifyProvenance turns on GitHub build-provenance attestation checks
+// for downloaded plugins. When enabled, an archive that carries an
+// attestation must verify against owner/repo's GitHub Actions identity
+// (via Sigstore); an archive with no attestation falls back to the
+// SHA256SUMS + lockfile-TOFU floor with a warning. The gateway and the
+// install/update/lock commands enable it; tests inject a stub instead.
+func (m *Manager) VerifyProvenance(enabled bool) {
+	if !enabled {
+		m.prov = nil
+		return
+	}
+	c := newGHClient()
+	if m.ghBase != "" {
+		c.base = m.ghBase
+	}
+	m.prov = newGitHubProvenance(c, nil)
+}
+
 func (m *Manager) stateDirLocked() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,7 +139,15 @@ func (m *Manager) stateDirLocked() string {
 func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *pb.ManifestResponse, error) {
 	source := sp.Source
 
-	bin, err := resolveSandboxPath(sp.Source)
+	// Resolve the source to a local binary path first: a GitHub source is
+	// downloaded to (or read from) the cache here; a local path passes
+	// through unchanged. Everything downstream — hashing, the manifest
+	// probe, the real spawn — operates on this resolved path.
+	local, err := m.resolvePluginBinary(ctx, sp)
+	if err != nil {
+		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
+	}
+	bin, err := resolveSandboxPath(local)
 	if err != nil {
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
@@ -110,7 +156,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
 
-	network, warn, err := m.resolveNetwork(ctx, sp, hash)
+	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -118,7 +164,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", warn)
 	}
 
-	spec, mode, sbWarn, err := buildSandboxSpec(sp, network, m.stateDirLocked())
+	spec, mode, sbWarn, err := buildSandboxSpec(sp, bin, network, m.stateDirLocked())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -217,7 +263,7 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 // optional human note for logging, or an error — including the
 // fail-closed escalation error when an upgraded plugin requests more
 // than the lockfile recorded.
-func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, hash string) (sandbox.Network, string, error) {
+func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, binPath, hash string) (sandbox.Network, string, error) {
 	// An operator HCL `network` override always wins (force or veto)
 	// and is what gets recorded — an explicit, lockfile-visible choice.
 	if sp.Network != "" {
@@ -234,7 +280,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 	// No lockfile (tests, config.LoadBytes): use the manifest-declared
 	// capability directly, no persistence or escalation check.
 	if !m.lock.active() {
-		net, err := m.probeNetwork(ctx, sp)
+		net, err := m.probeNetwork(ctx, sp, binPath)
 		return net, "", err
 	}
 
@@ -249,7 +295,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 
 	// Unknown binary (new plugin, new version, or a platform build not
 	// yet in the set): read what it now declares.
-	declared, err := m.probeNetwork(ctx, sp)
+	declared, err := m.probeNetwork(ctx, sp, binPath)
 	if err != nil {
 		return "", "", err
 	}
@@ -284,8 +330,8 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, ha
 // capability, then tears it down. Manifest fetch needs no network, so
 // this is safe even for a plugin that will ultimately run with
 // outbound access.
-func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource) (sandbox.Network, error) {
-	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone, m.stateDirLocked())
+func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource, binPath string) (sandbox.Network, error) {
+	spec, mode, _, err := buildSandboxSpec(sp, binPath, sandbox.NetworkNone, m.stateDirLocked())
 	if err != nil {
 		return "", err
 	}
@@ -336,7 +382,11 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 		if len(want) > 0 && !want[sp.Name] {
 			continue
 		}
-		bin, err := resolveSandboxPath(sp.Source)
+		local, err := m.resolvePluginBinary(ctx, sp)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		bin, err := resolveSandboxPath(local)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
@@ -351,7 +401,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}
 		} else {
-			declared, err = m.probeNetwork(ctx, sp)
+			declared, err = m.probeNetwork(ctx, sp, bin)
 			if err != nil {
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}
@@ -547,10 +597,15 @@ type PluginInfo struct {
 	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
 	SandboxWarning string   `json:"sandboxWarning,omitempty"`
 	ApprovedHashes []string `json:"approvedHashes,omitempty"` // lockfile-approved binary hashes (one per platform build)
-	Credentials    []string `json:"credentials,omitempty"`
-	Tunnels        []string `json:"tunnels,omitempty"`
-	Endpoints      []string `json:"endpoints,omitempty"`
-	Facets         []string `json:"facets,omitempty"`
+	// UpdateAvailable is the newest release tag satisfying the plugin's
+	// constraint that is newer than the locked version (GitHub sources
+	// only). Set by the background update check; the operator applies it
+	// with `clawpatrol plugins update`.
+	UpdateAvailable string   `json:"updateAvailable,omitempty"`
+	Credentials     []string `json:"credentials,omitempty"`
+	Tunnels         []string `json:"tunnels,omitempty"`
+	Endpoints       []string `json:"endpoints,omitempty"`
+	Facets          []string `json:"facets,omitempty"`
 }
 
 // PluginInfos returns a dashboard summary of every plugin — loaded
@@ -559,6 +614,12 @@ type PluginInfo struct {
 func (m *Manager) PluginInfos() []PluginInfo {
 	out := []PluginInfo{}
 	loaded := map[string]bool{}
+	m.mu.Lock()
+	updates := make(map[string]string, len(m.updates))
+	for k, v := range m.updates {
+		updates[k] = v
+	}
+	m.mu.Unlock()
 	for _, c := range m.Plugins() {
 		loaded[c.Name()] = true
 		info := PluginInfo{
@@ -586,6 +647,7 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		if e, ok := m.lock.get(c.Name()); ok {
 			info.ApprovedHashes = e.Hashes
 		}
+		info.UpdateAvailable = updates[info.Source]
 		out = append(out, info)
 	}
 	m.mu.Lock()
@@ -593,7 +655,10 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		if loaded[name] {
 			continue
 		}
-		out = append(out, PluginInfo{Name: name, Source: b.source, Blocked: true, Reason: b.reason})
+		out = append(out, PluginInfo{
+			Name: name, Source: b.source, Blocked: true, Reason: b.reason,
+			UpdateAvailable: updates[b.source],
+		})
 	}
 	m.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

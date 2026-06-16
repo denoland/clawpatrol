@@ -37,6 +37,16 @@ type lockEntry struct {
 	Name    string   `hcl:"name,label"`
 	Network string   `hcl:"network"`
 	Hashes  []string `hcl:"hashes"`
+
+	// Source/Version/Constraints are set for plugins fetched from a
+	// GitHub release (empty for local-path plugins). Source is the
+	// canonical "github.com/<owner>/<repo>"; Version is the resolved
+	// release tag the gateway is pinned to; Constraints echoes the
+	// operator's version constraint for review. The running gateway
+	// loads exactly Version; `clawpatrol plugins update` rewrites it.
+	Source      string `hcl:"source,optional"`
+	Version     string `hcl:"version,optional"`
+	Constraints string `hcl:"constraints,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -139,6 +149,30 @@ func (s *lockStore) addHash(name, hash, network string) {
 	}
 }
 
+// setSource records the resolved GitHub source/version/constraints for a
+// plugin (the binary hashes are recorded separately by addHash at load,
+// or by an all-platform `plugins lock`). Marks dirty only on change.
+func (s *lockStore) setSource(name, source, version, constraints string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[name]
+	if e.Name == name && e.Source == source && e.Version == version && e.Constraints == constraints {
+		return
+	}
+	// A version change re-pins the plugin: the recorded hashes belonged
+	// to the old version's platform builds, so drop them — the new
+	// version's hashes are recorded fresh by the caller (addHash / lock).
+	if e.Version != version {
+		e.Hashes = nil
+	}
+	e.Name = name
+	e.Source = source
+	e.Version = version
+	e.Constraints = constraints
+	s.entries[name] = e
+	s.dirty = true
+}
+
 // active reports whether a lockfile is in use (a path is configured).
 func (s *lockStore) active() bool {
 	s.mu.Lock()
@@ -173,6 +207,18 @@ func (s *lockStore) save() error {
 	for _, n := range names {
 		e := s.entries[n]
 		blk := body.AppendNewBlock("plugin", []string{n})
+		// Distribution provenance first (when set), then the permission
+		// record, so a GitHub-sourced block reads source -> version ->
+		// network -> hashes top to bottom.
+		if e.Source != "" {
+			blk.Body().SetAttributeValue("source", cty.StringVal(e.Source))
+		}
+		if e.Version != "" {
+			blk.Body().SetAttributeValue("version", cty.StringVal(e.Version))
+		}
+		if e.Constraints != "" {
+			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))
+		}
 		blk.Body().SetAttributeValue("network", cty.StringVal(e.Network))
 		hashVals := make([]cty.Value, len(e.Hashes))
 		for i, h := range e.Hashes {

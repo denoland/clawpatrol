@@ -315,6 +315,18 @@ Because the lockfile is committed, the approval is also a diff in code
 review. Filesystem and `sandbox = "off"` grants are never
 plugin-declarable; they are operator-only and explicit (below).
 
+When a plugin's `source` is a GitHub repo, the same lockfile pins the
+resolved release version and the binary's hash, and distribution is
+gated three ways: the download must match the release's `SHA256SUMS`;
+the binary's hash is trusted-on-first-use and re-checked (fail-closed)
+on every later load; and, when the release carries a [GitHub
+build-provenance attestation](plugins.md#verification-and-trust),
+clawpatrol verifies through Sigstore that the binary was built by *that
+repo's* Actions workflow — the `github.com/owner/repo` named in the
+config is the trust anchor, closing the first-download gap. The gateway
+loads only the locked version and never upgrades on its own; moving to a
+newer release is the operator's explicit `clawpatrol plugins update`.
+
 The sandbox is defense-in-depth, not a capability wall around the
 gateway as a whole. The grants form a deliberate risk ladder:
 
