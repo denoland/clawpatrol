@@ -58,6 +58,11 @@ type Manager struct {
 type blockedRecord struct {
 	source string
 	reason string
+	// requested is the privileges the plugin's resolvable version
+	// declares, read (best-effort) from its signed static manifest — so
+	// the dashboard can show what a blocked/unapproved plugin wants
+	// before it is approved. nil when no static manifest is available.
+	requested *ManifestPreview
 }
 
 // New constructs an empty Manager. The logger is wrapped so plugin
@@ -561,7 +566,14 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.
 				Summary:  fmt.Sprintf("Plugin %q failed to start", sp.Name),
 				Detail:   err.Error(),
 			})
-			blocked[sp.Name] = blockedRecord{source: sp.Source, reason: err.Error()}
+			rec := blockedRecord{source: sp.Source, reason: err.Error()}
+			// Best-effort: read what the resolvable version *requires* from
+			// its signed static manifest so the dashboard can show the
+			// privileges a blocked/unapproved plugin wants. No spawn.
+			if pv, perr := m.previewManifest(ctx, sp); perr == nil {
+				rec.requested = &pv
+			}
+			blocked[sp.Name] = rec
 			continue
 		}
 		if w := client.SandboxWarning(); w != "" {
@@ -681,6 +693,23 @@ type PluginInfo struct {
 	Tunnels         []string `json:"tunnels,omitempty"`
 	Endpoints       []string `json:"endpoints,omitempty"`
 	Facets          []string `json:"facets,omitempty"`
+	// Requested is the privileges a blocked/unapproved plugin's
+	// resolvable version declares in its signed static manifest — what it
+	// wants, shown so an operator can review before approving. Read
+	// without running the plugin; nil when no static manifest is
+	// available.
+	Requested *RequestedPrivileges `json:"requested,omitempty"`
+}
+
+// RequestedPrivileges is what a plugin version declares it needs, read
+// from its signed static manifest (no spawn).
+type RequestedPrivileges struct {
+	Version     string   `json:"version,omitempty"`
+	Network     string   `json:"network"`
+	Credentials []string `json:"credentials,omitempty"`
+	Endpoints   []string `json:"endpoints,omitempty"`
+	Tunnels     []string `json:"tunnels,omitempty"`
+	Facets      []string `json:"facets,omitempty"`
 }
 
 // PluginInfos returns a dashboard summary of every plugin — loaded
@@ -730,10 +759,21 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		if loaded[name] {
 			continue
 		}
-		out = append(out, PluginInfo{
+		info := PluginInfo{
 			Name: name, Source: b.source, Blocked: true, Reason: b.reason,
 			UpdateAvailable: updates[b.source],
-		})
+		}
+		if r := b.requested; r != nil {
+			info.Requested = &RequestedPrivileges{
+				Version:     r.Version,
+				Network:     r.Network,
+				Credentials: r.Credentials,
+				Endpoints:   r.Endpoints,
+				Tunnels:     r.Tunnels,
+				Facets:      r.Facets,
+			}
+		}
+		out = append(out, info)
 	}
 	m.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

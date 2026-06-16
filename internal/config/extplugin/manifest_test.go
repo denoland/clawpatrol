@@ -127,6 +127,38 @@ func TestCheckManifestConsistency(t *testing.T) {
 	}
 }
 
+func TestPluginInfosSurfacesRequested(t *testing.T) {
+	m := New(nil)
+	m.mu.Lock()
+	m.blocked = map[string]blockedRecord{
+		"p": {
+			source: "github.com/o/p",
+			reason: "upgrade escalates permissions",
+			requested: &ManifestPreview{
+				Version:     "v2.0.0",
+				Network:     "outbound",
+				Credentials: []string{"p_token"},
+			},
+		},
+	}
+	m.mu.Unlock()
+
+	var pi *PluginInfo
+	for _, info := range m.PluginInfos() {
+		if info.Name == "p" {
+			i := info
+			pi = &i
+		}
+	}
+	if pi == nil || !pi.Blocked || pi.Requested == nil {
+		t.Fatalf("blocked plugin missing requested privileges: %+v", pi)
+	}
+	if pi.Requested.Network != "outbound" || pi.Requested.Version != "v2.0.0" ||
+		len(pi.Requested.Credentials) != 1 {
+		t.Fatalf("requested = %+v, want outbound/v2.0.0/[p_token]", pi.Requested)
+	}
+}
+
 func TestPreviewSourceNoManifest(t *testing.T) {
 	owner, repo := "acme", "myplugin"
 	plat := platformToken()

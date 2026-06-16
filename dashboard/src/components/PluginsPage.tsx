@@ -104,6 +104,22 @@ function BlockedCard({ p, onApproved }: { p: Plugin; onApproved: () => void }) {
         <Field label="Reason">
           <span className="text-xs text-danger-500">{p.reason}</span>
         </Field>
+        {p.requested && (
+          <Field label="Requires">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                {p.requested.version && (
+                  <span className="font-mono text-2xs text-text-muted">{p.requested.version}</span>
+                )}
+                <NetworkBadge network={p.requested.network} />
+              </div>
+              <RequestedTypes label="credentials" items={p.requested.credentials} />
+              <RequestedTypes label="endpoints" items={p.requested.endpoints} />
+              <RequestedTypes label="tunnels" items={p.requested.tunnels} />
+              <RequestedTypes label="facets" items={p.requested.facets} />
+            </div>
+          </Field>
+        )}
         <Field label="Or run">
           <code className="font-mono text-2xs text-text bg-navy-100 px-2 py-1 squircle-md break-all">
             clawpatrol plugins approve &lt;config.hcl&gt; {p.name}
@@ -173,6 +189,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </span>
       {children}
+    </div>
+  );
+}
+
+function RequestedTypes({ label, items }: { label: string; items?: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="flex items-baseline gap-2 flex-wrap">
+      <span className="font-mono text-2xs text-text-muted">{label}:</span>
+      {items.map((t) => (
+        <span
+          key={t}
+          className="font-mono text-2xs text-navy bg-navy-100 px-1.5 py-0.5 squircle-md"
+        >
+          {t}
+        </span>
+      ))}
     </div>
   );
 }

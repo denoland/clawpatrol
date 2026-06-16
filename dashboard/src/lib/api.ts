@@ -211,6 +211,15 @@ export async function getRules(): Promise<RuleSummary[]> {
 // | "outbound"); sandboxMode is the OS backend ("namespaces" |
 // "landlock" | "seatbelt" | "off"). Plugins blocked by a permission
 // escalation never load, so they don't appear here.
+export type RequestedPrivileges = {
+  version?: string;
+  network: string;
+  credentials?: string[];
+  endpoints?: string[];
+  tunnels?: string[];
+  facets?: string[];
+};
+
 export type Plugin = {
   name: string;
   source: string;
@@ -227,6 +236,10 @@ export type Plugin = {
   // satisfies the plugin's constraint and is newer than the locked
   // version; apply it with `clawpatrol plugins update`.
   updateAvailable?: string;
+  // requested is what a blocked/unapproved plugin's resolvable version
+  // declares it needs, read from its signed static manifest (no spawn) —
+  // shown so an operator can review the privileges before approving.
+  requested?: RequestedPrivileges;
   credentials?: string[];
   tunnels?: string[];
   endpoints?: string[];

@@ -133,15 +133,21 @@ type ManifestPreview struct {
 // included so a caller can show what an upgrade would change. Returns
 // errNoManifest when the release publishes no static manifest.
 func (m *Manager) PreviewSource(ctx context.Context, sp config.PluginSource) (ManifestPreview, error) {
+	if err := m.lock.load(); err != nil {
+		return ManifestPreview{}, err
+	}
+	return m.previewManifest(ctx, sp)
+}
+
+// previewManifest is PreviewSource without reloading the lockfile — for
+// callers (LoadPlugins) that already hold a loaded lock pass.
+func (m *Manager) previewManifest(ctx context.Context, sp config.PluginSource) (ManifestPreview, error) {
 	p, err := pluginSourceFor(sp)
 	if err != nil {
 		return ManifestPreview{}, err
 	}
 	if !p.IsRemote() {
 		return ManifestPreview{}, fmt.Errorf("plugin %q has a local source; nothing to preview", sp.Name)
-	}
-	if err := m.lock.load(); err != nil {
-		return ManifestPreview{}, err
 	}
 	locked := ""
 	if e, ok := m.lock.get(sp.Name); ok {
