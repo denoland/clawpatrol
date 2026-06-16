@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/denoland/clawpatrol/internal/config"
@@ -144,9 +145,11 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 	// Resolve the source to a local binary path first: a GitHub source is
 	// downloaded to (or read from) the cache here; a local path passes
 	// through unchanged. accept=false enforces the pinned version, hashes,
-	// and provenance level. Everything downstream — hashing, the manifest
-	// probe, the real spawn — operates on this resolved path.
-	local, err := m.resolvePluginBinary(ctx, sp, false)
+	// and provenance level. staticMf is the plugin's signed static
+	// manifest (nil for a local plugin, a cache hit, or a release without
+	// one) — its declared capabilities are authoritative, so no
+	// reconnaissance spawn is needed to learn them.
+	local, staticMf, err := m.resolvePluginBinary(ctx, sp, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
@@ -159,7 +162,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
 
-	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash)
+	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash, staticMf)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -177,6 +180,14 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 
 	c, manifest, err := m.spawnClient(ctx, source, spec, mode, sbWarn)
 	if err != nil {
+		return nil, nil, err
+	}
+
+	// Consistency check: the running binary's manifest must match the
+	// signed static manifest it published. A mismatch means the binary
+	// does not do what its signed declaration claims — fail closed.
+	if err := checkManifestConsistency(sp.Name, staticMf, manifest); err != nil {
+		c.kill()
 		return nil, nil, err
 	}
 
@@ -260,13 +271,25 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 	return c, manifest, nil
 }
 
+// pluginDeclaredNetwork returns the plugin's declared network capability.
+// For a GitHub plugin whose release ships a signed static manifest this
+// comes from that manifest — no plugin code is run. Otherwise (a local
+// plugin, or a release without a static manifest) it falls back to a
+// throwaway network-denied probe spawn.
+func (m *Manager) pluginDeclaredNetwork(ctx context.Context, sp config.PluginSource, binPath string, staticMf *pb.ManifestResponse) (sandbox.Network, error) {
+	if staticMf != nil {
+		return networkFromManifest(staticMf), nil
+	}
+	return m.probeNetwork(ctx, sp, binPath)
+}
+
 // resolveNetwork determines the approved network grant for sp from the
-// manifest-declared capability, the lockfile (trust-on-first-use), and
-// an optional operator HCL override. It returns the grant plus an
-// optional human note for logging, or an error — including the
-// fail-closed escalation error when an upgraded plugin requests more
-// than the lockfile recorded.
-func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, binPath, hash string) (sandbox.Network, string, error) {
+// declared capability (the signed static manifest, or a probe), the
+// lockfile (trust-on-first-use), and an optional operator HCL override.
+// It returns the grant plus an optional human note for logging, or an
+// error — including the fail-closed escalation error when an upgraded
+// plugin requests more than the lockfile recorded.
+func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, binPath, hash string, staticMf *pb.ManifestResponse) (sandbox.Network, string, error) {
 	// An operator HCL `network` override always wins (force or veto)
 	// and is what gets recorded — an explicit, lockfile-visible choice.
 	if sp.Network != "" {
@@ -280,10 +303,10 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, bi
 		return net, "", nil
 	}
 
-	// No lockfile (tests, config.LoadBytes): use the manifest-declared
-	// capability directly, no persistence or escalation check.
+	// No lockfile (tests, config.LoadBytes): use the declared capability
+	// directly, no persistence or escalation check.
 	if !m.lock.active() {
-		net, err := m.probeNetwork(ctx, sp, binPath)
+		net, err := m.pluginDeclaredNetwork(ctx, sp, binPath, staticMf)
 		return net, "", err
 	}
 
@@ -297,8 +320,9 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, bi
 	}
 
 	// Unknown binary (new plugin, new version, or a platform build not
-	// yet in the set): read what it now declares.
-	declared, err := m.probeNetwork(ctx, sp, binPath)
+	// yet in the set): read what it now declares (signed manifest, or a
+	// probe fallback).
+	declared, err := m.pluginDeclaredNetwork(ctx, sp, binPath, staticMf)
 	if err != nil {
 		return "", "", err
 	}
@@ -360,6 +384,49 @@ func networkRank(n sandbox.Network) int {
 	return 0
 }
 
+// checkManifestConsistency verifies the running binary's gRPC manifest
+// matches the signed static manifest it published — the required network
+// capability, the manifest name, and the declared type set. A mismatch
+// means the binary does not do what its signed declaration claims, so it
+// fails closed. A nil staticMf (local plugin, or a release without a
+// static manifest) skips the check.
+func checkManifestConsistency(name string, staticMf, runtimeMf *pb.ManifestResponse) error {
+	if staticMf == nil {
+		return nil
+	}
+	if s, g := networkFromManifest(staticMf), networkFromManifest(runtimeMf); s != g {
+		return fmt.Errorf(
+			"plugin %q binary requests network=%q but its signed release manifest declares network=%q; "+
+				"the binary does not match its published manifest", name, g, s)
+	}
+	if staticMf.GetName() != runtimeMf.GetName() || manifestTypeKey(staticMf) != manifestTypeKey(runtimeMf) {
+		return fmt.Errorf(
+			"plugin %q binary declares different identity or types than its signed release manifest; "+
+				"the binary does not match its published manifest", name)
+	}
+	return nil
+}
+
+// manifestTypeKey is a stable, comparable summary of a manifest's
+// declared name (its types), independent of ordering.
+func manifestTypeKey(mf *pb.ManifestResponse) string {
+	var names []string
+	for _, c := range mf.GetCredentials() {
+		names = append(names, "c:"+c.GetTypeName())
+	}
+	for _, e := range mf.GetEndpoints() {
+		names = append(names, "e:"+e.GetTypeName())
+	}
+	for _, t := range mf.GetTunnels() {
+		names = append(names, "t:"+t.GetTypeName())
+	}
+	for _, f := range mf.GetFacets() {
+		names = append(names, "f:"+f.GetName())
+	}
+	sort.Strings(names)
+	return strings.Join(names, "\n")
+}
+
 // ApprovedPlugin is one result row from Approve.
 type ApprovedPlugin struct {
 	Name    string
@@ -390,7 +457,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 		// accept=true: re-resolve the constraint's newest, download, and
 		// re-record the source/version/commit/provenance, deliberately
 		// accepting it (clears a provenance-downgrade or escalation block).
-		local, err := m.resolvePluginBinary(ctx, sp, true)
+		local, staticMf, err := m.resolvePluginBinary(ctx, sp, true)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
@@ -409,7 +476,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}
 		} else {
-			declared, err = m.probeNetwork(ctx, sp, bin)
+			declared, err = m.pluginDeclaredNetwork(ctx, sp, bin, staticMf)
 			if err != nil {
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}

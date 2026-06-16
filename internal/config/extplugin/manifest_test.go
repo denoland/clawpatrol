@@ -70,6 +70,63 @@ func TestPreviewSourceReadsStaticManifest(t *testing.T) {
 	}
 }
 
+// TestStaticManifestDrivesNetworkWithoutProbe proves that when a release
+// ships a signed static manifest, the network grant comes from it with no
+// probe spawn: the "binary" here is not a runnable plugin, so a probe
+// would fail — install succeeding with the manifest's grant means none
+// happened.
+func TestStaticManifestDrivesNetworkWithoutProbe(t *testing.T) {
+	owner, repo := "acme", "myplugin"
+	plat := platformToken()
+	archive := tarGz(t, map[string][]byte{repo: []byte("not-a-runnable-plugin")}, repo)
+	archiveName := fmt.Sprintf("%s_1.0.0_%s.tar.gz", repo, plat)
+	mfName := fmt.Sprintf("%s_1.0.0_manifest.json", repo)
+	mf := staticManifestJSON(t, repo, "1.0.0", pb.NetworkAccess_NETWORK_OUTBOUND)
+	sums := fmt.Sprintf("%s  %s\n%s  %s\n", sha256hex(archive), archiveName, sha256hex(mf), mfName)
+	srv := newReleaseServer(t, owner, repo, []relSpec{{
+		tag:    "v1.0.0",
+		assets: map[string][]byte{archiveName: archive, mfName: mf, repo + "_1.0.0_SHA256SUMS": []byte(sums)},
+	}})
+	m, _ := newFetchTestManager(t, srv.URL)
+	// No Network override: the grant must come from the signed manifest.
+	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin"}
+	res, err := m.Install(context.Background(), []config.PluginSource{sp}, nil, false)
+	if err != nil {
+		t.Fatalf("install via static manifest (no probe) failed: %v", err)
+	}
+	if res[0].Network != "outbound" {
+		t.Fatalf("network = %q, want outbound (from the static manifest)", res[0].Network)
+	}
+}
+
+func TestCheckManifestConsistency(t *testing.T) {
+	mk := func(net pb.NetworkAccess, cred string) *pb.ManifestResponse {
+		return &pb.ManifestResponse{
+			Name:         "p",
+			Capabilities: &pb.PluginCapabilities{Network: net},
+			Credentials:  []*pb.CredentialDecl{{TypeName: cred}},
+		}
+	}
+	stat := mk(pb.NetworkAccess_NETWORK_OUTBOUND, "p_token")
+	// nil static manifest -> check skipped.
+	if err := checkManifestConsistency("p", nil, mk(pb.NetworkAccess_NETWORK_NONE, "x")); err != nil {
+		t.Fatalf("nil static should skip: %v", err)
+	}
+	// Exact match -> ok.
+	if err := checkManifestConsistency("p", stat, mk(pb.NetworkAccess_NETWORK_OUTBOUND, "p_token")); err != nil {
+		t.Fatalf("matching manifests: %v", err)
+	}
+	// Network mismatch -> fail closed.
+	if err := checkManifestConsistency("p", stat, mk(pb.NetworkAccess_NETWORK_NONE, "p_token")); err == nil ||
+		!strings.Contains(err.Error(), "network") {
+		t.Fatalf("network mismatch should fail: %v", err)
+	}
+	// Declared types differ -> fail closed.
+	if err := checkManifestConsistency("p", stat, mk(pb.NetworkAccess_NETWORK_OUTBOUND, "other_token")); err == nil {
+		t.Fatal("type mismatch should fail closed")
+	}
+}
+
 func TestPreviewSourceNoManifest(t *testing.T) {
 	owner, repo := "acme", "myplugin"
 	plat := platformToken()

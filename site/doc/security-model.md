@@ -315,6 +315,16 @@ Because the lockfile is committed, the approval is also a diff in code
 review. Filesystem and `sandbox = "off"` grants are never
 plugin-declarable; they are operator-only and explicit (below).
 
+For a GitHub-distributed plugin the declared capability comes from the
+release's **signed static manifest** — verified (checksum + provenance)
+before the binary is downloaded — so the gateway never runs the
+unapproved binary to discover what it wants. When the binary then runs,
+its manifest is cross-checked against that signed declaration and the
+load **fails closed** if they disagree: the binary must do what its
+published manifest claims. A local plugin, or a release that ships no
+static manifest, falls back to reading the manifest from a throwaway,
+network-denied probe spawn.
+
 When a plugin's `source` is a GitHub repo, the same lockfile pins the
 resolved release version and the binary's hash, and distribution is
 gated three ways: the download must match the release's `SHA256SUMS`;

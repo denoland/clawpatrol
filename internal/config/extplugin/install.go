@@ -9,6 +9,7 @@ import (
 	version "github.com/hashicorp/go-version"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 )
 
 // This file backs the `clawpatrol plugins install|update|lock`
@@ -88,7 +89,13 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 		}
 		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)
 
-		network, err := m.declaredNetwork(ctx, sp, res.path)
+		// Read the network grant from the signed static manifest (no
+		// spawn); fall back to a probe only for a release without one.
+		staticMf, err := f.staticManifest(ctx, p, r, mode)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		network, err := m.declaredNetwork(ctx, sp, res.path, staticMf)
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
@@ -231,13 +238,14 @@ func (m *Manager) CheckUpdates(ctx context.Context, specs []config.PluginSource)
 }
 
 // declaredNetwork resolves the network grant to record at install time:
-// an operator HCL override wins, else the plugin's manifest is probed.
-func (m *Manager) declaredNetwork(ctx context.Context, sp config.PluginSource, binPath string) (string, error) {
+// an operator HCL override wins, else the plugin's declared capability
+// (signed static manifest, or a probe fallback).
+func (m *Manager) declaredNetwork(ctx context.Context, sp config.PluginSource, binPath string, staticMf *pb.ManifestResponse) (string, error) {
 	if sp.Network != "" {
 		net, err := parseNetwork(sp.Network)
 		return string(net), err
 	}
-	net, err := m.probeNetwork(ctx, sp, binPath)
+	net, err := m.pluginDeclaredNetwork(ctx, sp, binPath, staticMf)
 	return string(net), err
 }
 

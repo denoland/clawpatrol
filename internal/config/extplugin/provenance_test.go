@@ -130,7 +130,7 @@ func TestProvenanceVerifyIfPresentFallback(t *testing.T) {
 
 	// no-attestation verifier -> soft miss -> install proceeds.
 	m.prov = stubProv{err: errNoAttestation}
-	if _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
 		t.Fatalf("no-attestation should fall back to checksum, got: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestProvenanceVerifyIfPresentFallback(t *testing.T) {
 	// the cache miss forces a re-download (and the verifier runs).
 	m2, _ := newFetchTestManager(t, srv.URL)
 	m2.prov = stubProv{err: errors.New("bad attestation")}
-	if _, err := m2.resolvePluginBinary(context.Background(), sp, false); err == nil ||
+	if _, _, err := m2.resolvePluginBinary(context.Background(), sp, false); err == nil ||
 		!strings.Contains(err.Error(), "provenance verification failed") {
 		t.Fatalf("invalid attestation should fail closed, got: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestProvenanceRecordsAndPinsCommit(t *testing.T) {
 	// First use records the attested commit in the lockfile.
 	m, _ := newFetchTestManager(t, srv.URL)
 	m.prov = stubProv{commit: "commit-aaa"}
-	if _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
 	if e, _ := m.lock.get(repo); e.Commit != "commit-aaa" {
@@ -178,7 +178,7 @@ func TestProvenanceRecordsAndPinsCommit(t *testing.T) {
 	m2.prov = stubProv{commit: "commit-bbb"}
 	m2.lock.setSource(repo, "github.com/acme/myplugin", "v1.0.0", "", "commit-aaa", false)
 	m2.lock.addHash(repo, binSHA, "none")
-	_, err := m2.resolvePluginBinary(context.Background(), sp, false)
+	_, _, err := m2.resolvePluginBinary(context.Background(), sp, false)
 	if err == nil || !strings.Contains(err.Error(), "does not match the locked commit") {
 		t.Fatalf("commit mismatch should fail closed, got: %v", err)
 	}
@@ -208,20 +208,20 @@ func TestProvenanceDowngradeBlockedUntilApproved(t *testing.T) {
 	m.prov = stubProv{err: errNoAttestation}
 	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.0.0", "", "commit-aaa", true)
 	m.lock.addHash(repo, binSHA, "none")
-	if _, err := m.resolvePluginBinary(context.Background(), sp, false); err == nil ||
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, false); err == nil ||
 		!strings.Contains(err.Error(), "lost its build-provenance") {
 		t.Fatalf("provenance downgrade should fail closed, got: %v", err)
 	}
 
 	// Approve (accept=true) accepts it, re-recording attested=false.
-	if _, err := m.resolvePluginBinary(context.Background(), sp, true); err != nil {
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, true); err != nil {
 		t.Fatalf("approve should accept the downgrade: %v", err)
 	}
 	if e, _ := m.lock.get(repo); e.Attested {
 		t.Fatalf("approve should have recorded attested=false, got %+v", e)
 	}
 	// Load now succeeds (cache hit, no downgrade).
-	if _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil {
 		t.Fatalf("load after approve failed: %v", err)
 	}
 }
@@ -246,7 +246,7 @@ func TestProvenanceModes(t *testing.T) {
 	m, _ := newFetchTestManager(t, mkSrv())
 	m.prov = stubProv{err: errNoAttestation}
 	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin", Provenance: "require"}
-	if _, err := m.resolvePluginBinary(context.Background(), sp, false); err == nil ||
+	if _, _, err := m.resolvePluginBinary(context.Background(), sp, false); err == nil ||
 		!strings.Contains(err.Error(), "provenance is required") {
 		t.Fatalf("require + no attestation should fail closed, got: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestProvenanceModes(t *testing.T) {
 	m2, _ := newFetchTestManager(t, mkSrv())
 	m2.prov = stubProv{err: errors.New("should not be called")}
 	sp.Provenance = "off"
-	if _, err := m2.resolvePluginBinary(context.Background(), sp, false); err != nil {
+	if _, _, err := m2.resolvePluginBinary(context.Background(), sp, false); err != nil {
 		t.Fatalf("off should skip provenance entirely, got: %v", err)
 	}
 }

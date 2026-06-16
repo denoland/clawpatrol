@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	version "github.com/hashicorp/go-version"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 )
 
 // This file downloads a plugin binary from a GitHub release, verifies it
@@ -462,13 +464,13 @@ func platformFromArchive(name string) string {
 // level — a re-download that loses provenance fails closed. Approve
 // (accept=true) instead re-records the binary's current provenance level,
 // the operator deliberately accepting it (e.g. a downgrade).
-func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSource, accept bool) (string, error) {
+func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSource, accept bool) (string, *pb.ManifestResponse, error) {
 	p, err := pluginSourceFor(sp)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !p.IsRemote() {
-		return sp.Source, nil // local path: existing behavior
+		return sp.Source, nil, nil // local path: existing behavior
 	}
 	mode := provenanceModeOf(sp)
 	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
@@ -486,70 +488,100 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 	// the first-use branch, which would silently re-resolve the constraint
 	// and auto-upgrade — the one thing the running gateway must never do.
 	if !accept && have && entry.Version != "" && entry.Source == "" {
-		return "", fmt.Errorf(
+		return "", nil, fmt.Errorf(
 			"lockfile entry for %q has a version but no source; fix or remove it, then run `clawpatrol plugins install`",
 			sp.Name)
 	}
 
 	if pinned {
 		if entry.Source != p.slug() {
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"source changed from %q to %q since it was locked; run `clawpatrol plugins update %s`",
 				entry.Source, p.slug(), sp.Name)
 		}
 		if err := constraintHolds(sp.Version, entry.Version); err != nil {
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"locked version %s no longer satisfies %q; run `clawpatrol plugins update %s` (%w)",
 				entry.Version, sp.Version, sp.Name, err)
 		}
 		// Offline fast path: trust the cache only when the lockfile records
-		// at least one approved hash AND the cached binary matches it. An
-		// entry with no hashes was never fully verified (e.g. a first-load
-		// probe failed after the source/version was recorded), so fall
-		// through to a fresh, provenance- and checksum-verified download
-		// rather than load an unchecked binary.
+		// at least one approved hash AND the cached binary matches it. The
+		// approved network grant is already in the lockfile, so no static
+		// manifest is needed (nil) — resolveNetwork takes its fast path. An
+		// entry with no hashes was never fully verified, so fall through to
+		// a fresh, verified download rather than load an unchecked binary.
 		path := f.binPath(p, entry.Version)
 		if len(entry.Hashes) > 0 && fileExists(path) {
 			if h, err := hashFile(path); err == nil && entry.hasHash(h) {
-				return path, nil
+				return path, nil, nil
 			}
 			// Hash mismatch or unreadable: re-download and re-verify below.
 		}
 		r, err := f.gh.releaseByTag(ctx, p.Owner, p.Repo, entry.Version)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		res, err := f.ensure(ctx, p, r, mode)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if len(entry.Hashes) > 0 && !entry.hasHash(res.binSHA) {
 			_ = os.Remove(res.path)
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", res.binSHA, entry.Hashes)
 		}
 		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
 			_ = os.Remove(res.path)
-			return "", err
+			return "", nil, err
 		}
-		return res.path, nil
+		mf, err := f.staticManifest(ctx, p, r, mode)
+		if err != nil {
+			_ = os.Remove(res.path)
+			return "", nil, err
+		}
+		return res.path, mf, nil
 	}
 
 	// First use, or Approve: resolve the constraint to the newest release,
-	// download, and (trust-on-first-use / operator-accept) record the
-	// source + resolved tag + attested commit + provenance level. The
-	// binary hash + network grant are recorded by the resolveNetwork pass
-	// that runs next.
+	// download, read the signed static manifest, and (trust-on-first-use /
+	// operator-accept) record the source + resolved tag + attested commit +
+	// provenance level. The binary hash + network grant are recorded by the
+	// resolveNetwork pass that runs next.
 	r, _, err := f.gh.resolveVersion(ctx, p, sp.Version)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	res, err := f.ensure(ctx, p, r, mode)
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+	mf, err := f.staticManifest(ctx, p, r, mode)
+	if err != nil {
+		_ = os.Remove(res.path)
+		return "", nil, err
 	}
 	m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)
-	return res.path, nil
+	return res.path, mf, nil
+}
+
+// staticManifest reads the release's signed static manifest, or returns
+// (nil, nil) when the release publishes none — in which case the caller
+// falls back to a probe spawn. A present-but-tampered manifest (checksum
+// or provenance failure) is a hard error.
+func (f *fetcher) staticManifest(ctx context.Context, p parsedSource, r ghRelease, mode provenanceMode) (*pb.ManifestResponse, error) {
+	mf, err := f.fetchManifest(ctx, p, r, mode)
+	if errors.Is(err, errNoManifest) {
+		if f.logger != nil {
+			f.logger.Warn("plugin release has no static manifest; falling back to a probe spawn to read its capabilities",
+				"plugin", p.slug(), "version", r.TagName)
+		}
+		// Absent, not an error: the caller falls back to a probe.
+		return nil, nil //nolint:nilnil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return mf, nil
 }
 
 // checkProvenanceNotDowngraded fails closed when a freshly-fetched binary

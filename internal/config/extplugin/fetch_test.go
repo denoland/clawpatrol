@@ -183,7 +183,7 @@ func TestResolvePluginBinaryDownloadCacheAndPin(t *testing.T) {
 	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin", Version: "~> 1.2"}
 
 	// First use: resolves ~> 1.2 -> v1.2.0, downloads, caches, TOFU-records.
-	path, err := m.resolvePluginBinary(context.Background(), sp, false)
+	path, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestResolvePluginBinaryDownloadCacheAndPin(t *testing.T) {
 
 	// Second resolve is offline (cache hit): close the server first.
 	srv.Close()
-	path2, err := m.resolvePluginBinary(context.Background(), sp, false)
+	path2, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err != nil || path2 != wantPath {
 		t.Fatalf("cache-hit resolve failed: %v (path %q)", err, path2)
 	}
@@ -227,14 +227,14 @@ func TestResolvePluginBinaryConstraintDriftFailsClosed(t *testing.T) {
 
 	// Operator tightened the constraint so the locked version no longer fits.
 	sp := config.PluginSource{Name: "p", Source: "github.com/acme/myplugin", Version: "~> 2.0"}
-	_, err := m.resolvePluginBinary(context.Background(), sp, false)
+	_, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err == nil || !strings.Contains(err.Error(), "no longer satisfies") {
 		t.Fatalf("want constraint-drift fail-closed, got %v", err)
 	}
 
 	// The matching constraint takes the offline cache hit.
 	sp.Version = "~> 1.2"
-	if got, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil || got != cached {
+	if got, _, err := m.resolvePluginBinary(context.Background(), sp, false); err != nil || got != cached {
 		t.Fatalf("pinned cache hit failed: %v (got %q)", err, got)
 	}
 }
@@ -267,7 +267,7 @@ func TestPinnedEmptyHashesReDownloads(t *testing.T) {
 	}
 	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.0.0", "", "", false)
 
-	path, err := m.resolvePluginBinary(context.Background(), sp, false)
+	path, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestPinnedVersionWithoutSourceFailsClosed(t *testing.T) {
 	m, _ := newFetchTestManager(t, "http://127.0.0.1:0") // must never dial
 	m.lock.setSource("p", "", "v1.0.0", "", "", false)   // malformed: version, no source
 	sp := config.PluginSource{Name: "p", Source: "github.com/acme/myplugin", Version: "~> 1.0"}
-	_, err := m.resolvePluginBinary(context.Background(), sp, false)
+	_, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err == nil || !strings.Contains(err.Error(), "version but no source") {
 		t.Fatalf("want version-without-source fail-closed, got %v", err)
 	}
@@ -304,7 +304,7 @@ func TestResolvePluginBinaryTamperRejected(t *testing.T) {
 	}})
 	m, _ := newFetchTestManager(t, srv.URL)
 	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin"}
-	_, err := m.resolvePluginBinary(context.Background(), sp, false)
+	_, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Fatalf("want sha256 mismatch rejection, got %v", err)
 	}
@@ -313,7 +313,7 @@ func TestResolvePluginBinaryTamperRejected(t *testing.T) {
 func TestResolvePluginBinaryLocalPassThrough(t *testing.T) {
 	m, _ := newFetchTestManager(t, "")
 	sp := config.PluginSource{Name: "p", Source: "/abs/local/plugin"}
-	got, err := m.resolvePluginBinary(context.Background(), sp, false)
+	got, _, err := m.resolvePluginBinary(context.Background(), sp, false)
 	if err != nil || got != "/abs/local/plugin" {
 		t.Fatalf("local source should pass through unchanged: %q err=%v", got, err)
 	}
