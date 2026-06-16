@@ -177,7 +177,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`passthrough`](#credential-passthrough), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`basic_auth`](#credential-basicauth), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`passthrough`](#credential-passthrough), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -207,6 +207,31 @@ _No configurable attributes._
 
 ```hcl
 credential "aws_credential" "example" {}
+```
+
+### `credential "basic_auth" "<name>"`
+
+Injects `Authorization: Basic <base64(username:password)>`.
+
+The credential secret is the raw password; `username` lives in
+config. Common credential binding fields apply: use `endpoint` or
+`endpoints` to bind the credential to upstreams.
+
+When a profile has multiple Basic Auth credentials for the same HTTPS
+endpoint, use the `placeholder` disambiguator on the profile entry or
+credential block. The HTTPS placeholder detector matches that value
+inside decoded `Authorization: Basic <base64(username:placeholder)>`
+request headers.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `username` | `string` | yes | The upstream HTTP Basic Auth username. |
+
+```hcl
+credential "basic_auth" "example" {
+  endpoint = https.example
+  username = "example"
+}
 ```
 
 ### `credential "bearer_token" "<name>"`
@@ -687,4 +712,3 @@ Configures the tunnel runtime.
 ```hcl
 tunnel "tailscale" "example" {}
 ```
-

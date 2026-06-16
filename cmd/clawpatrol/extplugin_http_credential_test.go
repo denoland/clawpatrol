@@ -20,6 +20,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all" // register built-in plugins
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/sandbox/sandboxtest"
 )
 
 type externalHTTPTestSecretStore map[string]string
@@ -33,6 +34,7 @@ func (s externalHTTPTestSecretStore) Get(name string) (runtime.Secret, error) {
 }
 
 func TestExternalCredentialInjectsAuthorizationThroughBuiltInHTTPS(t *testing.T) {
+	sandboxtest.RequireBackend(t)
 	typeName := fmt.Sprintf("ext_https_cred_%d", time.Now().UnixNano())
 	pluginPath := buildExternalHTTPTestPlugin(t, typeName)
 
@@ -173,6 +175,7 @@ rule "allow-api" {
 }
 
 func TestExternalCredentialPlaceholderDispatchThroughBuiltInHTTPS(t *testing.T) {
+	sandboxtest.RequireBackend(t)
 	typeName := fmt.Sprintf("ext_https_cred_%d", time.Now().UnixNano())
 	pluginPath := buildExternalHTTPTestPlugin(t, typeName)
 

@@ -1160,6 +1160,43 @@ profile "default" { credentials = [bearer_token.test, bearer_token.prod, bearer_
 			t.Errorf("no match should fall back, got %+v", got)
 		}
 	})
+
+	t.Run("basic_auth routes by Basic password placeholder", func(t *testing.T) {
+		src := `
+endpoint "https" "ep" { hosts = ["x.example.com"] }
+credential "basic_auth" "test" {
+  endpoint    = https.ep
+  username    = "agent"
+  placeholder = "PH_test"
+}
+credential "basic_auth" "prod" {
+  endpoint    = https.ep
+  username    = "agent"
+  placeholder = "PH_prod"
+}
+credential "basic_auth" "fallback" {
+  endpoint = https.ep
+  username = "agent"
+}
+profile "default" { credentials = [basic_auth.test, basic_auth.prod, basic_auth.fallback] }
+`
+		cp := compileFixture(t, src)
+		ep := cp.Endpoints["ep"]
+		mkReq := func(user, password string) *match.Request {
+			h := http.Header{}
+			payload := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+			h.Set("Authorization", "Basic "+payload)
+			return &match.Request{Family: "http", Headers: h}
+		}
+		got := runtime.ResolveCredential(cp, "default", ep, mkReq("agent", "PH_prod"))
+		if got == nil || got.Credential.Symbol.Name != "prod" {
+			t.Errorf("Basic password PH_prod should select prod, got %+v", got)
+		}
+		got = runtime.ResolveCredential(cp, "default", ep, mkReq("agent", "unknown"))
+		if got == nil || got.Credential.Symbol.Name != "fallback" {
+			t.Errorf("no Basic placeholder match should fall back, got %+v", got)
+		}
+	})
 }
 
 // TestResolveCredentialIsolatesProfilesSharingEndpoint verifies that

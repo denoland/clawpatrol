@@ -142,3 +142,40 @@ func TestEmitDashboardBranding(t *testing.T) {
 		}
 	}
 }
+
+func TestEmitBasicAuthCredential(t *testing.T) {
+	gw, diags := config.LoadBytes([]byte(`gateway {
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "127.0.0.1:51820"
+  }
+}
+
+endpoint "https" "api" {
+  hosts = ["api.example.com"]
+}
+
+credential "basic_auth" "api" {
+  endpoint = https.api
+  username = "agent"
+}
+
+profile "default" { credentials = [basic_auth.api] }
+`), "basic-auth.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	emitted, err := config.Emit(gw)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(string(emitted), `credential "basic_auth" "api"`) {
+		t.Fatalf("emitted config missing basic_auth credential:\n%s", emitted)
+	}
+	if !strings.Contains(string(emitted), `username = "agent"`) {
+		t.Fatalf("emitted config missing basic_auth username:\n%s", emitted)
+	}
+	if _, diags := config.LoadBytes(emitted, "emitted.hcl"); diags.HasErrors() {
+		t.Fatalf("re-load emitted bytes:\n--- emitted ---\n%s\n--- diags ---\n%v", emitted, diags)
+	}
+}

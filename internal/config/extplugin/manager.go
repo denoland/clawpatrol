@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"sort"
 	"sync"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/sandbox"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/hcl/v2"
@@ -29,7 +29,19 @@ import (
 type Manager struct {
 	mu      sync.Mutex
 	plugins map[string]*Client // keyed by plugin name from Manifest
-	logger  hclog.Logger
+	// blocked records plugins that failed to load on the last pass —
+	// most importantly the ones held back by a permission escalation,
+	// which never enter `plugins`. Rebuilt every LoadPlugins pass so
+	// the dashboard reflects the current state. Keyed by HCL name.
+	blocked  map[string]blockedRecord
+	logger   hclog.Logger
+	lock     *lockStore
+	stateDir string // gateway secret-store dir; read_paths may not overlap it
+}
+
+type blockedRecord struct {
+	source string
+	reason string
 }
 
 // New constructs an empty Manager. The logger is wrapped so plugin
@@ -44,78 +56,325 @@ func New(out *log.Logger) *Manager {
 	})
 	return &Manager{
 		plugins: make(map[string]*Client),
+		blocked: make(map[string]blockedRecord),
 		logger:  logger,
+		lock:    newLockStore(),
 	}
 }
 
-// Start spawns the plugin binary at source, performs the
-// gRPC handshake, fetches the Manifest, and returns a *Client whose
-// Manifest method exposes the declared types. The caller (the
-// register helper in this package) typically immediately registers
-// every type with the global config registry.
+// SetLockfile points the manager at the permission lockfile beside the
+// gateway config. Without it (tests, config.LoadBytes) plugins fall
+// back to their manifest-declared capabilities with no persistence or
+// escalation check. readOnly (used by `clawpatrol validate`) resolves
+// and reports escalations but never writes the lockfile.
+func (m *Manager) SetLockfile(path string, readOnly bool) {
+	m.lock.configure(path, readOnly)
+}
+
+// setStateDir / stateDirLocked guard m.stateDir behind m.mu. LoadPlugins
+// (startup + reload) writes it; the spawn path (Start, probeNetwork,
+// Approve) reads it via buildSandboxSpec. Callers are already serialized
+// by the gateway's configMu, but guarding here keeps the field
+// memory-safe on its own terms.
+func (m *Manager) setStateDir(d string) {
+	m.mu.Lock()
+	m.stateDir = d
+	m.mu.Unlock()
+}
+
+func (m *Manager) stateDirLocked() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateDir
+}
+
+// Start spawns the plugin binary declared by sp inside the sandbox
+// its grants call for, performs the gRPC handshake, fetches the
+// Manifest, and returns a *Client whose Manifest method exposes the
+// declared types. The caller (the register helper in this package)
+// typically immediately registers every type with the global config
+// registry.
 //
 // Start blocks until the subprocess is ready or fails. Returns the
 // client + manifest, or an error suitable for surfacing as an HCL
 // diagnostic on the `plugin` block.
-func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.ManifestResponse, error) {
-	if _, err := os.Stat(source); err != nil {
+func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *pb.ManifestResponse, error) {
+	source := sp.Source
+
+	bin, err := resolveSandboxPath(sp.Source)
+	if err != nil {
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
-	cli := plugin.NewClient(&plugin.ClientConfig{
-		HandshakeConfig: HandshakeConfig,
-		Plugins: map[string]plugin.Plugin{
-			PluginName: &grpcClient{},
-		},
-		Cmd:              exec.Command(source),
-		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
-		Logger:           m.logger,
-	})
-	rpcCli, err := cli.Client()
+	hash, err := hashFile(bin)
 	if err != nil {
-		cli.Kill()
-		return nil, nil, fmt.Errorf("plugin %q: handshake: %w", source, err)
+		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
-	raw, err := rpcCli.Dispense(PluginName)
+
+	network, warn, err := m.resolveNetwork(ctx, sp, hash)
 	if err != nil {
-		cli.Kill()
-		return nil, nil, fmt.Errorf("plugin %q: dispense: %w", source, err)
+		return nil, nil, err
 	}
-	conn, ok := raw.(*grpc.ClientConn)
-	if !ok {
-		cli.Kill()
-		return nil, nil, fmt.Errorf("plugin %q: unexpected client type %T", source, raw)
+	if warn != "" {
+		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", warn)
 	}
-	c := &Client{
-		source:     source,
-		gp:         cli,
-		conn:       conn,
-		pluginCli:  pb.NewPluginClient(conn),
-		credential: pb.NewCredentialClient(conn),
-		endpoint:   pb.NewEndpointClient(conn),
-		tunnel:     pb.NewTunnelClient(conn),
-	}
-	manifest, err := c.pluginCli.Manifest(ctx, &pb.ManifestRequest{})
+
+	spec, mode, sbWarn, err := buildSandboxSpec(sp, network, m.stateDirLocked())
 	if err != nil {
-		cli.Kill()
-		return nil, nil, fmt.Errorf("plugin %q: manifest: %w", source, err)
+		return nil, nil, err
 	}
-	if manifest.Name == "" {
-		cli.Kill()
-		return nil, nil, fmt.Errorf("plugin %q: empty manifest name", source)
+	if sbWarn != "" {
+		m.logger.Warn("plugin sandbox degraded", "plugin", sp.Name, "warning", sbWarn)
 	}
-	c.name = manifest.Name
-	c.manifest = manifest
+
+	c, manifest, err := m.spawnClient(ctx, source, spec, mode, sbWarn)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	m.mu.Lock()
 	if _, dup := m.plugins[manifest.Name]; dup {
 		m.mu.Unlock()
-		cli.Kill()
+		c.kill()
 		return nil, nil, fmt.Errorf("plugin %q (%q) already registered", manifest.Name, source)
 	}
 	m.plugins[manifest.Name] = c
 	m.mu.Unlock()
 
 	return c, manifest, nil
+}
+
+// spawnClient launches the plugin under the given sandbox spec/mode,
+// performs the handshake, and fetches the Manifest. The returned
+// *Client owns its socket dir; call c.kill() to tear it down. Used by
+// both Start (the real, capability-approved spawn) and the throwaway
+// capability probe.
+func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.Spec, mode sandbox.Mode, warning string) (*Client, *pb.ManifestResponse, error) {
+	cmd, err := sandbox.Command(spec, mode)
+	if err != nil {
+		_ = os.RemoveAll(spec.SocketDir)
+		return nil, nil, fmt.Errorf("plugin %q: %w", source, err)
+	}
+	cli := plugin.NewClient(&plugin.ClientConfig{
+		HandshakeConfig: HandshakeConfig,
+		Plugins: map[string]plugin.Plugin{
+			PluginName: &grpcClient{},
+		},
+		Cmd: cmd,
+		// The plugin's environment is exactly what sandbox.Command
+		// set (plus go-plugin's handshake vars): the gateway's own
+		// environment — CLAWPATROL_SECRET_*, cloud credentials —
+		// must never reach plugin code.
+		SkipHostEnv:      true,
+		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
+		Logger:           m.logger,
+	})
+	c := &Client{
+		source:         source,
+		sandboxMode:    mode,
+		sandboxWarning: warning,
+		network:        spec.Network,
+		socketDir:      spec.SocketDir,
+		gp:             cli,
+	}
+	rpcCli, err := cli.Client()
+	if err != nil {
+		c.kill()
+		return nil, nil, fmt.Errorf("plugin %q: handshake: %w", source, err)
+	}
+	raw, err := rpcCli.Dispense(PluginName)
+	if err != nil {
+		c.kill()
+		return nil, nil, fmt.Errorf("plugin %q: dispense: %w", source, err)
+	}
+	conn, ok := raw.(*grpc.ClientConn)
+	if !ok {
+		c.kill()
+		return nil, nil, fmt.Errorf("plugin %q: unexpected client type %T", source, raw)
+	}
+	c.conn = conn
+	c.pluginCli = pb.NewPluginClient(conn)
+	c.credential = pb.NewCredentialClient(conn)
+	c.endpoint = pb.NewEndpointClient(conn)
+	c.tunnel = pb.NewTunnelClient(conn)
+
+	manifest, err := c.pluginCli.Manifest(ctx, &pb.ManifestRequest{})
+	if err != nil {
+		c.kill()
+		return nil, nil, fmt.Errorf("plugin %q: manifest: %w", source, err)
+	}
+	if manifest.Name == "" {
+		c.kill()
+		return nil, nil, fmt.Errorf("plugin %q: empty manifest name", source)
+	}
+	c.name = manifest.Name
+	c.manifest = manifest
+	return c, manifest, nil
+}
+
+// resolveNetwork determines the approved network grant for sp from the
+// manifest-declared capability, the lockfile (trust-on-first-use), and
+// an optional operator HCL override. It returns the grant plus an
+// optional human note for logging, or an error — including the
+// fail-closed escalation error when an upgraded plugin requests more
+// than the lockfile recorded.
+func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, hash string) (sandbox.Network, string, error) {
+	// An operator HCL `network` override always wins (force or veto)
+	// and is what gets recorded — an explicit, lockfile-visible choice.
+	if sp.Network != "" {
+		net, err := parseNetwork(sp.Network)
+		if err != nil {
+			return "", "", err
+		}
+		if m.lock.active() {
+			m.lock.addHash(sp.Name, hash, string(net))
+		}
+		return net, "", nil
+	}
+
+	// No lockfile (tests, config.LoadBytes): use the manifest-declared
+	// capability directly, no persistence or escalation check.
+	if !m.lock.active() {
+		net, err := m.probeNetwork(ctx, sp)
+		return net, "", err
+	}
+
+	if entry, ok := m.lock.get(sp.Name); ok && entry.hasHash(hash) {
+		// Fast path: this binary is in the approved set — no probe.
+		net, err := parseNetwork(entry.Network)
+		if err != nil {
+			return "", "", fmt.Errorf("plugin %q: lockfile network %q: %w", sp.Name, entry.Network, err)
+		}
+		return net, "", nil
+	}
+
+	// Unknown binary (new plugin, new version, or a platform build not
+	// yet in the set): read what it now declares.
+	declared, err := m.probeNetwork(ctx, sp)
+	if err != nil {
+		return "", "", err
+	}
+
+	entry, recorded := m.lock.get(sp.Name)
+	if !recorded {
+		// Trust on first use: record and proceed.
+		m.lock.addHash(sp.Name, hash, string(declared))
+		return declared, fmt.Sprintf("first load: recorded network=%q in %s", declared, LockfileName), nil
+	}
+
+	rec, err := parseNetwork(entry.Network)
+	if err != nil {
+		return "", "", fmt.Errorf("plugin %q: lockfile network %q: %w", sp.Name, entry.Network, err)
+	}
+	if networkRank(declared) > networkRank(rec) {
+		return "", "", fmt.Errorf(
+			"plugin %q upgrade escalates permissions: it now requests network=%q but was approved for network=%q. "+
+				"A compromised plugin update gaining an exfiltration path looks exactly like this. "+
+				"If you trust this update, re-approve it: clawpatrol plugins approve %s",
+			sp.Name, declared, rec, sp.Name)
+	}
+	// Same or reduced permissions: add this binary's hash to the
+	// approved set (a new platform build or a same-perms version) and
+	// proceed.
+	m.lock.addHash(sp.Name, hash, string(declared))
+	return declared, "", nil
+}
+
+// probeNetwork spawns the plugin in a throwaway, network-denied
+// sandbox just long enough to read its manifest-declared network
+// capability, then tears it down. Manifest fetch needs no network, so
+// this is safe even for a plugin that will ultimately run with
+// outbound access.
+func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource) (sandbox.Network, error) {
+	spec, mode, _, err := buildSandboxSpec(sp, sandbox.NetworkNone, m.stateDirLocked())
+	if err != nil {
+		return "", err
+	}
+	c, manifest, err := m.spawnClient(ctx, sp.Source, spec, mode, "")
+	if err != nil {
+		return "", err
+	}
+	defer c.kill()
+	return networkFromManifest(manifest), nil
+}
+
+func networkFromManifest(mf *pb.ManifestResponse) sandbox.Network {
+	if mf.GetCapabilities().GetNetwork() == pb.NetworkAccess_NETWORK_OUTBOUND {
+		return sandbox.NetworkOutbound
+	}
+	return sandbox.NetworkNone
+}
+
+func networkRank(n sandbox.Network) int {
+	if n == sandbox.NetworkOutbound {
+		return 1
+	}
+	return 0
+}
+
+// ApprovedPlugin is one result row from Approve.
+type ApprovedPlugin struct {
+	Name    string
+	Network string
+}
+
+// Approve (re)records the current permissions of the named plugins
+// (or all when names is empty) in the lockfile: it probes each
+// plugin's manifest and writes {hash, declared network}, bypassing the
+// escalation check — this is the operator deliberately accepting the
+// current version. It does not register the plugin's types, so it is
+// safe to call without a full config load.
+func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, names []string) ([]ApprovedPlugin, error) {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	if err := m.lock.load(); err != nil {
+		return nil, err
+	}
+	var out []ApprovedPlugin
+	for _, sp := range specs {
+		if len(want) > 0 && !want[sp.Name] {
+			continue
+		}
+		bin, err := resolveSandboxPath(sp.Source)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		hash, err := hashFile(bin)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+		}
+		declared := sandbox.Network("")
+		if sp.Network != "" {
+			declared, err = parseNetwork(sp.Network)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+			}
+		} else {
+			declared, err = m.probeNetwork(ctx, sp)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
+			}
+		}
+		m.lock.addHash(sp.Name, hash, string(declared))
+		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared)})
+	}
+	for n := range want {
+		found := false
+		for _, a := range out {
+			if a.Name == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no plugin %q in config", n)
+		}
+	}
+	if err := m.lock.save(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // LoadPlugins satisfies config.PluginLoader. Called from inside
@@ -127,15 +386,41 @@ func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.Manife
 // Already-loaded plugins (matched by manifest name) are skipped so
 // reload-style flows don't re-spawn or trip the "duplicate plugin"
 // panic in config.Register.
-func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
+func (m *Manager) LoadPlugins(specs []config.PluginSource, stateDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	ctx := context.Background()
+	m.setStateDir(stateDir)
+	// Reload the lockfile each pass so manual edits and
+	// `plugins approve` are picked up; write back any
+	// trust-on-first-use records when done.
+	if err := m.lock.load(); err != nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Failed to read the plugin permission lockfile",
+			Detail:   err.Error(),
+		})
+		return diags
+	}
+	defer func() {
+		if err := m.lock.save(); err != nil {
+			m.logger.Error("failed to write plugin lockfile", "err", err)
+		}
+	}()
+	// Rebuild the blocked set from scratch this pass; a plugin that
+	// now loads (or was removed from the config) drops out of it.
+	blocked := map[string]blockedRecord{}
+	defer func() {
+		m.mu.Lock()
+		m.blocked = blocked
+		m.mu.Unlock()
+	}()
 	for _, sp := range specs {
 		if sp.Source == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Plugin %q: source is required", sp.Name),
 			})
+			blocked[sp.Name] = blockedRecord{source: sp.Source, reason: "source is required"}
 			continue
 		}
 		m.mu.Lock()
@@ -144,14 +429,22 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
 		if dup {
 			continue // already loaded — caller is reloading
 		}
-		client, manifest, err := m.Start(ctx, sp.Source)
+		client, manifest, err := m.Start(ctx, sp)
 		if err != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Plugin %q failed to start", sp.Name),
 				Detail:   err.Error(),
 			})
+			blocked[sp.Name] = blockedRecord{source: sp.Source, reason: err.Error()}
 			continue
+		}
+		if w := client.SandboxWarning(); w != "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  fmt.Sprintf("Plugin %q: running under a reduced sandbox", sp.Name),
+				Detail:   w,
+			})
 		}
 		if manifest.Name != sp.Name {
 			diags = append(diags, &hcl.Diagnostic{
@@ -239,29 +532,124 @@ func (m *Manager) Plugins() []*Client {
 	return out
 }
 
+// PluginInfo is the dashboard-facing summary of one plugin — either
+// loaded (with its permissions and declared types) or blocked (failed
+// to load, with the reason; chiefly a permission escalation).
+type PluginInfo struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	// Blocked plugins carry only Name, Source, Blocked, Reason.
+	Blocked bool   `json:"blocked,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+
+	Version        string   `json:"version,omitempty"`
+	Network        string   `json:"network,omitempty"`     // approved grant it runs with
+	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
+	SandboxWarning string   `json:"sandboxWarning,omitempty"`
+	ApprovedHashes []string `json:"approvedHashes,omitempty"` // lockfile-approved binary hashes (one per platform build)
+	Credentials    []string `json:"credentials,omitempty"`
+	Tunnels        []string `json:"tunnels,omitempty"`
+	Endpoints      []string `json:"endpoints,omitempty"`
+	Facets         []string `json:"facets,omitempty"`
+}
+
+// PluginInfos returns a dashboard summary of every plugin — loaded
+// ones with their permissions, plus any currently blocked (e.g. a
+// permission escalation) with the failure reason.
+func (m *Manager) PluginInfos() []PluginInfo {
+	out := []PluginInfo{}
+	loaded := map[string]bool{}
+	for _, c := range m.Plugins() {
+		loaded[c.Name()] = true
+		info := PluginInfo{
+			Name:           c.Name(),
+			Source:         c.Source(),
+			Network:        c.Network(),
+			SandboxMode:    c.SandboxMode(),
+			SandboxWarning: c.SandboxWarning(),
+		}
+		if mf := c.Manifest(); mf != nil {
+			info.Version = mf.Version
+			for _, cr := range mf.Credentials {
+				info.Credentials = append(info.Credentials, cr.TypeName)
+			}
+			for _, t := range mf.Tunnels {
+				info.Tunnels = append(info.Tunnels, t.TypeName)
+			}
+			for _, e := range mf.Endpoints {
+				info.Endpoints = append(info.Endpoints, e.TypeName)
+			}
+			for _, f := range mf.Facets {
+				info.Facets = append(info.Facets, f.Name)
+			}
+		}
+		if e, ok := m.lock.get(c.Name()); ok {
+			info.ApprovedHashes = e.Hashes
+		}
+		out = append(out, info)
+	}
+	m.mu.Lock()
+	for name, b := range m.blocked {
+		if loaded[name] {
+			continue
+		}
+		out = append(out, PluginInfo{Name: name, Source: b.source, Blocked: true, Reason: b.reason})
+	}
+	m.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // Stop tears down every spawned subprocess. Idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range m.plugins {
-		c.gp.Kill()
+		c.kill()
 	}
 	m.plugins = make(map[string]*Client)
+}
+
+// kill tears down the subprocess and removes its socket dir.
+// Idempotent and safe before the gRPC conn is wired (probe path).
+func (c *Client) kill() {
+	if c.gp != nil {
+		c.gp.Kill()
+	}
+	if c.socketDir != "" {
+		_ = os.RemoveAll(c.socketDir)
+	}
 }
 
 // Client is the gateway-side handle to one running plugin subprocess.
 // Adapters use it to issue RPCs.
 type Client struct {
-	name       string
-	source     string
-	manifest   *pb.ManifestResponse
-	gp         *plugin.Client
-	conn       *grpc.ClientConn
-	pluginCli  pb.PluginClient
-	credential pb.CredentialClient
-	endpoint   pb.EndpointClient
-	tunnel     pb.TunnelClient
+	name           string
+	source         string
+	sandboxMode    sandbox.Mode
+	sandboxWarning string
+	network        sandbox.Network
+	socketDir      string
+	manifest       *pb.ManifestResponse
+	gp             *plugin.Client
+	conn           *grpc.ClientConn
+	pluginCli      pb.PluginClient
+	credential     pb.CredentialClient
+	endpoint       pb.EndpointClient
+	tunnel         pb.TunnelClient
 }
+
+// SandboxMode reports which sandbox backend the subprocess runs
+// under ("off" when the operator opted out).
+func (c *Client) SandboxMode() string { return string(c.sandboxMode) }
+
+// SandboxWarning is non-empty when the plugin runs under a degraded
+// fallback backend; it describes what the fallback does not cover.
+func (c *Client) SandboxWarning() string { return c.sandboxWarning }
+
+// Network reports the approved network grant the plugin runs with
+// ("none" or "outbound").
+func (c *Client) Network() string { return string(c.network) }
 
 // Name returns the plugin's manifest name (lower-case identifier).
 func (c *Client) Name() string { return c.name }

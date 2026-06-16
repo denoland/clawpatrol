@@ -206,6 +206,13 @@ type ConnHandle struct {
 	// DialUpstream connects to the upstream host:port over plain
 	// TCP. Postgres MITM uses this for the upstream socket.
 	DialUpstream func(ctx context.Context, network, addr string) (net.Conn, error)
+	// DialUpstreamTLS dials addr and completes an upstream TLS
+	// handshake the way the gateway's own HTTPS path does: system
+	// roots plus the endpoint's EndpointTLSConfigurer and any
+	// TLSCredentialRuntime client certs. serverName drives SNI and
+	// certificate verification. nil when the host doesn't support
+	// it; callers fall back to DialUpstream + their own TLS.
+	DialUpstreamTLS func(ctx context.Context, network, addr, serverName string) (net.Conn, error)
 	// Sink is an opaque event-sink callback. Plugins emit per-query
 	// events; the gateway funnels them to the dashboard SSE +
 	// JSONL log.

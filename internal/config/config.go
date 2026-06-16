@@ -412,6 +412,24 @@ func (g *Gateway) DashboardIconURL() string {
 // StateDir returns the configured state directory, or empty string.
 func (g *Gateway) StateDir() string { return g.settings().StateDir }
 
+// ResolvedStateDir returns the effective state directory: the
+// configured state_dir, or ${HOME}/.clawpatrol when unset. This is the
+// path the gateway actually uses at runtime, so it is what the plugin
+// loader must guard read_paths against — the raw StateDir() is empty by
+// default, which would let a read_paths grant of the default dir slip
+// past the credential-store overlap check. Returns "" only when
+// state_dir is unset and $HOME is unavailable.
+func (g *Gateway) ResolvedStateDir() string {
+	if d := g.StateDir(); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".clawpatrol")
+}
+
 // Operators returns the tailnet-login allowlist from the `tailscale
 // {}` block. Empty/nil disables the allowlist gate (and is the only
 // value when no tailscale block is declared — without tsnet there's
@@ -582,6 +600,36 @@ func (f FrameworkAttrs) Str(name string) string {
 type PluginSource struct {
 	Name   string `hcl:"name,label"`
 	Source string `hcl:"source"`
+
+	// Network grants the plugin direct network access. "none" (the
+	// default) confines the plugin to its gateway socket — endpoint
+	// and credential plugins don't need more: upstream connections
+	// go through the gateway's brokered dial. "outbound" lets the
+	// plugin dial out itself; tunnel plugins (they are the upstream
+	// transport) need it.
+	Network string `hcl:"network,optional"`
+
+	// Sandbox controls subprocess isolation. "enforce" (the default)
+	// runs the plugin inside an OS sandbox — Linux namespaces (or
+	// Landlock where user namespaces are unavailable), macOS
+	// seatbelt — and fails config load when no sandbox can be
+	// established on this host. "off" runs the plugin with the
+	// gateway user's full privileges; the gateway's environment is
+	// scrubbed either way.
+	Sandbox string `hcl:"sandbox,optional"`
+
+	// ReadPaths grants the plugin recursive read-only access to
+	// extra host paths (e.g. "~/.ssh" for an SSH tunnel plugin).
+	// Paths must be absolute; a leading "~/" expands to the gateway
+	// user's home directory. The gateway refuses a path that overlaps
+	// the state dir (the secret store). There is deliberately no
+	// host-write grant: writing an active location (~/.bashrc, cron,
+	// a $PATH dir, ...) is a code-execution-as-the-gateway-user
+	// primitive, and no denylist of such locations can be complete.
+	// A plugin that genuinely needs host writes runs with
+	// sandbox = "off" (the single, explicit full-trust knob);
+	// durable plugin storage goes through the gateway's blob store.
+	ReadPaths []string `hcl:"read_paths,optional"`
 }
 
 // PluginLoader is the gateway-side hook the loader calls before
@@ -592,7 +640,10 @@ type PluginSource struct {
 // Implemented by *extplugin.Manager — the package-cycle-safe seam
 // (config can't import extplugin since extplugin imports config).
 type PluginLoader interface {
-	LoadPlugins(specs []PluginSource) hcl.Diagnostics
+	// stateDir is the gateway's resolved state directory (where the
+	// secret store lives); the loader refuses a plugin read_paths
+	// grant that overlaps it.
+	LoadPlugins(specs []PluginSource, stateDir string) hcl.Diagnostics
 }
 
 // pluginLoader is the package-global hook every Load call uses.
@@ -619,7 +670,7 @@ func SetPluginLoader(p PluginLoader) {
 // referencing endpoint blocks.
 type noopPluginLoader struct{}
 
-func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil }
+func (noopPluginLoader) LoadPlugins([]PluginSource, string) hcl.Diagnostics { return nil }
 
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Credentials is
@@ -877,7 +928,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	// types they declare are visible to pass-1 symbol building. The
 	// loader is package-global; see SetPluginLoader.
 	if len(gw.Plugins) > 0 {
-		d := pluginLoader.LoadPlugins(gw.Plugins)
+		d := pluginLoader.LoadPlugins(gw.Plugins, gw.ResolvedStateDir())
 		if d.HasErrors() {
 			return gw, append(diags, d...)
 		}
