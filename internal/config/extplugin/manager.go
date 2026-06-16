@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -196,6 +197,22 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		return nil, nil, err
 	}
 
+	// Resolve the approved brokered-dial egress set from the (now
+	// consistency-checked) manifest and the lockfile. A version that
+	// broadens egress beyond what was approved fails closed here, the same
+	// trust-on-first-use model as the network grant. Egress doesn't gate
+	// the sandbox — the plugin already runs network=none — so this happens
+	// after the spawn, off the real manifest.
+	egress, eWarn, err := m.resolveEgress(sp, hash, egressFromManifest(manifest))
+	if err != nil {
+		c.kill()
+		return nil, nil, err
+	}
+	if eWarn != "" {
+		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", eWarn)
+	}
+	c.egress = egress
+
 	m.mu.Lock()
 	if _, dup := m.plugins[manifest.Name]; dup {
 		m.mu.Unlock()
@@ -357,22 +374,74 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, bi
 	return declared, "", nil
 }
 
-// probeNetwork spawns the plugin in a throwaway, network-denied
-// sandbox just long enough to read its manifest-declared network
-// capability, then tears it down. Manifest fetch needs no network, so
-// this is safe even for a plugin that will ultimately run with
-// outbound access.
+// resolveEgress determines the approved brokered-dial egress set for sp
+// from the plugin's manifest-declared targets and the lockfile
+// (trust-on-first-use). It records the set on first load and, on a later
+// binary, fails closed when the declared set broadens beyond what was
+// approved (a destination none of the approved entries cover). A same or
+// narrower set is recorded and allowed. Egress does not gate the sandbox;
+// it bounds which upstream targets the gateway's brokered dial will open.
+func (m *Manager) resolveEgress(sp config.PluginSource, hash string, declared []string) ([]string, string, error) {
+	declared = normalizeEgress(declared)
+
+	// No lockfile (tests, config.LoadBytes): use the declared set directly,
+	// no persistence or broadening check.
+	if !m.lock.active() {
+		return declared, "", nil
+	}
+
+	entry, recorded := m.lock.get(sp.Name)
+	if recorded && entry.hasHash(hash) {
+		// Fast path: this exact binary is approved — use its recorded set.
+		return entry.Egress, "", nil
+	}
+	if !recorded {
+		// Trust on first use: record and proceed.
+		m.lock.setEgress(sp.Name, declared)
+		if len(declared) > 0 {
+			return declared, fmt.Sprintf("first load: recorded egress %v in %s", declared, LockfileName), nil
+		}
+		return declared, "", nil
+	}
+	if broadened := egressBroadened(entry.Egress, declared); len(broadened) > 0 {
+		return nil, "", fmt.Errorf(
+			"plugin %q upgrade broadens its network egress: it now wants to reach %v but was approved only for %v. "+
+				"A compromised plugin update adding an exfiltration destination looks exactly like this. "+
+				"If you trust this update, re-approve it: clawpatrol plugins approve %s",
+			sp.Name, broadened, entry.Egress, sp.Name)
+	}
+	// Same or narrowed: record the (possibly tightened) declared set.
+	m.lock.setEgress(sp.Name, declared)
+	return declared, "", nil
+}
+
+// probeNetwork reads the plugin's manifest-declared network capability via
+// a throwaway probe spawn (see probeManifest).
 func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource, binPath string) (sandbox.Network, error) {
-	spec, mode, _, err := buildSandboxSpec(sp, binPath, sandbox.NetworkNone, m.stateDirLocked())
+	mf, err := m.probeManifest(ctx, sp, binPath)
 	if err != nil {
 		return "", err
+	}
+	return networkFromManifest(mf), nil
+}
+
+// probeManifest spawns the plugin in a throwaway, network-denied sandbox
+// just long enough to read its manifest, then tears it down. Manifest
+// fetch needs no network, so this is safe even for a plugin that will
+// ultimately run with outbound access. Used to learn a local plugin's (or
+// a static-manifest-less release's) declared capabilities without granting
+// them.
+func (m *Manager) probeManifest(ctx context.Context, sp config.PluginSource, binPath string) (*pb.ManifestResponse, error) {
+	spec, mode, _, err := buildSandboxSpec(sp, binPath, sandbox.NetworkNone, m.stateDirLocked())
+	if err != nil {
+		return nil, err
 	}
 	c, manifest, err := m.spawnClient(ctx, sp.Source, spec, mode, "")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer c.kill()
-	return networkFromManifest(manifest), nil
+	return manifest, nil
 }
 
 func networkFromManifest(mf *pb.ManifestResponse) sandbox.Network {
@@ -408,6 +477,11 @@ func checkManifestConsistency(name string, staticMf, runtimeMf *pb.ManifestRespo
 		return fmt.Errorf(
 			"plugin %q binary declares different identity or types than its signed release manifest; "+
 				"the binary does not match its published manifest", name)
+	}
+	if s, g := egressFromManifest(staticMf), egressFromManifest(runtimeMf); !slices.Equal(s, g) {
+		return fmt.Errorf(
+			"plugin %q binary requests network egress %v but its signed release manifest declares %v; "+
+				"the binary does not match its published manifest", name, g, s)
 	}
 	return nil
 }
@@ -487,6 +561,12 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 			}
 		}
 		m.lock.addHash(sp.Name, hash, string(declared))
+		// Record the manifest-declared egress when the release ships a
+		// signed static manifest (no spawn); a manifest-less release has its
+		// egress recorded trust-on-first-use at the first real load.
+		if staticMf != nil {
+			m.lock.setEgress(sp.Name, egressFromManifest(staticMf))
+		}
 		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared)})
 	}
 	for n := range want {
@@ -681,6 +761,7 @@ type PluginInfo struct {
 
 	Version        string   `json:"version,omitempty"`
 	Network        string   `json:"network,omitempty"`     // approved grant it runs with
+	Egress         []string `json:"egress,omitempty"`      // approved brokered-dial targets
 	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
 	SandboxWarning string   `json:"sandboxWarning,omitempty"`
 	ApprovedHashes []string `json:"approvedHashes,omitempty"` // lockfile-approved binary hashes (one per platform build)
@@ -706,6 +787,7 @@ type PluginInfo struct {
 type RequestedPrivileges struct {
 	Version     string   `json:"version,omitempty"`
 	Network     string   `json:"network"`
+	Egress      []string `json:"egress,omitempty"`
 	Credentials []string `json:"credentials,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
 	Tunnels     []string `json:"tunnels,omitempty"`
@@ -750,6 +832,10 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		}
 		if e, ok := m.lock.get(c.Name()); ok {
 			info.ApprovedHashes = e.Hashes
+			info.Egress = e.Egress
+		}
+		if len(info.Egress) == 0 {
+			info.Egress = c.Egress()
 		}
 		info.UpdateAvailable = updates[info.Source]
 		out = append(out, info)
@@ -767,6 +853,7 @@ func (m *Manager) PluginInfos() []PluginInfo {
 			info.Requested = &RequestedPrivileges{
 				Version:     r.Version,
 				Network:     r.Network,
+				Egress:      r.Egress,
 				Credentials: r.Credentials,
 				Endpoints:   r.Endpoints,
 				Tunnels:     r.Tunnels,
@@ -809,14 +896,19 @@ type Client struct {
 	sandboxMode    sandbox.Mode
 	sandboxWarning string
 	network        sandbox.Network
-	socketDir      string
-	manifest       *pb.ManifestResponse
-	gp             *plugin.Client
-	conn           *grpc.ClientConn
-	pluginCli      pb.PluginClient
-	credential     pb.CredentialClient
-	endpoint       pb.EndpointClient
-	tunnel         pb.TunnelClient
+	// egress is the lockfile-approved set of brokered-dial targets the
+	// plugin's manifest declared ("host:port" / "*.suffix:port"). Merged
+	// into every endpoint binding's dial allow-list so the gateway opens
+	// these upstreams on the plugin's behalf without operator `dial` HCL.
+	egress     []string
+	socketDir  string
+	manifest   *pb.ManifestResponse
+	gp         *plugin.Client
+	conn       *grpc.ClientConn
+	pluginCli  pb.PluginClient
+	credential pb.CredentialClient
+	endpoint   pb.EndpointClient
+	tunnel     pb.TunnelClient
 }
 
 // SandboxMode reports which sandbox backend the subprocess runs
@@ -830,6 +922,10 @@ func (c *Client) SandboxWarning() string { return c.sandboxWarning }
 // Network reports the approved network grant the plugin runs with
 // ("none" or "outbound").
 func (c *Client) Network() string { return string(c.network) }
+
+// Egress reports the lockfile-approved brokered-dial targets the
+// plugin's manifest declared.
+func (c *Client) Egress() []string { return c.egress }
 
 // Name returns the plugin's manifest name (lower-case identifier).
 func (c *Client) Name() string { return c.name }

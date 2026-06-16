@@ -155,6 +155,9 @@ func runPluginsInfo(args []string) {
 			fmt.Printf("  version:   %s\n", pv.Version)
 		}
 		fmt.Printf("  requires:  network = %s\n", pv.Network)
+		if len(pv.Egress) > 0 {
+			fmt.Printf("  egress:    %s\n", strings.Join(pv.Egress, ", "))
+		}
 		printTypes("credentials", pv.Credentials)
 		printTypes("endpoints", pv.Endpoints)
 		printTypes("tunnels", pv.Tunnels)

@@ -113,6 +113,7 @@ function BlockedCard({ p, onApproved }: { p: Plugin; onApproved: () => void }) {
                 )}
                 <NetworkBadge network={p.requested.network} />
               </div>
+              <RequestedTypes label="egress" items={p.requested.egress} />
               <RequestedTypes label="credentials" items={p.requested.credentials} />
               <RequestedTypes label="endpoints" items={p.requested.endpoints} />
               <RequestedTypes label="tunnels" items={p.requested.tunnels} />
@@ -173,6 +174,7 @@ function PluginCard({ p }: { p: Plugin }) {
             </div>
           </Field>
         )}
+        <TypeGroup label="Egress" items={p.egress} />
         <TypeGroup label="Credentials" items={p.credentials} />
         <TypeGroup label="Tunnels" items={p.tunnels} />
         <TypeGroup label="Endpoints" items={p.endpoints} />

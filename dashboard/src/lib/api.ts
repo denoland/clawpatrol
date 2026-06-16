@@ -214,6 +214,10 @@ export async function getRules(): Promise<RuleSummary[]> {
 export type RequestedPrivileges = {
   version?: string;
   network: string;
+  // egress is the set of upstream targets the plugin's manifest declares
+  // it needs to reach via the gateway's brokered dial ("host:port" or
+  // "*.suffix:port").
+  egress?: string[];
   credentials?: string[];
   endpoints?: string[];
   tunnels?: string[];
@@ -229,6 +233,9 @@ export type Plugin = {
   reason?: string;
   version?: string;
   network?: string;
+  // egress is the approved set of brokered-dial targets the plugin's
+  // manifest declared, recorded in the lockfile.
+  egress?: string[];
   sandboxMode?: string;
   sandboxWarning?: string;
   approvedHashes?: string[];

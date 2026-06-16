@@ -125,6 +125,24 @@ func TestCheckManifestConsistency(t *testing.T) {
 	if err := checkManifestConsistency("p", stat, mk(pb.NetworkAccess_NETWORK_OUTBOUND, "other_token")); err == nil {
 		t.Fatal("type mismatch should fail closed")
 	}
+
+	// Egress mismatch between the signed static manifest and the running
+	// binary -> fail closed.
+	withEgress := func(egress ...string) *pb.ManifestResponse {
+		return &pb.ManifestResponse{
+			Name:         "p",
+			Capabilities: &pb.PluginCapabilities{Network: pb.NetworkAccess_NETWORK_OUTBOUND, Egress: egress},
+			Credentials:  []*pb.CredentialDecl{{TypeName: "p_token"}},
+		}
+	}
+	statEgress := withEgress("*.foo.com:443")
+	if err := checkManifestConsistency("p", statEgress, withEgress("*.foo.com:443")); err != nil {
+		t.Fatalf("matching egress: %v", err)
+	}
+	if err := checkManifestConsistency("p", statEgress, withEgress("*.foo.com:443", "evil.com:443")); err == nil ||
+		!strings.Contains(err.Error(), "egress") {
+		t.Fatalf("egress mismatch should fail: %v", err)
+	}
 }
 
 func TestPluginInfosSurfacesRequested(t *testing.T) {

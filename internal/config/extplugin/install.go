@@ -101,6 +101,15 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 		}
 		m.lock.addHash(sp.Name, res.binSHA, network)
 
+		// Record the manifest-declared brokered-dial egress set when the
+		// release ships a signed static manifest (no spawn). install /
+		// update is the operator's explicit accept, so a broadened set is
+		// recorded rather than blocked. A release without a static manifest
+		// has its egress recorded trust-on-first-use at the first real load.
+		if staticMf != nil {
+			m.lock.setEgress(sp.Name, egressFromManifest(staticMf))
+		}
+
 		out = append(out, InstalledPlugin{
 			Name:      sp.Name,
 			Source:    p.slug(),

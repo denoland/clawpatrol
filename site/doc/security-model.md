@@ -298,8 +298,11 @@ network entirely, an endpoint plugin that receives credential secrets
 (to inject them into an upstream request) cannot exfiltrate them: its
 only channel is the gateway socket, and its upstream connections are
 opened *by the gateway* through the [brokered
-dial](plugins.md#brokered-upstream-dial), restricted to targets the
-operator's HCL sanctions and audited on every attempt. Tunnel plugins
+dial](plugins.md#brokered-upstream-dial), restricted to the targets the
+endpoint's `hosts`/`dial` HCL or the plugin's manifest-declared egress
+set sanctions and audited on every attempt. That egress set is recorded
+trust-on-first-use like the network grant, and an upgrade that broadens
+it fails closed until re-approved. Tunnel plugins
 are the upstream transport themselves and need outbound network; that
 grant is per-plugin, so it does not loosen the endpoint plugins beside
 it.

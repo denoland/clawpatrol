@@ -376,12 +376,12 @@ is what lets endpoint plugins run with `network = "none"`: they
 receive credential secrets but cannot exfiltrate them, because they
 have no socket of their own.
 
-The gateway only dials targets the operator's HCL sanctions for that
-endpoint instance:
+The gateway only dials targets sanctioned for that endpoint instance:
 
 1. the exact host:port the agent originally dialed,
-2. an entry of the endpoint's `hosts` list, or
-3. an entry of the endpoint's `dial` allow-list:
+2. an entry of the endpoint's `hosts` list,
+3. an entry of the plugin's **manifest-declared egress** set, or
+4. an entry of the endpoint's `dial` allow-list:
 
 ```hcl
 endpoint "example_https" "demo-site" {
@@ -392,8 +392,34 @@ endpoint "example_https" "demo-site" {
 ```
 
 Any other target is refused and audited (a `dial` / `deny` event on
-the dashboard). Plugin-supplied config is never consulted for dial
-authorization — only HCL the operator wrote.
+the dashboard). Plugin-supplied *config* is never consulted for dial
+authorization.
+
+#### Manifest-declared egress
+
+A plugin that always needs to reach the same upstreams — an AWS plugin
+talking to `*.amazonaws.com`, say — declares them in its manifest
+rather than making every operator hand-write a `dial` list:
+
+```go
+Capabilities: pluginsdk.Capabilities{
+    Egress: []string{"*.amazonaws.com:443"},
+},
+```
+
+Each entry is `host:port` or `*.suffix.tld:port` (the same shape as
+`dial`). The gateway records the approved set in `clawpatrol.lock.hcl`
+on first load (trust-on-first-use, alongside the network grant) and
+merges it into every one of the plugin's endpoints' dial allow-list.
+An upgrade that **broadens** egress — a new version that wants a
+destination none of the approved entries cover — fails closed until
+the operator re-approves it (`clawpatrol plugins approve`), exactly
+like a network-grant escalation; a narrower or equal set loads
+unchanged. The declared set is verified against the signed static
+manifest, so `clawpatrol plugins info` shows a plugin's egress before
+any binary is downloaded. The operator's `dial` list still works and
+composes with the manifest set — use it for site-specific upstreams
+the plugin author can't know.
 
 `DialUpstream` requires a gateway that supports the brokered-dial
 protocol; against an older gateway it returns

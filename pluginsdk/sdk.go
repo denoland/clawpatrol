@@ -65,6 +65,16 @@ type Capabilities struct {
 	// NetworkNone (the plugin only talks to the gateway over its
 	// socket).
 	Network NetworkAccess
+
+	// Egress is the set of upstream targets this plugin needs to reach
+	// through the gateway's brokered dial (conn.DialUpstream), each
+	// "host:port" or "*.suffix.tld:port" (port required). Declaring it
+	// lets a plugin run with Network = NetworkNone — no raw sockets,
+	// every connection gateway-validated and audited — instead of the
+	// coarse NetworkOutbound. The gateway records the approved set in its
+	// lockfile (trust-on-first-use) and blocks an upgrade that broadens
+	// it, the same model as Network; the operator never hand-writes it.
+	Egress []string
 }
 
 // NetworkAccess is a plugin's declared network requirement.

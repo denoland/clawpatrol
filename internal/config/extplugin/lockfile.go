@@ -58,6 +58,12 @@ type lockEntry struct {
 	// provenance — attested here, unattested now — is blocked until
 	// reapproved, the same trust-on-first-use model as the network grant.
 	Attested bool `hcl:"attested,optional"`
+	// Egress is the approved set of brokered-dial upstream targets the
+	// plugin's manifest declared, recorded trust-on-first-use. Each entry
+	// is "host:port" or "*.suffix.tld:port". An upgrade that broadens this
+	// set — wants a destination none of these entries cover — fails closed
+	// until reapproved. Shared across the entry's Hashes, like Network.
+	Egress []string `hcl:"egress,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -188,6 +194,26 @@ func (s *lockStore) setSource(name, source, version, constraints, commit string,
 	s.dirty = true
 }
 
+// setEgress records the approved brokered-dial egress set for a plugin
+// (shared across its platform hashes, like Network). Marks dirty only on
+// change. A nil/empty set is recorded as "no egress".
+func (s *lockStore) setEgress(name string, egress []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[name]
+	if e.Name == name && slices.Equal(e.Egress, egress) {
+		return
+	}
+	e.Name = name
+	if len(egress) == 0 {
+		e.Egress = nil
+	} else {
+		e.Egress = egress
+	}
+	s.entries[name] = e
+	s.dirty = true
+}
+
 // active reports whether a lockfile is in use (a path is configured).
 func (s *lockStore) active() bool {
 	s.mu.Lock()
@@ -241,6 +267,13 @@ func (s *lockStore) save() error {
 			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))
 		}
 		blk.Body().SetAttributeValue("network", cty.StringVal(e.Network))
+		if len(e.Egress) > 0 {
+			egVals := make([]cty.Value, len(e.Egress))
+			for i, eg := range e.Egress {
+				egVals[i] = cty.StringVal(eg)
+			}
+			blk.Body().SetAttributeValue("egress", cty.ListVal(egVals))
+		}
 		hashVals := make([]cty.Value, len(e.Hashes))
 		for i, h := range e.Hashes {
 			hashVals[i] = cty.StringVal(h)

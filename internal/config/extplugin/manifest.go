@@ -120,7 +120,8 @@ type ManifestPreview struct {
 	Source      string   `json:"source"`
 	Version     string   `json:"version"` // resolved release tag
 	Locked      string   `json:"locked,omitempty"`
-	Network     string   `json:"network"` // required network grant
+	Network     string   `json:"network"`          // required network grant
+	Egress      []string `json:"egress,omitempty"` // required brokered-dial targets
 	Credentials []string `json:"credentials,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
 	Tunnels     []string `json:"tunnels,omitempty"`
@@ -169,6 +170,7 @@ func previewFromManifest(name, source, version, locked string, mf *pb.ManifestRe
 	pv := ManifestPreview{
 		Name: name, Source: source, Version: version, Locked: locked,
 		Network: string(networkFromManifest(mf)),
+		Egress:  egressFromManifest(mf),
 	}
 	for _, c := range mf.GetCredentials() {
 		pv.Credentials = append(pv.Credentials, c.GetTypeName())
