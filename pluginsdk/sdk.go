@@ -448,10 +448,6 @@ func (r BuildRequest) Decode(v any) error {
 	return json.Unmarshal(r.ConfigJSON, v)
 }
 
-// Conn is the per-inbound-conn handle a plugin's HandleConn receives.
-// Reading / writing the underlying agent connection is done through
-// the embedded net.Conn (which is a TLS-terminated *tls.Conn for
-// TLSMode=TLSTerminate, or a raw stream-backed conn otherwise).
 // ConnCredential is one credential bound to a plugin endpoint, as
 // delivered on Conn.Credentials. Mirrors the singular Conn.Credential*
 // fields; carried as a list so an endpoint can offer several and the
@@ -464,6 +460,10 @@ type ConnCredential struct {
 	CanonicalConfig []byte
 }
 
+// Conn is the per-inbound-conn handle a plugin's HandleConn receives.
+// Reading / writing the underlying agent connection is done through
+// the embedded net.Conn (which is a TLS-terminated *tls.Conn for
+// TLSMode=TLSTerminate, or a raw stream-backed conn otherwise).
 type Conn struct {
 	net.Conn
 
