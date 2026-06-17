@@ -91,6 +91,14 @@ func (b *dynamicEndpointBody) ConnRouteHosts() []string { return b.hosts }
 // plugin asked for it in its manifest.
 func (b *dynamicEndpointBody) RequiresVIP() bool { return b.wantsVIP }
 
+// TLSTerminates reports whether this plugin endpoint terminates the
+// agent's TLS itself (the plugin asked for TLSTerminate). The :443 SNI
+// dispatch uses this to route a matched HTTPS plugin endpoint to the
+// plugin — and only such endpoints, so built-in wire-protocol conn
+// runtimes (postgres / clickhouse / ssh) bound to a host aren't handed a
+// raw ClientHello they can't parse.
+func (b *dynamicEndpointBody) TLSTerminates() bool { return b.tlsTerminate }
+
 // HandleConn satisfies runtime.ConnEndpointRuntime. The host has
 // already routed the agent conn to this endpoint and bundled the
 // full per-conn context on ch.
