@@ -22,7 +22,7 @@ test/docker/
     ├── 01-https-mitm.sh        agent → MITM-handled HTTPS endpoint
     ├── 02-relay-no-spam.sh     no `[clawpatrol relay] …` log lines
     ├── 03-vip-passthrough.sh   orchid#184: SSH host w/o profile binding
-    └── 04-sigurg-resilience.sh seccomp supervisor survives runtime signals
+    └── 04-sigurg-resilience.sh seccomp supervisor + GitHub API survive signals
 ```
 
 The gateway image embeds the `examples/gateway.example.hcl`-shaped

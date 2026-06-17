@@ -2,8 +2,8 @@
 # 04-sigurg-resilience.sh — guards orchid#184 #3: the seccomp supervisor
 # used to exit its `notif_recv` loop on EINTR, which the Go runtime
 # delivers via SIGURG during goroutine preemption. With the EINTR retry
-# in place, the supervisor must keep serving auto-expose across runtime
-# signals.
+# in place, the supervisor must keep serving auto-expose and gateway
+# connectivity across runtime signals.
 #
 set -u
 
@@ -17,6 +17,7 @@ out="$(timeout 30s "${CLAWPATROL_BIN}" run -- sh -eu -c '
         kill "$p" 2>/dev/null || true
         wait "$p" 2>/dev/null || true
     done
+    curl -fsS https://api.github.com/rate_limit | grep -q "\"rate\""
 ' 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
