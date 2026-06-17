@@ -200,6 +200,15 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 				_ = os.RemoveAll(tmp)
 				return nil, fmt.Errorf("plugin %q (%s): %w", sp.Name, plat, err)
 			}
+			// addHash extends the entry's grants — including a recorded
+			// privileged grant, which is shared across the entry's hashes — to
+			// every sibling platform build of the SAME pinned release. That is
+			// intended: the operator pinned and approved this version, and lock
+			// is how one committed lockfile covers a mixed-OS team. A release
+			// that ships a signed static manifest still has each build's
+			// declaration checked against it at load (checkManifestConsistency);
+			// a manifest-less release is trusted per the pin, the same as its
+			// network/egress grants.
 			m.lock.addHash(sp.Name, res.binSHA, entry.Network)
 			if commit == "" {
 				commit = res.commit
