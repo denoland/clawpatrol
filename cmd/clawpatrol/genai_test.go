@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -93,28 +95,44 @@ func TestEmitGenAISpanWithContent(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
-	events := spans[0].Events()
-	if len(events) != 3 { // system message, user message, choice
-		t.Fatalf("got %d events, want 3: %+v", len(events), events)
+	// Content rides span attributes now, not events.
+	if n := len(spans[0].Events()); n != 0 {
+		t.Errorf("got %d events, want 0 (content is on attributes)", n)
 	}
-	if events[0].Name != "gen_ai.system.message" {
-		t.Errorf("event[0].Name = %q", events[0].Name)
+	m := attrMap(spans[0].Attributes())
+
+	// System message → gen_ai.system_instructions (separate from input).
+	var sysParts []genAIPart
+	if err := json.Unmarshal([]byte(m["gen_ai.system_instructions"].AsString()), &sysParts); err != nil {
+		t.Fatalf("gen_ai.system_instructions: %v (raw %q)", err, m["gen_ai.system_instructions"].AsString())
 	}
-	if events[1].Name != "gen_ai.user.message" {
-		t.Errorf("event[1].Name = %q", events[1].Name)
+	wantSys := []genAIPart{{Type: "text", Content: "you are helpful"}}
+	if !reflect.DeepEqual(sysParts, wantSys) {
+		t.Errorf("gen_ai.system_instructions = %+v, want %+v", sysParts, wantSys)
 	}
-	if got := attrMap(events[1].Attributes)["content"].AsString(); got != "hello there" {
-		t.Errorf("user message content = %q", got)
+
+	// Non-system messages → gen_ai.input.messages.
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("gen_ai.input.messages: %v (raw %q)", err, m["gen_ai.input.messages"].AsString())
 	}
-	if events[2].Name != "gen_ai.choice" {
-		t.Errorf("event[2].Name = %q", events[2].Name)
+	wantInput := []genAIChatMessage{
+		{Role: "user", Parts: []genAIPart{{Type: "text", Content: "hello there"}}},
 	}
-	choice := attrMap(events[2].Attributes)
-	if got := choice["content"].AsString(); got != "general kenobi" {
-		t.Errorf("choice content = %q", got)
+	if !reflect.DeepEqual(input, wantInput) {
+		t.Errorf("gen_ai.input.messages = %+v, want %+v", input, wantInput)
 	}
-	if got := choice["finish_reason"].AsString(); got != "end_turn" {
-		t.Errorf("choice finish_reason = %q", got)
+
+	// Completion → gen_ai.output.messages with finish reason.
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("gen_ai.output.messages: %v (raw %q)", err, m["gen_ai.output.messages"].AsString())
+	}
+	wantOutput := []genAIChatMessage{
+		{Role: "assistant", Parts: []genAIPart{{Type: "text", Content: "general kenobi"}}, FinishReason: "end_turn"},
+	}
+	if !reflect.DeepEqual(output, wantOutput) {
+		t.Errorf("gen_ai.output.messages = %+v, want %+v", output, wantOutput)
 	}
 }
 
@@ -292,11 +310,32 @@ gateway {
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
-	events := spans[0].Events()
-	if len(events) != 3 { // system + user message + choice
-		t.Fatalf("got %d events, want 3: %+v", len(events), events)
+	if n := len(spans[0].Events()); n != 0 {
+		t.Errorf("got %d events, want 0 (content is on attributes)", n)
 	}
-	if got := attrMap(events[2].Attributes)["content"].AsString(); got != "hello back" {
-		t.Errorf("completion content = %q", got)
+	m := attrMap(spans[0].Attributes())
+
+	var sysParts []genAIPart
+	if err := json.Unmarshal([]byte(m["gen_ai.system_instructions"].AsString()), &sysParts); err != nil {
+		t.Fatalf("gen_ai.system_instructions: %v", err)
+	}
+	if len(sysParts) != 1 || sysParts[0].Content != "be terse" {
+		t.Errorf("gen_ai.system_instructions = %+v", sysParts)
+	}
+
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("gen_ai.input.messages: %v", err)
+	}
+	if len(input) != 1 || input[0].Role != "user" || len(input[0].Parts) != 1 || input[0].Parts[0].Content != "hi there" {
+		t.Errorf("gen_ai.input.messages = %+v", input)
+	}
+
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("gen_ai.output.messages: %v", err)
+	}
+	if len(output) != 1 || output[0].Parts[0].Content != "hello back" || output[0].FinishReason != "end_turn" {
+		t.Errorf("gen_ai.output.messages = %+v", output)
 	}
 }

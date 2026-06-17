@@ -1,15 +1,16 @@
 // OpenTelemetry GenAI semantic-convention export for intercepted LLM
-// turns. Targets semconv v1.27.0
+// turns. Targets the GenAI semantic conventions
 // (https://opentelemetry.io/docs/specs/semconv/gen-ai/): one span per
 // model invocation carrying gen_ai.* attributes (system, models, token
 // usage, finish reason) and — only when the operator opts in — the
-// prompt/completion message content as span events.
+// prompt/completion message content as the gen_ai.input.messages /
+// gen_ai.output.messages / gen_ai.system_instructions span attributes.
 //
 // Opt-in is two independent switches (internal/config GenAITelemetry):
 // the `genai_telemetry {}` block presence enables the attribute span;
-// `include_message_content` additionally attaches content events.
-// Disabled is the zero-overhead default — recordGenAITurn returns
-// before parsing anything.
+// `include_message_content` additionally attaches the message-content
+// attributes. Disabled is the zero-overhead default — recordGenAITurn
+// returns before parsing anything.
 
 package main
 
@@ -31,6 +32,22 @@ type genAIMessage struct {
 	Content string
 }
 
+// genAIPart is a single content part within a GenAI message. Only text
+// parts are captured today, so Type is always "text".
+type genAIPart struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// genAIChatMessage is one message in the gen_ai.input.messages /
+// gen_ai.output.messages span attributes: a role, its content parts,
+// and (output messages only) the finish reason for that message.
+type genAIChatMessage struct {
+	Role         string      `json:"role"`
+	Parts        []genAIPart `json:"parts"`
+	FinishReason string      `json:"finish_reason,omitempty"`
+}
+
 // genAITurn is one intercepted LLM request/response mapped to OTel
 // GenAI semantic-convention terms.
 type genAITurn struct {
@@ -47,16 +64,18 @@ type genAITurn struct {
 	// stamped at emission time.
 	Start time.Time
 
-	// Messages and Completion populate the content events; filled only
-	// when message-content capture is enabled.
+	// Messages and Completion populate the content attributes; filled
+	// only when message-content capture is enabled.
 	Messages   []genAIMessage
 	Completion string
 }
 
 // emitGenAISpan records one GenAI span on the provided tracer. When
-// includeContent is true, message content is attached as span events
-// per the GenAI content convention. A free function (not a method) so
-// tests can drive it with an in-memory tracer.
+// includeContent is true, message content is attached as the
+// gen_ai.input.messages / gen_ai.output.messages /
+// gen_ai.system_instructions span attributes per the GenAI semantic
+// conventions. A free function (not a method) so tests can drive it
+// with an in-memory tracer.
 func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	if tracer == nil {
 		return
@@ -94,26 +113,63 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	span.SetAttributes(attrs...)
 
 	if includeContent {
-		for _, m := range t.Messages {
-			role := m.Role
-			if role == "" {
-				role = "user"
-			}
-			span.AddEvent("gen_ai."+role+".message", trace.WithAttributes(
-				attribute.String("gen_ai.system", t.System),
-				attribute.String("content", m.Content),
-			))
-		}
-		if t.Completion != "" {
-			span.AddEvent("gen_ai.choice", trace.WithAttributes(
-				attribute.String("gen_ai.system", t.System),
-				attribute.Int("index", 0),
-				attribute.String("finish_reason", t.FinishReason),
-				attribute.String("content", t.Completion),
-			))
+		if content := genAIContentAttrs(t); len(content) > 0 {
+			span.SetAttributes(content...)
 		}
 	}
 	span.End()
+}
+
+// genAIContentAttrs builds the message-content span attributes for one
+// turn following the GenAI semantic conventions:
+//
+//   - gen_ai.system_instructions — system messages, as content parts
+//   - gen_ai.input.messages      — the user/assistant input messages
+//   - gen_ai.output.messages     — the assistant completion + finish reason
+//
+// Each value is JSON-serialized because OTel attribute values are
+// primitives; the convention models these fields as structured data
+// carried as a JSON string. Returns nil when there is no content.
+func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
+	var sysParts []genAIPart
+	var input []genAIChatMessage
+	for _, m := range t.Messages {
+		if m.Role == "system" {
+			sysParts = append(sysParts, genAIPart{Type: "text", Content: m.Content})
+			continue
+		}
+		role := m.Role
+		if role == "" {
+			role = "user"
+		}
+		input = append(input, genAIChatMessage{
+			Role:  role,
+			Parts: []genAIPart{{Type: "text", Content: m.Content}},
+		})
+	}
+
+	var attrs []attribute.KeyValue
+	if len(sysParts) > 0 {
+		if js, err := json.Marshal(sysParts); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.system_instructions", string(js)))
+		}
+	}
+	if len(input) > 0 {
+		if js, err := json.Marshal(input); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.input.messages", string(js)))
+		}
+	}
+	if t.Completion != "" {
+		output := []genAIChatMessage{{
+			Role:         "assistant",
+			Parts:        []genAIPart{{Type: "text", Content: t.Completion}},
+			FinishReason: t.FinishReason,
+		}}
+		if js, err := json.Marshal(output); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(js)))
+		}
+	}
+	return attrs
 }
 
 // recordGenAITurn emits a GenAI span for a completed LLM turn when the

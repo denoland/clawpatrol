@@ -213,11 +213,12 @@ type GatewaySettings struct {
 type GenAITelemetryBlock struct {
 	// IncludeMessageContent additionally captures and exports the
 	// prompt/completion message content via the GenAI content
-	// convention (span events: gen_ai.{role}.message and
-	// gen_ai.choice). Default false: message content can be large and
-	// sensitive, so it is only captured when an operator explicitly
-	// opts in. Independent of the base span export — the gen_ai.*
-	// attribute span emits regardless of this flag.
+	// convention (the gen_ai.input.messages, gen_ai.output.messages,
+	// and gen_ai.system_instructions span attributes). Default false:
+	// message content can be large and sensitive, so it is only
+	// captured when an operator explicitly opts in. Independent of the
+	// base span export — the gen_ai.* attribute span emits regardless
+	// of this flag.
 	IncludeMessageContent bool `hcl:"include_message_content,optional"`
 }
 

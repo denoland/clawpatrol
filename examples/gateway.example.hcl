@@ -103,8 +103,9 @@ gateway {
   # nothing to export to. Remove the block to disable (zero overhead).
   #
   # include_message_content additionally attaches the prompt and
-  # completion text as GenAI content events. Default false — content can
-  # be large and sensitive, so it ships only when you explicitly opt in.
+  # completion text as the gen_ai.input.messages / gen_ai.output.messages
+  # / gen_ai.system_instructions span attributes. Default false — content
+  # can be large and sensitive, so it ships only when you explicitly opt in.
   #
   # genai_telemetry {
   #   include_message_content = false
