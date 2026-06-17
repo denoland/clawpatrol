@@ -1490,6 +1490,21 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 		g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 		return
 	}
+	// External plugin conn-endpoints (e.g. an `aws_api` bound to
+	// `*.amazonaws.com`) terminate TLS themselves and pump the raw
+	// agent conn to the subprocess over gRPC, so they aren't an
+	// https-mitm facet. They're matched here purely by SNI: the agent
+	// resolves and dials the real upstream IP and the forwarder
+	// intercepts :443 promiscuously, so no VIP or conn-index entry is
+	// needed — which matters for a wildcard host, since it has
+	// neither (it can't be DNS-resolved to an IP for the conn-index,
+	// and an HTTPS plugin isn't RequiresVIP). Hand the peeked conn to
+	// the plugin instead of splicing past it.
+	if _, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime); ok {
+		log.Printf("sni-conn: %s → %s", host, ep.Name)
+		g.dispatchConnEndpoint(c, dstIP, dstPort, ep, host)
+		return
+	}
 	// Wire-protocol families (postgres / clickhouse_* / future
 	// native plugins) dispatch through their own port handlers,
 	// not through SNI peek on 443. Anything that lands here is
