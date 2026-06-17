@@ -8,14 +8,15 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
 // ctrlTestPlugin wires both sides over a real go-plugin broker, exactly as
 // the gateway/plugin do: the server (plugin) side captures the broker so
 // the plugin can dial the capability bundle; the client (gateway) side
-// serves HostControl on the reserved broker id, backed by a session
-// registry.
+// serves HostControl on the reserved broker id behind the session
+// interceptor, backed by a per-plugin session registry.
 type ctrlTestPlugin struct {
 	goplugin.NetRPCUnsupportedPlugin
 	broker   *goplugin.GRPCBroker
@@ -29,31 +30,48 @@ func (p *ctrlTestPlugin) GRPCServer(broker *goplugin.GRPCBroker, _ *grpc.Server)
 
 func (p *ctrlTestPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, c *grpc.ClientConn) (any, error) {
 	go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
+		opts = append(opts, grpc.ChainUnaryInterceptor(sessionUnaryInterceptor(p.sessions)))
 		s := grpc.NewServer(opts...)
-		pb.RegisterHostControlServer(s, newHostControl(p.sessions))
+		pb.RegisterHostControlServer(s, hostControl{})
 		return s
 	})
 	return c, nil
 }
 
+func dialHostControl(t *testing.T, p *ctrlTestPlugin) pb.HostControlClient {
+	t.Helper()
+	conn, err := p.broker.Dial(HostServicesBrokerID)
+	if err != nil {
+		t.Fatalf("dial broker: %v", err)
+	}
+	return pb.NewHostControlClient(conn)
+}
+
+// withSession returns a ctx carrying the session token as request metadata,
+// the way the SDK client interceptor will.
+func withSession(token string) context.Context {
+	return metadata.AppendToOutgoingContext(context.Background(), sessionMetadataKey, token)
+}
+
 // TestHostControlEvaluateRoundTrip is the capability-bundle spike: a plugin
 // runs a rule evaluation by calling a plain gRPC method over the broker —
 // no EvaluateAction frame, no call_id, no inflight correlation map. The
-// gateway routes the call to the connection's evaluator via a session
-// token, and rejects a token it never issued.
+// gateway routes the call to the connection's session via the metadata
+// token, resolved once in an interceptor.
 func TestHostControlEvaluateRoundTrip(t *testing.T) {
 	sessions := newSessionRegistry()
-	// What HandleConn would register when a connection starts: the same
-	// rule + approve work pumpConn's EvaluateAction branch does today.
 	var gotFacet string
 	var gotAction []byte
-	sessions.register("tok-1", func(_ context.Context, facet string, action []byte, _ string) (string, string, string, error) {
-		gotFacet = facet
-		gotAction = action
-		if facet == "http" {
-			return "allow", "matched", "rule-1", nil
-		}
-		return "deny", "no rule", "", nil
+	// What HandleConn will register when a connection starts: the same rule
+	// + approve work pumpConn's EvaluateAction branch does today.
+	token, remove := sessions.register(&session{
+		evaluate: func(_ context.Context, facet string, action []byte, _ string) (Verdict, error) {
+			gotFacet, gotAction = facet, action
+			if facet == "http" {
+				return Verdict{Action: "allow", Reason: "matched", Rule: "rule-1"}, nil
+			}
+			return Verdict{Action: "deny", Reason: "no rule"}, nil
+		},
 	})
 
 	p := &ctrlTestPlugin{sessions: sessions}
@@ -62,42 +80,61 @@ func TestHostControlEvaluateRoundTrip(t *testing.T) {
 	if _, err := client.Dispense("x"); err != nil {
 		t.Fatalf("dispense: %v", err)
 	}
+	ctrl := dialHostControl(t, p)
 
-	conn, err := p.broker.Dial(HostServicesBrokerID)
-	if err != nil {
-		t.Fatalf("dial broker: %v", err)
-	}
-	ctrl := pb.NewHostControlClient(conn)
-
-	// The whole client side: one call, gRPC correlates the reply.
-	v, err := ctrl.Evaluate(context.Background(), &pb.EvaluateRequest{
-		SessionToken: "tok-1",
-		FacetName:    "http",
-		ActionJson:   []byte(`{"method":"GET"}`),
-		Summary:      "GET /",
+	// The whole client side: one call, gRPC correlates the reply; the token
+	// rides in metadata, not the message.
+	v, err := ctrl.Evaluate(withSession(token), &pb.EvaluateRequest{
+		FacetName:  "http",
+		ActionJson: []byte(`{"method":"GET"}`),
+		Summary:    "GET /",
 	})
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if v.Action != "allow" || v.Rule != "rule-1" {
-		t.Fatalf("verdict = %+v, want allow/rule-1", v)
+	if v.Action != "allow" || v.Rule != "rule-1" || v.Reason != "matched" {
+		t.Fatalf("verdict = %+v, want allow/matched/rule-1", v)
 	}
 	if gotFacet != "http" || string(gotAction) != `{"method":"GET"}` {
 		t.Fatalf("gateway saw facet=%q action=%q", gotFacet, gotAction)
 	}
 
-	// A token the gateway never issued is rejected — a plugin cannot
-	// evaluate against a connection context it does not own.
-	_, err = ctrl.Evaluate(context.Background(), &pb.EvaluateRequest{SessionToken: "forged", FacetName: "http"})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("forged token err = %v, want NotFound", err)
+	// A token the gateway never issued is rejected by the interceptor — a
+	// plugin cannot evaluate against a context it does not own.
+	if _, err := ctrl.Evaluate(withSession("forged"), &pb.EvaluateRequest{FacetName: "http"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("forged token err = %v, want Unauthenticated", err)
 	}
 
-	// Once the connection ends and its token is removed, further calls on
-	// it are rejected — no dangling evaluation context.
-	sessions.remove("tok-1")
-	_, err = ctrl.Evaluate(context.Background(), &pb.EvaluateRequest{SessionToken: "tok-1", FacetName: "http"})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("removed token err = %v, want NotFound", err)
+	// No token at all is rejected too (the method requires a session).
+	if _, err := ctrl.Evaluate(context.Background(), &pb.EvaluateRequest{FacetName: "http"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("missing token err = %v, want Unauthenticated", err)
+	}
+
+	// Once the connection ends and its token is removed, further calls on it
+	// are rejected — no dangling evaluation context.
+	remove()
+	if _, err := ctrl.Evaluate(withSession(token), &pb.EvaluateRequest{FacetName: "http"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("removed token err = %v, want Unauthenticated", err)
+	}
+}
+
+// TestSessionRegistryTokensUnique guards the unforgeable-token property:
+// minted tokens are distinct, non-empty, and only resolve while registered.
+func TestSessionRegistryTokensUnique(t *testing.T) {
+	r := newSessionRegistry()
+	t1, rm1 := r.register(&session{})
+	t2, _ := r.register(&session{})
+	if t1 == t2 || t1 == "" {
+		t.Fatalf("tokens not unique/non-empty: %q %q", t1, t2)
+	}
+	if _, ok := r.lookup(t1); !ok {
+		t.Fatal("t1 should resolve while registered")
+	}
+	rm1()
+	if _, ok := r.lookup(t1); ok {
+		t.Fatal("t1 should not resolve after remove")
+	}
+	if _, ok := r.lookup(t2); !ok {
+		t.Fatal("t2 should still resolve")
 	}
 }

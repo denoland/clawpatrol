@@ -773,11 +773,23 @@ const (
 // in the session init and the plugin echoes back — the one piece of
 // bookkeeping a separate control channel needs that a multiplexed stream
 // gets implicitly.
+// HostControl is the host-served (plugin->host) capability bundle: the
+// gateway serves it over the go-plugin broker (next to HostState) and a
+// plugin calls it. Each plugin->gateway callback is an ordinary gRPC
+// method, so gRPC correlates the reply and the hand-rolled call_id/dial_id
+// inflight maps disappear. It grows by adding methods (Dial, Decide), not
+// new frames.
+//
+// Every call is scoped to one connection's evaluation context by an opaque
+// session token the gateway issued for that connection. The token rides in
+// gRPC METADATA (key "clawpatrol-session"), not in the message — session
+// scope is a cross-cutting concern, so a server interceptor resolves it
+// once and every method is scoped without repeating the field. A forged,
+// expired, or removed token is rejected before the handler runs.
 type HostControlClient interface {
 	// Evaluate runs the gateway's rule + approve chain for one action and
-	// returns the verdict. Prototype replacement for the
-	// EvaluateAction / ActionVerdict frames (and the inflight call_id map
-	// on both sides of HandleConn).
+	// returns the verdict. Replaces the EvaluateAction / ActionVerdict
+	// frames (and the inflight call_id map on both sides of HandleConn).
 	Evaluate(ctx context.Context, in *EvaluateRequest, opts ...grpc.CallOption) (*EvaluateVerdict, error)
 }
 
@@ -820,11 +832,23 @@ func (c *hostControlClient) Evaluate(ctx context.Context, in *EvaluateRequest, o
 // in the session init and the plugin echoes back — the one piece of
 // bookkeeping a separate control channel needs that a multiplexed stream
 // gets implicitly.
+// HostControl is the host-served (plugin->host) capability bundle: the
+// gateway serves it over the go-plugin broker (next to HostState) and a
+// plugin calls it. Each plugin->gateway callback is an ordinary gRPC
+// method, so gRPC correlates the reply and the hand-rolled call_id/dial_id
+// inflight maps disappear. It grows by adding methods (Dial, Decide), not
+// new frames.
+//
+// Every call is scoped to one connection's evaluation context by an opaque
+// session token the gateway issued for that connection. The token rides in
+// gRPC METADATA (key "clawpatrol-session"), not in the message — session
+// scope is a cross-cutting concern, so a server interceptor resolves it
+// once and every method is scoped without repeating the field. A forged,
+// expired, or removed token is rejected before the handler runs.
 type HostControlServer interface {
 	// Evaluate runs the gateway's rule + approve chain for one action and
-	// returns the verdict. Prototype replacement for the
-	// EvaluateAction / ActionVerdict frames (and the inflight call_id map
-	// on both sides of HandleConn).
+	// returns the verdict. Replaces the EvaluateAction / ActionVerdict
+	// frames (and the inflight call_id map on both sides of HandleConn).
 	Evaluate(context.Context, *EvaluateRequest) (*EvaluateVerdict, error)
 	mustEmbedUnimplementedHostControlServer()
 }

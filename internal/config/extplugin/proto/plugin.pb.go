@@ -3734,16 +3734,12 @@ func (*StatePutResponse) Descriptor() ([]byte, []int) {
 
 type EvaluateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// session_token scopes the call to one connection's evaluation context
-	// (its rules, approve chain, peer info). Issued by the gateway in the
-	// session init; opaque to the plugin.
-	SessionToken string `protobuf:"bytes,1,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
 	// facet_name is the namespaced facet the action conforms to.
-	FacetName string `protobuf:"bytes,2,opt,name=facet_name,json=facetName,proto3" json:"facet_name,omitempty"`
+	FacetName string `protobuf:"bytes,1,opt,name=facet_name,json=facetName,proto3" json:"facet_name,omitempty"`
 	// action_json is the facet payload (the same bytes EvaluateAction
 	// carries today).
-	ActionJson    []byte `protobuf:"bytes,3,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
-	Summary       string `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	ActionJson    []byte `protobuf:"bytes,2,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
+	Summary       string `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"` // NB: the session token is carried in request metadata, not here.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3776,13 +3772,6 @@ func (x *EvaluateRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use EvaluateRequest.ProtoReflect.Descriptor instead.
 func (*EvaluateRequest) Descriptor() ([]byte, []int) {
 	return file_plugin_proto_rawDescGZIP(), []int{50}
-}
-
-func (x *EvaluateRequest) GetSessionToken() string {
-	if x != nil {
-		return x.SessionToken
-	}
-	return ""
 }
 
 func (x *EvaluateRequest) GetFacetName() string {
@@ -4137,14 +4126,13 @@ const file_plugin_proto_rawDesc = "" +
 	"\x0fStatePutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"\x12\n" +
-	"\x10StatePutResponse\"\x90\x01\n" +
-	"\x0fEvaluateRequest\x12#\n" +
-	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1d\n" +
+	"\x10StatePutResponse\"k\n" +
+	"\x0fEvaluateRequest\x12\x1d\n" +
 	"\n" +
-	"facet_name\x18\x02 \x01(\tR\tfacetName\x12\x1f\n" +
-	"\vaction_json\x18\x03 \x01(\fR\n" +
+	"facet_name\x18\x01 \x01(\tR\tfacetName\x12\x1f\n" +
+	"\vaction_json\x18\x02 \x01(\fR\n" +
 	"actionJson\x12\x18\n" +
-	"\asummary\x18\x04 \x01(\tR\asummary\"U\n" +
+	"\asummary\x18\x03 \x01(\tR\asummary\"U\n" +
 	"\x0fEvaluateVerdict\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x12\n" +
