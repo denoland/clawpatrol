@@ -214,11 +214,13 @@ type GenAITelemetryBlock struct {
 	// IncludeMessageContent additionally captures and exports the
 	// prompt/completion message content via the GenAI content
 	// convention (the gen_ai.input.messages, gen_ai.output.messages,
-	// and gen_ai.system_instructions span attributes). Default false:
-	// message content can be large and sensitive, so it is only
-	// captured when an operator explicitly opts in. Independent of the
-	// base span export — the gen_ai.* attribute span emits regardless
-	// of this flag.
+	// and gen_ai.system_instructions span attributes), and enriches
+	// gen_ai.tool.definitions with each tool's description and JSON
+	// schema. Default false: message content can be large and
+	// sensitive, so it is only captured when an operator explicitly
+	// opts in. Independent of the base span export — the gen_ai.*
+	// attribute span emits regardless of this flag, including
+	// gen_ai.tool.definitions with each tool's name and type.
 	IncludeMessageContent bool `hcl:"include_message_content,optional"`
 }
 

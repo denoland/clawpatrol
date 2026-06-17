@@ -11,6 +11,11 @@
 // kind are mapped to GenAI message parts (text, reasoning, tool_call,
 // tool_call_response, plus a generic fallback), not just text.
 //
+// The request's tool catalogue rides gen_ai.tool.definitions: each
+// tool's name and type are on the base span, while its description and
+// JSON-schema parameters are attached only under the content opt-in
+// (a schema can be large and may carry proprietary detail).
+//
 // Opt-in is two independent switches (internal/config GenAITelemetry):
 // the `genai_telemetry {}` block presence enables the attribute span;
 // `include_message_content` additionally attaches the message-content
@@ -70,6 +75,19 @@ type genAIChatMessage struct {
 	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
+// genAIToolDef is one entry in the gen_ai.tool.definitions span
+// attribute: a tool the model was offered for this turn. Type and Name
+// ride the base span; Description and Parameters (the tool's JSON
+// schema) are populated only when message-content capture is opted in,
+// since a schema can be large and may expose proprietary detail.
+// `omitempty` keeps a base-span entry to just {type, name}.
+type genAIToolDef struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
 // genAITurn is one intercepted LLM request/response mapped to OTel
 // GenAI semantic-convention terms.
 type genAITurn struct {
@@ -105,6 +123,11 @@ type genAITurn struct {
 	TopP          *float64 // gen_ai.request.top_p
 	TopK          *int64   // gen_ai.request.top_k
 	StopSequences []string // gen_ai.request.stop_sequences
+
+	// Tools is the request's tool catalogue (gen_ai.tool.definitions).
+	// Name+type are always populated; the schema/description ride only
+	// the content opt-in. Empty when the request offered no tools.
+	Tools []genAIToolDef
 
 	// Start, when non-zero, sets the span start time so its duration
 	// reflects the real upstream round-trip latency. Zero → span is
@@ -172,6 +195,14 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	}
 	if len(t.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", t.StopSequences))
+	}
+	// Tool definitions ride the base span (name+type always; schema and
+	// description only when content capture filled them in). The value is
+	// JSON-serialized since OTel attribute values are primitives.
+	if len(t.Tools) > 0 {
+		if js, err := json.Marshal(t.Tools); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(js)))
+		}
 	}
 	if t.ResponseModel != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", t.ResponseModel))
@@ -308,6 +339,9 @@ func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respMo
 		turn.TopP = p.TopP
 		turn.TopK = p.TopK
 		turn.StopSequences = p.StopSequences
+		// Tool name+type ride the base span; the schema/description are
+		// gated behind the same content opt-in as message content.
+		turn.Tools = parseClaudeToolDefs(reqBody, includeContent)
 
 		meta := claudeResponseMeta(respBody)
 		turn.ResponseID = meta.ID
@@ -362,6 +396,49 @@ func parseClaudeRequestParams(reqBody []byte) claudeRequestParams {
 		TopK:          req.TopK,
 		StopSequences: req.StopSequences,
 	}
+}
+
+// parseClaudeToolDefs extracts the tool catalogue from an Anthropic
+// /v1/messages request body for the gen_ai.tool.definitions span
+// attribute. A tool's name and type are always captured (they ride the
+// base span); its description and JSON-schema parameters are captured
+// only when includeContent is set, since a schema can be large and may
+// carry proprietary detail. Anthropic custom tools omit a type, so an
+// absent type maps to the GenAI default "function"; built-in tools
+// (e.g. type "web_search_20250305") keep their declared type. A
+// malformed body, or one offering no tools, yields nil.
+func parseClaudeToolDefs(reqBody []byte, includeContent bool) []genAIToolDef {
+	var req struct {
+		Tools []struct {
+			Type        string          `json:"type"`
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(reqBody, &req) != nil || len(req.Tools) == 0 {
+		return nil
+	}
+	defs := make([]genAIToolDef, 0, len(req.Tools))
+	for _, tl := range req.Tools {
+		if tl.Name == "" {
+			continue
+		}
+		typ := tl.Type
+		if typ == "" {
+			typ = "function"
+		}
+		d := genAIToolDef{Type: typ, Name: tl.Name}
+		if includeContent {
+			d.Description = tl.Description
+			d.Parameters = rawOrNil(tl.InputSchema)
+		}
+		defs = append(defs, d)
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	return defs
 }
 
 // claudeResponseMetadata is the non-content response metadata mapped to

@@ -99,15 +99,18 @@ gateway {
   # per intercepted LLM turn following the GenAI semantic conventions
   # (gen_ai.* — provider name, server address, request/response model,
   # request sampling params, token usage incl. the Anthropic cache-token
-  # breakdown, response id, finish reason, error type). Requires the
-  # OTLP exporter to be configured via the
+  # breakdown, response id, finish reason, error type, and the request's
+  # tool catalogue as gen_ai.tool.definitions — name and type per tool).
+  # Requires the OTLP exporter to be configured via the
   # standard OTEL_EXPORTER_OTLP_ENDPOINT env var; without it there is
   # nothing to export to. Remove the block to disable (zero overhead).
   #
   # include_message_content additionally attaches the prompt and
   # completion text as the gen_ai.input.messages / gen_ai.output.messages
-  # / gen_ai.system_instructions span attributes. Default false — content
-  # can be large and sensitive, so it ships only when you explicitly opt in.
+  # / gen_ai.system_instructions span attributes, and enriches
+  # gen_ai.tool.definitions with each tool's description and JSON schema.
+  # Default false — content can be large and sensitive, so it ships only
+  # when you explicitly opt in.
   #
   # genai_telemetry {
   #   include_message_content = false

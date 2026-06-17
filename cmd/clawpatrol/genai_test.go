@@ -496,6 +496,143 @@ func TestParseClaudeRequestParams(t *testing.T) {
 	}
 }
 
+// Tool definitions: name+type are captured even without content; the
+// description and JSON schema appear only when content capture is on.
+// An absent Anthropic type defaults to "function"; a built-in tool's
+// declared type is kept.
+func TestParseClaudeToolDefs(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"tools":[
+			{"name":"get_weather","description":"Look up the weather","input_schema":{"type":"object","properties":{"location":{"type":"string"}}}},
+			{"type":"web_search_20250305","name":"web_search"}
+		]
+	}`)
+
+	// Without content: name+type only, no description/parameters.
+	base := parseClaudeToolDefs(body, false)
+	want := []genAIToolDef{
+		{Type: "function", Name: "get_weather"},
+		{Type: "web_search_20250305", Name: "web_search"},
+	}
+	if !reflect.DeepEqual(base, want) {
+		t.Errorf("base defs = %+v, want %+v", base, want)
+	}
+
+	// With content: description + JSON-schema parameters ride along.
+	full := parseClaudeToolDefs(body, true)
+	if len(full) != 2 {
+		t.Fatalf("got %d defs, want 2", len(full))
+	}
+	if full[0].Description != "Look up the weather" {
+		t.Errorf("description = %q", full[0].Description)
+	}
+	if !reflect.DeepEqual(full[0].Parameters, json.RawMessage(`{"type":"object","properties":{"location":{"type":"string"}}}`)) {
+		t.Errorf("parameters = %s", full[0].Parameters)
+	}
+	// A tool with no schema leaves Parameters nil even under content.
+	if full[1].Parameters != nil {
+		t.Errorf("schemaless tool parameters = %s, want nil", full[1].Parameters)
+	}
+
+	// No tools / malformed → nil.
+	if got := parseClaudeToolDefs([]byte(`{"model":"x"}`), true); got != nil {
+		t.Errorf("no tools = %+v, want nil", got)
+	}
+	if got := parseClaudeToolDefs([]byte(`not json`), true); got != nil {
+		t.Errorf("malformed = %+v, want nil", got)
+	}
+}
+
+// gen_ai.tool.definitions rides the base span even with content off,
+// carrying name+type but neither description nor schema.
+func TestRecordGenAITurnToolDefsNoContent(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry {}
+}
+`), "tools.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{}
+	g.cfg.Store(gw)
+
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+		[]byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","description":"secret","input_schema":{"type":"object"}}]}`),
+		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`),
+		time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("gen_ai.tool.definitions: %v (raw %q)", err, m["gen_ai.tool.definitions"].AsString())
+	}
+	want := []genAIToolDef{{Type: "function", Name: "get_weather"}}
+	if !reflect.DeepEqual(defs, want) {
+		t.Errorf("tool defs = %+v, want %+v (description/schema must stay off without content)", defs, want)
+	}
+}
+
+// With content on, gen_ai.tool.definitions also carries the description
+// and JSON schema.
+func TestRecordGenAITurnToolDefsWithContent(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry { include_message_content = true }
+}
+`), "tools-content.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{}
+	g.cfg.Store(gw)
+
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+		[]byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","description":"Look up the weather","input_schema":{"type":"object","properties":{"location":{"type":"string"}}}}]}`),
+		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`),
+		time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("gen_ai.tool.definitions: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "get_weather" || defs[0].Type != "function" {
+		t.Fatalf("tool defs = %+v", defs)
+	}
+	if defs[0].Description != "Look up the weather" {
+		t.Errorf("description = %q", defs[0].Description)
+	}
+	if !reflect.DeepEqual(defs[0].Parameters, json.RawMessage(`{"type":"object","properties":{"location":{"type":"string"}}}`)) {
+		t.Errorf("parameters = %s", defs[0].Parameters)
+	}
+}
+
 func TestClaudeResponseMetaJSON(t *testing.T) {
 	meta := claudeResponseMeta([]byte(`{
 		"id":"msg_01ABC",
