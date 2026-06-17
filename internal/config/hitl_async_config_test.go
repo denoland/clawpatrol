@@ -38,7 +38,6 @@ approver "human_approver" "ops" {
   sync_wait_timeout = "90s"
   async_grant {
     enabled            = true
-    approval_ttl       = "15m"
     approved_retry_ttl = "5m"
     fingerprint_body   = "raw"
     max_body_bytes     = 1048576
@@ -70,7 +69,7 @@ rule "writes" {
 	reader, ok := gw.Policy.Approvers["ops"].Body.(interface {
 		HITLAsyncGrantEnabled() bool
 		HITLSyncWaitTimeout() time.Duration
-		HITLAsyncApprovalTTL() time.Duration
+		HITLAsyncApprovalTTL(*config.CompiledPolicy) time.Duration
 		HITLAsyncApprovedRetryTTL() time.Duration
 		HITLAsyncMaxBodyBytes() int64
 		HITLAsyncFingerprintBody() string
@@ -84,8 +83,10 @@ rule "writes" {
 	if got := reader.HITLSyncWaitTimeout(); got != 90*time.Second {
 		t.Fatalf("sync wait timeout = %v, want 90s", got)
 	}
-	if got := reader.HITLAsyncApprovalTTL(); got != 15*time.Minute {
-		t.Fatalf("approval ttl = %v, want 15m", got)
+	// No approver/policy timeout configured, so the approver timeout
+	// defaults to 10m; the async TTL is that minus the 90s sync wait.
+	if got := reader.HITLAsyncApprovalTTL(cp); got != 10*time.Minute-90*time.Second {
+		t.Fatalf("approval ttl = %v, want %v", got, 10*time.Minute-90*time.Second)
 	}
 	if got := reader.HITLAsyncApprovedRetryTTL(); got != 5*time.Minute {
 		t.Fatalf("approved retry ttl = %v, want 5m", got)
@@ -153,7 +154,7 @@ func TestHITLAsyncConfigReaderDefaultsWithoutAsyncGrant(t *testing.T) {
 	reader, ok := gw.Policy.Approvers["ops"].Body.(interface {
 		HITLAsyncGrantEnabled() bool
 		HITLSyncWaitTimeout() time.Duration
-		HITLAsyncApprovalTTL() time.Duration
+		HITLAsyncApprovalTTL(*config.CompiledPolicy) time.Duration
 		HITLAsyncApprovedRetryTTL() time.Duration
 		HITLAsyncMaxBodyBytes() int64
 		HITLAsyncFingerprintBody() string
@@ -167,8 +168,10 @@ func TestHITLAsyncConfigReaderDefaultsWithoutAsyncGrant(t *testing.T) {
 	if got := reader.HITLSyncWaitTimeout(); got != 0 {
 		t.Fatalf("sync wait timeout = %v, want 0", got)
 	}
-	if got := reader.HITLAsyncApprovalTTL(); got != config.HITLAsyncDefaultApprovalTTL {
-		t.Fatalf("approval ttl = %v, want default", got)
+	// No timeouts configured: the approver timeout defaults to 10m and
+	// the sync wait is zero, so the derived async TTL is the full 10m.
+	if got := reader.HITLAsyncApprovalTTL(nil); got != 10*time.Minute {
+		t.Fatalf("approval ttl = %v, want 10m", got)
 	}
 	if got := reader.HITLAsyncApprovedRetryTTL(); got != config.HITLAsyncDefaultApprovedRetryTTL {
 		t.Fatalf("approved retry ttl = %v, want default", got)
@@ -227,7 +230,6 @@ approver "human_approver" "ops" {
   sync_wait_timeout = "0s"
   async_grant {
     enabled            = true
-    approval_ttl       = "nope"
     approved_retry_ttl = "0s"
     fingerprint_body   = "json"
     max_body_bytes     = 0
@@ -244,7 +246,6 @@ rule "writes" {
 	}
 	for _, want := range []string{
 		"sync_wait_timeout must be positive",
-		"invalid async_grant.approval_ttl",
 		"async_grant.approved_retry_ttl must be positive",
 		"async_grant.fingerprint_body must be raw",
 		"async_grant.max_body_bytes must be positive",
@@ -252,6 +253,26 @@ rule "writes" {
 		if !diagnosticsContain(diags, want) {
 			t.Fatalf("diagnostics missing %q:\n%v", want, diags)
 		}
+	}
+}
+
+// approval_ttl was removed in favor of deriving the async TTL as
+// approver_timeout - sync_wait_timeout. Stale configs that still set it
+// must be rejected so the redundant knob can't silently drift.
+func TestHITLAsyncConfigRejectsRemovedApprovalTTL(t *testing.T) {
+	src := hitlAsyncConfigSource(
+		"https://clawpatrol.example.test",
+		true,
+		true,
+		"90s",
+		"enabled = true\n    approval_ttl = \"15m\"",
+	)
+	_, diags := config.LoadBytes([]byte(src), "stale_approval_ttl.hcl")
+	if !diags.HasErrors() {
+		t.Fatal("load succeeded, want approval_ttl rejected")
+	}
+	if !diagnosticsContain(diags, "approval_ttl") {
+		t.Fatalf("diagnostics did not reject approval_ttl:\n%v", diags)
 	}
 }
 

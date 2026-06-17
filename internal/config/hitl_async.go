@@ -10,9 +10,6 @@ import (
 )
 
 const (
-	// HITLAsyncDefaultApprovalTTL is the default lifetime for an async
-	// operation after the original synchronous wait returns 202.
-	HITLAsyncDefaultApprovalTTL = 15 * time.Minute
 	// HITLAsyncDefaultApprovedRetryTTL is the default lifetime of the
 	// one-shot retry grant after a human approval.
 	HITLAsyncDefaultApprovedRetryTTL = 5 * time.Minute
@@ -33,8 +30,6 @@ type HITLAsyncGrantConfig struct {
 	// Enabled explicitly opts this approver into async retry-grant mode.
 	// The active profile must also set hitl_async_grants = true.
 	Enabled bool `hcl:"enabled,optional" json:"enabled,omitempty"`
-	// Human approval lifetime after the original sync wait falls back to a 202 response.
-	ApprovalTTL string `hcl:"approval_ttl,optional" json:"approval_ttl,omitempty"`
 	// Post-approval retry grant lifetime for the client to retry.
 	ApprovedRetryTTL string `hcl:"approved_retry_ttl,optional" json:"approved_retry_ttl,omitempty"`
 	// Request-body fingerprinting mode. V1 supports only "raw".
@@ -48,12 +43,6 @@ type HITLAsyncGrantConfig struct {
 // small avoids a config -> approvers package import cycle.
 type HITLAsyncGrantEnabler interface {
 	HITLAsyncGrantEnabled() bool
-}
-
-// ApprovalTTLDuration parses the configured approval TTL, falling back
-// to HITLAsyncDefaultApprovalTTL when unset.
-func (g *HITLAsyncGrantConfig) ApprovalTTLDuration() (time.Duration, error) {
-	return parseOptionalPositiveDuration(g, g.approvalTTLRaw(), HITLAsyncDefaultApprovalTTL)
 }
 
 // ApprovedRetryTTLDuration parses the approved-retry TTL, falling back
@@ -78,13 +67,6 @@ func (g *HITLAsyncGrantConfig) MaxBodyBytesValue() int64 {
 		return HITLAsyncDefaultMaxBodyBytes
 	}
 	return int64(*g.MaxBodyBytes)
-}
-
-func (g *HITLAsyncGrantConfig) approvalTTLRaw() string {
-	if g == nil {
-		return ""
-	}
-	return g.ApprovalTTL
 }
 
 func (g *HITLAsyncGrantConfig) approvedRetryTTLRaw() string {
@@ -187,13 +169,6 @@ func ValidateHITLAsyncGrant(name string, syncWaitTimeout string, grant *HITLAsyn
 		}
 	}
 
-	if grant.ApprovalTTL != "" {
-		if d, err := time.ParseDuration(grant.ApprovalTTL); err != nil {
-			diags = append(diags, hitlAsyncDiagnostic(name, "invalid async_grant.approval_ttl", err.Error()))
-		} else if d <= 0 {
-			diags = append(diags, hitlAsyncDiagnostic(name, "async_grant.approval_ttl must be positive", "approval_ttl must be greater than zero."))
-		}
-	}
 	if grant.ApprovedRetryTTL != "" {
 		if d, err := time.ParseDuration(grant.ApprovedRetryTTL); err != nil {
 			diags = append(diags, hitlAsyncDiagnostic(name, "invalid async_grant.approved_retry_ttl", err.Error()))

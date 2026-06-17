@@ -152,6 +152,29 @@ func TestHumanApproverPendingExpirationUsesDefaultTimeoutFallback(t *testing.T) 
 	assertPendingLifetime(t, pending, 10*time.Minute)
 }
 
+func TestHumanApproverAsyncApprovalTTLDerivedFromApproverTimeout(t *testing.T) {
+	h := &HumanApprover{Timeout: 600, SyncWaitTimeout: "90s"}
+	if got := h.HITLAsyncApprovalTTL(nil); got != 10*time.Minute-90*time.Second {
+		t.Fatalf("approval ttl = %v, want %v", got, 10*time.Minute-90*time.Second)
+	}
+}
+
+func TestHumanApproverAsyncApprovalTTLUsesPolicyTimeoutFallback(t *testing.T) {
+	h := &HumanApprover{SyncWaitTimeout: "30s"}
+	if got := h.HITLAsyncApprovalTTL(&config.CompiledPolicy{HumanTimeout: 600}); got != 10*time.Minute-30*time.Second {
+		t.Fatalf("approval ttl = %v, want %v", got, 10*time.Minute-30*time.Second)
+	}
+}
+
+func TestHumanApproverAsyncApprovalTTLClampsToZeroWhenSyncWaitExceedsTimeout(t *testing.T) {
+	// sync_wait_timeout >= approver timeout leaves no budget for the
+	// async grant: clamp to zero rather than a negative lifetime.
+	h := &HumanApprover{Timeout: 60, SyncWaitTimeout: "90s"}
+	if got := h.HITLAsyncApprovalTTL(nil); got != 0 {
+		t.Fatalf("approval ttl = %v, want 0", got)
+	}
+}
+
 func TestHumanApproverPendingIncludesSyncApprovalGuidance(t *testing.T) {
 	pending := captureHumanPending(t, &HumanApprover{Timeout: 17}, &config.CompiledPolicy{HumanTimeout: 600})
 	if pending.OperationState != runtime.HITLOperationStateSyncWaiting {

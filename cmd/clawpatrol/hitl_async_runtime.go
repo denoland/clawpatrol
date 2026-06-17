@@ -29,7 +29,7 @@ const (
 type hitlAsyncGrantRuntime interface {
 	HITLAsyncGrantEnabled() bool
 	HITLSyncWaitTimeout() time.Duration
-	HITLAsyncApprovalTTL() time.Duration
+	HITLAsyncApprovalTTL(policy *config.CompiledPolicy) time.Duration
 	HITLAsyncApprovedRetryTTL() time.Duration
 	HITLAsyncMaxBodyBytes() int64
 	HITLAsyncFingerprintBody() string
@@ -155,7 +155,7 @@ func (g *Gateway) maybeStartAsyncHITLOperation(ctx context.Context, in hitlAsync
 		RequestFingerprint:  fp.RequestFingerprint,
 		CreatedAt:           now,
 		SyncWaitDeadline:    now.Add(syncWait),
-		ApprovalExpiresAt:   now.Add(in.Approver.HITLAsyncApprovalTTL()),
+		ApprovalExpiresAt:   now.Add(in.Approver.HITLAsyncApprovalTTL(policy)),
 		RetryExpiresAt:      now.Add(in.Approver.HITLAsyncApprovedRetryTTL()),
 	})
 	if err != nil {

@@ -101,10 +101,19 @@ func (h *HumanApprover) HITLSyncWaitTimeout() time.Duration {
 	return d
 }
 
-// HITLAsyncApprovalTTL returns the async pending approval lifetime.
-func (h *HumanApprover) HITLAsyncApprovalTTL() time.Duration {
-	d, _ := h.AsyncGrant.ApprovalTTLDuration()
-	return d
+// HITLAsyncApprovalTTL returns the async pending approval lifetime,
+// derived as the approver's overall timeout minus the synchronous wait
+// window: once the sync wait elapses and the request falls back to a
+// 202, the grant should stay pending only for whatever is left of the
+// approval budget. When sync_wait_timeout >= the approver timeout the
+// difference is non-positive; we clamp to zero so the grant is born
+// already expired rather than carrying a negative lifetime.
+func (h *HumanApprover) HITLAsyncApprovalTTL(policy *config.CompiledPolicy) time.Duration {
+	ttl := h.approvalTimeout(policy) - h.HITLSyncWaitTimeout()
+	if ttl < 0 {
+		return 0
+	}
+	return ttl
 }
 
 // HITLAsyncApprovedRetryTTL returns the post-approval retry grant lifetime.
@@ -281,9 +290,6 @@ func init() {
 				ag := b.AppendNewBlock("async_grant", nil).Body()
 				if a.AsyncGrant.Enabled {
 					ag.SetAttributeValue("enabled", cty.True)
-				}
-				if a.AsyncGrant.ApprovalTTL != "" {
-					ag.SetAttributeValue("approval_ttl", cty.StringVal(a.AsyncGrant.ApprovalTTL))
 				}
 				if a.AsyncGrant.ApprovedRetryTTL != "" {
 					ag.SetAttributeValue("approved_retry_ttl", cty.StringVal(a.AsyncGrant.ApprovedRetryTTL))

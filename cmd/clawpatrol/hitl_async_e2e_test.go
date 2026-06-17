@@ -156,7 +156,6 @@ approver "human_approver" "ops" {
   sync_wait_timeout = "1ms"
   async_grant {
     enabled            = true
-    approval_ttl       = "15m"
     approved_retry_ttl = "5m"
     fingerprint_body   = "raw"
     max_body_bytes     = 1048576
