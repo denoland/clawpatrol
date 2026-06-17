@@ -191,6 +191,14 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		return nil, nil, fmt.Errorf("plugin source %q: %w", source, err)
 	}
 
+	// Snapshot the lockfile entry as loaded from disk, before
+	// resolveNetwork's addHash records this binary's hash. resolveEgress
+	// needs the pre-pass view to tell a first load (record the declared
+	// egress) from an already-approved binary (trust the recorded set):
+	// once addHash adds the hash below, a live re-read would make every
+	// fresh load look approved and silently drop the declared egress.
+	priorLock, priorLocked := m.lock.get(sp.Name)
+
 	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash, staticMf)
 	if err != nil {
 		return nil, nil, err
@@ -226,7 +234,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 	// trust-on-first-use model as the network grant. Egress doesn't gate
 	// the sandbox — the plugin already runs network=none — so this happens
 	// after the spawn, off the real manifest.
-	egress, eWarn, err := m.resolveEgress(sp, hash, egressFromManifest(manifest))
+	egress, eWarn, err := m.resolveEgress(sp, priorLock, priorLocked, hash, egressFromManifest(manifest))
 	if err != nil {
 		c.kill()
 		return nil, nil, err
@@ -413,7 +421,7 @@ func (m *Manager) resolveNetwork(ctx context.Context, sp config.PluginSource, bi
 // approved (a destination none of the approved entries cover). A same or
 // narrower set is recorded and allowed. Egress does not gate the sandbox;
 // it bounds which upstream targets the gateway's brokered dial will open.
-func (m *Manager) resolveEgress(sp config.PluginSource, hash string, declared []string) ([]string, string, error) {
+func (m *Manager) resolveEgress(sp config.PluginSource, prior lockEntry, priorRecorded bool, hash string, declared []string) ([]string, string, error) {
 	declared = normalizeEgress(declared)
 
 	// No lockfile (tests, config.LoadBytes): use the declared set directly,
@@ -422,12 +430,18 @@ func (m *Manager) resolveEgress(sp config.PluginSource, hash string, declared []
 		return declared, "", nil
 	}
 
-	entry, recorded := m.lock.get(sp.Name)
-	if recorded && entry.hasHash(hash) {
-		// Fast path: this exact binary is approved — use its recorded set.
-		return entry.Egress, "", nil
+	// Every decision below reads `prior` — the lockfile entry as it was on
+	// disk at the start of this pass, captured before resolveNetwork's
+	// addHash recorded this binary's hash. Reading the live entry here
+	// would see that freshly-added hash and mistake a first load for an
+	// already-approved binary, taking the fast path and dropping the
+	// declared egress.
+	if priorRecorded && prior.hasHash(hash) {
+		// Fast path: this exact binary was approved in a prior load — use
+		// its recorded set.
+		return prior.Egress, "", nil
 	}
-	if !recorded {
+	if !priorRecorded {
 		// Trust on first use: record and proceed.
 		m.lock.setEgress(sp.Name, declared)
 		if len(declared) > 0 {
@@ -435,12 +449,12 @@ func (m *Manager) resolveEgress(sp config.PluginSource, hash string, declared []
 		}
 		return declared, "", nil
 	}
-	if broadened := egressBroadened(entry.Egress, declared); len(broadened) > 0 {
+	if broadened := egressBroadened(prior.Egress, declared); len(broadened) > 0 {
 		return nil, "", fmt.Errorf(
 			"plugin %q upgrade broadens its network egress: it now wants to reach %v but was approved only for %v. "+
 				"A compromised plugin update adding an exfiltration destination looks exactly like this. "+
 				"If you trust this update, re-approve it: clawpatrol plugins approve %s",
-			sp.Name, broadened, entry.Egress, sp.Name)
+			sp.Name, broadened, prior.Egress, sp.Name)
 	}
 	// Same or narrowed: record the (possibly tightened) declared set.
 	m.lock.setEgress(sp.Name, declared)
