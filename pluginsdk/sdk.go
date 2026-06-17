@@ -452,6 +452,18 @@ func (r BuildRequest) Decode(v any) error {
 // Reading / writing the underlying agent connection is done through
 // the embedded net.Conn (which is a TLS-terminated *tls.Conn for
 // TLSMode=TLSTerminate, or a raw stream-backed conn otherwise).
+// ConnCredential is one credential bound to a plugin endpoint, as
+// delivered on Conn.Credentials. Mirrors the singular Conn.Credential*
+// fields; carried as a list so an endpoint can offer several and the
+// plugin picks which to use per connection.
+type ConnCredential struct {
+	TypeName        string
+	Instance        string
+	Secret          []byte
+	Extras          map[string]string
+	CanonicalConfig []byte
+}
+
 type Conn struct {
 	net.Conn
 
@@ -469,6 +481,14 @@ type Conn struct {
 	CredentialSecret          []byte
 	CredentialExtras          map[string]string
 	CredentialCanonicalConfig []byte
+
+	// Credentials is every credential bound to this endpoint, in
+	// declaration order, for plugins that support multi-credential
+	// endpoints (e.g. a base key per account). The singular Credential*
+	// fields above mirror Credentials[0]. On single-credential endpoints
+	// it holds that one credential; on older gateways that don't send the
+	// set it is nil (read the singular fields instead).
+	Credentials []ConnCredential
 
 	TunnelTypeName string
 	TunnelInstance string

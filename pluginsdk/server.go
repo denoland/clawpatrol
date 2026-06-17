@@ -489,6 +489,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		CredentialSecret:          in.CredentialSecret,
 		CredentialExtras:          in.CredentialExtras,
 		CredentialCanonicalConfig: in.CredentialCanonicalJson,
+		Credentials:               connCredentialsFromProto(in.Credentials),
 		TunnelTypeName:            in.TunnelTypeName,
 		TunnelInstance:            in.TunnelInstance,
 	}
@@ -1111,4 +1112,28 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 		_ = stream.Send(&pb.DialMessage{Kind: &pb.DialMessage_Close{Close: &pb.DialClose{}}})
 	}
 	return dialErr
+}
+
+// connCredentialsFromProto maps the repeated BoundCredential set carried on
+// ConnInit to the SDK's ConnCredential slice. Returns nil when the gateway
+// sent none (older gateways, or an endpoint with no credential) — callers
+// then fall back to the singular Conn.Credential* fields.
+func connCredentialsFromProto(in []*pb.BoundCredential) []ConnCredential {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ConnCredential, 0, len(in))
+	for _, c := range in {
+		if c == nil {
+			continue
+		}
+		out = append(out, ConnCredential{
+			TypeName:        c.TypeName,
+			Instance:        c.Instance,
+			Secret:          c.Secret,
+			Extras:          c.Extras,
+			CanonicalConfig: c.CanonicalJson,
+		})
+	}
+	return out
 }

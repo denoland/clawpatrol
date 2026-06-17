@@ -158,3 +158,26 @@ func TestServerCredentialBuildPlainCanonicalRemainsBackwardCompatible(t *testing
 		t.Fatalf("canonical = %#v", canonical)
 	}
 }
+
+func TestConnCredentialsFromProto(t *testing.T) {
+	if got := connCredentialsFromProto(nil); got != nil {
+		t.Errorf("nil input = %v, want nil", got)
+	}
+	in := []*pb.BoundCredential{
+		nil, // skipped
+		{TypeName: "aws_account", Instance: "prod", Secret: []byte("s"), Extras: map[string]string{"access_key_id": "AKIA"}, CanonicalJson: []byte(`{"accounts":["111"]}`)},
+		{TypeName: "aws_account", Instance: "fallback"},
+	}
+	got := connCredentialsFromProto(in)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (nil skipped)", len(got))
+	}
+	if got[0].TypeName != "aws_account" || got[0].Instance != "prod" ||
+		string(got[0].Secret) != "s" || got[0].Extras["access_key_id"] != "AKIA" ||
+		string(got[0].CanonicalConfig) != `{"accounts":["111"]}` {
+		t.Errorf("first credential mapped wrong: %+v", got[0])
+	}
+	if got[1].Instance != "fallback" {
+		t.Errorf("second credential = %+v, want instance fallback", got[1])
+	}
+}

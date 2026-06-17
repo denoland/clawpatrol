@@ -527,12 +527,22 @@ message ConnInit {
 
   // Bound credential. credential_secret is the secret material
   // fetched by the gateway just-in-time from its secret store.
-  // Empty when the endpoint has no credential.
+  // Empty when the endpoint has no credential. When more than one
+  // credential is bound to the endpoint these fields carry the first
+  // (declaration order); the full set is in `credentials` below.
   string credential_type_name = 8;
   string credential_instance  = 9;
   bytes  credential_canonical_json = 10;
   bytes  credential_secret    = 11;
   map<string,string> credential_extras = 12;
+
+  // All credentials bound to this endpoint, in declaration order, when
+  // the endpoint binds more than one. A plugin that supports
+  // multi-credential endpoints selects among these per connection (e.g.
+  // the aws plugin picks a base key by the target account). Fields 8-12
+  // stay populated with credentials[0] for plugins that read only the
+  // single bound credential. Empty when the endpoint has no credential.
+  repeated BoundCredential credentials = 16;
 
   // Bound tunnel (optional, informational). Brokered dials
   // (DialUpstreamRequest) are routed through this tunnel by the
@@ -545,6 +555,17 @@ message ConnInit {
   // false (they silently drop unknown frames); the SDK fails
   // Conn.DialUpstream fast instead of hanging.
   bool supports_dial_upstream = 15;
+}
+
+// BoundCredential is one credential bound to a plugin endpoint. The same
+// shape the singular ConnInit.credential_* fields carry, repeated so an
+// endpoint can offer several (the plugin chooses which to use).
+message BoundCredential {
+  string type_name = 1;
+  string instance  = 2;
+  bytes  canonical_json = 3;
+  bytes  secret    = 4;
+  map<string,string> extras = 5;
 }
 
 message ConnData {

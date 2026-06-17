@@ -132,26 +132,40 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Resolve credential secret.
+	// Resolve credential secrets. Every credential bound to the endpoint is
+	// delivered in `allCreds` (declaration order) for plugins that select
+	// among several — e.g. the aws plugin picks a base key by target
+	// account. The singular cred* fields below mirror the first so plugins
+	// that read only one keep working unchanged.
 	var (
 		credName  string
 		credType  string
 		credSec   []byte
 		credCanon []byte
 		credExtra map[string]string
+		allCreds  []*pb.BoundCredential
 	)
-	if len(ch.Endpoint.Credentials) > 0 {
-		c := ch.Endpoint.Credentials[0]
-		credName = c.Symbol.Name
-		credType = c.Symbol.Type
-		secret, err := ch.Secrets.Get(credName)
-		if err == nil {
-			credSec = secret.Bytes
-			credExtra = secret.Extras
+	for _, c := range ch.Endpoint.Credentials {
+		bc := &pb.BoundCredential{
+			TypeName: c.Symbol.Type,
+			Instance: c.Symbol.Name,
+		}
+		if secret, err := ch.Secrets.Get(c.Symbol.Name); err == nil {
+			bc.Secret = secret.Bytes
+			bc.Extras = secret.Extras
 		}
 		if cb, ok := credentialBaseOf(c.Body); ok {
-			credCanon = cb.canonicalJSON
+			bc.CanonicalJson = cb.canonicalJSON
 		}
+		allCreds = append(allCreds, bc)
+	}
+	if len(allCreds) > 0 {
+		first := allCreds[0]
+		credType = first.TypeName
+		credName = first.Instance
+		credSec = first.Secret
+		credExtra = first.Extras
+		credCanon = first.CanonicalJson
 	}
 
 	// Tunnel binding (informational only — gateway dialing happens
@@ -183,6 +197,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		CredentialCanonicalJson: credCanon,
 		CredentialSecret:        credSec,
 		CredentialExtras:        credExtra,
+		Credentials:             allCreds,
 		TunnelTypeName:          tunType,
 		TunnelInstance:          tunInst,
 		SupportsDialUpstream:    true,
