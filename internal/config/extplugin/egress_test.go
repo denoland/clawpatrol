@@ -84,8 +84,16 @@ func TestResolveEgressTOFUAndBroadening(t *testing.T) {
 	m := newEgressTestManager(t)
 	sp := config.PluginSource{Name: "p", Source: "github.com/o/p"}
 
+	// resolveEgress reads the lockfile entry as it was at the start of the
+	// pass (the snapshot Manager.Start captures before resolveNetwork's
+	// addHash). Mirror that here.
+	call := func(hash string, egress ...string) ([]string, string, error) {
+		prior, priorRec := m.lock.get(sp.Name)
+		return m.resolveEgress(sp, prior, priorRec, hash, egressFromManifest(mfWithEgress(egress...)))
+	}
+
 	// First load records the declared set (trust on first use).
-	got, warn, err := m.resolveEgress(sp, "sha256:v1", egressFromManifest(mfWithEgress("*.foo.com:443")))
+	got, warn, err := call("sha256:v1", "*.foo.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,20 +105,20 @@ func TestResolveEgressTOFUAndBroadening(t *testing.T) {
 	}
 
 	// Same binary again: fast path returns the recorded set, no warn.
-	if got, warn, err := m.resolveEgress(sp, "sha256:v1", egressFromManifest(mfWithEgress("*.foo.com:443"))); err != nil ||
+	if got, warn, err := call("sha256:v1", "*.foo.com:443"); err != nil ||
 		warn != "" || !slices.Equal(got, []string{"*.foo.com:443"}) {
 		t.Fatalf("fast path = %v warn=%q err=%v", got, warn, err)
 	}
 
 	// A new binary that broadens egress fails closed.
-	_, _, err = m.resolveEgress(sp, "sha256:v2", egressFromManifest(mfWithEgress("*.foo.com:443", "evil.com:443")))
+	_, _, err = call("sha256:v2", "*.foo.com:443", "evil.com:443")
 	if err == nil || !strings.Contains(err.Error(), "broadens its network egress") {
 		t.Fatalf("broadening err = %v, want fail-closed", err)
 	}
 
 	// A new binary within the approved set is allowed and (narrowing)
 	// re-recorded.
-	got, _, err = m.resolveEgress(sp, "sha256:v3", egressFromManifest(mfWithEgress("a.foo.com:443")))
+	got, _, err = call("sha256:v3", "a.foo.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +127,41 @@ func TestResolveEgressTOFUAndBroadening(t *testing.T) {
 	}
 }
 
+// TestResolveEgressRecordsAfterAddHash reproduces the load-time ordering in
+// Manager.Start: resolveNetwork's addHash records the binary's hash before
+// resolveEgress runs. On a first load resolveEgress must still record the
+// declared egress — it keys off the pre-pass snapshot, not the live entry
+// whose hash addHash just added. Regression: a fast path keyed on the live
+// hash saw addHash's entry and silently dropped egress on every fresh
+// lockfile, leaving the brokered-dial allow-list empty.
+func TestResolveEgressRecordsAfterAddHash(t *testing.T) {
+	m := newEgressTestManager(t)
+	sp := config.PluginSource{Name: "p", Source: "github.com/o/p"}
+	const hash = "sha256:v1"
+
+	// Snapshot up front, exactly as Start does before resolveNetwork.
+	prior, priorRec := m.lock.get(sp.Name)
+
+	// resolveNetwork records the hash first.
+	m.lock.addHash(sp.Name, hash, "none")
+
+	got, warn, err := m.resolveEgress(sp, prior, priorRec, hash, egressFromManifest(mfWithEgress("*.amazonaws.com:443")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"*.amazonaws.com:443"}) || warn == "" {
+		t.Fatalf("first load after addHash = %v warn=%q, want egress recorded", got, warn)
+	}
+	if e, _ := m.lock.get("p"); !slices.Equal(e.Egress, []string{"*.amazonaws.com:443"}) {
+		t.Fatalf("egress not persisted after addHash: %v", e.Egress)
+	}
+}
+
 func TestResolveEgressNoLockfile(t *testing.T) {
 	m := New(nil) // no lockfile configured
 	sp := config.PluginSource{Name: "p", Source: "github.com/o/p"}
-	got, _, err := m.resolveEgress(sp, "sha256:x", egressFromManifest(mfWithEgress("*.foo.com:443")))
+	prior, priorRec := m.lock.get(sp.Name)
+	got, _, err := m.resolveEgress(sp, prior, priorRec, "sha256:x", egressFromManifest(mfWithEgress("*.foo.com:443")))
 	if err != nil {
 		t.Fatal(err)
 	}

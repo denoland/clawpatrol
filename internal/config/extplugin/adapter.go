@@ -91,6 +91,14 @@ func (b *dynamicEndpointBody) ConnRouteHosts() []string { return b.hosts }
 // plugin asked for it in its manifest.
 func (b *dynamicEndpointBody) RequiresVIP() bool { return b.wantsVIP }
 
+// TLSTerminates reports whether this plugin endpoint terminates the
+// agent's TLS itself (the plugin asked for TLSTerminate). The :443 SNI
+// dispatch uses this to route a matched HTTPS plugin endpoint to the
+// plugin — and only such endpoints, so built-in wire-protocol conn
+// runtimes (postgres / clickhouse / ssh) bound to a host aren't handed a
+// raw ClientHello they can't parse.
+func (b *dynamicEndpointBody) TLSTerminates() bool { return b.tlsTerminate }
+
 // HandleConn satisfies runtime.ConnEndpointRuntime. The host has
 // already routed the agent conn to this endpoint and bundled the
 // full per-conn context on ch.
@@ -236,7 +244,15 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 	dials := newDialRegistry()
 	defer dials.closeAll()
 
-	errCh := make(chan error, 2)
+	// agentDone fires when the agent->plugin copy stops (the agent closed
+	// or errored); pluginDone fires when the plugin->agent copy stops (the
+	// plugin's HandleConn returned — sending ConnClose — or the stream
+	// errored). Tracking them separately lets the teardown half-close the
+	// agent connection gracefully when the plugin finishes first, so a
+	// one-shot plugin's final response isn't truncated by an immediate hard
+	// close before the netstack has flushed it to the agent.
+	agentDone := make(chan error, 1)
+	pluginDone := make(chan error, 1)
 
 	// agent -> plugin
 	go func() {
@@ -247,16 +263,16 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 				if serr := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
 					Data: &pb.ConnData{Payload: append([]byte(nil), buf[:n]...)},
 				}}); serr != nil {
-					errCh <- serr
+					agentDone <- serr
 					return
 				}
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: &pb.ConnClose{}}})
-					errCh <- nil
+					agentDone <- nil
 				} else {
-					errCh <- err
+					agentDone <- err
 				}
 				return
 			}
@@ -269,16 +285,16 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 			msg, err := stream.Recv()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					errCh <- nil
+					pluginDone <- nil
 				} else {
-					errCh <- err
+					pluginDone <- err
 				}
 				return
 			}
 			switch k := msg.GetKind().(type) {
 			case *pb.ConnMessage_Data:
 				if _, werr := conn.Write(k.Data.Payload); werr != nil {
-					errCh <- werr
+					pluginDone <- werr
 					return
 				}
 			case *pb.ConnMessage_Event:
@@ -334,22 +350,58 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 					d.close()
 				}
 			case *pb.ConnMessage_Close:
-				errCh <- nil
+				pluginDone <- nil
 				return
 			}
 		}
 	}()
 
 	select {
-	case err := <-errCh:
+	case err := <-pluginDone:
+		// The plugin finished its side (a one-shot endpoint like aws_api
+		// returns after writing one response). Half-close the agent's write
+		// direction so the buffered response flushes and the agent sees
+		// end-of-stream, then wait — bounded — for the agent to read it and
+		// close. Hard-closing here instead would discard the response still
+		// queued in the netstack send buffer (the agent then hangs, having
+		// sent its request but received nothing).
+		halfCloseWrite(conn)
+		select {
+		case <-agentDone:
+		case <-time.After(connDrainTimeout):
+		}
 		_ = conn.Close()
-		<-errCh
+		return err
+	case err := <-agentDone:
+		// The agent closed/errored first — nothing in flight to protect, so
+		// tear down and let the plugin observe the ConnClose.
+		_ = conn.Close()
+		<-pluginDone
 		return err
 	case <-ctx.Done():
 		_ = conn.Close()
-		<-errCh
-		<-errCh
+		<-agentDone
+		<-pluginDone
 		return ctx.Err()
+	}
+}
+
+// connDrainTimeout bounds how long the gateway waits, after a plugin
+// finishes a connection, for the agent to read the final response and
+// close. The wait lets the netstack flush the buffered response before the
+// hard close; it ends as soon as the agent closes (the common case is a
+// few milliseconds), and the timeout is only a backstop for a peer that
+// holds the half-closed connection open.
+const connDrainTimeout = 30 * time.Second
+
+// halfCloseWrite shuts the write half of c so buffered bytes flush and the
+// peer sees end-of-stream, without tearing down the read half. For a TLS
+// server conn this sends close_notify; the underlying TCP FIN follows when
+// the peer closes its side. A no-op when c can't half-close — the caller
+// still performs a full Close afterwards.
+func halfCloseWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
 	}
 }
 

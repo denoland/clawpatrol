@@ -1490,6 +1490,24 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 		g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 		return
 	}
+	// External plugin endpoints that terminate TLS themselves (e.g. an
+	// `aws_api` bound to `*.amazonaws.com`) pump the raw agent conn to
+	// the subprocess over gRPC, so they aren't an https-mitm facet.
+	// They're matched here purely by SNI: the agent resolves and dials
+	// the real upstream IP and the forwarder intercepts :443
+	// promiscuously, so no VIP or conn-index entry is needed — which
+	// matters for a wildcard host, since it has neither (it can't be
+	// DNS-resolved to an IP for the conn-index, and an HTTPS plugin
+	// isn't RequiresVIP). Gate on the plugin body's TLS-terminate
+	// marker, not just ConnEndpointRuntime: built-in wire-protocol
+	// runtimes (postgres / clickhouse / ssh) also satisfy that
+	// interface but can't read a raw ClientHello, and route via
+	// VIP/direct-IP rather than SNI-on-443.
+	if tt, ok := ep.Body.(interface{ TLSTerminates() bool }); ok && tt.TLSTerminates() {
+		log.Printf("sni-conn: %s → %s", host, ep.Name)
+		g.dispatchConnEndpoint(c, dstIP, dstPort, ep, host)
+		return
+	}
 	// Wire-protocol families (postgres / clickhouse_* / future
 	// native plugins) dispatch through their own port handlers,
 	// not through SNI peek on 443. Anything that lands here is
@@ -1828,7 +1846,12 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			})
 		},
 	}
-	if err := connRT.HandleConn(context.Background(), ch); err != nil {
+	// Cancel on return so a pump goroutine still parked on the plugin
+	// stream (e.g. blocked in Send after the other direction finished)
+	// unblocks and the gRPC stream tears down instead of leaking.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := connRT.HandleConn(ctx, ch); err != nil {
 		if hostname != "" {
 			log.Printf("%s vip %s (%s): %v", mode, dstIP, hostname, err)
 		} else {
