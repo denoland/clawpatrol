@@ -1,8 +1,13 @@
 package tunnels
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tailscale.com/tsnet"
@@ -108,4 +113,59 @@ func TestApplyOAuth(t *testing.T) {
 	if len(srv.AdvertiseTags) != 1 || srv.AdvertiseTags[0] != "tag:bot" {
 		t.Errorf("AdvertiseTags = %v", srv.AdvertiseTags)
 	}
+}
+
+// TestTailscaleDialWaitsForJoin covers the Dial join-window behavior: it
+// waits for the node to join (bounded by ctx / the cap) instead of failing
+// fast, surfaces a permanent join failure, and returns the right pending
+// message per auth path.
+func TestTailscaleDialWaitsForJoin(t *testing.T) {
+	mk := func(credential string) *tailscaleTunnelConn {
+		c := newTailscaleTunnelConn("ts-test", &tsnet.Server{}, log.New(io.Discard, "", 0))
+		c.credential = credential
+		return c
+	}
+
+	// Pending window + the caller's deadline fires: Dial does not fail fast
+	// (the join channel is still open) and returns the dashboard-friendly
+	// error rather than hanging.
+	t.Run("credential pending, ctx done", func(t *testing.T) {
+		c := mk("deno-tailnet")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := c.Dial(ctx, "tcp", "x:9440")
+		if err == nil || !strings.Contains(err.Error(), "node not connected") {
+			t.Fatalf("err = %v, want node-not-connected", err)
+		}
+	})
+
+	// Permanent join failure: joined is closed with upErr set, so Dial
+	// surfaces the real error instead of waiting.
+	t.Run("permanent failure surfaces upErr", func(t *testing.T) {
+		c := mk("deno-tailnet")
+		c.upErr.Store(errors.New("up: boom"))
+		close(c.joined)
+		_, err := c.Dial(context.Background(), "tcp", "x:9440")
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("err = %v, want upErr surfaced", err)
+		}
+	})
+
+	// Literal-authkey path (no credential) uses the "still joining" wording.
+	t.Run("literal authkey wording", func(t *testing.T) {
+		c := mk("")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := c.Dial(ctx, "tcp", "x:9440")
+		if err == nil || !strings.Contains(err.Error(), "still joining") {
+			t.Fatalf("err = %v, want still-joining", err)
+		}
+	})
+
+	t.Run("closed tunnel", func(t *testing.T) {
+		c := &tailscaleTunnelConn{}
+		if _, err := c.Dial(context.Background(), "tcp", "x:9440"); err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("err = %v, want closed", err)
+		}
+	})
 }

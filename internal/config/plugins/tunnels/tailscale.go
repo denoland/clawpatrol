@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -292,28 +293,50 @@ func newTailscaleTunnelConn(name string, srv *tsnet.Server, logger *log.Logger) 
 	}
 }
 
-// Dial routes through the embedded tsnet node. For credential-driven
-// tunnels in the pending-auth window, returns a clear "node not
-// connected" error so the dashboard's pending integrations list reads
-// correctly; the literal-authkey path is always already joined.
+// dialJoinWait bounds how long Dial waits for a still-joining node before
+// giving up. The (re)join window is normally ~2s (state is cached in
+// sqlite); this cap only matters when a join is wedged, so a dependent
+// endpoint returns a clear error instead of blocking on a request whose
+// own deadline never fires.
+const dialJoinWait = 15 * time.Second
+
+// Dial routes through the embedded tsnet node. If the node is still
+// (re)joining, Dial waits for the join to finish rather than failing fast
+// — the pending window after Open or a restart is brief, and an endpoint
+// dialing through it should ride across it, not error. The wait is bounded
+// by the caller's ctx and dialJoinWait; runUp always closes `joined` (on
+// success and on permanent failure, where it also sets upErr), so the wait
+// can't hang. A genuinely unjoined node still returns the same
+// dashboard-friendly "node not connected" error.
 func (t *tailscaleTunnelConn) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if t.srv == nil {
 		return nil, errors.New("tailscale tunnel closed")
 	}
 	select {
 	case <-t.joined:
-		if e := t.upErr.Load(); e != nil {
-			if err, ok := e.(error); ok && err != nil {
-				return nil, err
-			}
-		}
-		return t.srv.Dial(ctx, network, addr)
-	default:
-		if t.credential != "" {
-			return nil, fmt.Errorf("tailscale tunnel %q: node not connected — visit dashboard to complete %q sign-in", t.name, t.credential)
-		}
-		return nil, fmt.Errorf("tailscale tunnel %q: still joining", t.name)
+		// joined (success or permanent failure) — fall through.
+	case <-ctx.Done():
+		return nil, t.notConnectedErr(ctx.Err())
+	case <-time.After(dialJoinWait):
+		return nil, t.notConnectedErr(fmt.Errorf("still joining after %s", dialJoinWait))
 	}
+	if e := t.upErr.Load(); e != nil {
+		if err, ok := e.(error); ok && err != nil {
+			return nil, err
+		}
+	}
+	return t.srv.Dial(ctx, network, addr)
+}
+
+// notConnectedErr formats the pending-window error. Credential-driven
+// tunnels point the operator at the dashboard sign-in (the pending
+// integrations list keys off this); the literal-authkey path has no
+// sign-in to complete.
+func (t *tailscaleTunnelConn) notConnectedErr(cause error) error {
+	if t.credential != "" {
+		return fmt.Errorf("tailscale tunnel %q: node not connected — visit dashboard to complete %q sign-in (%w)", t.name, t.credential, cause)
+	}
+	return fmt.Errorf("tailscale tunnel %q: still joining (%w)", t.name, cause)
 }
 
 // CredentialName implements runtime.TunnelCredentialNamer so the
