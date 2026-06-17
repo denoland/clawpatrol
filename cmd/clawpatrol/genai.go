@@ -1,8 +1,10 @@
 // OpenTelemetry GenAI semantic-convention export for intercepted LLM
 // turns. Targets the GenAI semantic conventions
 // (https://opentelemetry.io/docs/specs/semconv/gen-ai/): one span per
-// model invocation carrying gen_ai.* attributes (system, conversation
-// id, models, token usage, finish reason) and — only when the operator
+// model invocation carrying gen_ai.* attributes (provider name,
+// conversation id, server address, models, request sampling params,
+// token usage incl. the Anthropic cache-token breakdown, response id,
+// finish reason, error type) and — only when the operator
 // opts in — the prompt/completion message content as the
 // gen_ai.input.messages / gen_ai.output.messages /
 // gen_ai.system_instructions span attributes. Content blocks of every
@@ -71,14 +73,38 @@ type genAIChatMessage struct {
 // genAITurn is one intercepted LLM request/response mapped to OTel
 // GenAI semantic-convention terms.
 type genAITurn struct {
-	System         string // gen_ai.system: "anthropic" | "openai"
+	Provider       string // gen_ai.provider.name: "anthropic" | "openai" (replaces the removed gen_ai.system)
 	Operation      string // gen_ai.operation.name: "chat"
 	ConversationID string // gen_ai.conversation.id: correlates a multi-turn session
 	RequestModel   string // gen_ai.request.model
 	ResponseModel  string // gen_ai.response.model
+	ResponseID     string // gen_ai.response.id
 	InputTokens    int64  // gen_ai.usage.input_tokens
 	OutputTokens   int64  // gen_ai.usage.output_tokens
 	FinishReason   string // gen_ai.response.finish_reasons[0]
+	ErrorType      string // error.type: set when the turn carried a provider error
+
+	// Anthropic-specific prompt-cache token breakdown. Both are already
+	// folded into InputTokens for billing; the GenAI convention also
+	// surfaces them separately as gen_ai.usage.cache_read.input_tokens /
+	// gen_ai.usage.cache_creation.input_tokens.
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+
+	// ServerAddress / ServerPort identify the upstream the turn went to
+	// (server.address / server.port). Port is 0 when unknown.
+	ServerAddress string
+	ServerPort    int
+
+	// Request sampling parameters (gen_ai.request.*). Pointers/zero-checks
+	// distinguish "not set in the request" from a real zero value
+	// (temperature 0 is valid and common).
+	Stream        *bool    // gen_ai.request.stream
+	MaxTokens     int64    // gen_ai.request.max_tokens (0 → unset)
+	Temperature   *float64 // gen_ai.request.temperature
+	TopP          *float64 // gen_ai.request.top_p
+	TopK          *int64   // gen_ai.request.top_k
+	StopSequences []string // gen_ai.request.stop_sequences
 
 	// Start, when non-zero, sets the span start time so its duration
 	// reflects the real upstream round-trip latency. Zero → span is
@@ -114,17 +140,44 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	_, span := tracer.Start(context.Background(), name, startOpts...)
 
 	attrs := []attribute.KeyValue{
-		attribute.String("gen_ai.system", t.System),
+		attribute.String("gen_ai.provider.name", t.Provider),
 		attribute.String("gen_ai.operation.name", t.Operation),
 	}
 	if t.ConversationID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.conversation.id", t.ConversationID))
 	}
+	if t.ServerAddress != "" {
+		attrs = append(attrs, attribute.String("server.address", t.ServerAddress))
+	}
+	if t.ServerPort > 0 {
+		attrs = append(attrs, attribute.Int("server.port", t.ServerPort))
+	}
 	if t.RequestModel != "" {
 		attrs = append(attrs, attribute.String("gen_ai.request.model", t.RequestModel))
 	}
+	if t.Stream != nil {
+		attrs = append(attrs, attribute.Bool("gen_ai.request.stream", *t.Stream))
+	}
+	if t.MaxTokens > 0 {
+		attrs = append(attrs, attribute.Int64("gen_ai.request.max_tokens", t.MaxTokens))
+	}
+	if t.Temperature != nil {
+		attrs = append(attrs, attribute.Float64("gen_ai.request.temperature", *t.Temperature))
+	}
+	if t.TopP != nil {
+		attrs = append(attrs, attribute.Float64("gen_ai.request.top_p", *t.TopP))
+	}
+	if t.TopK != nil {
+		attrs = append(attrs, attribute.Int64("gen_ai.request.top_k", *t.TopK))
+	}
+	if len(t.StopSequences) > 0 {
+		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", t.StopSequences))
+	}
 	if t.ResponseModel != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", t.ResponseModel))
+	}
+	if t.ResponseID != "" {
+		attrs = append(attrs, attribute.String("gen_ai.response.id", t.ResponseID))
 	}
 	if t.InputTokens > 0 {
 		attrs = append(attrs, attribute.Int64("gen_ai.usage.input_tokens", t.InputTokens))
@@ -132,8 +185,17 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	if t.OutputTokens > 0 {
 		attrs = append(attrs, attribute.Int64("gen_ai.usage.output_tokens", t.OutputTokens))
 	}
+	if t.CacheReadTokens > 0 {
+		attrs = append(attrs, attribute.Int64("gen_ai.usage.cache_read.input_tokens", t.CacheReadTokens))
+	}
+	if t.CacheCreationTokens > 0 {
+		attrs = append(attrs, attribute.Int64("gen_ai.usage.cache_creation.input_tokens", t.CacheCreationTokens))
+	}
 	if t.FinishReason != "" {
 		attrs = append(attrs, attribute.StringSlice("gen_ai.response.finish_reasons", []string{t.FinishReason}))
+	}
+	if t.ErrorType != "" {
+		attrs = append(attrs, attribute.String("error.type", t.ErrorType))
 	}
 	span.SetAttributes(attrs...)
 
@@ -198,13 +260,14 @@ func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
 }
 
 // recordGenAITurn emits a GenAI span for a completed LLM turn when the
-// feature is enabled and the trace exporter is live. system is the
-// gen_ai.system value ("anthropic"/"openai"); convID is the session
-// correlation key emitted as gen_ai.conversation.id (empty when the turn
-// carries no session info). Content is parsed from the bodies only when
-// content capture is opted in, so the disabled and no-content paths stay
-// cheap.
-func (g *Gateway) recordGenAITurn(system, convID, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time) {
+// feature is enabled and the trace exporter is live. provider is the
+// gen_ai.provider.name value ("anthropic"/"openai"); convID is the
+// session correlation key emitted as gen_ai.conversation.id (empty when
+// the turn carries no session info); serverAddr is the upstream host the
+// turn went to (server.address, port 443). Content is parsed from the
+// bodies only when content capture is opted in, so the disabled and
+// no-content paths stay cheap.
+func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time) {
 	cfg := g.cfg.Load()
 	if genaiTracer == nil || !cfg.GenAITelemetryEnabled() {
 		return
@@ -219,18 +282,39 @@ func (g *Gateway) recordGenAITurn(system, convID, reqModel, respModel string, in
 		return
 	}
 	turn := genAITurn{
-		System:         system,
+		Provider:       provider,
 		Operation:      "chat",
 		ConversationID: convID,
+		ServerAddress:  serverAddr,
 		RequestModel:   model,
 		ResponseModel:  respModel,
 		InputTokens:    in,
 		OutputTokens:   out,
 		Start:          start,
 	}
+	// All intercepted LLM endpoints are HTTPS (the MITM only handles TLS).
+	if serverAddr != "" {
+		turn.ServerPort = 443
+	}
 	includeContent := cfg.GenAITelemetryIncludeContent()
-	if system == "anthropic" {
-		// stop_reason is on the response regardless of content capture.
+	if provider == "anthropic" {
+		// Request sampling params and response metadata (id, cache-token
+		// breakdown, error/stop reason) ride the span regardless of
+		// content capture — they carry no prompt/completion text.
+		p := parseClaudeRequestParams(reqBody)
+		turn.Stream = p.Stream
+		turn.MaxTokens = p.MaxTokens
+		turn.Temperature = p.Temperature
+		turn.TopP = p.TopP
+		turn.TopK = p.TopK
+		turn.StopSequences = p.StopSequences
+
+		meta := claudeResponseMeta(respBody)
+		turn.ResponseID = meta.ID
+		turn.CacheReadTokens = meta.CacheReadTokens
+		turn.CacheCreationTokens = meta.CacheCreationTokens
+		turn.ErrorType = meta.ErrorType
+
 		parts, finish := claudeResponseContent(respBody)
 		turn.FinishReason = finish
 		if includeContent {
@@ -239,6 +323,125 @@ func (g *Gateway) recordGenAITurn(system, convID, reqModel, respModel string, in
 		}
 	}
 	emitGenAISpan(genaiTracer, turn, includeContent)
+}
+
+// claudeRequestParams holds the GenAI request sampling parameters parsed
+// from an Anthropic /v1/messages request body. Optional scalar fields are
+// pointers so a real zero (e.g. temperature 0) is distinguished from
+// "absent in the request".
+type claudeRequestParams struct {
+	Stream        *bool
+	MaxTokens     int64
+	Temperature   *float64
+	TopP          *float64
+	TopK          *int64
+	StopSequences []string
+}
+
+// parseClaudeRequestParams pulls the sampling parameters
+// (stream/max_tokens/temperature/top_p/top_k/stop_sequences) from an
+// Anthropic /v1/messages request body for the gen_ai.request.* span
+// attributes. A malformed body yields the zero value (all unset).
+func parseClaudeRequestParams(reqBody []byte) claudeRequestParams {
+	var req struct {
+		Stream        *bool    `json:"stream"`
+		MaxTokens     int64    `json:"max_tokens"`
+		Temperature   *float64 `json:"temperature"`
+		TopP          *float64 `json:"top_p"`
+		TopK          *int64   `json:"top_k"`
+		StopSequences []string `json:"stop_sequences"`
+	}
+	if json.Unmarshal(reqBody, &req) != nil {
+		return claudeRequestParams{}
+	}
+	return claudeRequestParams{
+		Stream:        req.Stream,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		TopK:          req.TopK,
+		StopSequences: req.StopSequences,
+	}
+}
+
+// claudeResponseMetadata is the non-content response metadata mapped to
+// GenAI span attributes: the message id, the Anthropic prompt-cache token
+// breakdown, and the error type when the turn carried a provider error.
+type claudeResponseMetadata struct {
+	ID                  string
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	ErrorType           string
+}
+
+// claudeResponseMeta extracts the response id, prompt-cache token
+// breakdown, and any error type from an Anthropic /v1/messages response,
+// handling both non-streaming JSON and streaming SSE bodies. An error
+// shape ({"type":"error",...} or an SSE `error` event) surfaces only
+// error.type; cache tokens ride the non-streaming usage object or the
+// SSE message_start event.
+func claudeResponseMeta(body []byte) claudeResponseMetadata {
+	// Non-streaming JSON: success carries id+usage; an error response is
+	// {"type":"error","error":{"type":"..."}}.
+	var jr struct {
+		ID    string `json:"id"`
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+		Usage struct {
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &jr) == nil && (jr.ID != "" || jr.Type == "error") {
+		if jr.Type == "error" {
+			return claudeResponseMetadata{ErrorType: jr.Error.Type}
+		}
+		return claudeResponseMetadata{
+			ID:                  jr.ID,
+			CacheReadTokens:     jr.Usage.CacheReadInputTokens,
+			CacheCreationTokens: jr.Usage.CacheCreationInputTokens,
+		}
+	}
+	// SSE: id + cache tokens ride message_start; an `error` event carries
+	// the same {"type":"error","error":{"type":...}} payload.
+	var meta claudeResponseMetadata
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len("data:"):])
+		if len(payload) == 0 || payload[0] != '{' {
+			continue
+		}
+		var ev struct {
+			Type    string `json:"type"`
+			Message struct {
+				ID    string `json:"id"`
+				Usage struct {
+					CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+					CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			Error struct {
+				Type string `json:"type"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(payload, &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "message_start":
+			meta.ID = ev.Message.ID
+			meta.CacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+			meta.CacheCreationTokens = ev.Message.Usage.CacheCreationInputTokens
+		case "error":
+			meta.ErrorType = ev.Error.Type
+		}
+	}
+	return meta
 }
 
 // claudeContentMessages extracts the ordered system/user/assistant/tool

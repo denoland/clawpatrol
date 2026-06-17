@@ -31,7 +31,7 @@ func attrMap(kvs []attribute.KeyValue) map[string]attribute.Value {
 func TestEmitGenAISpanAttributesNoContent(t *testing.T) {
 	sr, tp := newRecordingTracer(t)
 	turn := genAITurn{
-		System:         "anthropic",
+		Provider:       "anthropic",
 		Operation:      "chat",
 		ConversationID: "s_abc123",
 		RequestModel:   "claude-3-5-sonnet-20241022",
@@ -53,8 +53,8 @@ func TestEmitGenAISpanAttributesNoContent(t *testing.T) {
 		t.Errorf("span name = %q", s.Name())
 	}
 	m := attrMap(s.Attributes())
-	if m["gen_ai.system"].AsString() != "anthropic" {
-		t.Errorf("gen_ai.system = %q", m["gen_ai.system"].AsString())
+	if m["gen_ai.provider.name"].AsString() != "anthropic" {
+		t.Errorf("gen_ai.provider.name = %q", m["gen_ai.provider.name"].AsString())
 	}
 	if m["gen_ai.operation.name"].AsString() != "chat" {
 		t.Errorf("gen_ai.operation.name = %q", m["gen_ai.operation.name"].AsString())
@@ -83,7 +83,7 @@ func TestEmitGenAISpanAttributesNoContent(t *testing.T) {
 func TestEmitGenAISpanWithContent(t *testing.T) {
 	sr, tp := newRecordingTracer(t)
 	turn := genAITurn{
-		System:       "anthropic",
+		Provider:     "anthropic",
 		Operation:    "chat",
 		RequestModel: "claude-3-5-sonnet-20241022",
 		FinishReason: "end_turn",
@@ -146,7 +146,7 @@ func TestEmitGenAISpanNilTracerNoPanic(t *testing.T) {
 			t.Fatalf("emitGenAISpan(nil) panicked: %v", r)
 		}
 	}()
-	emitGenAISpan(nil, genAITurn{System: "anthropic", Operation: "chat"}, true)
+	emitGenAISpan(nil, genAITurn{Provider: "anthropic", Operation: "chat"}, true)
 }
 
 func TestClaudeContentMessages(t *testing.T) {
@@ -335,7 +335,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 1, 2,
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 1, 2,
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"yo"}]}`),
 		time.Time{})
@@ -365,7 +365,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"secret"}]}`),
 		time.Time{})
@@ -375,8 +375,8 @@ gateway {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
 	m := attrMap(spans[0].Attributes())
-	if m["gen_ai.system"].AsString() != "anthropic" {
-		t.Errorf("gen_ai.system = %q", m["gen_ai.system"].AsString())
+	if m["gen_ai.provider.name"].AsString() != "anthropic" {
+		t.Errorf("gen_ai.provider.name = %q", m["gen_ai.provider.name"].AsString())
 	}
 	if m["gen_ai.conversation.id"].AsString() != "s_abc123" {
 		t.Errorf("gen_ai.conversation.id = %q, want s_abc123", m["gen_ai.conversation.id"].AsString())
@@ -414,7 +414,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"system":"be terse","messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"hello back"}]}`),
 		time.Time{})
@@ -450,5 +450,181 @@ gateway {
 	}
 	if len(output) != 1 || output[0].Parts[0].Content != "hello back" || output[0].FinishReason != "end_turn" {
 		t.Errorf("gen_ai.output.messages = %+v", output)
+	}
+}
+
+func TestParseClaudeRequestParams(t *testing.T) {
+	stream := true
+	temp := 0.0 // a real zero must round-trip, not read as "unset".
+	topP := 0.95
+	topK := int64(40)
+	p := parseClaudeRequestParams([]byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"max_tokens":1024,
+		"stream":true,
+		"temperature":0.0,
+		"top_p":0.95,
+		"top_k":40,
+		"stop_sequences":["STOP","END"]
+	}`))
+	if p.Stream == nil || *p.Stream != stream {
+		t.Errorf("stream = %v, want %v", p.Stream, stream)
+	}
+	if p.MaxTokens != 1024 {
+		t.Errorf("max_tokens = %d, want 1024", p.MaxTokens)
+	}
+	if p.Temperature == nil || *p.Temperature != temp {
+		t.Errorf("temperature = %v, want %v", p.Temperature, temp)
+	}
+	if p.TopP == nil || *p.TopP != topP {
+		t.Errorf("top_p = %v, want %v", p.TopP, topP)
+	}
+	if p.TopK == nil || *p.TopK != topK {
+		t.Errorf("top_k = %v, want %v", p.TopK, topK)
+	}
+	if !reflect.DeepEqual(p.StopSequences, []string{"STOP", "END"}) {
+		t.Errorf("stop_sequences = %v", p.StopSequences)
+	}
+
+	// Absent optional fields stay unset (nil), distinguishable from zero.
+	empty := parseClaudeRequestParams([]byte(`{"model":"x","max_tokens":10}`))
+	if empty.Stream != nil || empty.Temperature != nil || empty.TopP != nil || empty.TopK != nil {
+		t.Errorf("absent optionals should be nil, got %+v", empty)
+	}
+	if len(empty.StopSequences) != 0 {
+		t.Errorf("stop_sequences should be empty, got %v", empty.StopSequences)
+	}
+}
+
+func TestClaudeResponseMetaJSON(t *testing.T) {
+	meta := claudeResponseMeta([]byte(`{
+		"id":"msg_01ABC",
+		"model":"claude-3-5-sonnet-20241022",
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":100,"cache_creation_input_tokens":40}
+	}`))
+	if meta.ID != "msg_01ABC" {
+		t.Errorf("id = %q, want msg_01ABC", meta.ID)
+	}
+	if meta.CacheReadTokens != 100 {
+		t.Errorf("cache_read = %d, want 100", meta.CacheReadTokens)
+	}
+	if meta.CacheCreationTokens != 40 {
+		t.Errorf("cache_creation = %d, want 40", meta.CacheCreationTokens)
+	}
+	if meta.ErrorType != "" {
+		t.Errorf("error_type = %q, want empty", meta.ErrorType)
+	}
+}
+
+func TestClaudeResponseMetaError(t *testing.T) {
+	meta := claudeResponseMeta([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"slow down"}}`))
+	if meta.ErrorType != "overloaded_error" {
+		t.Errorf("error_type = %q, want overloaded_error", meta.ErrorType)
+	}
+	if meta.ID != "" {
+		t.Errorf("id = %q, want empty on error", meta.ID)
+	}
+}
+
+func TestClaudeResponseMetaSSE(t *testing.T) {
+	body := []byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_stream1","usage":{"input_tokens":3,"cache_read_input_tokens":12,"cache_creation_input_tokens":8}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+`)
+	meta := claudeResponseMeta(body)
+	if meta.ID != "msg_stream1" {
+		t.Errorf("id = %q, want msg_stream1", meta.ID)
+	}
+	if meta.CacheReadTokens != 12 || meta.CacheCreationTokens != 8 {
+		t.Errorf("cache tokens = read %d / create %d, want 12 / 8", meta.CacheReadTokens, meta.CacheCreationTokens)
+	}
+}
+
+func TestClaudeResponseMetaSSEError(t *testing.T) {
+	body := []byte(`event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"slow down"}}
+`)
+	if meta := claudeResponseMeta(body); meta.ErrorType != "overloaded_error" {
+		t.Errorf("error_type = %q, want overloaded_error", meta.ErrorType)
+	}
+}
+
+// TestRecordGenAITurnRichAttributes drives the full recordGenAITurn path
+// and asserts every newly added GenAI attribute lands on the span:
+// provider name, server address/port, request sampling params, response
+// id, and the Anthropic prompt-cache token breakdown.
+func TestRecordGenAITurnRichAttributes(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry {}
+}
+`), "rich.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{}
+	g.cfg.Store(gw)
+
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com",
+		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+		[]byte(`{"model":"claude-3-5-sonnet-20241022","max_tokens":2048,"stream":false,"temperature":0.7,"top_p":0.9,"top_k":50,"stop_sequences":["STOP"],"messages":[{"role":"user","content":"hi"}]}`),
+		[]byte(`{"id":"msg_01XYZ","model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":256,"cache_creation_input_tokens":64},"content":[{"type":"text","text":"hello"}]}`),
+		time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+
+	if m["gen_ai.provider.name"].AsString() != "anthropic" {
+		t.Errorf("provider.name = %q", m["gen_ai.provider.name"].AsString())
+	}
+	if m["server.address"].AsString() != "api.anthropic.com" {
+		t.Errorf("server.address = %q", m["server.address"].AsString())
+	}
+	if got := m["server.port"].AsInt64(); got != 443 {
+		t.Errorf("server.port = %d, want 443", got)
+	}
+	if got := m["gen_ai.request.max_tokens"].AsInt64(); got != 2048 {
+		t.Errorf("request.max_tokens = %d, want 2048", got)
+	}
+	if m["gen_ai.request.stream"].AsBool() != false {
+		t.Errorf("request.stream = %v, want false", m["gen_ai.request.stream"].AsBool())
+	}
+	if got := m["gen_ai.request.temperature"].AsFloat64(); got != 0.7 {
+		t.Errorf("request.temperature = %v, want 0.7", got)
+	}
+	if got := m["gen_ai.request.top_p"].AsFloat64(); got != 0.9 {
+		t.Errorf("request.top_p = %v, want 0.9", got)
+	}
+	if got := m["gen_ai.request.top_k"].AsInt64(); got != 50 {
+		t.Errorf("request.top_k = %d, want 50", got)
+	}
+	if ss := m["gen_ai.request.stop_sequences"].AsStringSlice(); len(ss) != 1 || ss[0] != "STOP" {
+		t.Errorf("request.stop_sequences = %v", ss)
+	}
+	if m["gen_ai.response.id"].AsString() != "msg_01XYZ" {
+		t.Errorf("response.id = %q", m["gen_ai.response.id"].AsString())
+	}
+	if got := m["gen_ai.usage.cache_read.input_tokens"].AsInt64(); got != 256 {
+		t.Errorf("cache_read.input_tokens = %d, want 256", got)
+	}
+	if got := m["gen_ai.usage.cache_creation.input_tokens"].AsInt64(); got != 64 {
+		t.Errorf("cache_creation.input_tokens = %d, want 64", got)
 	}
 }

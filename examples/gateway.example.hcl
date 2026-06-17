@@ -97,8 +97,10 @@ gateway {
 
   # OpenTelemetry GenAI telemetry. Block presence emits one OTel span
   # per intercepted LLM turn following the GenAI semantic conventions
-  # (gen_ai.* — system, request/response model, token usage, finish
-  # reason). Requires the OTLP exporter to be configured via the
+  # (gen_ai.* — provider name, server address, request/response model,
+  # request sampling params, token usage incl. the Anthropic cache-token
+  # breakdown, response id, finish reason, error type). Requires the
+  # OTLP exporter to be configured via the
   # standard OTEL_EXPORTER_OTLP_ENDPOINT env var; without it there is
   # nothing to export to. Remove the block to disable (zero overhead).
   #
