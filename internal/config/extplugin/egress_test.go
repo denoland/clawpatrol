@@ -157,6 +157,33 @@ func TestResolveEgressRecordsAfterAddHash(t *testing.T) {
 	}
 }
 
+// TestResolveEgressRecordsDeferredFromInstall covers `plugins install` from a
+// release without a signed static manifest: it records the binary hash but
+// defers egress to the first real load. resolveEgress must record the
+// manifest's declared egress on that load even though the hash is already
+// approved, otherwise the brokered-dial allow-list stays empty.
+func TestResolveEgressRecordsDeferredFromInstall(t *testing.T) {
+	m := newEgressTestManager(t)
+	sp := config.PluginSource{Name: "p", Source: "github.com/o/p"}
+	const hash = "sha256:v1"
+
+	// Simulate the lockfile install wrote: hash + network, no egress.
+	m.lock.addHash(sp.Name, hash, "none")
+
+	// First real load: the snapshot already has the hash but no egress.
+	prior, priorRec := m.lock.get(sp.Name)
+	got, warn, err := m.resolveEgress(sp, prior, priorRec, hash, egressFromManifest(mfWithEgress("*.amazonaws.com:443")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"*.amazonaws.com:443"}) || warn == "" {
+		t.Fatalf("deferred egress = %v warn=%q, want recorded", got, warn)
+	}
+	if e, _ := m.lock.get("p"); !slices.Equal(e.Egress, []string{"*.amazonaws.com:443"}) {
+		t.Fatalf("deferred egress not persisted: %v", e.Egress)
+	}
+}
+
 func TestResolveEgressNoLockfile(t *testing.T) {
 	m := New(nil) // no lockfile configured
 	sp := config.PluginSource{Name: "p", Source: "github.com/o/p"}

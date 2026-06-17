@@ -437,8 +437,16 @@ func (m *Manager) resolveEgress(sp config.PluginSource, prior lockEntry, priorRe
 	// already-approved binary, taking the fast path and dropping the
 	// declared egress.
 	if priorRecorded && prior.hasHash(hash) {
-		// Fast path: this exact binary was approved in a prior load — use
-		// its recorded set.
+		// This exact binary was approved in a prior load — trust its
+		// recorded egress. But `plugins install` from a release without a
+		// signed static manifest records the hash with egress deferred to
+		// the first real load (see install.go); record the declared set now
+		// when none is recorded yet. The binary is already approved, so this
+		// is trust-on-first-use, not an escalation.
+		if len(prior.Egress) == 0 && len(declared) > 0 {
+			m.lock.setEgress(sp.Name, declared)
+			return declared, fmt.Sprintf("first load: recorded deferred egress %v in %s", declared, LockfileName), nil
+		}
 		return prior.Egress, "", nil
 	}
 	if !priorRecorded {
