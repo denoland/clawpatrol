@@ -21,11 +21,15 @@ import (
 // the cause and the cost of sandbox = "off".
 //
 // network is the already-resolved network grant (from the manifest +
-// lockfile, or an operator override); see resolveNetwork.
+// lockfile, or an operator override); see resolveNetwork. privileged is
+// the already-resolved privileged grant (the operator-approved answer to
+// the plugin's declared privileged capability); see resolvePrivileged.
+// Either it or the operator's `sandbox = "off"` HCL attribute turns the
+// sandbox off.
 //
 // The caller owns spec.SocketDir and must remove it when the plugin
 // dies.
-func buildSandboxSpec(sp config.PluginSource, binSource string, network sandbox.Network, stateDir string) (sandbox.Spec, sandbox.Mode, string, error) {
+func buildSandboxSpec(sp config.PluginSource, binSource string, network sandbox.Network, privileged bool, stateDir string) (sandbox.Spec, sandbox.Mode, string, error) {
 	var zero sandbox.Spec
 
 	switch sp.Sandbox {
@@ -59,7 +63,7 @@ func buildSandboxSpec(sp config.PluginSource, binSource string, network sandbox.
 
 	mode := sandbox.Mode("")
 	warning := ""
-	if sp.Sandbox == "off" {
+	if sp.Sandbox == "off" || privileged {
 		mode = sandbox.ModeOff
 	} else {
 		av, err := sandbox.Probe()

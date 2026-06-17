@@ -144,8 +144,9 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		Name:    s.plug.Name,
 		Version: s.plug.Version,
 		Capabilities: &pb.PluginCapabilities{
-			Network: networkAccessToProto(s.plug.Capabilities.Network),
-			Egress:  append([]string(nil), s.plug.Capabilities.Egress...),
+			Network:    networkAccessToProto(s.plug.Capabilities.Network),
+			Egress:     append([]string(nil), s.plug.Capabilities.Egress...),
+			Privileged: s.plug.Capabilities.Privileged,
 		},
 	}
 	for _, c := range s.plug.Credentials {

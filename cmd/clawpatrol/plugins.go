@@ -25,8 +25,10 @@ commands:
   info      Show a GitHub-sourced plugin's metadata and required
             privileges from its signed static manifest, without
             downloading the binary.
-  approve   Re-approve a plugin after an intentional permission change,
-            clearing the escalation block so the gateway will load it.
+  approve   Approve a plugin's current permissions: clears an escalation
+            block after an intentional permission change, and grants a
+            plugin that declares the privileged capability (run with the
+            sandbox off) — held closed until you approve it here.
 
 With no name arguments a command applies to every plugin in the config.`
 
@@ -155,6 +157,9 @@ func runPluginsInfo(args []string) {
 			fmt.Printf("  version:   %s\n", pv.Version)
 		}
 		fmt.Printf("  requires:  network = %s\n", pv.Network)
+		if pv.Privileged {
+			fmt.Printf("  privileged: yes — needs the sandbox OFF (full host access)\n")
+		}
 		if len(pv.Egress) > 0 {
 			fmt.Printf("  egress:    %s\n", strings.Join(pv.Egress, ", "))
 		}
@@ -185,7 +190,11 @@ func runPluginsApprove(args []string) {
 		os.Exit(1)
 	}
 	for _, a := range approved {
-		fmt.Printf("approved plugin %q (network=%s)\n", a.Name, a.Network)
+		if a.Privileged {
+			fmt.Printf("approved plugin %q (network=%s, PRIVILEGED: runs with the sandbox off)\n", a.Name, a.Network)
+		} else {
+			fmt.Printf("approved plugin %q (network=%s)\n", a.Name, a.Network)
+		}
 	}
 	if len(approved) == 0 {
 		fmt.Println("no plugins to approve")

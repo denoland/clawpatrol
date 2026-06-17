@@ -109,6 +109,26 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 		if staticMf != nil {
 			m.lock.setEgress(sp.Name, egressFromManifest(staticMf))
 		}
+		// Record the privileged grant. install/update can only grant it from
+		// a signed static manifest — running install on a plugin whose
+		// manifest declares privileged is the operator explicitly accepting
+		// it. install does NOT spawn, so for a manifest-less release it cannot
+		// read the declaration; it must instead make sure no stale grant rides
+		// onto this binary. Unless this exact binary was already an
+		// approved-privileged hash (a re-download of the same approved
+		// binary), clear the grant — the plugin then fails closed at load
+		// until `clawpatrol plugins approve` (which probes the binary) grants
+		// it. This errs toward the sandboxed, more-restricted side and never
+		// grants privilege silently.
+		switch {
+		case staticMf != nil:
+			m.lock.setPrivileged(sp.Name, privilegedFromManifest(staticMf))
+		case have && entry.hasHash(res.binSHA) && entry.Privileged:
+			// Re-download of the same already-approved-privileged binary:
+			// preserve the existing approval.
+		default:
+			m.lock.setPrivileged(sp.Name, false)
+		}
 
 		out = append(out, InstalledPlugin{
 			Name:      sp.Name,
@@ -180,6 +200,15 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 				_ = os.RemoveAll(tmp)
 				return nil, fmt.Errorf("plugin %q (%s): %w", sp.Name, plat, err)
 			}
+			// addHash extends the entry's grants — including a recorded
+			// privileged grant, which is shared across the entry's hashes — to
+			// every sibling platform build of the SAME pinned release. That is
+			// intended: the operator pinned and approved this version, and lock
+			// is how one committed lockfile covers a mixed-OS team. A release
+			// that ships a signed static manifest still has each build's
+			// declaration checked against it at load (checkManifestConsistency);
+			// a manifest-less release is trusted per the pin, the same as its
+			// network/egress grants.
 			m.lock.addHash(sp.Name, res.binSHA, entry.Network)
 			if commit == "" {
 				commit = res.commit

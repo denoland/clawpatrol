@@ -244,14 +244,17 @@ a scrubbed environment — it inherits **none** of the gateway's
 environment, only `PATH`, `HOME`, `TMPDIR` (pointing at a private
 scratch dir) and the plugin socket path.
 
-Permissions come from two places, by risk:
+Permissions come from three places, by risk:
 
-- **Network is declared by the plugin** in its manifest (a *leak path*
-  the sandbox keeps bounded — see below). The operator doesn't write
-  it.
-- **Host filesystem access and the sandbox opt-out are operator-only**,
-  declared on the `plugin` block, because they can expose every
-  credential.
+- **Network and egress are declared by the plugin** in its manifest
+  (*leak paths* the sandbox keeps bounded — see below) and recorded
+  trust-on-first-use. The operator doesn't write them.
+- **Privileged (sandbox off) is declared by the plugin but never
+  trust-on-first-use** — handing a plugin full host access is too
+  dangerous to grant silently, so it is held closed until the operator
+  approves it explicitly (see below).
+- **Extra host filesystem read paths and the operator-forced sandbox
+  opt-out are operator-only**, declared on the `plugin` block.
 
 ```hcl
 plugin "ssh_tools" {
@@ -319,6 +322,54 @@ An operator can still set `network` on the `plugin` block to override
 the plugin's request (force or veto); the override wins and is what
 gets recorded.
 
+### Privileged: declared by the plugin, approved explicitly
+
+Some plugins genuinely cannot run sandboxed — they need to exec
+arbitrary helper tools (`ssh`, `kubectl`, `aws`, …) and read the user's
+tool configs (`~/.ssh`, `~/.aws`, `~/.kube`). Enumerating which binaries
+and paths such a plugin touches is hopeless (a plugin that can run a
+shell can run anything), so there is no fine-grained "exec" grant: a
+plugin that needs this declares a single coarse **privileged**
+capability, which runs it with the **sandbox off** — the same full host
+access as the operator's `sandbox = "off"`.
+
+```go
+pluginsdk.Run(&pluginsdk.Plugin{
+    Name:         "ssh_tools",
+    Capabilities: pluginsdk.Capabilities{Privileged: true},
+    // …
+})
+```
+
+Because privileged hands the plugin full host access — it can read every
+file the gateway user can, including clawpatrol's own secret store, and
+run any command — it is **not** trust-on-first-use like network and
+egress. The gateway holds a privileged plugin **closed** until the
+operator approves it explicitly:
+
+```
+clawpatrol plugins approve <config.hcl> ssh_tools
+```
+
+Approval records `privileged = true` in `clawpatrol.lock.hcl`, gated on
+the binary hash like every other grant, so a later version re-pends
+approval. The dashboard's Plugins page shows the request on the blocked
+card (a red **privileged** badge) and offers the same one-click approve.
+
+```hcl
+plugin "ssh_tools" {
+  network    = "outbound"
+  privileged = true
+  hashes     = ["sha256:…"]
+}
+```
+
+`privileged` is the plugin asking for what `sandbox = "off"` grants;
+the operator's `sandbox = "off"` on the block is the operator forcing
+the same thing directly (and wins outright, no approval needed). Prefer
+a narrower capability — `Egress`, a built-in tunnel — whenever one fits;
+reach for `privileged` only when the plugin must shell out.
+
 ### Filesystem and full-trust grants (operator-only)
 
 - **`read_paths`** — extra host paths the plugin may read recursively,
@@ -337,7 +388,10 @@ gets recorded.
   sandbox entirely (full host read, write, and exec — the plugin can
   read every credential in the state DB), so only set it for a plugin
   you fully trust on a host that can't sandbox. The environment is
-  scrubbed either way.
+  scrubbed either way. A plugin can also *request* the same full host
+  access by declaring the [`privileged`](#privileged-declared-by-the-plugin-approved-explicitly)
+  capability, which the operator then approves explicitly rather than
+  hand-writing `sandbox = "off"`.
 
 Backends, by platform:
 
