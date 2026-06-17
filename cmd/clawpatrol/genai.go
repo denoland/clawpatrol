@@ -3,9 +3,11 @@
 // (https://opentelemetry.io/docs/specs/semconv/gen-ai/): one span per
 // model invocation carrying gen_ai.* attributes (system, conversation
 // id, models, token usage, finish reason) and — only when the operator
-// opts in — the
-// prompt/completion message content as the gen_ai.input.messages /
-// gen_ai.output.messages / gen_ai.system_instructions span attributes.
+// opts in — the prompt/completion message content as the
+// gen_ai.input.messages / gen_ai.output.messages /
+// gen_ai.system_instructions span attributes. Content blocks of every
+// kind are mapped to GenAI message parts (text, reasoning, tool_call,
+// tool_call_response, plus a generic fallback), not just text.
 //
 // Opt-in is two independent switches (internal/config GenAITelemetry):
 // the `genai_telemetry {}` block presence enables the attribute span;
@@ -26,18 +28,35 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// genAIMessage is one input message (system/user/assistant) captured
-// for the GenAI content convention.
+// genAIMessage is one input message (system/user/assistant/tool)
+// captured for the GenAI content convention, carrying its content parts
+// (text, tool_call, tool_call_response, reasoning, …).
 type genAIMessage struct {
-	Role    string
-	Content string
+	Role  string
+	Parts []genAIPart
 }
 
-// genAIPart is a single content part within a GenAI message. Only text
-// parts are captured today, so Type is always "text".
+// genAIPart is a single content part within a GenAI message, following
+// the GenAI message-part conventions. The fields are a superset across
+// the part types we emit; `omitempty` keeps each serialized part to the
+// keys its type actually defines:
+//
+//   - text               → {type, content}
+//   - reasoning          → {type, content}            (Anthropic "thinking")
+//   - tool_call          → {type, id, name, arguments}
+//   - tool_call_response → {type, id, response}
+//   - any other block    → {type}                     (generic part)
+//
+// Mapping every Anthropic block to one of these — rather than flattening
+// to text and dropping the rest — means tool calls, tool results, and
+// reasoning are captured too.
 type genAIPart struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
+	Type      string          `json:"type"`
+	Content   string          `json:"content,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Response  json.RawMessage `json:"response,omitempty"`
 }
 
 // genAIChatMessage is one message in the gen_ai.input.messages /
@@ -66,10 +85,11 @@ type genAITurn struct {
 	// stamped at emission time.
 	Start time.Time
 
-	// Messages and Completion populate the content attributes; filled
-	// only when message-content capture is enabled.
-	Messages   []genAIMessage
-	Completion string
+	// Messages and Output populate the content attributes; filled only
+	// when message-content capture is enabled. Messages are the input
+	// (request) messages; Output is the assistant response's parts.
+	Messages []genAIMessage
+	Output   []genAIPart
 }
 
 // emitGenAISpan records one GenAI span on the provided tracer. When
@@ -139,18 +159,18 @@ func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
 	var sysParts []genAIPart
 	var input []genAIChatMessage
 	for _, m := range t.Messages {
+		if len(m.Parts) == 0 {
+			continue
+		}
 		if m.Role == "system" {
-			sysParts = append(sysParts, genAIPart{Type: "text", Content: m.Content})
+			sysParts = append(sysParts, m.Parts...)
 			continue
 		}
 		role := m.Role
 		if role == "" {
 			role = "user"
 		}
-		input = append(input, genAIChatMessage{
-			Role:  role,
-			Parts: []genAIPart{{Type: "text", Content: m.Content}},
-		})
+		input = append(input, genAIChatMessage{Role: role, Parts: m.Parts})
 	}
 
 	var attrs []attribute.KeyValue
@@ -164,10 +184,10 @@ func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
 			attrs = append(attrs, attribute.String("gen_ai.input.messages", string(js)))
 		}
 	}
-	if t.Completion != "" {
+	if len(t.Output) > 0 {
 		output := []genAIChatMessage{{
 			Role:         "assistant",
-			Parts:        []genAIPart{{Type: "text", Content: t.Completion}},
+			Parts:        t.Output,
 			FinishReason: t.FinishReason,
 		}}
 		if js, err := json.Marshal(output); err == nil {
@@ -211,20 +231,21 @@ func (g *Gateway) recordGenAITurn(system, convID, reqModel, respModel string, in
 	includeContent := cfg.GenAITelemetryIncludeContent()
 	if system == "anthropic" {
 		// stop_reason is on the response regardless of content capture.
-		completion, finish := claudeResponseContent(respBody)
+		parts, finish := claudeResponseContent(respBody)
 		turn.FinishReason = finish
 		if includeContent {
 			turn.Messages = claudeContentMessages(reqBody)
-			turn.Completion = completion
+			turn.Output = parts
 		}
 	}
 	emitGenAISpan(genaiTracer, turn, includeContent)
 }
 
-// claudeContentMessages extracts the ordered system/user/assistant
+// claudeContentMessages extracts the ordered system/user/assistant/tool
 // input messages from an Anthropic /v1/messages request body for the
-// GenAI content convention. Reuses messageText so both string and
-// content-block message shapes are flattened to text.
+// GenAI content convention. Every content block is mapped to a GenAI
+// message part (see claudeBlockPart), so tool calls, tool results, and
+// reasoning are captured alongside text rather than dropped.
 func claudeContentMessages(reqBody []byte) []genAIMessage {
 	var req struct {
 		System   json.RawMessage `json:"system"`
@@ -237,47 +258,163 @@ func claudeContentMessages(reqBody []byte) []genAIMessage {
 		return nil
 	}
 	var out []genAIMessage
-	if sys := messageText(req.System); sys != "" {
-		out = append(out, genAIMessage{Role: "system", Content: sys})
+	if sys := claudeMessageParts(req.System); len(sys) > 0 {
+		out = append(out, genAIMessage{Role: "system", Parts: sys})
 	}
 	for _, m := range req.Messages {
-		txt := messageText(m.Content)
-		if txt == "" {
+		parts := claudeMessageParts(m.Content)
+		if len(parts) == 0 {
 			continue
 		}
-		out = append(out, genAIMessage{Role: m.Role, Content: txt})
+		out = append(out, genAIMessage{Role: m.Role, Parts: parts})
 	}
 	return out
 }
 
-// claudeResponseContent extracts the assistant completion text and
-// stop_reason from an Anthropic /v1/messages response, handling both
-// non-streaming JSON and streaming SSE bodies.
-func claudeResponseContent(body []byte) (text, finish string) {
-	// Non-streaming JSON: {"stop_reason":"...","content":[{"type":"text","text":"..."}]}.
-	var jr struct {
-		StopReason string `json:"stop_reason"`
-		Content    []struct {
-			Type string `json:"type"`
+// claudeMessageParts converts an Anthropic message Content — either a
+// plain string or an array of typed blocks — into GenAI message parts.
+func claudeMessageParts(c json.RawMessage) []genAIPart {
+	if len(c) == 0 {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(c, &s) == nil {
+		if s == "" {
+			return nil
+		}
+		return []genAIPart{{Type: "text", Content: s}}
+	}
+	var blocks []json.RawMessage
+	if json.Unmarshal(c, &blocks) != nil {
+		return nil
+	}
+	var parts []genAIPart
+	for _, raw := range blocks {
+		if p, ok := claudeBlockPart(raw); ok {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+// claudeBlockPart maps a single Anthropic content block to a GenAI
+// message part following the part-type conventions. Known block types
+// become their semantic part (text, reasoning, tool_call,
+// tool_call_response); any other block type (image, document,
+// redacted_thinking, web_search_tool_result, …) becomes a generic part
+// that preserves the type so it is recorded rather than silently
+// dropped. Raw binary payloads (e.g. base64 image data) are
+// intentionally not captured. ok is false for blocks with no type and
+// for empty text/reasoning blocks that carry nothing worth recording.
+func claudeBlockPart(raw json.RawMessage) (genAIPart, bool) {
+	var hdr struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &hdr) != nil || hdr.Type == "" {
+		return genAIPart{}, false
+	}
+	switch hdr.Type {
+	case "text":
+		var b struct {
 			Text string `json:"text"`
-		} `json:"content"`
+		}
+		_ = json.Unmarshal(raw, &b)
+		if b.Text == "" {
+			return genAIPart{}, false
+		}
+		return genAIPart{Type: "text", Content: b.Text}, true
+	case "thinking":
+		var b struct {
+			Thinking string `json:"thinking"`
+		}
+		_ = json.Unmarshal(raw, &b)
+		if b.Thinking == "" {
+			return genAIPart{}, false
+		}
+		return genAIPart{Type: "reasoning", Content: b.Thinking}, true
+	case "tool_use", "server_tool_use":
+		var b struct {
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		}
+		_ = json.Unmarshal(raw, &b)
+		return genAIPart{Type: "tool_call", ID: b.ID, Name: b.Name, Arguments: rawOrNil(b.Input)}, true
+	case "tool_result":
+		var b struct {
+			ToolUseID string          `json:"tool_use_id"`
+			Content   json.RawMessage `json:"content"`
+		}
+		_ = json.Unmarshal(raw, &b)
+		return genAIPart{Type: "tool_call_response", ID: b.ToolUseID, Response: rawOrNil(b.Content)}, true
+	default:
+		return genAIPart{Type: hdr.Type}, true
+	}
+}
+
+// rawOrNil normalizes an absent or literal-null RawMessage to nil so it
+// is omitted from the serialized part.
+func rawOrNil(r json.RawMessage) json.RawMessage {
+	if len(r) == 0 || string(bytes.TrimSpace(r)) == "null" {
+		return nil
+	}
+	return r
+}
+
+// claudeResponseContent extracts the assistant response parts and
+// stop_reason from an Anthropic /v1/messages response, handling both
+// non-streaming JSON and streaming SSE bodies. Every content block
+// (text, tool_use, thinking, …) is mapped to a GenAI message part via
+// claudeBlockPart, so the response is captured beyond just its text.
+func claudeResponseContent(body []byte) (parts []genAIPart, finish string) {
+	// Non-streaming JSON: {"stop_reason":"...","content":[ <blocks> ]}.
+	var jr struct {
+		StopReason string          `json:"stop_reason"`
+		Content    json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(body, &jr); err == nil && (len(jr.Content) > 0 || jr.StopReason != "") {
-		var b strings.Builder
-		for _, c := range jr.Content {
-			if c.Text == "" {
-				continue
+		var blocks []json.RawMessage
+		if json.Unmarshal(jr.Content, &blocks) == nil {
+			for _, raw := range blocks {
+				if p, ok := claudeBlockPart(raw); ok {
+					parts = append(parts, p)
+				}
 			}
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(c.Text)
 		}
-		return b.String(), jr.StopReason
+		return parts, jr.StopReason
 	}
-	// SSE: accumulate content_block_delta text; stop_reason rides the
-	// message_delta event.
-	var b strings.Builder
+	// SSE: reconstruct each block from its start + delta events.
+	return claudeResponseSSEParts(body)
+}
+
+// claudeResponseSSEParts reconstructs the assistant response parts and
+// stop_reason from an Anthropic streaming (SSE) response. Blocks are
+// tracked by index across content_block_start / content_block_delta
+// events: text and thinking deltas accumulate their content, and
+// tool_use input_json_delta fragments accumulate the arguments JSON.
+// stop_reason rides the message_delta event.
+func claudeResponseSSEParts(body []byte) (parts []genAIPart, finish string) {
+	type sseBlock struct {
+		typ  string
+		id   string
+		name string
+		text strings.Builder
+		args strings.Builder
+	}
+	blocks := map[int]*sseBlock{}
+	var order []int
+	// get returns the block at index i, defaulting unseen indices to a
+	// text block (some streams omit content_block_start, e.g. a plain
+	// text-only response).
+	get := func(i int) *sseBlock {
+		b := blocks[i]
+		if b == nil {
+			b = &sseBlock{typ: "text"}
+			blocks[i] = b
+			order = append(order, i)
+		}
+		return b
+	}
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -288,24 +425,68 @@ func claudeResponseContent(body []byte) (text, finish string) {
 			continue
 		}
 		var ev struct {
-			Type  string `json:"type"`
+			Type         string `json:"type"`
+			Index        int    `json:"index"`
+			ContentBlock struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content_block"`
 			Delta struct {
-				Type       string `json:"type"`
-				Text       string `json:"text"`
-				StopReason string `json:"stop_reason"`
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
+				PartialJSON string `json:"partial_json"`
+				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
 		}
 		if json.Unmarshal(payload, &ev) != nil {
 			continue
 		}
 		switch ev.Type {
+		case "content_block_start":
+			b := get(ev.Index)
+			if ev.ContentBlock.Type != "" {
+				b.typ = ev.ContentBlock.Type
+			}
+			b.id = ev.ContentBlock.ID
+			b.name = ev.ContentBlock.Name
 		case "content_block_delta":
-			b.WriteString(ev.Delta.Text)
+			b := get(ev.Index)
+			switch ev.Delta.Type {
+			case "text_delta":
+				b.text.WriteString(ev.Delta.Text)
+			case "thinking_delta":
+				b.text.WriteString(ev.Delta.Thinking)
+			case "input_json_delta":
+				b.args.WriteString(ev.Delta.PartialJSON)
+			}
 		case "message_delta":
 			if ev.Delta.StopReason != "" {
 				finish = ev.Delta.StopReason
 			}
 		}
 	}
-	return b.String(), finish
+	for _, i := range order {
+		b := blocks[i]
+		switch b.typ {
+		case "text":
+			if b.text.Len() > 0 {
+				parts = append(parts, genAIPart{Type: "text", Content: b.text.String()})
+			}
+		case "thinking":
+			if b.text.Len() > 0 {
+				parts = append(parts, genAIPart{Type: "reasoning", Content: b.text.String()})
+			}
+		case "tool_use", "server_tool_use":
+			p := genAIPart{Type: "tool_call", ID: b.id, Name: b.name}
+			if b.args.Len() > 0 {
+				p.Arguments = json.RawMessage(b.args.String())
+			}
+			parts = append(parts, p)
+		default:
+			parts = append(parts, genAIPart{Type: b.typ})
+		}
+	}
+	return parts, finish
 }
