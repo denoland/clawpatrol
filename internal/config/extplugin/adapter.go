@@ -605,13 +605,21 @@ func stringField(m map[string]any, key string) string {
 }
 
 // stringListField extracts a []string from action[key]. JSON decodes a
-// list into []any, so string elements are collected and anything else is
-// skipped; an already-[]string value passes through. Returns nil when the
-// key is absent or not a list.
-func stringListField(m map[string]any, key string) []string {
-	switch vv := m[key].(type) {
+// list into []any, so string elements are collected and non-string
+// elements are skipped; an already-[]string value passes through.
+// malformed is true when the key is present but not a list at all (e.g. a
+// string or number) — a contract violation the caller can treat as
+// unparseable (fail closed) instead of silently coercing to empty. An
+// absent key returns (nil, false): nothing was claimed, so nothing is
+// wrong.
+func stringListField(m map[string]any, key string) (vals []string, malformed bool) {
+	v, present := m[key]
+	if !present {
+		return nil, false
+	}
+	switch vv := v.(type) {
 	case []string:
-		return vv
+		return vv, false
 	case []any:
 		out := make([]string, 0, len(vv))
 		for _, item := range vv {
@@ -619,9 +627,9 @@ func stringListField(m map[string]any, key string) []string {
 				out = append(out, s)
 			}
 		}
-		return out
+		return out, false
 	}
-	return nil
+	return nil, true
 }
 
 // builtinRequestFor maps an EvaluateAction's action map onto a
@@ -644,10 +652,12 @@ func builtinRequestFor(family, peerIP, summary string, action map[string]any, st
 		// built-in sql matcher type-asserts req.Meta to *sql.Meta, so build
 		// one. A large statement may arrive as a stream field instead of
 		// inline JSON.
+		tables, badTables := stringListField(action, "tables")
+		functions, badFns := stringListField(action, "functions")
 		meta := &sql.Meta{
 			Verb:      stringField(action, "verb"),
-			Tables:    stringListField(action, "tables"),
-			Functions: stringListField(action, "functions"),
+			Tables:    tables,
+			Functions: functions,
 			Database:  stringField(action, "database"),
 		}
 		if b, ok := streams["statement"]; ok {
@@ -655,7 +665,16 @@ func builtinRequestFor(family, peerIP, summary string, action map[string]any, st
 		} else {
 			meta.Statement = stringField(action, "statement")
 		}
-		return &match.Request{Family: family, PeerIP: peerIP, Meta: meta}
+		req := &match.Request{Family: family, PeerIP: peerIP, Meta: meta}
+		// A present-but-wrong-typed list field (a plugin sending `tables`
+		// as a string/number instead of a list) is a contract violation.
+		// Mark the parse unreliable so sql.verb/tables/functions evaluate to
+		// a CEL unknown and any rule referencing them fails closed, rather
+		// than silently seeing an empty list and missing a guardrail.
+		if badTables || badFns {
+			req.Unparseable = true
+		}
+		return req
 	case "http":
 		req := &match.Request{
 			Family: family,

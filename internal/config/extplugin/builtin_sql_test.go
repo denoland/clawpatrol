@@ -70,3 +70,42 @@ func TestBuiltinRequestForSQLStatementStream(t *testing.T) {
 		t.Errorf("statement = %q, want from stream", meta.Statement)
 	}
 }
+
+// TestBuiltinRequestForSQLMalformedListFailsClosed: a plugin that sends
+// `tables` as the wrong type marks the request unparseable, so a rule
+// referencing sql.tables fails closed (Unevaluable -> deny) instead of
+// silently seeing an empty list.
+func TestBuiltinRequestForSQLMalformedListFailsClosed(t *testing.T) {
+	// tables sent as a bare string instead of a list.
+	req := builtinRequestFor("sql", "1.2.3.4", "summary", map[string]any{
+		"verb":   "delete",
+		"tables": "tokens",
+	}, nil)
+	if !req.Unparseable {
+		t.Fatalf("wrong-typed tables should mark req.Unparseable")
+	}
+	m, err := facet.NewMatcher("sql", "sets.intersects(sql.tables, ['tokens'])")
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	if got := m.Match(req).Result; got != match.Unevaluable {
+		t.Errorf("tables rule on malformed action = %v, want Unevaluable (fail closed)", got)
+	}
+
+	// A well-formed action is not flagged, and absent list fields are not a
+	// violation (nothing was claimed).
+	ok := builtinRequestFor("sql", "1.2.3.4", "s", map[string]any{"verb": "select"}, nil)
+	if ok.Unparseable {
+		t.Errorf("absent tables/functions must not mark unparseable")
+	}
+}
+
+// TestBuiltinRequestForSQLInlineStatement: statement inline in the action
+// (no stream) reaches the matcher.
+func TestBuiltinRequestForSQLInlineStatement(t *testing.T) {
+	req := builtinRequestFor("sql", "1.2.3.4", "s",
+		map[string]any{"verb": "select", "statement": "SELECT 1"}, nil)
+	if got := req.Meta.(*sqlfacet.Meta).Statement; got != "SELECT 1" {
+		t.Errorf("inline statement = %q, want SELECT 1", got)
+	}
+}
