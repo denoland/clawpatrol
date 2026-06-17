@@ -75,6 +75,20 @@ type Capabilities struct {
 	// lockfile (trust-on-first-use) and blocks an upgrade that broadens
 	// it, the same model as Network; the operator never hand-writes it.
 	Egress []string
+
+	// Privileged declares that this plugin cannot run sandboxed and needs
+	// full host access — to exec arbitrary helper tools (ssh, kubectl,
+	// aws, ...), read the user's tool configs (~/.ssh, ~/.aws, ~/.kube),
+	// and so on. It is the same grant as the operator-written
+	// `sandbox = "off"` HCL attribute, just plugin-declared. Unlike
+	// Network and Egress it is NOT trust-on-first-use: handing a plugin
+	// full host access is too dangerous to grant silently, so the gateway
+	// holds the plugin closed until the operator explicitly approves it
+	// (clawpatrol plugins approve, or the dashboard). An upgrade re-pends
+	// approval. Prefer a narrower capability (Egress, a built-in tunnel)
+	// whenever one fits; reach for this only when the plugin genuinely
+	// must shell out.
+	Privileged bool
 }
 
 // NetworkAccess is a plugin's declared network requirement.

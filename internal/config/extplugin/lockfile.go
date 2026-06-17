@@ -64,6 +64,15 @@ type lockEntry struct {
 	// set — wants a destination none of these entries cover — fails closed
 	// until reapproved. Shared across the entry's Hashes, like Network.
 	Egress []string `hcl:"egress,optional"`
+	// Privileged records that the operator explicitly approved running this
+	// plugin unsandboxed (full host access), in response to the plugin's
+	// manifest-declared privileged capability. Unlike Network and Egress
+	// this is NEVER trust-on-first-use: it is written only by
+	// `clawpatrol plugins approve` (or the dashboard). The grant is gated on
+	// the binary's hash being in Hashes, so an upgrade — whose hash is not
+	// yet recorded — re-pends approval and the plugin fails closed until the
+	// operator re-approves the new binary.
+	Privileged bool `hcl:"privileged,optional"`
 }
 
 // hasHash reports whether hash is in the entry's approved set.
@@ -181,8 +190,14 @@ func (s *lockStore) setSource(name, source, version, constraints, commit string,
 	// A version change re-pins the plugin: the recorded hashes belonged
 	// to the old version's platform builds, so drop them — the new
 	// version's hashes are recorded fresh by the caller (addHash / lock).
+	// The privileged grant is per-version too (it is explicit-approval,
+	// never trust-on-first-use): drop it so the new version's binary cannot
+	// inherit the old version's approval and silently run unsandboxed. The
+	// caller re-records it from the new version's signed manifest, or it
+	// stays closed until `plugins approve`.
 	if e.Version != version {
 		e.Hashes = nil
+		e.Privileged = false
 	}
 	e.Name = name
 	e.Source = source
@@ -210,6 +225,22 @@ func (s *lockStore) setEgress(name string, egress []string) {
 	} else {
 		e.Egress = egress
 	}
+	s.entries[name] = e
+	s.dirty = true
+}
+
+// setPrivileged records (or clears) the operator's explicit approval to run
+// the plugin unsandboxed. Only `clawpatrol plugins approve` calls this — it
+// is never set trust-on-first-use. Marks dirty only on change.
+func (s *lockStore) setPrivileged(name string, privileged bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[name]
+	if e.Name == name && e.Privileged == privileged {
+		return
+	}
+	e.Name = name
+	e.Privileged = privileged
 	s.entries[name] = e
 	s.dirty = true
 }
@@ -267,6 +298,9 @@ func (s *lockStore) save() error {
 			blk.Body().SetAttributeValue("constraints", cty.StringVal(e.Constraints))
 		}
 		blk.Body().SetAttributeValue("network", cty.StringVal(e.Network))
+		if e.Privileged {
+			blk.Body().SetAttributeValue("privileged", cty.BoolVal(true))
+		}
 		if len(e.Egress) > 0 {
 			egVals := make([]cty.Value, len(e.Egress))
 			for i, eg := range e.Egress {

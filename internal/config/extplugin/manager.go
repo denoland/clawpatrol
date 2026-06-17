@@ -199,7 +199,37 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 	// fresh load look approved and silently drop the declared egress.
 	priorLock, priorLocked := m.lock.get(sp.Name)
 
-	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash, staticMf)
+	// declaredMf is the manifest the capability resolvers read to learn what
+	// this binary requires. For a release with a signed static manifest it
+	// is that manifest (no plugin code runs). Otherwise, when the binary is
+	// not already approved in the lockfile (a first load or an upgrade), we
+	// probe once — a throwaway network-denied spawn — and share the result
+	// across resolveSandboxOff and resolveNetwork so neither probes again.
+	// An already-approved binary takes both resolvers' lockfile fast paths
+	// and needs no manifest, so declaredMf stays nil there.
+	declaredMf := staticMf
+	if declaredMf == nil && (!priorLocked || !priorLock.hasHash(hash)) {
+		declaredMf, err = m.probeManifest(ctx, sp, bin)
+		if err != nil {
+			return nil, nil, fmt.Errorf("plugin source %q: read manifest: %w", source, err)
+		}
+	}
+
+	// resolvePrivileged runs BEFORE resolveNetwork on purpose: an unapproved
+	// privileged declaration must fail closed here, before resolveNetwork
+	// records this binary's hash. Otherwise a same-or-reduced network
+	// upgrade would silently add the new hash to the approved set, and the
+	// next load would see it as approved-for-privileged without the operator
+	// ever running `plugins approve`.
+	privileged, privWarn, err := m.resolvePrivileged(sp, priorLock, priorLocked, hash, declaredMf)
+	if err != nil {
+		return nil, nil, err
+	}
+	if privWarn != "" {
+		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", privWarn)
+	}
+
+	network, warn, err := m.resolveNetwork(ctx, sp, bin, hash, declaredMf)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -207,7 +237,7 @@ func (m *Manager) Start(ctx context.Context, sp config.PluginSource) (*Client, *
 		m.logger.Warn("plugin permission", "plugin", sp.Name, "note", warn)
 	}
 
-	spec, mode, sbWarn, err := buildSandboxSpec(sp, bin, network, m.stateDirLocked())
+	spec, mode, sbWarn, err := buildSandboxSpec(sp, bin, network, privileged, m.stateDirLocked())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -494,9 +524,11 @@ func (m *Manager) probeNetwork(ctx context.Context, sp config.PluginSource, binP
 // fetch needs no network, so this is safe even for a plugin that will
 // ultimately run with outbound access. Used to learn a local plugin's (or
 // a static-manifest-less release's) declared capabilities without granting
-// them.
+// them — privileged=false here so the probe stays sandboxed even when the
+// plugin declares the privileged capability (the operator's own
+// `sandbox = "off"` HCL still takes effect via buildSandboxSpec).
 func (m *Manager) probeManifest(ctx context.Context, sp config.PluginSource, binPath string) (*pb.ManifestResponse, error) {
-	spec, mode, _, err := buildSandboxSpec(sp, binPath, sandbox.NetworkNone, m.stateDirLocked())
+	spec, mode, _, err := buildSandboxSpec(sp, binPath, sandbox.NetworkNone, false, m.stateDirLocked())
 	if err != nil {
 		return nil, err
 	}
@@ -508,6 +540,66 @@ func (m *Manager) probeManifest(ctx context.Context, sp config.PluginSource, bin
 	}
 	defer c.kill()
 	return manifest, nil
+}
+
+// privilegedFromManifest reports whether the plugin's manifest declares the
+// privileged (run-unsandboxed) capability.
+func privilegedFromManifest(mf *pb.ManifestResponse) bool {
+	return mf.GetCapabilities().GetPrivileged()
+}
+
+// resolvePrivileged decides whether sp runs unsandboxed. Privileged is the
+// strongest grant a plugin can ask for — full host access — so unlike
+// network and egress it is NEVER trust-on-first-use: the operator must
+// approve it explicitly with `clawpatrol plugins approve` (or the
+// dashboard), which records it in the lockfile gated on the binary's hash.
+//
+// prior is the lockfile entry as it was at the start of this pass (the
+// snapshot Start captures before resolveNetwork records anything), so an
+// upgraded binary — whose hash is not yet in prior.Hashes — fails closed
+// here until re-approved. resolvePrivileged must run before resolveNetwork
+// so this fail-closed happens before the new hash is recorded.
+//
+// declaredMf is the plugin's manifest (signed static, or a probe), nil only
+// on the lockfile fast path where prior already records this exact binary.
+func (m *Manager) resolvePrivileged(sp config.PluginSource, prior lockEntry, priorRecorded bool, hash string, declaredMf *pb.ManifestResponse) (bool, string, error) {
+	// An operator `sandbox = "off"` HCL attribute is the operator already
+	// accepting full host access in a reviewable, committed file — it wins
+	// outright, no lockfile approval needed (buildSandboxSpec honours it
+	// too; returning true here keeps the two in step and short-circuits the
+	// declaration check).
+	if sp.Sandbox == "off" {
+		return true, "", nil
+	}
+
+	// Fast path: this exact binary is already recorded. Trust its recorded
+	// privileged flag without consulting the manifest.
+	if priorRecorded && prior.hasHash(hash) {
+		return prior.Privileged, "", nil
+	}
+
+	if !privilegedFromManifest(declaredMf) {
+		return false, "", nil // plugin runs sandboxed; nothing to approve.
+	}
+
+	// The plugin declares it needs full host access.
+	//
+	// No lockfile (tests, config.LoadBytes): there is no approval channel,
+	// so fall back to the declared capability directly — the same "trust the
+	// declaration, no enforcement" behaviour network and egress have without
+	// a lockfile. A real deployment always has a lockfile.
+	if !m.lock.active() {
+		return true, fmt.Sprintf("no lockfile: running plugin %q unsandboxed as it declares the privileged capability", sp.Name), nil
+	}
+
+	// Lockfile active but this binary is not approved-for-privileged: fail
+	// closed. resolvePrivileged never records the grant itself — only an
+	// explicit `plugins approve` does.
+	return false, "", fmt.Errorf(
+		"plugin %q declares the privileged capability: it needs to run with the sandbox OFF (full host access — "+
+			"it can read every file this user can, including clawpatrol's own secrets, and run any command). "+
+			"clawpatrol will not grant that silently. If you trust this plugin, approve it explicitly: "+
+			"clawpatrol plugins approve %s", sp.Name, sp.Name)
 }
 
 func networkFromManifest(mf *pb.ManifestResponse) sandbox.Network {
@@ -549,6 +641,11 @@ func checkManifestConsistency(name string, staticMf, runtimeMf *pb.ManifestRespo
 			"plugin %q binary requests network egress %v but its signed release manifest declares %v; "+
 				"the binary does not match its published manifest", name, g, s)
 	}
+	if s, g := privilegedFromManifest(staticMf), privilegedFromManifest(runtimeMf); s != g {
+		return fmt.Errorf(
+			"plugin %q binary requests privileged=%v but its signed release manifest declares privileged=%v; "+
+				"the binary does not match its published manifest", name, g, s)
+	}
 	return nil
 }
 
@@ -574,8 +671,9 @@ func manifestTypeKey(mf *pb.ManifestResponse) string {
 
 // ApprovedPlugin is one result row from Approve.
 type ApprovedPlugin struct {
-	Name    string
-	Network string
+	Name       string
+	Network    string
+	Privileged bool
 }
 
 // Approve (re)records the current permissions of the named plugins
@@ -614,6 +712,17 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
+		// The declared manifest: the signed static one for a release, or a
+		// throwaway probe for a local / manifest-less plugin. Resolved once
+		// and reused for both network and privileged so a local plugin is
+		// probed at most once per approve.
+		declaredMf := staticMf
+		if declaredMf == nil {
+			declaredMf, err = m.probeManifest(ctx, sp, bin)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q: read manifest: %w", sp.Name, err)
+			}
+		}
 		declared := sandbox.Network("")
 		if sp.Network != "" {
 			declared, err = parseNetwork(sp.Network)
@@ -621,10 +730,7 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 			}
 		} else {
-			declared, err = m.pluginDeclaredNetwork(ctx, sp, bin, staticMf)
-			if err != nil {
-				return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
-			}
+			declared = networkFromManifest(declaredMf)
 		}
 		m.lock.addHash(sp.Name, hash, string(declared))
 		// Record the manifest-declared egress when the release ships a
@@ -633,7 +739,15 @@ func (m *Manager) Approve(ctx context.Context, specs []config.PluginSource, name
 		if staticMf != nil {
 			m.lock.setEgress(sp.Name, egressFromManifest(staticMf))
 		}
-		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared)})
+		// Record the privileged grant explicitly. This is the whole point of
+		// approving a privileged plugin: resolvePrivileged never records it
+		// on its own, so a plugin that declares the capability fails closed
+		// at load until this writes it. A plugin that does not declare it
+		// records privileged=false (clearing any stale grant from a prior
+		// version that did).
+		privileged := privilegedFromManifest(declaredMf)
+		m.lock.setPrivileged(sp.Name, privileged)
+		out = append(out, ApprovedPlugin{Name: sp.Name, Network: string(declared), Privileged: privileged})
 	}
 	for n := range want {
 		found := false
@@ -828,6 +942,7 @@ type PluginInfo struct {
 	Version        string   `json:"version,omitempty"`
 	Network        string   `json:"network,omitempty"`     // approved grant it runs with
 	Egress         []string `json:"egress,omitempty"`      // approved brokered-dial targets
+	Privileged     bool     `json:"privileged,omitempty"`  // approved to run unsandboxed
 	SandboxMode    string   `json:"sandboxMode,omitempty"` // namespaces | landlock | seatbelt | off
 	SandboxWarning string   `json:"sandboxWarning,omitempty"`
 	ApprovedHashes []string `json:"approvedHashes,omitempty"` // lockfile-approved binary hashes (one per platform build)
@@ -854,6 +969,7 @@ type RequestedPrivileges struct {
 	Version     string   `json:"version,omitempty"`
 	Network     string   `json:"network"`
 	Egress      []string `json:"egress,omitempty"`
+	Privileged  bool     `json:"privileged,omitempty"`
 	Credentials []string `json:"credentials,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
 	Tunnels     []string `json:"tunnels,omitempty"`
@@ -899,6 +1015,12 @@ func (m *Manager) PluginInfos() []PluginInfo {
 		if e, ok := m.lock.get(c.Name()); ok {
 			info.ApprovedHashes = e.Hashes
 			info.Egress = e.Egress
+			info.Privileged = e.Privileged
+		}
+		// A plugin forced unsandboxed by the operator's `sandbox = "off"`
+		// HCL (rather than the approved capability) still runs privileged.
+		if c.SandboxMode() == string(sandbox.ModeOff) {
+			info.Privileged = true
 		}
 		if len(info.Egress) == 0 {
 			info.Egress = c.Egress()
@@ -920,6 +1042,7 @@ func (m *Manager) PluginInfos() []PluginInfo {
 				Version:     r.Version,
 				Network:     r.Network,
 				Egress:      r.Egress,
+				Privileged:  r.Privileged,
 				Credentials: r.Credentials,
 				Endpoints:   r.Endpoints,
 				Tunnels:     r.Tunnels,

@@ -61,6 +61,16 @@ message PluginCapabilities {
   // Declared by the plugin; the gateway records the approved set in the
   // lockfile (trust-on-first-use) and blocks an upgrade that broadens it.
   repeated string egress = 2;
+  // privileged declares that this plugin cannot run sandboxed: it needs
+  // the gateway to run it with full host access (to exec arbitrary helper
+  // tools, read the user's tool configs, etc.). It is the same grant as
+  // the operator-written `sandbox = "off"` HCL attribute, but
+  // plugin-declared. Unlike network and egress it is NOT
+  // trust-on-first-use — handing a plugin full host access is too
+  // dangerous to grant silently — so the gateway holds the plugin closed
+  // until the operator explicitly approves it (clawpatrol plugins approve,
+  // or the dashboard). An upgrade re-pends approval.
+  bool privileged = 3;
 }
 
 enum NetworkAccess {

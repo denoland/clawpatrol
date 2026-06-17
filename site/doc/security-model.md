@@ -291,7 +291,12 @@ Two mechanisms contain a malicious or compromised plugin:
   sandbox hides the filesystem (the plugin sees only its own binary,
   system libraries, and explicitly granted paths) and, by default,
   the network. If no sandbox can be established the plugin **fails to
-  load** unless the operator explicitly sets `sandbox = "off"`.
+  load** unless the operator explicitly sets `sandbox = "off"`. A plugin
+  that genuinely cannot run sandboxed (it must exec helper tools and read
+  the user's tool configs) can declare the **privileged** capability,
+  which runs it unsandboxed — but, because that is full host access, the
+  gateway holds it closed until the operator approves it explicitly (it
+  is never trust-on-first-use), and an upgrade re-pends that approval.
 
 Because the default `network = "none"` cuts a plugin off from the
 network entirely, an endpoint plugin that receives credential secrets

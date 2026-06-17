@@ -82,6 +82,68 @@ func TestInstallUpdateLock(t *testing.T) {
 	}
 }
 
+// TestInstallUpgradeClearsPrivileged is the regression test for the
+// silent-privilege-grant bypass: a manifest-less UPGRADE of a
+// previously-privileged-approved plugin must not let the new binary inherit
+// the old version's privileged grant. install can't read a manifest-less
+// release's declaration (it doesn't spawn), so it must clear the grant —
+// the new version then fails closed at load until `plugins approve` re-grants
+// it. Without the fix, the upgraded binary would silently run unsandboxed.
+func TestInstallUpgradeClearsPrivileged(t *testing.T) {
+	repo := "ssh_tools"
+	plats := []string{platformToken()}
+	srv := newReleaseServer(t, "o", repo, []relSpec{
+		mkRelease(t, repo, "1.2.0", plats),
+		mkRelease(t, repo, "1.3.0", plats),
+	})
+	m, _ := newFetchTestManager(t, srv.URL)
+	// Network override => install records without spawning the fake binary.
+	sp := config.PluginSource{Name: repo, Source: "github.com/o/ssh_tools", Version: "~> 1.2", Network: "outbound"}
+	specs := []config.PluginSource{sp}
+	ctx := context.Background()
+
+	// Seed a pin at v1.2.0 so the first install keeps it (rather than
+	// resolving ~> 1.2 to the newest in range).
+	m.lock.setSource(repo, "github.com/o/ssh_tools", "v1.2.0", "~> 1.2", "", false)
+	if err := m.lock.save(); err != nil {
+		t.Fatal(err)
+	}
+	// Install v1.2.0, then simulate the operator approving it as privileged
+	// (what `plugins approve` records for a manifest-less release after
+	// probing the binary).
+	if _, err := m.Install(ctx, specs, nil, false); err != nil {
+		t.Fatalf("install v1.2.0: %v", err)
+	}
+	m.lock.setPrivileged(repo, true)
+	if err := m.lock.save(); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := m.lock.get(repo); !e.Privileged || e.Version != "v1.2.0" {
+		t.Fatalf("precondition: entry = %+v, want privileged v1.2.0", e)
+	}
+
+	// Upgrade to the manifest-less v1.3.0. The stale grant must be dropped.
+	if _, err := m.Install(ctx, specs, nil, true); err != nil {
+		t.Fatalf("update v1.3.0: %v", err)
+	}
+	e, _ := m.lock.get(repo)
+	if e.Version != "v1.3.0" {
+		t.Fatalf("version = %q, want v1.3.0", e.Version)
+	}
+	if e.Privileged {
+		t.Fatalf("BYPASS: upgraded binary inherited privileged grant: %+v", e)
+	}
+
+	// Re-load the lockfile from disk to confirm it was persisted, not just
+	// the in-memory view.
+	if err := m.lock.load(); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := m.lock.get(repo); e.Privileged {
+		t.Fatalf("BYPASS persisted on disk: %+v", e)
+	}
+}
+
 func TestInstallFirstUsePicksNewest(t *testing.T) {
 	repo := "p"
 	plats := []string{platformToken()}

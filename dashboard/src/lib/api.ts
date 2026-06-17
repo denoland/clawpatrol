@@ -218,6 +218,9 @@ export type RequestedPrivileges = {
   // it needs to reach via the gateway's brokered dial ("host:port" or
   // "*.suffix:port").
   egress?: string[];
+  // privileged means the plugin's manifest declares it must run unsandboxed
+  // (full host access). The operator must approve it explicitly.
+  privileged?: boolean;
   credentials?: string[];
   endpoints?: string[];
   tunnels?: string[];
@@ -236,6 +239,10 @@ export type Plugin = {
   // egress is the approved set of brokered-dial targets the plugin's
   // manifest declared, recorded in the lockfile.
   egress?: string[];
+  // privileged means the plugin runs unsandboxed (full host access) — the
+  // operator approved its declared privileged capability, or forced it with
+  // `sandbox = "off"`.
+  privileged?: boolean;
   sandboxMode?: string;
   sandboxWarning?: string;
   approvedHashes?: string[];

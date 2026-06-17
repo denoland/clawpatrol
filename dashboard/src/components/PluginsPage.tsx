@@ -32,8 +32,10 @@ export function PluginsPage() {
         External plugins run sandboxed. Each declares its own network need; the gateway records the
         approved permissions in <code className="font-mono text-xs">clawpatrol.lock.hcl</code> on
         first load and refuses to start a plugin whose update asks for more — shown below as a
-        blocked plugin until you re-approve it. Filesystem access and turning the sandbox off are
-        operator-only.
+        blocked plugin until you re-approve it. Network and egress are recorded on first load; a
+        plugin that declares it must run <span className="font-bold">privileged</span> (sandbox off,
+        full host access) is held back until you approve it explicitly. Granting extra filesystem
+        read paths stays operator-only.
       </p>
 
       {err && (
@@ -112,6 +114,7 @@ function BlockedCard({ p, onApproved }: { p: Plugin; onApproved: () => void }) {
                   <span className="font-mono text-2xs text-text-muted">{p.requested.version}</span>
                 )}
                 <NetworkBadge network={p.requested.network} />
+                {p.requested.privileged && <PrivilegedBadge />}
               </div>
               <RequestedTypes label="egress" items={p.requested.egress} />
               <RequestedTypes label="credentials" items={p.requested.credentials} />
@@ -242,6 +245,17 @@ function NetworkBadge({ network }: { network: string }) {
       }
     >
       net: {network || "none"}
+    </Badge>
+  );
+}
+
+function PrivilegedBadge() {
+  return (
+    <Badge
+      tone="danger"
+      title="Privileged — the plugin needs to run with the sandbox OFF (full host access). Approve only if you trust it."
+    >
+      privileged
     </Badge>
   );
 }

@@ -120,8 +120,9 @@ type ManifestPreview struct {
 	Source      string   `json:"source"`
 	Version     string   `json:"version"` // resolved release tag
 	Locked      string   `json:"locked,omitempty"`
-	Network     string   `json:"network"`          // required network grant
-	Egress      []string `json:"egress,omitempty"` // required brokered-dial targets
+	Network     string   `json:"network"`              // required network grant
+	Egress      []string `json:"egress,omitempty"`     // required brokered-dial targets
+	Privileged  bool     `json:"privileged,omitempty"` // requires running unsandboxed
 	Credentials []string `json:"credentials,omitempty"`
 	Endpoints   []string `json:"endpoints,omitempty"`
 	Tunnels     []string `json:"tunnels,omitempty"`
@@ -169,8 +170,9 @@ func (m *Manager) previewManifest(ctx context.Context, sp config.PluginSource) (
 func previewFromManifest(name, source, version, locked string, mf *pb.ManifestResponse) ManifestPreview {
 	pv := ManifestPreview{
 		Name: name, Source: source, Version: version, Locked: locked,
-		Network: string(networkFromManifest(mf)),
-		Egress:  egressFromManifest(mf),
+		Network:    string(networkFromManifest(mf)),
+		Egress:     egressFromManifest(mf),
+		Privileged: privilegedFromManifest(mf),
 	}
 	for _, c := range mf.GetCredentials() {
 		pv.Credentials = append(pv.Credentials, c.GetTypeName())
