@@ -184,6 +184,23 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 	}
 	defer func() { _ = stream.CloseSend() }()
 
+	// Register this connection's evaluation context under a fresh,
+	// unforgeable session token and hand the token to the plugin in
+	// ConnInit. The plugin echoes it back as HostControl metadata to run an
+	// Evaluate over the broker (no EvaluateAction frame / call_id) — the
+	// session closure runs the same evaluateDecoded core the frame handler
+	// does. Removed when the connection ends so no context dangles.
+	var sessionToken string
+	if a.client != nil && a.client.sessions != nil {
+		tok, remove := a.client.sessions.register(&session{
+			evaluate: func(_ context.Context, _ string, actionJSON []byte, summary string) (Verdict, error) {
+				return evaluateInline(ch, summary, actionJSON), nil
+			},
+		})
+		sessionToken = tok
+		defer remove()
+	}
+
 	// Send ConnInit.
 	init := &pb.ConnInit{
 		EndpointTypeName:        body.adapter.typeName,
@@ -202,6 +219,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		TunnelTypeName:          tunType,
 		TunnelInstance:          tunInst,
 		SupportsDialUpstream:    true,
+		SessionToken:            sessionToken,
 	}
 	if err := stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Init{Init: init}}); err != nil {
 		return fmt.Errorf("extplugin: send ConnInit: %w", err)
@@ -441,36 +459,20 @@ const streamCapBytesForLog = 1024
 // the action map as the facet payload — plugins don't need to
 // double-emit via Conn.Emit.
 func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
-	verdict := &pb.ActionVerdict{CallId: ev.CallId}
-
-	// Decode the action payload into a map so it can both feed the
-	// CEL activation and ride along on the audit event.
-	var action map[string]any
-	if len(ev.ActionJson) > 0 {
-		if err := json.Unmarshal(ev.ActionJson, &action); err != nil {
-			verdict.Action = "error"
-			verdict.Reason = fmt.Sprintf("malformed action_json: %v", err)
-			emitEvaluation(ch, ev, verdict, action)
-			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: verdict}})
-			return
-		}
-	}
-	if action == nil {
-		action = map[string]any{}
+	action, derr := decodeAction(ev.ActionJson)
+	if derr != nil {
+		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", derr)}
+		emitEvaluation(ch, ev.Summary, action, v)
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
+		return
 	}
 
-	// Look up the synthetic facet, if any. nil means the endpoint
-	// binds to a built-in facet (http / sql / k8s) — the plugin sent
-	// an action shaped to that facet's variables and the adapter
-	// maps it onto the typed match.Request fields the built-in
-	// matcher reads, instead of stashing the action in Meta.
+	// Stream pulling (frame path only — the HostControl path carries the
+	// action inline): for each stream field present in ev.Streams, pull
+	// bytes until cap or EOF, cancel, and fold the bytes into the action
+	// map. For plugin facets the cap honours per-rule reference detection;
+	// for built-in facets we use the larger cap unconditionally.
 	pf := facetFor(ch.Endpoint.Family)
-
-	// Stream pulling: for each stream field present in ev.Streams,
-	// pull bytes until cap or EOF, then cancel. For plugin facets
-	// the cap honours per-rule reference detection; for built-in
-	// facets we use the larger cap unconditionally (rules attached
-	// to built-in matchers don't expose a SubFieldReferencer yet).
 	var truncated bool
 	streamBytes := map[string][]byte{}
 	if len(ev.Streams) > 0 {
@@ -490,19 +492,53 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			if hit {
 				truncated = true
 			}
-			// Always cancel after we've taken what we need so the
-			// plugin can release its source. Safe even if the stream
-			// already eof-ed; the SDK ignores cancels for handles
-			// it has already dropped.
+			// Always cancel after we've taken what we need so the plugin can
+			// release its source. Safe even if the stream already eof-ed.
 			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamCancel{StreamCancel: &pb.StreamCancel{Handle: handle}}})
 			streamBytes[fieldName] = data
 			action[fieldName] = string(data)
 		}
 	}
 
-	// Optional-field zero-fill so rule conditions can reference
-	// declared fields without `has()` guards. Plugin facets only —
-	// built-in facets have their own contract.
+	v := evaluateDecoded(ch, ev.Summary, action, streamBytes, truncated)
+	emitEvaluation(ch, ev.Summary, action, v)
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
+}
+
+// decodeAction unmarshals an action payload into a map. An empty payload is
+// an empty map; malformed JSON is an error the caller reports as a verdict.
+func decodeAction(b []byte) (map[string]any, error) {
+	action := map[string]any{}
+	if len(b) > 0 {
+		if err := json.Unmarshal(b, &action); err != nil {
+			return map[string]any{}, err
+		}
+	}
+	return action, nil
+}
+
+func actionVerdict(callID string, v Verdict) *pb.ActionVerdict {
+	return &pb.ActionVerdict{CallId: callID, Action: v.Action, Reason: v.Reason, Rule: v.Rule}
+}
+
+// evaluateDecoded runs one decoded action through the connection's matcher
+// and approve chain and returns the verdict. It is the single source of
+// truth shared by the EvaluateAction frame handler and the HostControl
+// session closure, so both produce identical verdicts. streamBytes carries
+// any FACET_STREAM bytes the frame pulled (nil for the inline HostControl
+// path); truncated marks a capped stream so stream-typed facet fields fail
+// closed.
+func evaluateDecoded(ch *runtime.ConnHandle, summary string, action map[string]any, streamBytes map[string][]byte, truncated bool) Verdict {
+	// Look up the synthetic facet, if any. nil means the endpoint binds to
+	// a built-in facet (http / sql / k8s) — the action is shaped to that
+	// facet's variables and builtinRequestFor maps it onto the typed
+	// match.Request the built-in matcher reads instead of stashing it in
+	// Meta.
+	pf := facetFor(ch.Endpoint.Family)
+
+	// Optional-field zero-fill so rule conditions can reference declared
+	// fields without has() guards. Plugin facets only — built-in facets
+	// have their own contract.
 	if pf != nil {
 		for field := range pf.optionalFields {
 			if _, present := action[field]; present && action[field] != nil {
@@ -512,87 +548,93 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 		}
 	}
 
-	// Build a match.Request rich enough for the matcher AND for the
-	// HITL prompt fields a human approver might render. Truncated
-	// is set when at least one stream field hit its cap before
-	// EOF — the matcher then marks stream-typed fields CEL-unknown
-	// and any rule whose outcome depends on one is denied.
 	var req *match.Request
 	if pf != nil {
 		req = &match.Request{
 			Family:    ch.Endpoint.Family,
 			PeerIP:    ch.PeerIP,
 			Method:    stringField(action, "verb"),
-			URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
+			URL:       &url.URL{Host: ch.UpstreamHost, Path: summary},
 			Meta:      action,
 			Truncated: truncated,
 		}
 	} else {
-		req = builtinRequestFor(ch.Endpoint.Family, ch.PeerIP, ev.Summary, action, streamBytes)
+		req = builtinRequestFor(ch.Endpoint.Family, ch.PeerIP, summary, action, streamBytes)
 		req.Truncated = truncated
 	}
 
 	rule := runtime.MatchRequest(ch.Endpoint, req)
+	var v Verdict
 	switch {
 	case rule == nil:
-		// No rule matched — gateway's default-deny.
-		verdict.Action = "deny"
-		verdict.Reason = "no rule matched"
+		v.Action, v.Reason = "deny", "no rule matched"
 	case len(rule.Outcome.Approve) > 0:
 		if ch.Approve == nil {
-			verdict.Action = "deny"
-			verdict.Reason = "rule requires approval but host has no approver wired"
-			verdict.Rule = rule.Name
+			v.Action, v.Reason, v.Rule = "deny", "rule requires approval but host has no approver wired", rule.Name
 			break
 		}
-		v := ch.Approve(runtime.ApproveCallRequest{
+		av := ch.Approve(runtime.ApproveCallRequest{
 			Stages:  rule.Outcome.Approve,
 			Verb:    stringField(action, "verb"),
-			Summary: ev.Summary,
+			Summary: summary,
 			Rule:    rule,
 		})
-		verdict.Rule = rule.Name
-		verdict.Reason = v.Reason
-		switch v.Decision {
+		v.Rule, v.Reason = rule.Name, av.Reason
+		switch av.Decision {
 		case "allow":
-			verdict.Action = "hitl_allow"
+			v.Action = "hitl_allow"
 		case "deny":
-			verdict.Action = "hitl_deny"
+			v.Action = "hitl_deny"
 		default:
-			verdict.Action = "hitl_deny"
-			if v.Reason == "" {
-				verdict.Reason = "approver returned no decision"
+			v.Action = "hitl_deny"
+			if av.Reason == "" {
+				v.Reason = "approver returned no decision"
 			}
 		}
 	default:
-		verdict.Rule = rule.Name
+		v.Rule = rule.Name
 		if rule.Outcome.Verdict == "deny" {
-			verdict.Action = "deny"
+			v.Action = "deny"
 		} else {
-			verdict.Action = "allow"
+			v.Action = "allow"
 		}
-		verdict.Reason = rule.Outcome.Reason
+		v.Reason = rule.Outcome.Reason
 	}
+	return v
+}
 
-	emitEvaluation(ch, ev, verdict, action)
-	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: verdict}})
+// evaluateInline runs one inline action (no stream-valued fields, the
+// HostControl path) through the connection's matcher, emits the audit
+// event, and returns the verdict. The frame analogue is handleEvaluate; a
+// malformed payload becomes an "error" verdict here too, not a transport
+// error.
+func evaluateInline(ch *runtime.ConnHandle, summary string, actionJSON []byte) Verdict {
+	action, err := decodeAction(actionJSON)
+	if err != nil {
+		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", err)}
+		emitEvaluation(ch, summary, action, v)
+		return v
+	}
+	v := evaluateDecoded(ch, summary, action, nil, false)
+	emitEvaluation(ch, summary, action, v)
+	return v
 }
 
 // emitEvaluation logs one EvaluateAction onto the gateway event
 // sink so the action shows up on the dashboard alongside built-in
 // facet events. Verb / Summary are pulled from the action so the
 // log line is human-readable; the action map rides as Facets.
-func emitEvaluation(ch *runtime.ConnHandle, ev *pb.EvaluateAction, verdict *pb.ActionVerdict, action map[string]any) {
+func emitEvaluation(ch *runtime.ConnHandle, summary string, action map[string]any, v Verdict) {
 	if ch.Emit == nil {
 		return
 	}
 	ch.Emit(runtime.ConnEvent{
-		Action:  verdict.Action,
-		Reason:  verdict.Reason,
+		Action:  v.Action,
+		Reason:  v.Reason,
 		Verb:    stringField(action, "verb"),
-		Summary: ev.Summary,
+		Summary: summary,
 		Facets:  action,
-		Rule:    verdict.Rule,
+		Rule:    v.Rule,
 	})
 }
 

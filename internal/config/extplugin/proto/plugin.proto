@@ -555,6 +555,13 @@ message ConnInit {
   // false (they silently drop unknown frames); the SDK fails
   // Conn.DialUpstream fast instead of hanging.
   bool supports_dial_upstream = 15;
+
+  // session_token scopes this connection's calls to the gateway's
+  // host-served HostControl service (Evaluate, and later Decide/Dial). The
+  // gateway mints it per connection, registers the connection's evaluation
+  // context under it, and the plugin echoes it back as HostControl request
+  // metadata.
+  string session_token = 17;
 }
 
 // BoundCredential is one credential bound to a plugin endpoint. The same
@@ -691,3 +698,41 @@ message StatePutRequest {
 }
 
 message StatePutResponse {}
+
+// HostControl is the gateway's host-served control plane for plugin->host
+// calls: the gateway serves it over the go-plugin broker (next to
+// HostState) and a plugin calls it. Each plugin->gateway callback is an
+// ordinary gRPC method, so gRPC correlates the reply and the hand-rolled
+// call_id/dial_id inflight maps that ride inside HandleConn disappear. It
+// grows by adding methods (Dial, HITL Decide), not new frames.
+//
+// Every call is scoped to one connection's evaluation context by the
+// opaque session_token the gateway issued in that connection's ConnInit.
+// The token rides in gRPC METADATA (key "clawpatrol-session"), not in the
+// message — session scope is cross-cutting, so a server interceptor
+// resolves it once and every method is scoped without repeating the field.
+// A forged / expired / removed token is rejected before the handler runs.
+service HostControl {
+  // Evaluate runs the gateway's rule + approve chain for one action and
+  // returns the verdict. The host-served replacement for the
+  // EvaluateAction / ActionVerdict frames (and the inflight call_id map on
+  // both sides of HandleConn). Stream-valued facet fields still use the
+  // frame; inline actions use this.
+  rpc Evaluate(EvaluateRequest) returns (EvaluateVerdict);
+}
+
+message EvaluateRequest {
+  // facet_name is the namespaced facet the action conforms to.
+  string facet_name = 1;
+  // action_json is the facet payload (the same bytes EvaluateAction
+  // carries today).
+  bytes action_json = 2;
+  string summary = 3;
+  // NB: the session token is carried in request metadata, not here.
+}
+
+message EvaluateVerdict {
+  string action = 1; // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+  string reason = 2;
+  string rule = 3;
+}

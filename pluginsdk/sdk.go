@@ -490,6 +490,12 @@ type Conn struct {
 	// set it is nil (read the singular fields instead).
 	Credentials []ConnCredential
 
+	// SessionToken scopes this connection's calls to the gateway's
+	// host-served HostControl service. The SDK threads it into
+	// Conn.Evaluate automatically (as request metadata); plugin authors
+	// don't use it directly.
+	SessionToken string
+
 	TunnelTypeName string
 	TunnelInstance string
 

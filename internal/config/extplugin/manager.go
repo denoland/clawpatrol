@@ -272,9 +272,18 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 	// lazily per call, so it works even though the gateway's blob store is
 	// wired only after the first config load. The gateway serves it over
 	// the broker; the plugin dials it.
+	// For a real load (a state namespace is given; throwaway probes pass
+	// ""), wire the per-plugin HostState + HostControl services. The session
+	// registry is shared between the broker server that serves HostControl
+	// (gc) and the adapter that registers a session per connection (c);
+	// HandleConn populates it. Probes never handle connections, so they get
+	// neither service (no idle broker goroutine).
 	gc := &grpcClient{}
+	var sessions *sessionRegistry
 	if stateNS != "" {
 		gc.hostState = newHostState(m.blobStore, stateNS)
+		sessions = newSessionRegistry()
+		gc.sessions = sessions
 	}
 	cli := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
@@ -297,6 +306,7 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 		network:        spec.Network,
 		socketDir:      spec.SocketDir,
 		gp:             cli,
+		sessions:       sessions,
 	}
 	rpcCli, err := cli.Client()
 	if err != nil {
@@ -965,6 +975,12 @@ type Client struct {
 	credential pb.CredentialClient
 	endpoint   pb.EndpointClient
 	tunnel     pb.TunnelClient
+	// sessions maps a per-connection HostControl session token to the
+	// connection's evaluation context. HandleConn registers a session and
+	// removes it when the connection ends; the broker-served HostControl
+	// resolves Evaluate calls against it. Shared with the grpcClient that
+	// serves the bundle.
+	sessions *sessionRegistry
 }
 
 // SandboxMode reports which sandbox backend the subprocess runs
@@ -1018,6 +1034,7 @@ func (c *Client) TunnelRPC() pb.TunnelClient { return c.tunnel }
 type grpcClient struct {
 	plugin.NetRPCUnsupportedPlugin
 	hostState pb.HostStateServer // nil = state service disabled
+	sessions  *sessionRegistry   // nil = HostControl disabled (probe path)
 }
 
 func (g *grpcClient) GRPCServer(_ *plugin.GRPCBroker, _ *grpc.Server) error {
@@ -1025,18 +1042,31 @@ func (g *grpcClient) GRPCServer(_ *plugin.GRPCBroker, _ *grpc.Server) error {
 }
 
 func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	// Serve HostState on the reserved broker stream id. AcceptAndServe
-	// blocks until the plugin dials, so run it in the background; the
-	// plugin only dials lazily on its first State call. When the client
-	// tears down, the broker closes and AcceptAndServe returns.
-	if g.hostState != nil && broker != nil {
-		hs := g.hostState
-		go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
-			s := grpc.NewServer(opts...)
-			pb.RegisterHostStateServer(s, hs)
-			return s
-		})
+	// Serve the host-side services (HostState + HostControl) on the reserved
+	// broker stream id. AcceptAndServe blocks until the plugin dials, so run
+	// it in the background; the plugin only dials lazily on its first call.
+	// When the client tears down, the broker closes and AcceptAndServe
+	// returns.
+	if broker == nil || (g.hostState == nil && g.sessions == nil) {
+		return conn, nil
 	}
+	hs, sessions := g.hostState, g.sessions
+	go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
+		// HostControl calls are session-scoped via metadata; the interceptor
+		// resolves the token once. HostState carries no token and passes
+		// through (the interceptor only acts on a present token).
+		if sessions != nil {
+			opts = append(opts, grpc.ChainUnaryInterceptor(sessionUnaryInterceptor(sessions)))
+		}
+		s := grpc.NewServer(opts...)
+		if hs != nil {
+			pb.RegisterHostStateServer(s, hs)
+		}
+		if sessions != nil {
+			pb.RegisterHostControlServer(s, hostControl{})
+		}
+		return s
+	})
 	return conn, nil
 }
 
