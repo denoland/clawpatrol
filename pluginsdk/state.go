@@ -8,6 +8,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/hashicorp/go-plugin"
+	"google.golang.org/grpc"
 )
 
 // StateStore is the handle to the gateway's per-plugin persistent byte
@@ -66,9 +67,13 @@ var (
 	hostBrokerMu sync.Mutex
 	hostBroker   *plugin.GRPCBroker
 
-	hostStateOnce sync.Once
-	hostStateCli  pb.HostStateClient
-	hostStateErr  error
+	// The gateway serves HostState and HostControl on one broker stream
+	// (HostServicesBrokerID), so the plugin dials it once and builds both
+	// stubs over the single connection — AcceptAndServe accepts that id
+	// only once.
+	hostConnOnce sync.Once
+	hostConn     *grpc.ClientConn
+	hostConnErr  error
 )
 
 func setHostBroker(b *plugin.GRPCBroker) {
@@ -77,25 +82,36 @@ func setHostBroker(b *plugin.GRPCBroker) {
 	hostBrokerMu.Unlock()
 }
 
-// hostStateClient lazily dials the gateway's HostState service over the
-// broker and caches the client. It errors when the plugin is running
-// without a gateway broker (a unit test, or an old gateway), so plugin
-// code can degrade gracefully.
-func hostStateClient() (pb.HostStateClient, error) {
-	hostStateOnce.Do(func() {
+// hostServicesConn lazily dials the gateway's host-services broker stream
+// and caches the connection. It errors when the plugin is running without a
+// gateway broker (a unit test, or an old gateway), so plugin code can
+// degrade gracefully.
+func hostServicesConn() (*grpc.ClientConn, error) {
+	hostConnOnce.Do(func() {
 		hostBrokerMu.Lock()
 		b := hostBroker
 		hostBrokerMu.Unlock()
 		if b == nil {
-			hostStateErr = errors.New("pluginsdk: state service unavailable (no gateway broker)")
+			hostConnErr = errors.New("pluginsdk: host services unavailable (no gateway broker)")
 			return
 		}
-		conn, err := b.Dial(extplugin.HostServicesBrokerID)
-		if err != nil {
-			hostStateErr = err
-			return
-		}
-		hostStateCli = pb.NewHostStateClient(conn)
+		hostConn, hostConnErr = b.Dial(extplugin.HostServicesBrokerID)
 	})
-	return hostStateCli, hostStateErr
+	return hostConn, hostConnErr
+}
+
+func hostStateClient() (pb.HostStateClient, error) {
+	c, err := hostServicesConn()
+	if err != nil {
+		return nil, err
+	}
+	return pb.NewHostStateClient(c), nil
+}
+
+func hostControlClient() (pb.HostControlClient, error) {
+	c, err := hostServicesConn()
+	if err != nil {
+		return nil, err
+	}
+	return pb.NewHostControlClient(c), nil
 }

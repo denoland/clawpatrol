@@ -65,9 +65,9 @@ func TestStateBrokerRoundTrip(t *testing.T) {
 	// because this is the single test that exercises State(): it runs
 	// before any broker goroutine of its own starts, and no other test in
 	// the package touches these globals concurrently.
-	hostStateOnce = sync.Once{}
-	hostStateCli = nil
-	hostStateErr = nil
+	hostConnOnce = sync.Once{}
+	hostConn = nil
+	hostConnErr = nil
 	setHostBroker(nil)
 
 	host := &brokerTestHostState{m: map[string][]byte{}}

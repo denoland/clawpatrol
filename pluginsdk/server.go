@@ -17,6 +17,7 @@ import (
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -490,6 +491,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		CredentialExtras:          in.CredentialExtras,
 		CredentialCanonicalConfig: in.CredentialCanonicalJson,
 		Credentials:               connCredentialsFromProto(in.Credentials),
+		SessionToken:              in.SessionToken,
 		TunnelTypeName:            in.TunnelTypeName,
 		TunnelInstance:            in.TunnelInstance,
 	}
@@ -575,6 +577,26 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		if err != nil {
 			return Verdict{}, fmt.Errorf("pluginsdk: marshal action: %w", err)
 		}
+
+		// Inline actions go over the host control plane: one gRPC call, gRPC
+		// correlates the reply, no call_id and no inflight map. Only
+		// stream-valued fields keep the legacy frame (HostControl.Evaluate
+		// carries no stream handles). The gateway always serves HostControl
+		// and issues a session token, so there is no fallback for its
+		// absence.
+		if streamHandles == nil {
+			cli, err := hostControlClient()
+			if err != nil {
+				return Verdict{}, fmt.Errorf("pluginsdk: host control plane: %w", err)
+			}
+			mctx := metadata.AppendToOutgoingContext(ctx, extplugin.SessionMetadataKey, conn.SessionToken)
+			v, err := cli.Evaluate(mctx, &pb.EvaluateRequest{FacetName: facet, ActionJson: j, Summary: summary})
+			if err != nil {
+				return Verdict{}, fmt.Errorf("pluginsdk: HostControl.Evaluate: %w", err)
+			}
+			return Verdict{Action: v.Action, Reason: v.Reason, Rule: v.Rule}, nil
+		}
+
 		callID := fmt.Sprintf("c%d", callSeq.Add(1))
 		ch := make(chan *pb.ActionVerdict, 1)
 		inflightMu.Lock()
