@@ -31,15 +31,16 @@ func attrMap(kvs []attribute.KeyValue) map[string]attribute.Value {
 func TestEmitGenAISpanAttributesNoContent(t *testing.T) {
 	sr, tp := newRecordingTracer(t)
 	turn := genAITurn{
-		System:        "anthropic",
-		Operation:     "chat",
-		RequestModel:  "claude-3-5-sonnet-20241022",
-		ResponseModel: "claude-3-5-sonnet-20241022",
-		InputTokens:   42,
-		OutputTokens:  17,
-		FinishReason:  "end_turn",
-		Messages:      []genAIMessage{{Role: "user", Content: "secret prompt"}},
-		Completion:    "secret completion",
+		System:         "anthropic",
+		Operation:      "chat",
+		ConversationID: "s_abc123",
+		RequestModel:   "claude-3-5-sonnet-20241022",
+		ResponseModel:  "claude-3-5-sonnet-20241022",
+		InputTokens:    42,
+		OutputTokens:   17,
+		FinishReason:   "end_turn",
+		Messages:       []genAIMessage{{Role: "user", Content: "secret prompt"}},
+		Completion:     "secret completion",
 	}
 	emitGenAISpan(tp.Tracer("test"), turn, false)
 
@@ -57,6 +58,9 @@ func TestEmitGenAISpanAttributesNoContent(t *testing.T) {
 	}
 	if m["gen_ai.operation.name"].AsString() != "chat" {
 		t.Errorf("gen_ai.operation.name = %q", m["gen_ai.operation.name"].AsString())
+	}
+	if m["gen_ai.conversation.id"].AsString() != "s_abc123" {
+		t.Errorf("gen_ai.conversation.id = %q, want s_abc123", m["gen_ai.conversation.id"].AsString())
 	}
 	if m["gen_ai.request.model"].AsString() != "claude-3-5-sonnet-20241022" {
 		t.Errorf("gen_ai.request.model = %q", m["gen_ai.request.model"].AsString())
@@ -225,7 +229,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 1, 2,
+	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 1, 2,
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"yo"}]}`),
 		time.Time{})
@@ -255,7 +259,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"secret"}]}`),
 		time.Time{})
@@ -267,6 +271,9 @@ gateway {
 	m := attrMap(spans[0].Attributes())
 	if m["gen_ai.system"].AsString() != "anthropic" {
 		t.Errorf("gen_ai.system = %q", m["gen_ai.system"].AsString())
+	}
+	if m["gen_ai.conversation.id"].AsString() != "s_abc123" {
+		t.Errorf("gen_ai.conversation.id = %q, want s_abc123", m["gen_ai.conversation.id"].AsString())
 	}
 	if got := m["gen_ai.usage.input_tokens"].AsInt64(); got != 10 {
 		t.Errorf("input_tokens = %d, want 10", got)
@@ -301,7 +308,7 @@ gateway {
 	g := &Gateway{}
 	g.cfg.Store(gw)
 
-	g.recordGenAITurn("anthropic", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+	g.recordGenAITurn("anthropic", "s_abc123", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"system":"be terse","messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"hello back"}]}`),
 		time.Time{})

@@ -1,8 +1,9 @@
 // OpenTelemetry GenAI semantic-convention export for intercepted LLM
 // turns. Targets the GenAI semantic conventions
 // (https://opentelemetry.io/docs/specs/semconv/gen-ai/): one span per
-// model invocation carrying gen_ai.* attributes (system, models, token
-// usage, finish reason) and — only when the operator opts in — the
+// model invocation carrying gen_ai.* attributes (system, conversation
+// id, models, token usage, finish reason) and — only when the operator
+// opts in — the
 // prompt/completion message content as the gen_ai.input.messages /
 // gen_ai.output.messages / gen_ai.system_instructions span attributes.
 //
@@ -51,13 +52,14 @@ type genAIChatMessage struct {
 // genAITurn is one intercepted LLM request/response mapped to OTel
 // GenAI semantic-convention terms.
 type genAITurn struct {
-	System        string // gen_ai.system: "anthropic" | "openai"
-	Operation     string // gen_ai.operation.name: "chat"
-	RequestModel  string // gen_ai.request.model
-	ResponseModel string // gen_ai.response.model
-	InputTokens   int64  // gen_ai.usage.input_tokens
-	OutputTokens  int64  // gen_ai.usage.output_tokens
-	FinishReason  string // gen_ai.response.finish_reasons[0]
+	System         string // gen_ai.system: "anthropic" | "openai"
+	Operation      string // gen_ai.operation.name: "chat"
+	ConversationID string // gen_ai.conversation.id: correlates a multi-turn session
+	RequestModel   string // gen_ai.request.model
+	ResponseModel  string // gen_ai.response.model
+	InputTokens    int64  // gen_ai.usage.input_tokens
+	OutputTokens   int64  // gen_ai.usage.output_tokens
+	FinishReason   string // gen_ai.response.finish_reasons[0]
 
 	// Start, when non-zero, sets the span start time so its duration
 	// reflects the real upstream round-trip latency. Zero → span is
@@ -94,6 +96,9 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	attrs := []attribute.KeyValue{
 		attribute.String("gen_ai.system", t.System),
 		attribute.String("gen_ai.operation.name", t.Operation),
+	}
+	if t.ConversationID != "" {
+		attrs = append(attrs, attribute.String("gen_ai.conversation.id", t.ConversationID))
 	}
 	if t.RequestModel != "" {
 		attrs = append(attrs, attribute.String("gen_ai.request.model", t.RequestModel))
@@ -174,10 +179,12 @@ func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
 
 // recordGenAITurn emits a GenAI span for a completed LLM turn when the
 // feature is enabled and the trace exporter is live. system is the
-// gen_ai.system value ("anthropic"/"openai"). Content is parsed from
-// the bodies only when content capture is opted in, so the disabled and
-// no-content paths stay cheap.
-func (g *Gateway) recordGenAITurn(system, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time) {
+// gen_ai.system value ("anthropic"/"openai"); convID is the session
+// correlation key emitted as gen_ai.conversation.id (empty when the turn
+// carries no session info). Content is parsed from the bodies only when
+// content capture is opted in, so the disabled and no-content paths stay
+// cheap.
+func (g *Gateway) recordGenAITurn(system, convID, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time) {
 	cfg := g.cfg.Load()
 	if genaiTracer == nil || !cfg.GenAITelemetryEnabled() {
 		return
@@ -192,13 +199,14 @@ func (g *Gateway) recordGenAITurn(system, reqModel, respModel string, in, out in
 		return
 	}
 	turn := genAITurn{
-		System:        system,
-		Operation:     "chat",
-		RequestModel:  model,
-		ResponseModel: respModel,
-		InputTokens:   in,
-		OutputTokens:  out,
-		Start:         start,
+		System:         system,
+		Operation:      "chat",
+		ConversationID: convID,
+		RequestModel:   model,
+		ResponseModel:  respModel,
+		InputTokens:    in,
+		OutputTokens:   out,
+		Start:          start,
 	}
 	includeContent := cfg.GenAITelemetryIncludeContent()
 	if system == "anthropic" {
