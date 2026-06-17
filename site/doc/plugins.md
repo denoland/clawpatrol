@@ -733,6 +733,38 @@ Rules attached to this endpoint are written exactly the way they
 would be against any in-process HTTPS endpoint:
 `http.method == "POST"`, `http.body.contains("…")`, etc.
 
+The same applies to **SQL** endpoints. An endpoint that terminates a SQL
+wire protocol (postgres, mysql, clickhouse, …) sets `Family: "sql"`,
+parses each statement itself, and sends the coarse fields the built-in
+`sql` facet exposes — `verb`, `tables`, `functions`, `database`, and
+`statement` (which may be a `pluginsdk.Stream` for large queries):
+
+```go
+endpoint := pluginsdk.EndpointDef{
+    TypeName: "example_sql",
+    Family:   "sql", // bind to the built-in sql facet
+    TLSMode:  pluginsdk.TLSTerminate,
+    HandleConn: func(ctx context.Context, conn *pluginsdk.Conn) error {
+        // ... parse one statement from the wire ...
+        verdict, _ := conn.Evaluate(ctx, "sql", map[string]any{
+            "verb":      "delete",
+            "tables":    []string{"tokens"},
+            "functions": []string{},
+            "database":  db,
+            "statement": pluginsdk.Stream(strings.NewReader(stmt)),
+        }, stmt)
+        // ... act on verdict ...
+    },
+}
+```
+
+Operators then reuse their existing `sql.*` rules verbatim —
+`sql.verb == "delete"`, `sets.intersects(sql.tables, ["secrets"])`,
+`sql.statement.contains("DROP")` — across any SQL plugin. `sql` is the
+one shared built-in family exposed for opt-in (SQL has many engines that
+benefit from a portable coarse guardrail); `k8s`, `ssh`, and bespoke
+protocols use a plugin-declared facet instead.
+
 ### Persistent state
 
 A sandboxed plugin has no writable filesystem of its own. When a plugin
