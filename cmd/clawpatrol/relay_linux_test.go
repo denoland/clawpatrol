@@ -356,6 +356,47 @@ func TestLoopbackRedirectRuleArgs(t *testing.T) {
 	}
 }
 
+// TestLoopbackRedirectDeleteArgs asserts the teardown args are the install
+// args with -A swapped for -D (iptables -D matches on the full spec), and
+// that deriving them does not perturb a fresh install-args slice.
+func TestLoopbackRedirectDeleteArgs(t *testing.T) {
+	const fwdPort uint16 = 41234
+	got := loopbackRedirectDeleteArgs(fwdPort)
+	want := [][]string{
+		{"-t", "nat", "-D", "OUTPUT", "-m", "mark", "--mark", "0xc1aa/0xc1aa", "-j", "RETURN"},
+		{"-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8",
+			"-m", "tcp", "!", "--dport", "41234", "-j", "REDIRECT", "--to-ports", "41234"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loopbackRedirectDeleteArgs(%d) =\n  %#v\nwant\n  %#v", fwdPort, got, want)
+	}
+	// A freshly-built install slice must still say -A (no shared backing).
+	if loopbackRedirectRuleArgs(fwdPort)[0][2] != "-A" {
+		t.Fatalf("loopbackRedirectRuleArgs mutated to %q; delete-args must not share backing", loopbackRedirectRuleArgs(fwdPort)[0][2])
+	}
+
+	// Invariant, independent of the literals above: the delete args are the
+	// install args verbatim except every -A becomes -D. This catches a
+	// future rule added to the install set whose teardown would otherwise be
+	// silently forgotten — iptables -D must remove exactly what -A added.
+	install := loopbackRedirectRuleArgs(fwdPort)
+	del := loopbackRedirectDeleteArgs(fwdPort)
+	if len(del) != len(install) {
+		t.Fatalf("delete args cover %d rules, install covers %d", len(del), len(install))
+	}
+	for i := range install {
+		swapped := append([]string(nil), install[i]...)
+		for j, tok := range swapped {
+			if tok == "-A" {
+				swapped[j] = "-D"
+			}
+		}
+		if !reflect.DeepEqual(del[i], swapped) {
+			t.Errorf("rule %d delete args %v are not install args modulo -A->-D (%v)", i, del[i], swapped)
+		}
+	}
+}
+
 // TestWorkerPIDFrameRoundTrip exercises the sendWorkerPID/recvWorkerPID
 // path over a SOCK_SEQPACKET socketpair: the supervisor reads the
 // worker's PID off the loopback sock before entering its main loop, and
