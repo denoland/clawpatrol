@@ -228,6 +228,16 @@ func runRelaySupervisor(_ []string) {
 		fail("relay-supervisor: expected fds 3,4,5 to be open")
 	}
 	notifyFD := int(notifyFile.Fd())
+	// notifyFile must outlive the notification loop below. We use the raw
+	// fd via ioctl (SECCOMP_IOCTL_NOTIF_RECV) rather than a RawConn, so
+	// nothing else holds a reference to the *os.File. Once it becomes
+	// unreachable its finalizer closes fd 3; the mirror/loopback goroutines
+	// then open sockets (net.Listen/net.Dial) that reuse the freed number,
+	// and the next NOTIF_RECV lands on a socket and fails with ENOTTY
+	// ("inappropriate ioctl for device"), killing the relay. Keep the file
+	// alive for the whole function — mirrors the RawConn protection the
+	// worker/lb socks get below.
+	defer runtime.KeepAlive(notifyFile)
 
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
