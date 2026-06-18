@@ -346,7 +346,16 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 		New:  func() any { return &dynamicTunnelBody{adapter: adapter} },
 		DecodeBody: func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics {
 			b := target.(*dynamicTunnelBody)
-			val, d := hcldec.Decode(body, spec, ctx)
+			// Peel the framework-level tunnel attrs (via / share / keepalive
+			// / credential) before the schema decode — the plugin's manifest
+			// schema doesn't know about them. TunnelCommon (on the body) hands
+			// them to compile, which resolves `via`/`credential` by name.
+			rest, d := decodeTunnelCommon(body, ctx, &b.common)
+			if d.HasErrors() {
+				return d
+			}
+			val, dd := hcldec.Decode(rest, spec, ctx)
+			d = append(d, dd...)
 			if d.HasErrors() {
 				return d
 			}
@@ -384,6 +393,49 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 		return d
 	}
 	return nil
+}
+
+// decodeTunnelCommon peels the framework-level tunnel attrs (via, share,
+// keepalive, credential) off a plugin tunnel block, fills tc, and returns
+// the remainder body for the plugin's schema decode. via and credential
+// are bare-name references that evaluate to the referenced block's name;
+// the compile pass resolves them against the symbol table (and detects via
+// cycles), exactly as for a built-in tunnel. Tunnels skip the loader's
+// frameworkAttrsByKind extraction (it covers only endpoints/credentials),
+// so the plugin decode peels them here.
+func decodeTunnelCommon(body hcl.Body, ctx *hcl.EvalContext, tc *config.TunnelCommon) (hcl.Body, hcl.Diagnostics) {
+	schema := &hcl.BodySchema{Attributes: []hcl.AttributeSchema{
+		{Name: "via"}, {Name: "share"}, {Name: "keepalive"}, {Name: "credential"},
+	}}
+	content, remain, diags := body.PartialContent(schema)
+	for name, attr := range content.Attributes {
+		v, d := attr.Expr.Value(ctx)
+		diags = append(diags, d...)
+		if d.HasErrors() || v.IsNull() {
+			continue
+		}
+		if v.Type() != cty.String {
+			rng := attr.Expr.Range()
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid %s attribute", name),
+				Detail:   fmt.Sprintf("Expected a string or bare-name reference; got %s.", v.Type().FriendlyName()),
+				Subject:  &rng,
+			})
+			continue
+		}
+		switch name {
+		case "via":
+			tc.Via = v.AsString()
+		case "share":
+			tc.Share = v.AsString()
+		case "keepalive":
+			tc.Keepalive = v.AsString()
+		case "credential":
+			tc.Credential = v.AsString()
+		}
+	}
+	return remain, diags
 }
 
 // =====================================================================

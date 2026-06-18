@@ -879,7 +879,18 @@ type dynamicTunnelBody struct {
 	adapter       *tunnelAdapter
 	instanceName  string
 	canonicalJSON []byte
+	// common holds the framework-level tunnel attrs (via / share /
+	// keepalive / credential) the loader peeled from the HCL block before
+	// the plugin's schema decode. Exposed via TunnelCommon so the compile
+	// pass picks them up exactly like a built-in tunnel.
+	common config.TunnelCommon
 }
+
+// TunnelCommon hands the framework-level attrs (via / share / keepalive /
+// credential) to the compile pass, which resolves `via` and `credential`
+// by name against the symbol table. This is what makes `via = <tunnel>`
+// (and the share/keepalive knobs) work on a plugin tunnel block.
+func (b *dynamicTunnelBody) TunnelCommon() config.TunnelCommon { return b.common }
 
 // dynamicTunnelBody is the CompiledTunnel.Body for a plugin tunnel; it
 // implements runtime.TunnelRuntime by delegating to its adapter so the
