@@ -3,8 +3,8 @@
 // Build:   go build -o example ./pluginsdk/example
 // Run:     the gateway spawns the binary; not invoked directly.
 //
-// Provides one credential (magic_token), one tunnel (passthrough),
-// and three endpoints (demo_https, demo_smtp, demo_echo) covering
+// Provides one credential (magic_token), two tunnels (passthrough and
+// socks), and three endpoints (demo_https, demo_smtp, demo_echo) covering
 // HTTPS, TLS-but-not-HTTPS, and plain TCP respectively.
 package main
 
@@ -14,18 +14,19 @@ func main() {
 	pluginsdk.Run(&pluginsdk.Plugin{
 		Name:    "example",
 		Version: "0.1",
-		// The passthrough tunnel dials upstream itself, so the plugin
-		// declares it needs outbound network. The operator no longer
-		// writes network = "outbound" in the HCL; the gateway records
-		// this on first load.
+		// Every type here reaches the network only through the gateway's
+		// brokered dial (endpoints via Conn.DialUpstream, tunnels via the
+		// transport DialUpstream), so the plugin needs no network of its
+		// own.
 		Capabilities: pluginsdk.Capabilities{
-			Network: pluginsdk.NetworkOutbound,
+			Network: pluginsdk.NetworkNone,
 		},
 		Credentials: []pluginsdk.CredentialDef{
 			magicTokenDef(),
 		},
 		Tunnels: []pluginsdk.TunnelDef{
 			passthroughDef(),
+			socksDef(),
 		},
 		Endpoints: []pluginsdk.EndpointDef{
 			demoHTTPSDef(),

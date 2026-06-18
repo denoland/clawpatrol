@@ -63,7 +63,15 @@ var buildSharedExamplePlugin = func() func(t *testing.T) string {
 // collide. The manager dedups by plugin name, so reusing it across
 // loads re-registers nothing.
 var sharedExampleManager = sync.OnceValue(func() *extplugin.Manager {
-	return extplugin.New(nil)
+	m := extplugin.New(nil)
+	// A tunnel plugin (e.g. example_socks) opens its transport through the
+	// gateway's brokered dial; with no `via` the gateway dials directly.
+	// Wire it here, before any test spawns the plugin, so the dialer is
+	// captured at spawn regardless of test order. Inert for endpoint tests.
+	m.SetTransportDialer(func(network, addr string) (net.Conn, error) {
+		return net.Dial(network, addr)
+	})
+	return m
 })
 
 // loadDemoPluginPolicy loads a config wired to the real example plugin
@@ -78,9 +86,9 @@ func loadDemoPluginPolicy(t *testing.T, dialList string) *config.CompiledPolicy 
 	t.Cleanup(func() { config.SetPluginLoader(nil) })
 
 	gw, diags := config.LoadBytes([]byte(fmt.Sprintf(`
-// Force network = "none" (operator override) so this exercises the
-// brokered dial with no plugin-side network, even though the example
-// plugin's manifest declares outbound for its passthrough tunnel.
+// network = "none": the example plugin reaches the network only through
+// the gateway's brokered dial, so this exercises that path with no
+// plugin-side network.
 plugin "example" {
   source  = %q
   network = "none"
