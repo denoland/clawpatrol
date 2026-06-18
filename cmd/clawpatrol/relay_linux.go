@@ -178,29 +178,48 @@ type seccompNotifResp struct {
 	Flags uint32
 }
 
-func notifRecv(fd int) (*seccompNotif, error) {
-	var n seccompNotif
-	_, _, e := unix.Syscall(unix.SYS_IOCTL,
-		uintptr(fd),
-		uintptr(unix.SECCOMP_IOCTL_NOTIF_RECV),
-		uintptr(unsafe.Pointer(&n)))
-	if e != 0 {
-		return nil, e
+// notifRecv issues SECCOMP_IOCTL_NOTIF_RECV on the notify fd carried by
+// rc. Running the ioctl inside rc.Read keeps the underlying *os.File
+// reachable for the syscall's duration (see runRelaySupervisor), so GC
+// can't finalize it and close the fd. The fd is blocking, so the ioctl
+// blocks here until a notification arrives; the errno (EINTR/EAGAIN/
+// ENOENT/…) is surfaced to the caller, which decides whether to retry.
+func notifRecv(rc syscall.RawConn) (*seccompNotif, error) {
+	var (
+		n   seccompNotif
+		ioe syscall.Errno
+	)
+	if err := rc.Read(func(fd uintptr) bool {
+		_, _, ioe = unix.Syscall(unix.SYS_IOCTL,
+			fd,
+			uintptr(unix.SECCOMP_IOCTL_NOTIF_RECV),
+			uintptr(unsafe.Pointer(&n)))
+		return true
+	}); err != nil {
+		return nil, err
+	}
+	if ioe != 0 {
+		return nil, ioe
 	}
 	return &n, nil
 }
 
-func notifSendContinue(fd int, id uint64) error {
+func notifSendContinue(rc syscall.RawConn, id uint64) error {
 	r := seccompNotifResp{
 		ID:    id,
 		Flags: unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE,
 	}
-	_, _, e := unix.Syscall(unix.SYS_IOCTL,
-		uintptr(fd),
-		uintptr(unix.SECCOMP_IOCTL_NOTIF_SEND),
-		uintptr(unsafe.Pointer(&r)))
-	if e != 0 {
-		return e
+	var ioe syscall.Errno
+	if err := rc.Control(func(fd uintptr) {
+		_, _, ioe = unix.Syscall(unix.SYS_IOCTL,
+			fd,
+			uintptr(unix.SECCOMP_IOCTL_NOTIF_SEND),
+			uintptr(unsafe.Pointer(&r)))
+	}); err != nil {
+		return err
+	}
+	if ioe != 0 {
+		return ioe
 	}
 	return nil
 }
@@ -227,17 +246,21 @@ func runRelaySupervisor(_ []string) {
 	if notifyFile == nil || workerSock == nil || lbSock == nil {
 		fail("relay-supervisor: expected fds 3,4,5 to be open")
 	}
-	notifyFD := int(notifyFile.Fd())
-	// notifyFile must outlive the notification loop below. We use the raw
-	// fd via ioctl (SECCOMP_IOCTL_NOTIF_RECV) rather than a RawConn, so
-	// nothing else holds a reference to the *os.File. Once it becomes
-	// unreachable its finalizer closes fd 3; the mirror/loopback goroutines
-	// then open sockets (net.Listen/net.Dial) that reuse the freed number,
-	// and the next NOTIF_RECV lands on a socket and fails with ENOTTY
-	// ("inappropriate ioctl for device"), killing the relay. Keep the file
-	// alive for the whole function — mirrors the RawConn protection the
-	// worker/lb socks get below.
-	defer runtime.KeepAlive(notifyFile)
+	// Drive the notify ioctls through a RawConn, the same way the worker
+	// and lb socks below are handled. RawConn retains a reference to the
+	// underlying *os.File, so GC can't finalize notifyFile and close fd 3
+	// mid-loop. Without that, once the loop stops touching the *os.File
+	// directly it becomes unreachable, its finalizer closes fd 3, the
+	// mirror/loopback goroutines' net.Listen/net.Dial reuse the freed
+	// number, and the next NOTIF_RECV lands on a socket and fails with
+	// ENOTTY ("inappropriate ioctl for device"), killing the relay. The
+	// notify fd stays blocking (it is not pollable here), so this buys
+	// liveness only — not poller integration — and the loop keeps its own
+	// EINTR/EAGAIN handling.
+	notifyRC, err := notifyFile.SyscallConn()
+	if err != nil {
+		fail("relay-supervisor: SyscallConn(seccomp-notify): %v", err)
+	}
 
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
@@ -280,7 +303,7 @@ func runRelaySupervisor(_ []string) {
 	}
 
 	for {
-		n, err := notifRecv(notifyFD)
+		n, err := notifRecv(notifyRC)
 		if err != nil {
 			// ENOENT = the filter has no remaining tasks. Normal shutdown.
 			if errors.Is(err, unix.ENOENT) {
@@ -308,12 +331,12 @@ func runRelaySupervisor(_ []string) {
 			if int(n.Pid) == workerPID {
 				// Our own host-loopback forwarder calls listen(); don't
 				// mirror it to the host.
-				_ = notifSendContinue(notifyFD, n.ID)
+				_ = notifSendContinue(notifyRC, n.ID)
 				continue
 			}
 			port, ip, family, perr := peekAgentListener(int(n.Pid), int(n.Data.Args[0]))
 			// Always reply CONTINUE first so the agent's listen() proceeds.
-			_ = notifSendContinue(notifyFD, n.ID)
+			_ = notifSendContinue(notifyRC, n.ID)
 
 			if perr != nil {
 				relayDebugf("[clawpatrol relay] inspect listen sockfd: %v\n", perr)
@@ -340,7 +363,7 @@ func runRelaySupervisor(_ []string) {
 			relayDebugf("[clawpatrol relay] auto-expose %s:%d → agent netns\n", host, port)
 			go acceptLoop(ln, port, workerRC)
 		} else {
-			_ = notifSendContinue(notifyFD, n.ID)
+			_ = notifSendContinue(notifyRC, n.ID)
 		}
 	}
 }
