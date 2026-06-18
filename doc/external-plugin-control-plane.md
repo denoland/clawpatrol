@@ -50,7 +50,7 @@ and another correlation map — bookkeeping gRPC does for free.
 
 | Direction | What it is | Where it lives | Examples |
 |---|---|---|---|
-| **plugin → host** | the plugin calls the gateway | host-served services over the broker (`HostControl`, `HostState`) | `Evaluate`, brokered `Dial`, HITL `Decide`, `State` |
+| **plugin → host** | the plugin calls the gateway | host-served services over the broker (`HostControl`, `HostState`, `HostTunnel`) | `Evaluate`, HITL `Decide`, `State`, tunnel transport `DialUpstream` |
 | **host → plugin** | the gateway calls the plugin | the plugin's own gRPC services | `Endpoint.HandleConn`, `Credential.TransformHTTP`, `Approver.Approve`, `Approver.Notify` |
 
 The split matters because the two directions have different homes and
@@ -79,21 +79,33 @@ the end.
 
 ### Host services over one broker stream
 
-The gateway serves two host-side services over the go-plugin broker on a
-single reserved stream id; the plugin dials it once and builds both stubs
-over that one connection:
+The gateway serves the host-side services over the go-plugin broker on a
+single reserved stream id; the plugin dials it once and builds all the
+stubs over that one connection. The broker is multiplexed over the
+plugin's main gRPC connection (`GRPCBrokerMultiplex`), not a separate
+socket — which is what lets a sandboxed plugin reach host services at all
+(a broker socket in the gateway's temp dir would be hidden by the
+namespaces sandbox's private `/tmp`).
 
 ```proto
 service HostState   { rpc Get(...); rpc Put(...); }          // persistent bytes
-service HostControl {
+service HostControl {                                        // connection-scoped control
   rpc Evaluate(EvaluateRequest) returns (EvaluateVerdict);
-  // grows plugin→host only: Dial(stream) for brokered dial, Decide(...) for HITL
+  // grows plugin→host only, e.g. Decide(...) for HITL
+}
+service HostTunnel  {                                        // tunnel transport dial
+  rpc DialUpstream(stream DialMessage) returns (stream DialMessage);
 }
 ```
 
 `HostState` is plugin-lifetime persistence; `HostControl` is
-connection-scoped control. Keep it to these two services and add
-*methods*, not services.
+connection-scoped control; `HostTunnel` is the brokered transport dial a
+tunnel plugin uses to open its own transport (the gateway routes it direct
+or through a `via` parent). `HostControl` is session-scoped via a metadata
+token (below); `HostTunnel` is instead capability-scoped by an unguessable
+per-tunnel transport-dial token, so it is not covered by the unary session
+interceptor. Prefer adding *methods* to an existing service over new
+services.
 
 ### Session scoping in metadata, resolved by an interceptor
 
@@ -161,9 +173,12 @@ credential.
 ```proto
 service HostControl {
   rpc Evaluate(EvaluateRequest) returns (EvaluateVerdict);    // implemented
-  // Brokered upstream dial as a method — removes the dial_id inflight map
-  // the way Evaluate removed call_id, and shrinks the data plane to bytes.
-  rpc Dial(stream DialChunk) returns (stream DialChunk);
+  // Original sketch: brokered upstream dial as a HostControl method. What
+  // actually shipped: the tunnel transport dial is the separate streaming
+  // service HostTunnel.DialUpstream (above), and the endpoint brokered dial
+  // rides the existing HandleConn stream as a frame — neither became a
+  // HostControl method, but the plugin→host direction is unchanged.
+  rpc Dial(stream DialChunk) returns (stream DialChunk);      // superseded by HostTunnel
   // HITL: a notifier (a Slack button) resolves a pending decision. The
   // gateway records it in the same pool the dashboard writes to.
   rpc Decide(DecideRequest) returns (DecideAck);

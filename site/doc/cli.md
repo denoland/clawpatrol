@@ -178,6 +178,30 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
   plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
 ```
 
+### `clawpatrol plugins`
+
+Manage external plugins — download GitHub-sourced plugins, pin them in
+`clawpatrol.lock.hcl`, and approve permission grants. The running gateway
+only ever loads the locked version and never downloads on its own; these
+are the explicit, reviewable steps.
+
+```bash
+clawpatrol plugins install <config.hcl> [name...]   # download + pin the locked version
+clawpatrol plugins update  <config.hcl> [name...]   # re-pin to the newest matching release
+clawpatrol plugins lock    <config.hcl> [name...]   # record every platform's binary hash
+clawpatrol plugins info    <config.hcl> [name...]   # show required privileges (no download)
+clawpatrol plugins approve <config.hcl> [name...]   # approve a pending permission escalation
+```
+
+`info` reads each GitHub plugin's signed static manifest — without
+downloading the binary — and prints its types and the network / egress /
+privileged grants it requests. `approve` records a plugin's requested
+grants in the lockfile after a manifest escalation held it closed (a new
+version that wants more than the lockfile recorded). Local (`./path`)
+sources skip the download but still pin a binary hash. See
+[Plugins](/docs/plugins/) for the `source` / `version` syntax and the
+trust model.
+
 ### `clawpatrol status`
 
 Report device install state — whether `join`/`login` ran, whether

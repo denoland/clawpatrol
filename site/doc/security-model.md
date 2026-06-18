@@ -307,10 +307,13 @@ dial](plugins.md#brokered-upstream-dial), restricted to the targets the
 endpoint's `hosts`/`dial` HCL or the plugin's manifest-declared egress
 set sanctions and audited on every attempt. That egress set is recorded
 trust-on-first-use like the network grant, and an upgrade that broadens
-it fails closed until re-approved. Tunnel plugins
-are the upstream transport themselves and need outbound network; that
-grant is per-plugin, so it does not loosen the endpoint plugins beside
-it.
+it fails closed until re-approved. Tunnel plugins keep the same posture:
+they open their *own* transport (the socket to a SOCKS proxy, a bastion)
+through the gateway's brokered transport dial, so they also default to
+`network = "none"`. `outbound` is the exception, not the rule — only a
+plugin that genuinely dials out itself (one that execs helper tools, or a
+credential plugin doing its own token exchange) requests it, and that
+grant is per-plugin, so it does not loosen the plugins beside it.
 
 Network is **declared by the plugin** in its manifest and recorded,
 trust-on-first-use, in a committed lockfile (`clawpatrol.lock.hcl`).

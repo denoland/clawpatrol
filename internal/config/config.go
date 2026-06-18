@@ -618,11 +618,14 @@ type PluginSource struct {
 	Provenance string `hcl:"provenance,optional"`
 
 	// Network grants the plugin direct network access. "none" (the
-	// default) confines the plugin to its gateway socket — endpoint
-	// and credential plugins don't need more: upstream connections
-	// go through the gateway's brokered dial. "outbound" lets the
-	// plugin dial out itself; tunnel plugins (they are the upstream
-	// transport) need it.
+	// default) confines the plugin to its gateway socket — endpoint,
+	// credential, and tunnel plugins all reach the network through the
+	// gateway's brokered dial (endpoints via the upstream dial, tunnels
+	// via the transport dial), so they need no more. "outbound" lets the
+	// plugin dial out itself; it's only for the few plugins that can't use
+	// the broker — e.g. one that execs helper tools (ssh, kubectl) which
+	// open their own connections, or a credential plugin doing its own
+	// token exchange.
 	Network string `hcl:"network,optional"`
 
 	// Sandbox controls subprocess isolation. "enforce" (the default)
