@@ -59,6 +59,26 @@ func resolveStateDir(cfg *config.Gateway) string {
 	return ""
 }
 
+// preflightStateDirWritable verifies the current process can create
+// files inside stateDir before the sqlite driver tries to. os.MkdirAll
+// is a no-op when the directory already exists, so a root-owned
+// state_dir — e.g. the example config's /opt/clawpatrol created under
+// sudo — sails past the mkdir step and only fails later when sqlite
+// can't create clawpatrol.db, surfacing as the opaque "unable to open
+// database file (14)" (SQLITE_CANTOPEN). Probing here turns that into
+// an actionable error naming the directory and the uid that can't
+// write to it.
+func preflightStateDirWritable(stateDir string) error {
+	f, err := os.CreateTemp(stateDir, ".write-probe-*")
+	if err != nil {
+		return fmt.Errorf("cannot create files in state_dir %s as uid %d: %w", stateDir, os.Getuid(), err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
 const hitlOperationTerminalRetention = 7 * 24 * time.Hour
 
 func runHITLOperationStartupMaintenance(ctx context.Context, db *sql.DB) (HITLOperationMaintenanceResult, error) {
@@ -3038,6 +3058,9 @@ func runGateway(args []string) {
 	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
+	}
+	if err := preflightStateDirWritable(stateDir); err != nil {
+		log.Fatalf("state dir: %v\n      Fix: run the gateway as the user that owns %[2]s, `chown` it to that user, or set a writable state_dir in the gateway block of %[3]s.", err, stateDir, cfgPath)
 	}
 	db, err := OpenDB(filepath.Join(stateDir, "clawpatrol.db"))
 	if err != nil {

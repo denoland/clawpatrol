@@ -60,3 +60,40 @@ func TestOpenDB_TightensExisting0644(t *testing.T) {
 		t.Errorf("%s mode = %#o, want 0600 after OpenDB tightens it", dbPath, mode)
 	}
 }
+
+// TestPreflightStateDirWritable_OK: a writable state_dir passes and the
+// probe file is cleaned up (it must not be mistaken for real state).
+func TestPreflightStateDirWritable_OK(t *testing.T) {
+	dir := t.TempDir()
+	if err := preflightStateDirWritable(dir); err != nil {
+		t.Fatalf("preflightStateDirWritable: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("probe left files behind: %v", entries)
+	}
+}
+
+// TestPreflightStateDirWritable_ReadOnly is the regression for the
+// root-owned /opt/clawpatrol case: MkdirAll no-ops on the existing
+// dir, but the unprivileged gateway can't create clawpatrol.db inside
+// it. The preflight must catch that with a clear error instead of
+// letting sqlite fail later with SQLITE_CANTOPEN(14).
+func TestPreflightStateDirWritable_ReadOnly(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory write permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Restore write so t.TempDir's cleanup can remove the dir.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := preflightStateDirWritable(dir); err == nil {
+		t.Fatal("expected error for read-only state_dir, got nil")
+	}
+}
