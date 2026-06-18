@@ -385,7 +385,7 @@ func runRunChild() {
 		_ = bindResolv(childResolvConf())
 		if body, changed := childNsswitch(); changed {
 			if err := bindNsswitch(body); err != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — getaddrinfo may bypass the gateway resolver (e.g. clawpatrol.internal may not resolve)\n", err)
+				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — DNS lookups may fail\n", err)
 			}
 		}
 	}
@@ -948,7 +948,7 @@ func childNsswitch() (body string, changed bool) {
 	raw, err := os.ReadFile("/etc/nsswitch.conf")
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "[clawpatrol] cannot read /etc/nsswitch.conf: %v — getaddrinfo may bypass the gateway resolver (e.g. clawpatrol.internal may not resolve)\n", err)
+			fmt.Fprintf(os.Stderr, "[clawpatrol] cannot read /etc/nsswitch.conf: %v — DNS lookups may fail\n", err)
 		}
 		return "", false
 	}
