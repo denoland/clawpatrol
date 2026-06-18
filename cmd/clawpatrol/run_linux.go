@@ -384,6 +384,12 @@ func runRunChild() {
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
 		_ = bindResolv(childResolvConf())
 		if body, changed := childNsswitch(); changed {
+			// Warn rather than abort: we can't know whether this command
+			// actually needs DNS. It may only talk to raw IPs, or not
+			// resolve anything at all, in which case a failed nsswitch
+			// rewrite breaks nothing. Failing hard here would block runs
+			// that would have worked fine; the warning is enough for the
+			// case where a lookup later fails for no obvious reason.
 			if err := bindNsswitch(body); err != nil {
 				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — DNS lookups may fail\n", err)
 			}
