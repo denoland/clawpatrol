@@ -890,8 +890,12 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
 
 - [`pluginsdk/example/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk/example)
   — fully exercised plugin: `example_magic_token` credential,
-  `example_passthrough` tunnel, `example_https` endpoint
-  (binds to the built-in `http` facet), `example_smtp`
+  `example_passthrough` tunnel (dials upstream itself),
+  `example_socks` tunnel (routes through a SOCKS5 proxy; opens
+  its transport via the gateway's brokered dial, so it needs no
+  network of its own and can be chained `via` another tunnel —
+  TCP via CONNECT, UDP via UDP ASSOCIATE), `example_https`
+  endpoint (binds to the built-in `http` facet), `example_smtp`
   endpoint + matching `example_smtp` facet (optional + stream
   fields), `example_echo` endpoint + matching `example_echo`
   facet (plain TCP).
