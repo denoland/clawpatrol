@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -86,9 +87,25 @@ type blockedRecord struct {
 // name; pass nil to use a default discarding logger.
 func New(out *log.Logger) *Manager {
 	level := hclog.Info
+	var output io.Writer = hclogWriter{out}
+	// CLAWPATROL_PLUGIN_LOG raises the plugin-subprocess log level
+	// (trace/debug/info/warn/error). At trace/debug this surfaces the
+	// plugin's own stderr — invaluable when a sandboxed plugin dies
+	// before the go-plugin handshake. When no gateway log sink is wired
+	// (e.g. `validate`), send it to stderr so it isn't discarded.
+	if v := os.Getenv("CLAWPATROL_PLUGIN_LOG"); v != "" {
+		if lvl := hclog.LevelFromString(v); lvl != hclog.NoLevel {
+			level = lvl
+		} else {
+			level = hclog.Trace
+		}
+		if out == nil {
+			output = os.Stderr
+		}
+	}
 	logger := hclog.New(&hclog.LoggerOptions{
 		Name:   "plugin",
-		Output: hclogWriter{out},
+		Output: output,
 		Level:  level,
 	})
 	return &Manager{
