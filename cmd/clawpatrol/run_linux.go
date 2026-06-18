@@ -51,6 +51,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -382,6 +383,9 @@ func runRunChild() {
 
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
 		_ = bindResolv(childResolvConf())
+		if body, changed := childNsswitch(); changed {
+			_ = bindNsswitch(body)
+		}
 	}
 
 	// The agent runs as the same uid as the parent and can therefore
@@ -890,6 +894,13 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 // any public-looking nameserver works; fall back to 1.1.1.1 / 8.8.8.8
 // for that and for joins old enough that they predate the gateway-IP
 // file.
+//
+// Note: the bind-mounted resolv.conf only governs the glibc `dns` NSS
+// module (and tools like dig that read resolv.conf directly). On hosts
+// whose nsswitch.conf puts `resolve` (systemd-resolved) ahead of `dns`
+// — Fedora's default — getaddrinfo answers from the host resolver
+// before ever consulting resolv.conf, so this alone is not enough.
+// childNsswitch handles that case.
 func childResolvConf() string {
 	caDir := defaultClawpatrolDir()
 	if gwIP := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip"))); gwIP != "" {
@@ -899,43 +910,124 @@ func childResolvConf() string {
 }
 
 // bindResolv writes body to a temp file and bind-mounts it over
-// /etc/resolv.conf in the calling mount namespace. The temp file is
-// unlinked on every path — including success: once the bind-mount is
-// in place it holds a reference to the inode, so removing the source
-// directory entry leaves /etc/resolv.conf intact (it points at the
-// inode, not the path) while ensuring we don't strand one
-// /tmp/clawpatrol-resolv-* file per `clawpatrol run`. The kernel
-// reclaims the inode when the mount goes away on namespace exit.
+// /etc/resolv.conf in the calling mount namespace.
+//
+// The temp file is made world-readable (0644) before the mount. In the
+// sudo path bindResolv runs as root (before the drop to the invoking
+// user), so a 0600 file ends up root-owned and the unprivileged command
+// can't read the resolv.conf bind-mounted over /etc/resolv.conf — every
+// name lookup then fails with "could not resolve host" while raw-IP
+// traffic still works. A resolv.conf holds only nameserver lines,
+// nothing sensitive.
 func bindResolv(body string) error {
-	tmp, err := os.CreateTemp("", "clawpatrol-resolv-*")
+	return bindOverEtc("/etc/resolv.conf", "clawpatrol-resolv-*", body)
+}
+
+// childNsswitch returns a sanitized /etc/nsswitch.conf body and whether
+// it differs from the host's. The sandbox bind-mounts a private
+// /etc/resolv.conf pointing at the gateway, but resolv.conf only governs
+// the glibc `dns` NSS module. Distros that list a host-resolver module
+// ahead of `dns` in the `hosts:` line — Fedora ships
+// `files myhostname mdns4_minimal [NOTFOUND=return] resolve
+// [!UNAVAIL=return] dns` — answer getaddrinfo from systemd-resolved (or
+// mDNS) first. That resolver runs on the host, is oblivious to the
+// sandbox's resolv.conf, and returns NXDOMAIN for gateway-only names
+// like clawpatrol.internal; the `[!UNAVAIL=return]` action then stops
+// the lookup before `dns` is ever tried, so the override is bypassed
+// and `curl https://clawpatrol.internal` fails to resolve while `dig`
+// (which reads resolv.conf directly) succeeds.
+//
+// The fix rewrites only the `hosts:` line, keeping the sources that
+// don't bypass resolv.conf (`files`, `myhostname`) and dropping the
+// rest, then appending `dns`. Everything else in the file (passwd,
+// group, …) is preserved. When the host line already routes through
+// `dns` without an interfering module (e.g. Ubuntu's `files dns`), the
+// rewrite is a no-op and changed is false, so unaffected distros keep
+// their nsswitch untouched.
+func childNsswitch() (body string, changed bool) {
+	return rewriteHostsLine(readFileSilent("/etc/nsswitch.conf"))
+}
+
+// rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf body,
+// keeping only the sources that don't bypass the bind-mounted
+// resolv.conf (`files`, `myhostname`) and appending `dns`. It returns
+// the full rewritten body and whether anything changed; changed is
+// false when raw has no hosts: line or the line already matches the
+// sanitized form (so we don't bind-mount a no-op over unaffected
+// distros).
+func rewriteHostsLine(raw string) (body string, changed bool) {
+	if raw == "" {
+		return "", false
+	}
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "hosts:")
+		if !ok {
+			continue
+		}
+		// Strip trailing comments before tokenizing the source list.
+		if c := strings.IndexByte(rest, '#'); c >= 0 {
+			rest = rest[:c]
+		}
+		orig := strings.Fields(rest)
+		var kept []string
+		for _, tok := range orig {
+			// Drop bracketed action modifiers ([!UNAVAIL=return] etc.)
+			// and any module that resolves ahead of resolv.conf.
+			if tok == "files" || tok == "myhostname" {
+				kept = append(kept, tok)
+			}
+		}
+		kept = append(kept, "dns")
+		// No-op when the source list is already exactly our sanitized
+		// form (token-wise, ignoring whitespace) — leaves unaffected
+		// distros' nsswitch untouched rather than rebinding a copy.
+		if reflect.DeepEqual(orig, kept) {
+			return "", false
+		}
+		lines[i] = "hosts:      " + strings.Join(kept, " ")
+		return strings.Join(lines, "\n"), true
+	}
+	return "", false
+}
+
+// bindNsswitch bind-mounts body over /etc/nsswitch.conf in the calling
+// mount namespace. Same 0644/teardown semantics as bindResolv.
+func bindNsswitch(body string) error {
+	return bindOverEtc("/etc/nsswitch.conf", "clawpatrol-nsswitch-*", body)
+}
+
+// bindOverEtc writes body to a temp file (named via pattern) and
+// bind-mounts it over target in the calling mount namespace. The temp
+// file is unlinked on every path — including success: once the
+// bind-mount is in place it holds a reference to the inode, so removing
+// the source directory entry leaves target intact (the mount points at
+// the inode, not the path) while ensuring we don't strand a temp file
+// per `clawpatrol run`. The kernel reclaims the inode when the mount
+// goes away on namespace exit. The file is made world-readable (0644)
+// so an unprivileged wrapped command can read it on the sudo path.
+func bindOverEtc(target, pattern, body string) error {
+	tmp, err := os.CreateTemp("", pattern)
 	if err != nil {
-		return fmt.Errorf("create resolv temp file: %w", err)
+		return fmt.Errorf("create temp file for %s: %w", target, err)
 	}
 	if _, err := tmp.WriteString(body); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("write resolv temp file: %w", err)
+		return fmt.Errorf("write temp file for %s: %w", target, err)
 	}
-	// os.CreateTemp makes the file 0600. In the sudo path bindResolv
-	// runs as root (before the drop to the invoking user), so a 0600
-	// file ends up root-owned and the unprivileged command can't read
-	// the resolv.conf bind-mounted over /etc/resolv.conf — every name
-	// lookup then fails with "could not resolve host" while raw-IP
-	// traffic still works. Make it world-readable like a normal
-	// /etc/resolv.conf; it holds only a nameserver line, nothing
-	// sensitive.
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("chmod resolv temp file: %w", err)
+		return fmt.Errorf("chmod temp file for %s: %w", target, err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("close resolv temp file: %w", err)
+		return fmt.Errorf("close temp file for %s: %w", target, err)
 	}
-	if err := unix.Mount(tmp.Name(), "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+	if err := unix.Mount(tmp.Name(), target, "", unix.MS_BIND, ""); err != nil {
 		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("bind-mount resolv: %w", err)
+		return fmt.Errorf("bind-mount %s: %w", target, err)
 	}
 	// Mount holds the inode; drop the now-redundant /tmp path so it
 	// doesn't accumulate across runs.
