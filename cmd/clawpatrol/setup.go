@@ -331,11 +331,9 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 	// user. A root-owned dir from a previous `docker run -v` will pass
 	// MkdirAll (dir already exists) but fail every subsequent WriteFile,
 	// causing join to report success while writing nothing.
-	probe := filepath.Join(caDir, ".write-probe")
-	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+	if err := checkDirWritable(caDir); err != nil {
 		return s, fmt.Errorf("config dir %s is not writable (owner mismatch?): %w", caDir, err)
 	}
-	_ = os.Remove(probe)
 	// Persist the dashboard URL before the CA fetch so subsequent
 	// `clawpatrol env` / `clawpatrol run` invocations work even when
 	// the CA fetch is deferred (Tailscale mode, 404 on /ca.crt).

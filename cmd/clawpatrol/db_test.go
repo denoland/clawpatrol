@@ -61,12 +61,12 @@ func TestOpenDB_TightensExisting0644(t *testing.T) {
 	}
 }
 
-// TestPreflightStateDirWritable_OK: a writable state_dir passes and the
-// probe file is cleaned up (it must not be mistaken for real state).
-func TestPreflightStateDirWritable_OK(t *testing.T) {
+// TestCheckDirWritable_OK: a writable dir passes and the probe file is
+// cleaned up (it must not be mistaken for real state).
+func TestCheckDirWritable_OK(t *testing.T) {
 	dir := t.TempDir()
-	if err := preflightStateDirWritable(dir); err != nil {
-		t.Fatalf("preflightStateDirWritable: %v", err)
+	if err := checkDirWritable(dir); err != nil {
+		t.Fatalf("checkDirWritable: %v", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -77,12 +77,12 @@ func TestPreflightStateDirWritable_OK(t *testing.T) {
 	}
 }
 
-// TestPreflightStateDirWritable_ReadOnly is the regression for the
-// root-owned /opt/clawpatrol case: MkdirAll no-ops on the existing
-// dir, but the unprivileged gateway can't create clawpatrol.db inside
-// it. The preflight must catch that with a clear error instead of
-// letting sqlite fail later with SQLITE_CANTOPEN(14).
-func TestPreflightStateDirWritable_ReadOnly(t *testing.T) {
+// TestCheckDirWritable_ReadOnly is the regression for the root-owned
+// /opt/clawpatrol case: MkdirAll no-ops on the existing dir, but the
+// unprivileged gateway can't create clawpatrol.db inside it. The
+// preflight must catch that with a clear error instead of letting
+// sqlite fail later with SQLITE_CANTOPEN(14).
+func TestCheckDirWritable_ReadOnly(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root bypasses directory write permissions")
 	}
@@ -93,7 +93,7 @@ func TestPreflightStateDirWritable_ReadOnly(t *testing.T) {
 	// Restore write so t.TempDir's cleanup can remove the dir.
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	if err := preflightStateDirWritable(dir); err == nil {
+	if err := checkDirWritable(dir); err == nil {
 		t.Fatal("expected error for read-only state_dir, got nil")
 	}
 }

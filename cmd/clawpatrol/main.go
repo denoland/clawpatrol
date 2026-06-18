@@ -59,23 +59,20 @@ func resolveStateDir(cfg *config.Gateway) string {
 	return ""
 }
 
-// preflightStateDirWritable verifies the current process can create
-// files inside stateDir before the sqlite driver tries to. os.MkdirAll
-// is a no-op when the directory already exists, so a root-owned
-// state_dir — e.g. the example config's /opt/clawpatrol created under
-// sudo — sails past the mkdir step and only fails later when sqlite
-// can't create clawpatrol.db, surfacing as the opaque "unable to open
-// database file (14)" (SQLITE_CANTOPEN). Probing here turns that into
-// an actionable error naming the directory and the uid that can't
-// write to it.
-func preflightStateDirWritable(stateDir string) error {
-	f, err := os.CreateTemp(stateDir, ".write-probe-*")
-	if err != nil {
-		return fmt.Errorf("cannot create files in state_dir %s as uid %d: %w", stateDir, os.Getuid(), err)
+// checkDirWritable verifies the current process can create files in
+// dir. os.MkdirAll is a no-op when the directory already exists, so a
+// root-owned directory — the example config's /opt/clawpatrol created
+// under sudo, or a Docker `-v` mount owned by root — passes MkdirAll
+// but fails every later write. Probing with a temp file surfaces that
+// as a clear error instead of an opaque downstream failure (sqlite's
+// "unable to open database file (14)" / SQLITE_CANTOPEN when the
+// gateway opens clawpatrol.db, a silently-dropped write on join).
+func checkDirWritable(dir string) error {
+	probe := filepath.Join(dir, ".write-probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		return err
 	}
-	name := f.Name()
-	_ = f.Close()
-	_ = os.Remove(name)
+	_ = os.Remove(probe)
 	return nil
 }
 
@@ -3059,8 +3056,8 @@ func runGateway(args []string) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
 	}
-	if err := preflightStateDirWritable(stateDir); err != nil {
-		log.Fatalf("state dir: %v\n      Fix: run the gateway as the user that owns %[2]s, `chown` it to that user, or set a writable state_dir in the gateway block of %[3]s.", err, stateDir, cfgPath)
+	if err := checkDirWritable(stateDir); err != nil {
+		log.Fatalf("state dir: cannot create files in state_dir %s as uid %d: %v\n      Fix: run the gateway as the user that owns it, `chown` it to that user, or set a writable state_dir in the gateway block of %s.", stateDir, os.Getuid(), err, cfgPath)
 	}
 	db, err := OpenDB(filepath.Join(stateDir, "clawpatrol.db"))
 	if err != nil {
