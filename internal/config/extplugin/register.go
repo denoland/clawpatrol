@@ -334,6 +334,18 @@ func validateBuildDisambiguators(pluginName, typeName string, supported, got []s
 // =====================================================================
 
 func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.Diagnostics {
+	if decl.Schema != nil {
+		for _, f := range decl.Schema.Fields {
+			if tunnelCommonReserved[f.Name] {
+				// These are the framework-level tunnel attrs the loader peels
+				// (decodeTunnelCommon); a plugin field by the same name would be
+				// silently stolen. Reject at registration, like endpointSpec
+				// rejects `hosts`/`dial`.
+				return fail("plugin %q tunnel %q: declared reserved attribute %q (via / share / keepalive / credential are framework-level tunnel attrs)",
+					pluginName, decl.TypeName, f.Name)
+			}
+		}
+	}
 	spec, err := schemaToSpec(decl.Schema)
 	if err != nil {
 		return fail("plugin %q tunnel %q: %v", pluginName, decl.TypeName, err)
@@ -403,10 +415,16 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 // cycles), exactly as for a built-in tunnel. Tunnels skip the loader's
 // frameworkAttrsByKind extraction (it covers only endpoints/credentials),
 // so the plugin decode peels them here.
+// tunnelCommonReserved is the set of framework-level tunnel attr names
+// decodeTunnelCommon peels — the names a plugin tunnel manifest may not
+// reuse (enforced in registerTunnel).
+var tunnelCommonReserved = map[string]bool{"via": true, "share": true, "keepalive": true, "credential": true}
+
 func decodeTunnelCommon(body hcl.Body, ctx *hcl.EvalContext, tc *config.TunnelCommon) (hcl.Body, hcl.Diagnostics) {
-	schema := &hcl.BodySchema{Attributes: []hcl.AttributeSchema{
-		{Name: "via"}, {Name: "share"}, {Name: "keepalive"}, {Name: "credential"},
-	}}
+	schema := &hcl.BodySchema{}
+	for name := range tunnelCommonReserved {
+		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: name})
+	}
 	content, remain, diags := body.PartialContent(schema)
 	for name, attr := range content.Attributes {
 		v, d := attr.Expr.Value(ctx)

@@ -38,7 +38,9 @@ gateway {
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 tunnel "example_socks" "corp" {
-  proxy = "10.0.0.9:1080"
+  proxy     = "10.0.0.9:1080"
+  share     = "per_conn"
+  keepalive = "5m"
 }
 tunnel "example_passthrough" "chained" {
   via = example_socks.corp
@@ -58,6 +60,13 @@ profile "default" { credentials = [] }
 	}
 	if chained.Via != corp {
 		t.Fatalf("via not wired on plugin tunnel: chained.Via = %v, want corp", chained.Via)
+	}
+	// share / keepalive on a plugin tunnel are peeled + compiled too.
+	if corp.Sharing != "per_conn" {
+		t.Errorf("share not wired: corp.Sharing = %q, want per_conn", corp.Sharing)
+	}
+	if corp.Keepalive != 5*time.Minute {
+		t.Errorf("keepalive not wired: corp.Keepalive = %v, want 5m", corp.Keepalive)
 	}
 }
 
