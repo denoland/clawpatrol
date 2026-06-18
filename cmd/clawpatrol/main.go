@@ -3093,6 +3093,12 @@ func runGateway(args []string) {
 		onboard:   newOnboardRegistry(),
 	}
 	g.cfg.Store(cfg)
+	// A tunnel plugin opens its transport through the gateway's brokered
+	// dial (HostTunnel.DialUpstream); when the tunnel has no `via` parent
+	// the gateway dials it directly with its own upstream dialer.
+	pluginMgr.SetTransportDialer(func(network, addr string) (net.Conn, error) {
+		return g.dialer.Dial(network, addr)
+	})
 	if cfg.DashboardConfigWrites() {
 		log.Printf("config: dashboard writes enabled (generated rules can be appended to gateway.hcl)")
 	} else {

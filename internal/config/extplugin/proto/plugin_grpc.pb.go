@@ -950,3 +950,137 @@ var HostControl_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "plugin.proto",
 }
+
+const (
+	HostTunnel_DialUpstream_FullMethodName = "/clawpatrol.plugin.v1.HostTunnel/DialUpstream"
+)
+
+// HostTunnelClient is the client API for HostTunnel service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// HostTunnel is the brokered transport dial for tunnel plugins — the
+// tunnel-side equivalent of an endpoint plugin's Conn.DialUpstream.
+// Gateway-served, like HostState/HostControl: the plugin is the client.
+// A tunnel plugin uses it to open the socket its transport rides on (the
+// TCP conn to an SSH bastion, the UDP conn to a WireGuard endpoint)
+// rather than opening a raw socket itself. The gateway routes the dial:
+// directly when the tunnel is top-level, or through the PARENT tunnel
+// when the tunnel is chained (`via = <tunnel>`). The plugin never knows
+// the route — that's how WireGuard-over-SOCKS works without the WG plugin
+// being SOCKS-aware. The gateway owns the composition.
+type HostTunnelClient interface {
+	// DialUpstream opens one transport connection for the calling tunnel.
+	// The first DialMessage MUST be a DialInit whose tunnel_handle is the
+	// transport_dial_handle from OpenTunnelRequest, and whose network/addr
+	// name the target ("tcp"/"udp", "host:port"). For network="udp" the
+	// byte stream carries length-prefixed datagrams (a 2-byte big-endian
+	// length per packet); the gateway frames a real UDP socket on the
+	// direct path, and a chained datagram tunnel (e.g. SOCKS5 UDP ASSOCIATE)
+	// on the via path.
+	DialUpstream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DialMessage, DialMessage], error)
+}
+
+type hostTunnelClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewHostTunnelClient(cc grpc.ClientConnInterface) HostTunnelClient {
+	return &hostTunnelClient{cc}
+}
+
+func (c *hostTunnelClient) DialUpstream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DialMessage, DialMessage], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &HostTunnel_ServiceDesc.Streams[0], HostTunnel_DialUpstream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DialMessage, DialMessage]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type HostTunnel_DialUpstreamClient = grpc.BidiStreamingClient[DialMessage, DialMessage]
+
+// HostTunnelServer is the server API for HostTunnel service.
+// All implementations must embed UnimplementedHostTunnelServer
+// for forward compatibility.
+//
+// HostTunnel is the brokered transport dial for tunnel plugins — the
+// tunnel-side equivalent of an endpoint plugin's Conn.DialUpstream.
+// Gateway-served, like HostState/HostControl: the plugin is the client.
+// A tunnel plugin uses it to open the socket its transport rides on (the
+// TCP conn to an SSH bastion, the UDP conn to a WireGuard endpoint)
+// rather than opening a raw socket itself. The gateway routes the dial:
+// directly when the tunnel is top-level, or through the PARENT tunnel
+// when the tunnel is chained (`via = <tunnel>`). The plugin never knows
+// the route — that's how WireGuard-over-SOCKS works without the WG plugin
+// being SOCKS-aware. The gateway owns the composition.
+type HostTunnelServer interface {
+	// DialUpstream opens one transport connection for the calling tunnel.
+	// The first DialMessage MUST be a DialInit whose tunnel_handle is the
+	// transport_dial_handle from OpenTunnelRequest, and whose network/addr
+	// name the target ("tcp"/"udp", "host:port"). For network="udp" the
+	// byte stream carries length-prefixed datagrams (a 2-byte big-endian
+	// length per packet); the gateway frames a real UDP socket on the
+	// direct path, and a chained datagram tunnel (e.g. SOCKS5 UDP ASSOCIATE)
+	// on the via path.
+	DialUpstream(grpc.BidiStreamingServer[DialMessage, DialMessage]) error
+	mustEmbedUnimplementedHostTunnelServer()
+}
+
+// UnimplementedHostTunnelServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedHostTunnelServer struct{}
+
+func (UnimplementedHostTunnelServer) DialUpstream(grpc.BidiStreamingServer[DialMessage, DialMessage]) error {
+	return status.Error(codes.Unimplemented, "method DialUpstream not implemented")
+}
+func (UnimplementedHostTunnelServer) mustEmbedUnimplementedHostTunnelServer() {}
+func (UnimplementedHostTunnelServer) testEmbeddedByValue()                    {}
+
+// UnsafeHostTunnelServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to HostTunnelServer will
+// result in compilation errors.
+type UnsafeHostTunnelServer interface {
+	mustEmbedUnimplementedHostTunnelServer()
+}
+
+func RegisterHostTunnelServer(s grpc.ServiceRegistrar, srv HostTunnelServer) {
+	// If the following call panics, it indicates UnimplementedHostTunnelServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&HostTunnel_ServiceDesc, srv)
+}
+
+func _HostTunnel_DialUpstream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(HostTunnelServer).DialUpstream(&grpc.GenericServerStream[DialMessage, DialMessage]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type HostTunnel_DialUpstreamServer = grpc.BidiStreamingServer[DialMessage, DialMessage]
+
+// HostTunnel_ServiceDesc is the grpc.ServiceDesc for HostTunnel service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var HostTunnel_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "clawpatrol.plugin.v1.HostTunnel",
+	HandlerType: (*HostTunnelServer)(nil),
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "DialUpstream",
+			Handler:       _HostTunnel_DialUpstream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
+	Metadata: "plugin.proto",
+}

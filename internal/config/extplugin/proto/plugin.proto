@@ -635,6 +635,16 @@ message OpenTunnelRequest {
   // Optional credential bound to the tunnel.
   bytes  credential_secret = 4;
   map<string,string> credential_extras = 5;
+  // transport_dial_handle is the opaque token a tunnel plugin echoes to
+  // HostTunnel.DialUpstream to open its own transport connection (the
+  // socket the tunnel uses to reach its endpoint/bastion). The gateway
+  // routes that dial: directly, or — when the tunnel is chained
+  // (`via = <tunnel>` in the gateway config) — through the parent tunnel.
+  // The plugin never knows or names the route; it just dials, exactly
+  // like an endpoint plugin's Conn.DialUpstream. A tunnel plugin should
+  // therefore run with no network capability of its own and rely on this
+  // brokered dial. Always set for a real tunnel load.
+  string transport_dial_handle = 6;
 }
 
 message OpenTunnelResponse {
@@ -745,4 +755,26 @@ message EvaluateVerdict {
   string action = 1; // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
   string reason = 2;
   string rule = 3;
+}
+
+// HostTunnel is the brokered transport dial for tunnel plugins — the
+// tunnel-side equivalent of an endpoint plugin's Conn.DialUpstream.
+// Gateway-served, like HostState/HostControl: the plugin is the client.
+// A tunnel plugin uses it to open the socket its transport rides on (the
+// TCP conn to an SSH bastion, the UDP conn to a WireGuard endpoint)
+// rather than opening a raw socket itself. The gateway routes the dial:
+// directly when the tunnel is top-level, or through the PARENT tunnel
+// when the tunnel is chained (`via = <tunnel>`). The plugin never knows
+// the route — that's how WireGuard-over-SOCKS works without the WG plugin
+// being SOCKS-aware. The gateway owns the composition.
+service HostTunnel {
+  // DialUpstream opens one transport connection for the calling tunnel.
+  // The first DialMessage MUST be a DialInit whose tunnel_handle is the
+  // transport_dial_handle from OpenTunnelRequest, and whose network/addr
+  // name the target ("tcp"/"udp", "host:port"). For network="udp" the
+  // byte stream carries length-prefixed datagrams (a 2-byte big-endian
+  // length per packet); the gateway frames a real UDP socket on the
+  // direct path, and a chained datagram tunnel (e.g. SOCKS5 UDP ASSOCIATE)
+  // on the via path.
+  rpc DialUpstream(stream DialMessage) returns (stream DialMessage);
 }
