@@ -117,9 +117,18 @@ func socksDialUDP(_ context.Context, cfg *socksConfig, target string, upstream n
 	if err != nil {
 		return fmt.Errorf("socks UDP ASSOCIATE: %w", err)
 	}
-	relay, err := net.ResolveUDPAddr("udp", relayStr)
+	// The reply's BND.ADDR is frequently unspecified (0.0.0.0) or an
+	// internal address when the proxy sits behind NAT (e.g. a cloud VM
+	// returning its private IP). The UDP relay lives on the proxy host, so
+	// fall back to the proxy's host with the returned port unless the reply
+	// names a concrete, routable address.
+	relayHost, relayPort, _ := net.SplitHostPort(relayStr)
+	if ip := net.ParseIP(relayHost); ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() {
+		relayHost, _, _ = net.SplitHostPort(cfg.Proxy)
+	}
+	relay, err := net.ResolveUDPAddr("udp", net.JoinHostPort(relayHost, relayPort))
 	if err != nil {
-		return fmt.Errorf("resolve socks relay %q: %w", relayStr, err)
+		return fmt.Errorf("resolve socks relay %q: %w", net.JoinHostPort(relayHost, relayPort), err)
 	}
 	uc, err := net.ListenUDP("udp", nil)
 	if err != nil {

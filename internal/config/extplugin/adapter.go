@@ -881,6 +881,16 @@ type dynamicTunnelBody struct {
 	canonicalJSON []byte
 }
 
+// dynamicTunnelBody is the CompiledTunnel.Body for a plugin tunnel; it
+// implements runtime.TunnelRuntime by delegating to its adapter so the
+// gateway's TunnelManager.Acquire can Open it (and thread a `via` parent)
+// exactly like a built-in tunnel.
+func (b *dynamicTunnelBody) Sharing() runtime.TunnelSharing { return b.adapter.Sharing() }
+
+func (b *dynamicTunnelBody) Open(ctx context.Context, host runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
+	return b.adapter.Open(ctx, host, via)
+}
+
 // tunnelAdapter implements runtime.TunnelRuntime via OpenTunnel /
 // Dial / CloseTunnel RPCs.
 type tunnelAdapter struct {

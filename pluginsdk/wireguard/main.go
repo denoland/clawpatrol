@@ -54,10 +54,11 @@ type wgConfig struct {
 }
 
 type wgHandle struct {
-	dev   *device.Device
-	tnet  *netstack.Net
-	relay *net.UDPConn // non-nil in via mode (the local WG<->via bridge socket)
-	via   net.Conn     // non-nil in via mode (datagram conduit through parent)
+	dev       *device.Device
+	tnet      *netstack.Net
+	relay     *net.UDPConn       // non-nil in via mode (local WG<->via bridge socket)
+	via       net.Conn           // non-nil in via mode (datagram conduit through parent)
+	viaCancel context.CancelFunc // cancels the via conduit's context on Close
 }
 
 func wireguardDef() pluginsdk.TunnelDef {
@@ -76,7 +77,7 @@ func wireguardDef() pluginsdk.TunnelDef {
 	}
 }
 
-func wireguardOpen(ctx context.Context, req pluginsdk.TunnelOpenRequest) (any, error) {
+func wireguardOpen(_ context.Context, req pluginsdk.TunnelOpenRequest) (any, error) {
 	var cfg wgConfig
 	if len(req.CanonicalConfig) > 0 {
 		if err := json.Unmarshal(req.CanonicalConfig, &cfg); err != nil {
@@ -110,8 +111,16 @@ func wireguardOpen(ctx context.Context, req pluginsdk.TunnelOpenRequest) (any, e
 	// parent tunnel's datagram conduit.
 	var deviceEndpoint string
 	if req.Via != nil {
-		via, err := req.Via.Dial(ctx, "udp", cfg.Endpoint)
+		// The via conduit must outlive this Open call — it carries the WG
+		// transport for the tunnel's whole lifetime. The OpenTunnel request
+		// ctx is cancelled the moment Open returns, which would tear the
+		// DialVia stream down immediately; use a tunnel-lifetime context
+		// cancelled on Close instead.
+		dialCtx, cancel := context.WithCancel(context.Background())
+		h.viaCancel = cancel
+		via, err := req.Via.Dial(dialCtx, "udp", cfg.Endpoint)
 		if err != nil {
+			cancel()
 			return nil, fmt.Errorf("wireguard via dial: %w", err)
 		}
 		relay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -180,6 +189,9 @@ func wireguardClose(_ context.Context, handle any) error {
 	}
 	if h.relay != nil {
 		_ = h.relay.Close()
+	}
+	if h.viaCancel != nil {
+		h.viaCancel()
 	}
 	if h.via != nil {
 		_ = h.via.Close()
