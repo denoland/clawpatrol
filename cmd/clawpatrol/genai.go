@@ -328,35 +328,47 @@ func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respMo
 		turn.ServerPort = 443
 	}
 	includeContent := cfg.GenAITelemetryIncludeContent()
-	if provider == "anthropic" {
-		// Request sampling params and response metadata (id, cache-token
-		// breakdown, error/stop reason) ride the span regardless of
-		// content capture — they carry no prompt/completion text.
-		p := parseClaudeRequestParams(reqBody)
-		turn.Stream = p.Stream
-		turn.MaxTokens = p.MaxTokens
-		turn.Temperature = p.Temperature
-		turn.TopP = p.TopP
-		turn.TopK = p.TopK
-		turn.StopSequences = p.StopSequences
-		// Tool name+type ride the base span; the schema/description are
-		// gated behind the same content opt-in as message content.
-		turn.Tools = parseClaudeToolDefs(reqBody, includeContent)
-
-		meta := claudeResponseMeta(respBody)
-		turn.ResponseID = meta.ID
-		turn.CacheReadTokens = meta.CacheReadTokens
-		turn.CacheCreationTokens = meta.CacheCreationTokens
-		turn.ErrorType = meta.ErrorType
-
-		parts, finish := claudeResponseContent(respBody)
-		turn.FinishReason = finish
-		if includeContent {
-			turn.Messages = claudeContentMessages(reqBody)
-			turn.Output = parts
-		}
+	// Per-provider field mapping fills the shared genAITurn from each
+	// provider's own wire format. The representation and exporter
+	// (emitGenAISpan) are shared — only the extraction differs.
+	switch provider {
+	case "anthropic":
+		mapClaudeTurn(&turn, reqBody, respBody, includeContent)
+	case "openai":
+		mapOpenAITurn(&turn, reqBody, respBody, includeContent)
 	}
 	emitGenAISpan(genaiTracer, turn, includeContent)
+}
+
+// mapClaudeTurn fills the GenAI turn from an Anthropic /v1/messages
+// request/response pair. Request sampling params and response metadata
+// (id, cache-token breakdown, error/stop reason) ride the span
+// regardless of content capture — they carry no prompt/completion text;
+// message content and tool schemas are gated behind includeContent.
+func mapClaudeTurn(turn *genAITurn, reqBody, respBody []byte, includeContent bool) {
+	p := parseClaudeRequestParams(reqBody)
+	turn.Stream = p.Stream
+	turn.MaxTokens = p.MaxTokens
+	turn.Temperature = p.Temperature
+	turn.TopP = p.TopP
+	turn.TopK = p.TopK
+	turn.StopSequences = p.StopSequences
+	// Tool name+type ride the base span; the schema/description are
+	// gated behind the same content opt-in as message content.
+	turn.Tools = parseClaudeToolDefs(reqBody, includeContent)
+
+	meta := claudeResponseMeta(respBody)
+	turn.ResponseID = meta.ID
+	turn.CacheReadTokens = meta.CacheReadTokens
+	turn.CacheCreationTokens = meta.CacheCreationTokens
+	turn.ErrorType = meta.ErrorType
+
+	parts, finish := claudeResponseContent(respBody)
+	turn.FinishReason = finish
+	if includeContent {
+		turn.Messages = claudeContentMessages(reqBody)
+		turn.Output = parts
+	}
 }
 
 // claudeRequestParams holds the GenAI request sampling parameters parsed
