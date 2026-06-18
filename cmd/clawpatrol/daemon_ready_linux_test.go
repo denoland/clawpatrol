@@ -119,7 +119,7 @@ func TestPollWGReady_Timeout(t *testing.T) {
 // retrying without burning the entire budget on one hung dial.
 func TestPollTsnetReady_ColdToReady(t *testing.T) {
 	var calls atomic.Int32
-	dial := func(ctx context.Context) error {
+	dial := func(_ context.Context) error {
 		n := calls.Add(1)
 		if n < 3 {
 			return errors.New("no route")
@@ -145,7 +145,7 @@ func TestPollTsnetReady_ColdToReady(t *testing.T) {
 // invariant as the wg warm case.
 func TestPollTsnetReady_WarmIsImmediate(t *testing.T) {
 	var calls atomic.Int32
-	dial := func(ctx context.Context) error {
+	dial := func(_ context.Context) error {
 		calls.Add(1)
 		return nil
 	}
