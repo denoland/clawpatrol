@@ -51,7 +51,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -384,7 +384,9 @@ func runRunChild() {
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
 		_ = bindResolv(childResolvConf())
 		if body, changed := childNsswitch(); changed {
-			_ = bindNsswitch(body)
+			if err := bindNsswitch(body); err != nil {
+				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — getaddrinfo may bypass the gateway resolver (e.g. clawpatrol.internal may not resolve)\n", err)
+			}
 		}
 	}
 
@@ -937,24 +939,36 @@ func bindResolv(body string) error {
 // and `curl https://clawpatrol.internal` fails to resolve while `dig`
 // (which reads resolv.conf directly) succeeds.
 //
-// The fix rewrites only the `hosts:` line, keeping the sources that
-// don't bypass resolv.conf (`files`, `myhostname`) and dropping the
-// rest, then appending `dns`. Everything else in the file (passwd,
-// group, …) is preserved. When the host line already routes through
-// `dns` without an interfering module (e.g. Ubuntu's `files dns`), the
-// rewrite is a no-op and changed is false, so unaffected distros keep
-// their nsswitch untouched.
+// See rewriteHostsLine for what the sanitization removes. A missing
+// nsswitch.conf is normal (musl/Alpine has no NSS; getaddrinfo reads
+// resolv.conf directly), so it is not worth a warning; any other read
+// error is, since it likely leaves the resolved short-circuit in place
+// and would otherwise turn into a silent resolution failure.
 func childNsswitch() (body string, changed bool) {
-	return rewriteHostsLine(readFileSilent("/etc/nsswitch.conf"))
+	raw, err := os.ReadFile("/etc/nsswitch.conf")
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "[clawpatrol] cannot read /etc/nsswitch.conf: %v — getaddrinfo may bypass the gateway resolver (e.g. clawpatrol.internal may not resolve)\n", err)
+		}
+		return "", false
+	}
+	return rewriteHostsLine(string(raw))
 }
 
 // rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf body,
-// keeping only the sources that don't bypass the bind-mounted
-// resolv.conf (`files`, `myhostname`) and appending `dns`. It returns
-// the full rewritten body and whether anything changed; changed is
-// false when raw has no hosts: line or the line already matches the
-// sanitized form (so we don't bind-mount a no-op over unaffected
-// distros).
+// removing only the NSS modules that bypass the bind-mounted resolv.conf
+// — systemd-resolved (`resolve`) and Avahi mDNS (`mdns*`) — along with
+// the bracketed action items that trail them, and ensuring `dns` is
+// present so getaddrinfo consults resolv.conf. Every other source
+// (`files`, `myhostname`, `sss`, `ldap`, `nis`, …) is preserved in its
+// original position, so a host that resolves internal names through
+// sssd/LDAP keeps doing so inside the sandbox.
+//
+// It returns the full rewritten body and whether anything changed;
+// changed is false when raw has no hosts: line or the line already
+// routes through dns without an interfering module (e.g. Ubuntu's
+// `files dns`), so unaffected distros keep their nsswitch untouched
+// rather than rebinding an identical copy.
 func rewriteHostsLine(raw string) (body string, changed bool) {
 	if raw == "" {
 		return "", false
@@ -971,18 +985,31 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 		}
 		orig := strings.Fields(rest)
 		var kept []string
+		dropAction := false // drop bracketed actions trailing a removed module
 		for _, tok := range orig {
-			// Drop bracketed action modifiers ([!UNAVAIL=return] etc.)
-			// and any module that resolves ahead of resolv.conf.
-			if tok == "files" || tok == "myhostname" {
-				kept = append(kept, tok)
+			if strings.HasPrefix(tok, "[") {
+				// Action modifier ([!UNAVAIL=return] etc.) applies to the
+				// preceding source; keep it only if that source survived.
+				if !dropAction {
+					kept = append(kept, tok)
+				}
+				continue
 			}
+			// resolve (systemd-resolved) and mdns* (Avahi) answer ahead
+			// of dns and can't reach the gateway through the tunnel.
+			if tok == "resolve" || strings.HasPrefix(tok, "mdns") {
+				dropAction = true
+				continue
+			}
+			dropAction = false
+			kept = append(kept, tok)
 		}
-		kept = append(kept, "dns")
-		// No-op when the source list is already exactly our sanitized
-		// form (token-wise, ignoring whitespace) — leaves unaffected
-		// distros' nsswitch untouched rather than rebinding a copy.
-		if reflect.DeepEqual(orig, kept) {
+		if !slices.Contains(kept, "dns") {
+			kept = append(kept, "dns")
+		}
+		// No-op when no bypassing module was present (token sequence
+		// unchanged), so unaffected distros' nsswitch is left untouched.
+		if slices.Equal(orig, kept) {
 			return "", false
 		}
 		lines[i] = "hosts:      " + strings.Join(kept, " ")

@@ -53,6 +53,44 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: true,
 			wantHosts:   "hosts:      dns",
 		},
+		{
+			// Regression: a resolv.conf-respecting module like sssd must
+			// not be dropped — only resolve/mdns short-circuiters are.
+			name:        "preserves sssd module - no change",
+			in:          "hosts: files sss dns\n",
+			wantChanged: false,
+		},
+		{
+			name:        "preserves ldap module - no change",
+			in:          "hosts: files myhostname ldap dns\n",
+			wantChanged: false,
+		},
+		{
+			// dns-first is unusual but intentional; must not be reordered.
+			name:        "dns before files not reordered - no change",
+			in:          "hosts: dns files\n",
+			wantChanged: false,
+		},
+		{
+			name:        "removes resolve but keeps sss in place",
+			in:          "hosts: files sss resolve [!UNAVAIL=return] dns\n",
+			wantChanged: true,
+			wantHosts:   "hosts:      files sss dns",
+		},
+		{
+			name:        "removes mdns keeps myhostname and dns",
+			in:          "hosts: files mdns4_minimal [NOTFOUND=return] myhostname dns\n",
+			wantChanged: true,
+			wantHosts:   "hosts:      files myhostname dns",
+		},
+		{
+			// No dns and no bypassing module: dns is appended so the
+			// gateway resolv.conf is still consulted.
+			name:        "appends dns when absent",
+			in:          "hosts: files myhostname\n",
+			wantChanged: true,
+			wantHosts:   "hosts:      files myhostname dns",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
