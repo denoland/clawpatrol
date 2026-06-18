@@ -15,8 +15,10 @@ They can declare:
 - **Credential types** (`credential "<type>" "<name>" { … }`) —
   describe a secret-bearing identity.
 - **Tunnel types** (`tunnel "<type>" "<name>" { … }`) — describe
-  how the gateway reaches the upstream when it isn’t directly
-  routable.
+  how the gateway reaches an upstream that isn’t directly routable
+  (a SOCKS proxy, a VPN, an SSH bastion). Like an endpoint, a tunnel
+  plugin opens its own transport through the gateway’s brokered dial,
+  so it too runs `network = "none"`.
 - **Facets** — protocol-family schemas with named fields. A facet
   exposes the variables a CEL rule condition can read
   (`example_smtp.verb`, `acme_webhook.signature`, …) and the
@@ -71,8 +73,8 @@ caches it, and pins the resolved version in the lockfile — the same
 model Terraform uses for providers:
 
 ```hcl
-plugin "customerio" {
-  source  = "github.com/denoland/clawpatrol-customerio-plugin"
+plugin "aws" {
+  source  = "github.com/denoland/clawpatrol-plugin-aws"
   version = "~> 1.2"   # newest 1.x ≥ 1.2 ; omit for the newest stable
 }
 ```
@@ -204,8 +206,8 @@ Three layers gate a downloaded binary, from least to most powerful:
    `provenance`:
 
    ```hcl
-   plugin "customerio" {
-     source     = "github.com/denoland/clawpatrol-customerio-plugin"
+   plugin "aws" {
+     source     = "github.com/denoland/clawpatrol-plugin-aws"
      version    = "~> 1.2"
      provenance = "require"   # "warn" (default) | "require" | "off"
    }
@@ -280,11 +282,17 @@ pluginsdk.Run(&pluginsdk.Plugin{
 ```
 
 `NetworkNone` (the default) cuts the plugin off from the network — its
-only channel is the gateway socket, and upstream connections go
-through the [brokered dial](#brokered-upstream-dial). `NetworkOutbound`
-lets the plugin dial out itself; **tunnel plugins** (they *are* the
-upstream transport, e.g. SSH or WireGuard) and credential plugins that
-do their own token exchange need it.
+only channel is the gateway socket, and upstream connections go through
+the gateway's brokered dial. This is enough for almost every plugin:
+endpoint plugins reach upstreams with the
+[brokered dial](#brokered-upstream-dial), and **tunnel plugins** open
+their own transport with the
+[tunnel transport dial](#tunnel-transport-dial), so both run
+`network = "none"` with no socket of their own. `NetworkOutbound` is for
+the few plugins that genuinely dial out themselves and can't use the
+broker — a plugin that execs helper tools (`ssh`, `kubectl`) which open
+their own connections, or a credential plugin doing its own token
+exchange.
 
 On first load the gateway records the plugin's declared network in
 **`clawpatrol.lock.hcl`** next to the config (commit it to VCS):
@@ -317,6 +325,13 @@ upgrade, re-approve it:
 ```
 clawpatrol plugins approve <config.hcl> ssh_tools
 ```
+
+Or approve it from the **dashboard**: any blocked plugin — an escalated
+network/egress grant, a lost provenance attestation, or a declared
+`privileged` request — shows on the **Plugins** page with the reason and an
+**Approve** button that records the grant and reloads, no CLI needed. This
+is the usual flow after installing or upgrading a GitHub plugin whose new
+release wants more than the lockfile recorded.
 
 An operator can still set `network` on the `plugin` block to override
 the plugin's request (force or veto); the override wins and is what
@@ -488,6 +503,41 @@ and then stops reading it can stall its own connection's other
 traffic (other dials, audit events, the agent response). This only
 affects the one connection the plugin is handling, but a misbehaving
 plugin can wedge itself — drain your dial conns.
+
+### Tunnel transport dial
+
+A tunnel plugin is the *transport* — it teaches the gateway how to reach
+an upstream that isn't directly routable (through a SOCKS proxy, a VPN, an
+SSH bastion). Like an endpoint plugin, it does **not** open that transport
+socket itself; from inside its `Dial` (or `Open`) it asks the gateway:
+
+```go
+c, err := req.DialUpstream(ctx, "tcp", cfg.Proxy)
+```
+
+The gateway opens the transport on the plugin's behalf, **routes** it
+(directly, or — when the tunnel is chained — through the parent tunnel),
+and hands back a `net.Conn`. The plugin opens no socket, so a tunnel plugin
+also runs with `network = "none"`.
+
+`req.DialUpstream` accepts **`"udp"`** as well as `"tcp"`. For UDP the
+returned conn carries length-prefixed datagrams; wrap it with
+`pluginsdk.PacketConnOverStream` for a `net.PacketConn`, or use
+`pluginsdk.WriteDatagram` / `ReadDatagram` directly. This is what lets a
+UDP-based tunnel (WireGuard) ride over a stream-based one (a SOCKS proxy):
+the datagrams are framed over the conduit end to end.
+
+The canonical example is `example_socks` (`pluginsdk/example/socks.go`): a
+SOCKS5 tunnel that opens both its TCP control connection (SOCKS CONNECT)
+and its UDP relay (SOCKS UDP ASSOCIATE) with `req.DialUpstream`, and runs
+`network = "none"`.
+
+**Chaining (`via`).** The gateway routes a tunnel's transport through the
+*parent* tunnel named by `via = <tunnel>` — this is how a chain composes
+without any plugin knowing about the others (a WireGuard tunnel's handshake
+routed through a SOCKS tunnel, say). `via` works on plugin tunnel blocks
+just like built-in ones, in either role (parent or child); see
+[Chaining tunnels](/docs/tunnels/#chaining-tunnels-with-via).
 
 ## Writing a plugin
 
@@ -890,11 +940,12 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
 
 - [`pluginsdk/example/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk/example)
   — fully exercised plugin: `example_magic_token` credential,
-  `example_passthrough` tunnel (dials upstream itself),
-  `example_socks` tunnel (routes through a SOCKS5 proxy; opens
-  its transport via the gateway's brokered dial, so it needs no
-  network of its own and can be chained `via` another tunnel —
-  TCP via CONNECT, UDP via UDP ASSOCIATE), `example_https`
+  `example_passthrough` tunnel (a no-op tunnel — opens the upstream
+  through the gateway's brokered dial), `example_socks` tunnel
+  (routes through a SOCKS5 proxy; opens its transport via the
+  gateway's brokered dial, so it needs no network of its own —
+  TCP via CONNECT, UDP via UDP ASSOCIATE; usable as a `via` parent),
+  `example_https`
   endpoint (binds to the built-in `http` facet), `example_smtp`
   endpoint + matching `example_smtp` facet (optional + stream
   fields), `example_echo` endpoint + matching `example_echo`

@@ -216,6 +216,24 @@ expires out from under you.
 
 See [config reference](/docs/config-reference/#tunnel-tailscale).
 
+## Plugin tunnel types
+
+External plugins can register their own tunnel types — a SOCKS proxy, a
+WireGuard or other VPN, anything that carries a connection. They are
+referenced exactly like the built-ins (`tunnel "<type>" "<name>" { … }`)
+and bound to endpoints the same way.
+
+A plugin tunnel does **not** open its transport socket itself. Like an
+endpoint plugin, it opens the connection it rides on (the TCP conn to a
+SOCKS proxy, the UDP conn to a WireGuard endpoint) through the gateway's
+brokered *transport dial*, so it runs with no network of its own
+(`network = "none"`); the gateway dials on its behalf. The brokered
+transport carries UDP as well as TCP, which is what lets a UDP tunnel
+(WireGuard) chain through a stream tunnel (a SOCKS proxy). See
+[plugins › tunnel transport dial](/docs/plugins/#tunnel-transport-dial). The
+example plugin ships `example_socks` (SOCKS5 CONNECT + UDP ASSOCIATE) and
+`example_passthrough`.
+
 ## share and keepalive
 
 Two knobs control how many runtime instances of a tunnel block
@@ -262,6 +280,13 @@ tunnel "ssh_port_forward" "rds-via-jump" {
 
 The manager opens, refcounts, and tears down the `via` chain
 automatically. Cycles in the `via` graph fail at compile time.
+
+`via` works the same on **plugin** tunnel blocks: a plugin tunnel can be
+either end of a chain — the `via` parent (the gateway routes a child's
+transport through it) or the child (`via = <other-tunnel>` on the plugin
+tunnel block itself). A plugin tunnel's transport is opened through the
+gateway's brokered dial, so the chaining composes without either plugin
+being aware of it.
 
 ## Credentials on tunnels
 
