@@ -3,10 +3,21 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/denoland/clawpatrol/internal/config"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 func TestStripAuthResponseHeaders(t *testing.T) {
@@ -37,6 +48,340 @@ func TestStripAuthResponseHeaders(t *testing.T) {
 	}
 	if h.Get("X-Custom") != "keep" {
 		t.Errorf("X-Custom was clobbered: %q", h.Get("X-Custom"))
+	}
+}
+
+func TestStripAuthResponseHeadersPreservingBasicChallenge(t *testing.T) {
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Add("Set-Cookie", "session=abc")
+	h.Set("Authentication-Info", `nextnonce="x"`)
+	h.Add("WWW-Authenticate", `Bearer realm="api"`)
+	h.Add("WWW-Authenticate", `Basic realm="GitLab"`)
+	h.Add("WWW-Authenticate", `basic realm="lower"`)
+	h.Add("WWW-Authenticate", `Basic realm="GitLab", charset="UTF-8"`)
+	h.Add("WWW-Authenticate", `Basic realm="GitLab", Bearer realm="api"`)
+	h.Set("Proxy-Authenticate", `Basic realm="proxy"`)
+	h.Set("X-Custom", "keep")
+
+	stripAuthResponseHeadersPreservingBasicChallenge(h)
+
+	if got := h.Values("WWW-Authenticate"); len(got) != 3 {
+		t.Fatalf("WWW-Authenticate values = %v, want only three Basic challenges", got)
+	} else {
+		for _, want := range []string{
+			`Basic realm="GitLab"`,
+			`basic realm="lower"`,
+			`Basic realm="GitLab", charset="UTF-8"`,
+		} {
+			found := false
+			for _, v := range got {
+				if v == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("WWW-Authenticate missing %q in %v", want, got)
+			}
+		}
+	}
+	for _, name := range []string{
+		"Set-Cookie", "Set-Cookie2", "Proxy-Authenticate",
+		"Authentication-Info", "Proxy-Authentication-Info",
+	} {
+		if v := h.Values(name); len(v) != 0 {
+			t.Errorf("header %q not stripped, got %v", name, v)
+		}
+	}
+	if h.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type was clobbered: %q", h.Get("Content-Type"))
+	}
+	if h.Get("X-Custom") != "keep" {
+		t.Errorf("X-Custom was clobbered: %q", h.Get("X-Custom"))
+	}
+}
+
+func TestIsBasicAuthenticateChallenge(t *testing.T) {
+	tests := []struct {
+		name      string
+		challenge string
+		want      bool
+	}{
+		{
+			name:      "basic realm",
+			challenge: `Basic realm="GitLab"`,
+			want:      true,
+		},
+		{
+			name:      "case insensitive scheme",
+			challenge: `basic realm="lower"`,
+			want:      true,
+		},
+		{
+			name:      "extra basic parameter",
+			challenge: `Basic realm="GitLab", charset="UTF-8"`,
+			want:      true,
+		},
+		{
+			name:      "quoted comma",
+			challenge: `Basic realm="GitLab, Inc."`,
+			want:      true,
+		},
+		{
+			name:      "escaped quote",
+			challenge: `Basic realm="GitLab \"private\""`,
+			want:      true,
+		},
+		{
+			name:      "leading and tab whitespace",
+			challenge: " Basic\trealm=\"GitLab\" ",
+			want:      true,
+		},
+		{
+			name:      "bearer",
+			challenge: `Bearer realm="api"`,
+			want:      false,
+		},
+		{
+			name:      "mixed challenge after basic",
+			challenge: `Basic realm="GitLab", Bearer realm="api"`,
+			want:      false,
+		},
+		{
+			name:      "mixed challenge before basic",
+			challenge: `Bearer realm="api", Basic realm="GitLab"`,
+			want:      false,
+		},
+		{
+			name:      "missing realm",
+			challenge: `Basic charset="UTF-8"`,
+			want:      false,
+		},
+		{
+			name:      "bare basic",
+			challenge: `Basic`,
+			want:      false,
+		},
+		{
+			name:      "token68",
+			challenge: `Basic abcdef`,
+			want:      false,
+		},
+		{
+			name:      "unclosed quote",
+			challenge: `Basic realm="GitLab`,
+			want:      false,
+		},
+		{
+			name:      "trailing comma",
+			challenge: `Basic realm="GitLab",`,
+			want:      false,
+		},
+		{
+			name:      "parameter without value",
+			challenge: `Basic realm`,
+			want:      false,
+		},
+		{
+			// A realm carrying CRLF must be rejected, not re-emitted: if it
+			// were preserved and written back it could split the response or
+			// smuggle a Set-Cookie line. In practice a value this far can't
+			// hold a bare CRLF (the upstream parser already split on it), but
+			// the parser must stay fail-closed regardless of how it's fed.
+			name:      "crlf injection in realm",
+			challenge: "Basic realm=\"x\r\nSet-Cookie: e=1\"",
+			want:      false,
+		},
+		{
+			name:      "lone lf injection in realm",
+			challenge: "Basic realm=\"x\nSet-Cookie: e=1\"",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBasicAuthenticateChallenge(tt.challenge); got != tt.want {
+				t.Fatalf("isBasicAuthenticateChallenge(%q) = %v, want %v",
+					tt.challenge, got, tt.want)
+			}
+		})
+	}
+}
+
+type basicAuthChallengeSecretStore map[string]string
+
+func (s basicAuthChallengeSecretStore) Get(name string) (runtime.Secret, error) {
+	v, ok := s[name]
+	if !ok {
+		return runtime.Secret{}, fmt.Errorf("unexpected secret lookup %q", name)
+	}
+	return runtime.Secret{Bytes: []byte(v)}, nil
+}
+
+func TestMITMPreservesBasicChallengeThenRewritesPlaceholder(t *testing.T) {
+	const (
+		placeholder = "glpat-clawpatrol-git-placeholder-do-not-use"
+		realSecret  = "glpat-real-secret"
+		username    = "oauth2"
+	)
+
+	gw, diags := config.LoadBytes([]byte(fmt.Sprintf(`
+gateway {
+  state_dir  = "/tmp/clawpatrol-test"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+endpoint "https" "gitlab" {
+  hosts = ["gitlab.com"]
+}
+credential "header_token" "gitlab-api-token" {
+  endpoint    = https.gitlab
+  placeholder = "glpat-clawpatrol-api-placeholder-do-not-use"
+  header      = "PRIVATE-TOKEN"
+}
+credential "basic_auth" "gitlab-git-token" {
+  endpoint    = https.gitlab
+  placeholder = %q
+  username    = %q
+}
+profile "default" {
+  credentials = [
+    header_token.gitlab-api-token,
+    basic_auth.gitlab-git-token,
+  ]
+}
+rule "allow-gitlab" {
+  endpoint = https.gitlab
+  verdict  = "allow"
+}
+`, placeholder, username)), "basic-auth-challenge-test.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load config: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile config: %v", err)
+	}
+	ep := policy.Endpoints["gitlab"]
+	if ep == nil {
+		t.Fatal("missing gitlab endpoint")
+	}
+
+	upstreamAuth := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Add("WWW-Authenticate", `Bearer realm="api"`)
+			w.Header().Add("WWW-Authenticate", `Basic realm="GitLab"`)
+			w.Header().Add("Set-Cookie", "session=upstream")
+			w.Header().Set("Authentication-Info", `nextnonce="x"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstreamAuth <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamAddr := upstream.Listener.Addr().String()
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, upstreamAddr)
+		},
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		ForceAttemptHTTP2: false,
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	sink, err := NewSink(nil, 8)
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	t.Cleanup(func() { close(sink.ch) })
+	certs, _ := inMemoryCertCache(t)
+	g := &Gateway{
+		certs: certs,
+		sink:  sink,
+		secrets: basicAuthChallengeSecretStore{
+			"gitlab-git-token": realSecret,
+		},
+	}
+	g.cfg.Store(gw)
+	g.policy.Store(policy)
+	g.transports.Store(ep, transport)
+
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.mitmHTTPS(serverConn, "gitlab.com", ep)
+	}()
+
+	clientTLS := tls.Client(clientConn, &tls.Config{InsecureSkipVerify: true, ServerName: "gitlab.com"})
+	if err := clientTLS.Handshake(); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+
+	firstReq, err := http.NewRequest(http.MethodGet, "https://gitlab.com/example-group/private-repo.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatalf("new first request: %v", err)
+	}
+	if err := firstReq.Write(clientTLS); err != nil {
+		t.Fatalf("write first request: %v", err)
+	}
+	firstResp, err := http.ReadResponse(bufio.NewReader(clientTLS), firstReq)
+	if err != nil {
+		t.Fatalf("read first response: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, firstResp.Body)
+	_ = firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first status = %d, want %d", firstResp.StatusCode, http.StatusUnauthorized)
+	}
+	if got := firstResp.Header.Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="GitLab"` {
+		t.Fatalf("WWW-Authenticate = %v, want only Basic challenge", got)
+	}
+	if got := firstResp.Header.Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("Set-Cookie leaked to client: %v", got)
+	}
+	if got := firstResp.Header.Get("Authentication-Info"); got != "" {
+		t.Fatalf("Authentication-Info leaked to client: %q", got)
+	}
+
+	secondReq, err := http.NewRequest(http.MethodGet, "https://gitlab.com/example-group/private-repo.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatalf("new second request: %v", err)
+	}
+	secondReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(username+":"+placeholder)))
+	if err := secondReq.Write(clientTLS); err != nil {
+		t.Fatalf("write second request: %v", err)
+	}
+	secondResp, err := http.ReadResponse(bufio.NewReader(clientTLS), secondReq)
+	if err != nil {
+		t.Fatalf("read second response: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, secondResp.Body)
+	_ = secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second status = %d, want %d", secondResp.StatusCode, http.StatusNoContent)
+	}
+
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+realSecret))
+	select {
+	case got := <-upstreamAuth:
+		if got != want {
+			t.Fatalf("upstream Authorization = %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream request")
+	}
+
+	_ = clientTLS.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway did not exit after client close")
 	}
 }
 

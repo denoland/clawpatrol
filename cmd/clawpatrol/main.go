@@ -2626,7 +2626,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		// before stripping credential-bearing ones — the dashboard
 		// still wants to show what the upstream actually sent.
 		ev.RespHeaders = flatHeaders(resp.Header)
-		stripAuthResponseHeaders(resp.Header)
+		stripAuthResponseHeadersPreservingBasicChallenge(resp.Header)
 		stripAltSvc(resp.Header)
 		// Trailers fall outside resp.Header — Go's http.Transport
 		// surfaces them on resp.Trailer and http.Response.Write

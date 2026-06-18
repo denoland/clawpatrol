@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"mime"
 	"net/http"
 	"strings"
 )
@@ -56,6 +57,93 @@ func stripAuthResponseHeaders(h http.Header) {
 	for _, name := range authResponseHeaders {
 		h.Del(name)
 	}
+}
+
+// stripAuthResponseHeadersPreservingBasicChallenge removes response-side
+// authentication artifacts but keeps Basic WWW-Authenticate challenges.
+// Basic challenges are protocol negotiation, not credentials; Git-over-HTTPS
+// needs them before it asks its credential helper and retries with auth.
+func stripAuthResponseHeadersPreservingBasicChallenge(h http.Header) {
+	challenges := h.Values("WWW-Authenticate")
+	stripAuthResponseHeaders(h)
+	for _, challenge := range challenges {
+		if isBasicAuthenticateChallenge(challenge) {
+			h.Add("WWW-Authenticate", challenge)
+		}
+	}
+}
+
+func isBasicAuthenticateChallenge(challenge string) bool {
+	scheme, params, ok := splitAuthChallenge(challenge)
+	if !ok || !strings.EqualFold(scheme, "Basic") || strings.TrimSpace(params) == "" {
+		return false
+	}
+
+	mediaValue, ok := authParamsAsMediaType(scheme, params)
+	if !ok {
+		return false
+	}
+	mediaType, parsedParams, err := mime.ParseMediaType(mediaValue)
+	if err != nil || !strings.EqualFold(mediaType, "Basic") {
+		return false
+	}
+	_, hasRealm := parsedParams["realm"]
+	return hasRealm
+}
+
+func splitAuthChallenge(challenge string) (scheme, params string, ok bool) {
+	challenge = strings.TrimSpace(challenge)
+	if challenge == "" {
+		return "", "", false
+	}
+	if i := strings.IndexAny(challenge, " \t"); i >= 0 {
+		scheme = challenge[:i]
+		params = strings.TrimSpace(challenge[i+1:])
+	} else {
+		scheme = challenge
+	}
+	if scheme == "" || strings.Contains(scheme, ",") {
+		return "", "", false
+	}
+	return scheme, params, true
+}
+
+func authParamsAsMediaType(scheme, params string) (string, bool) {
+	// WWW-Authenticate auth-params are comma-separated; mime.ParseMediaType
+	// validates the same param shape after we normalize the separators.
+	var b strings.Builder
+	b.WriteString(scheme)
+	for _, part := range commaPartsOutsideQuotes(params) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", false
+		}
+		b.WriteString("; ")
+		b.WriteString(part)
+	}
+	return b.String(), true
+}
+
+func commaPartsOutsideQuotes(s string) []string {
+	var parts []string
+	start := 0
+	inQuote := false
+	escaped := false
+	for i, r := range s {
+		switch {
+		case escaped:
+			escaped = false
+		case inQuote && r == '\\':
+			escaped = true
+		case r == '"':
+			inQuote = !inQuote
+		case r == ',' && !inQuote:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }
 
 // stripAuthResponseHeadersRaw removes credential-bearing header
