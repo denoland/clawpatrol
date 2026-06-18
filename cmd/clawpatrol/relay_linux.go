@@ -204,6 +204,10 @@ func notifRecv(rc syscall.RawConn) (*seccompNotif, error) {
 	return &n, nil
 }
 
+// notifSendContinue issues SECCOMP_IOCTL_NOTIF_SEND (CONTINUE) on the
+// notify fd carried by rc. NOTIF_SEND doesn't block, so it runs inside
+// rc.Control (one-shot, no poller wait) rather than rc.Read; like
+// notifRecv, the RawConn keeps the *os.File alive for the syscall.
 func notifSendContinue(rc syscall.RawConn, id uint64) error {
 	r := seccompNotifResp{
 		ID:    id,
@@ -253,10 +257,11 @@ func runRelaySupervisor(_ []string) {
 	// directly it becomes unreachable, its finalizer closes fd 3, the
 	// mirror/loopback goroutines' net.Listen/net.Dial reuse the freed
 	// number, and the next NOTIF_RECV lands on a socket and fails with
-	// ENOTTY ("inappropriate ioctl for device"), killing the relay. The
-	// notify fd stays blocking (it is not pollable here), so this buys
-	// liveness only — not poller integration — and the loop keeps its own
-	// EINTR/EAGAIN handling.
+	// ENOTTY ("inappropriate ioctl for device"), killing the relay. We
+	// leave the fd blocking and don't drive it through the runtime poller
+	// (unlike the worker/lb socks), so this buys liveness only — not the
+	// poller's EINTR/EAGAIN absorption — and the loop keeps its own
+	// EINTR/EAGAIN handling below.
 	notifyRC, err := notifyFile.SyscallConn()
 	if err != nil {
 		fail("relay-supervisor: SyscallConn(seccomp-notify): %v", err)
