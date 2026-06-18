@@ -91,6 +91,29 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: true,
 			wantHosts:   "hosts:      files myhostname dns",
 		},
+		{
+			// Multi-status action bracket contains a space; it must be
+			// treated as one token, not shattered by the tokenizer.
+			name:        "multi-status bracket on removed module",
+			in:          "hosts: files resolve [NOTFOUND=return UNAVAIL=return] dns\n",
+			wantChanged: true,
+			wantHosts:   "hosts:      files dns",
+		},
+		{
+			// Spaces inside the brackets, no bypassing module → no-op,
+			// preserved verbatim (also exercises the kept-bracket path).
+			name:        "spaced bracket on kept source - no change",
+			in:          "hosts: files [SUCCESS=return  NOTFOUND=continue] dns\n",
+			wantChanged: false,
+		},
+		{
+			// A bracket trailing a surviving source must be kept in place
+			// while the resolve module ahead of it is removed.
+			name:        "keeps bracket after surviving source, drops resolve",
+			in:          "hosts: files [SUCCESS=return] resolve [!UNAVAIL=return] dns\n",
+			wantChanged: true,
+			wantHosts:   "hosts:      files [SUCCESS=return] dns",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,14 +134,20 @@ func TestRewriteHostsLine(t *testing.T) {
 			if got != tc.wantHosts {
 				t.Fatalf("hosts line = %q, want %q", got, tc.wantHosts)
 			}
-			// Non-hosts lines must be preserved verbatim.
-			for _, l := range strings.Split(tc.in, "\n") {
-				if l == "" || strings.HasPrefix(strings.TrimLeft(l, " \t"), "hosts:") {
-					continue
+			// Non-hosts lines must be preserved verbatim and in order —
+			// compare the full sequence, not mere substring membership,
+			// so a reordering/duplication regression can't slip through.
+			nonHosts := func(s string) []string {
+				var out []string
+				for _, l := range strings.Split(s, "\n") {
+					if !strings.HasPrefix(strings.TrimLeft(l, " \t"), "hosts:") {
+						out = append(out, l)
+					}
 				}
-				if !strings.Contains(body, l) {
-					t.Fatalf("line %q dropped from rewritten body", l)
-				}
+				return out
+			}
+			if before, after := nonHosts(tc.in), nonHosts(body); !reflect.DeepEqual(before, after) {
+				t.Fatalf("non-hosts lines changed: %q -> %q", before, after)
 			}
 		})
 	}

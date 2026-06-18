@@ -961,6 +961,42 @@ func childNsswitch() (body string, changed bool) {
 	return rewriteHostsLine(string(raw))
 }
 
+// splitHostsTokens splits an nsswitch source list into tokens, treating
+// a bracketed action item as a single token even when it contains
+// whitespace. glibc accepts spaces inside the brackets and the
+// multi-status form `[SUCCESS=return NOTFOUND=continue]` is common, so
+// strings.Fields would shatter one action into several bogus tokens.
+// A `[` always starts an action token that runs to the next `]`
+// (inclusive); everything else is whitespace-separated.
+func splitHostsTokens(s string) []string {
+	var toks []string
+	for i := 0; i < len(s); {
+		if s[i] == ' ' || s[i] == '\t' {
+			i++
+			continue
+		}
+		if s[i] == '[' {
+			j := i + 1
+			for j < len(s) && s[j] != ']' {
+				j++
+			}
+			if j < len(s) {
+				j++ // include the closing ']'
+			}
+			toks = append(toks, s[i:j])
+			i = j
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != '[' {
+			j++
+		}
+		toks = append(toks, s[i:j])
+		i = j
+	}
+	return toks
+}
+
 // rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf body,
 // removing only the NSS modules that bypass the bind-mounted resolv.conf
 // — systemd-resolved (`resolve`) and Avahi mDNS (`mdns*`) — along with
@@ -989,7 +1025,7 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 		if c := strings.IndexByte(rest, '#'); c >= 0 {
 			rest = rest[:c]
 		}
-		orig := strings.Fields(rest)
+		orig := splitHostsTokens(rest)
 		var kept []string
 		dropAction := false // drop bracketed actions trailing a removed module
 		for _, tok := range orig {
