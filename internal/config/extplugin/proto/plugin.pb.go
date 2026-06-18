@@ -3668,8 +3668,18 @@ type OpenTunnelRequest struct {
 	// Optional credential bound to the tunnel.
 	CredentialSecret []byte            `protobuf:"bytes,4,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
 	CredentialExtras map[string]string `protobuf:"bytes,5,rep,name=credential_extras,json=credentialExtras,proto3" json:"credential_extras,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// transport_dial_handle is the opaque token a tunnel plugin echoes to
+	// HostTunnel.DialUpstream to open its own transport connection (the
+	// socket the tunnel uses to reach its endpoint/bastion). The gateway
+	// routes that dial: directly, or — when the tunnel is chained
+	// (`via = <tunnel>` in the gateway config) — through the parent tunnel.
+	// The plugin never knows or names the route; it just dials, exactly
+	// like an endpoint plugin's Conn.DialUpstream. A tunnel plugin should
+	// therefore run with no network capability of its own and rely on this
+	// brokered dial. Always set for a real tunnel load.
+	TransportDialHandle string `protobuf:"bytes,6,opt,name=transport_dial_handle,json=transportDialHandle,proto3" json:"transport_dial_handle,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *OpenTunnelRequest) Reset() {
@@ -3735,6 +3745,13 @@ func (x *OpenTunnelRequest) GetCredentialExtras() map[string]string {
 		return x.CredentialExtras
 	}
 	return nil
+}
+
+func (x *OpenTunnelRequest) GetTransportDialHandle() string {
+	if x != nil {
+		return x.TransportDialHandle
+	}
+	return ""
 }
 
 type OpenTunnelResponse struct {
@@ -4705,13 +4722,14 @@ const file_plugin_proto_rawDesc = "" +
 	"bytesCount\x12\x1f\n" +
 	"\vfacets_json\x18\x06 \x01(\fR\n" +
 	"facetsJson\x12\x12\n" +
-	"\x04rule\x18\a \x01(\tR\x04rule\"\xeb\x02\n" +
+	"\x04rule\x18\a \x01(\tR\x04rule\"\x9f\x03\n" +
 	"\x11OpenTunnelRequest\x12(\n" +
 	"\x10tunnel_type_name\x18\x01 \x01(\tR\x0etunnelTypeName\x12'\n" +
 	"\x0ftunnel_instance\x18\x02 \x01(\tR\x0etunnelInstance\x12%\n" +
 	"\x0ecanonical_json\x18\x03 \x01(\fR\rcanonicalJson\x12+\n" +
 	"\x11credential_secret\x18\x04 \x01(\fR\x10credentialSecret\x12j\n" +
-	"\x11credential_extras\x18\x05 \x03(\v2=.clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntryR\x10credentialExtras\x1aC\n" +
+	"\x11credential_extras\x18\x05 \x03(\v2=.clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntryR\x10credentialExtras\x122\n" +
+	"\x15transport_dial_handle\x18\x06 \x01(\tR\x13transportDialHandle\x1aC\n" +
 	"\x15CredentialExtrasEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\",\n" +
@@ -4784,7 +4802,10 @@ const file_plugin_proto_rawDesc = "" +
 	"\x03Get\x12%.clawpatrol.plugin.v1.StateGetRequest\x1a&.clawpatrol.plugin.v1.StateGetResponse\x12T\n" +
 	"\x03Put\x12%.clawpatrol.plugin.v1.StatePutRequest\x1a&.clawpatrol.plugin.v1.StatePutResponse2g\n" +
 	"\vHostControl\x12X\n" +
-	"\bEvaluate\x12%.clawpatrol.plugin.v1.EvaluateRequest\x1a%.clawpatrol.plugin.v1.EvaluateVerdictBCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
+	"\bEvaluate\x12%.clawpatrol.plugin.v1.EvaluateRequest\x1a%.clawpatrol.plugin.v1.EvaluateVerdict2f\n" +
+	"\n" +
+	"HostTunnel\x12X\n" +
+	"\fDialUpstream\x12!.clawpatrol.plugin.v1.DialMessage\x1a!.clawpatrol.plugin.v1.DialMessage(\x010\x01BCZAgithub.com/denoland/clawpatrol/config/extplugin/proto;extpluginpbb\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -4944,19 +4965,21 @@ var file_plugin_proto_depIdxs = []int32{
 	57, // 66: clawpatrol.plugin.v1.HostState.Get:input_type -> clawpatrol.plugin.v1.StateGetRequest
 	59, // 67: clawpatrol.plugin.v1.HostState.Put:input_type -> clawpatrol.plugin.v1.StatePutRequest
 	61, // 68: clawpatrol.plugin.v1.HostControl.Evaluate:input_type -> clawpatrol.plugin.v1.EvaluateRequest
-	6,  // 69: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	23, // 70: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	28, // 71: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
-	32, // 72: clawpatrol.plugin.v1.Credential.TransformHTTP:output_type -> clawpatrol.plugin.v1.TransformHTTPDown
-	34, // 73: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	50, // 74: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	53, // 75: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	52, // 76: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	58, // 77: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
-	60, // 78: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
-	62, // 79: clawpatrol.plugin.v1.HostControl.Evaluate:output_type -> clawpatrol.plugin.v1.EvaluateVerdict
-	69, // [69:80] is the sub-list for method output_type
-	58, // [58:69] is the sub-list for method input_type
+	53, // 69: clawpatrol.plugin.v1.HostTunnel.DialUpstream:input_type -> clawpatrol.plugin.v1.DialMessage
+	6,  // 70: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	23, // 71: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	28, // 72: clawpatrol.plugin.v1.Credential.InjectHTTP:output_type -> clawpatrol.plugin.v1.InjectHTTPResponse
+	32, // 73: clawpatrol.plugin.v1.Credential.TransformHTTP:output_type -> clawpatrol.plugin.v1.TransformHTTPDown
+	34, // 74: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	50, // 75: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	53, // 76: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	52, // 77: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	58, // 78: clawpatrol.plugin.v1.HostState.Get:output_type -> clawpatrol.plugin.v1.StateGetResponse
+	60, // 79: clawpatrol.plugin.v1.HostState.Put:output_type -> clawpatrol.plugin.v1.StatePutResponse
+	62, // 80: clawpatrol.plugin.v1.HostControl.Evaluate:output_type -> clawpatrol.plugin.v1.EvaluateVerdict
+	53, // 81: clawpatrol.plugin.v1.HostTunnel.DialUpstream:output_type -> clawpatrol.plugin.v1.DialMessage
+	70, // [70:82] is the sub-list for method output_type
+	58, // [58:70] is the sub-list for method input_type
 	58, // [58:58] is the sub-list for extension type_name
 	58, // [58:58] is the sub-list for extension extendee
 	0,  // [0:58] is the sub-list for field type_name
@@ -5004,7 +5027,7 @@ func file_plugin_proto_init() {
 			NumEnums:      5,
 			NumMessages:   67,
 			NumExtensions: 0,
-			NumServices:   6,
+			NumServices:   7,
 		},
 		GoTypes:           file_plugin_proto_goTypes,
 		DependencyIndexes: file_plugin_proto_depIdxs,

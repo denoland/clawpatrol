@@ -629,6 +629,15 @@ type TunnelOpenRequest struct {
 	CanonicalConfig  []byte
 	CredentialSecret []byte
 	CredentialExtras map[string]string
+	// DialUpstream opens this tunnel's own transport connection — the
+	// socket the tunnel rides on to reach its endpoint (a "udp" conn to a
+	// WireGuard endpoint, a "tcp" conn to an SSH bastion). The gateway
+	// dials on the plugin's behalf and routes it directly, or through the
+	// parent tunnel when this tunnel is chained (`via = <tunnel>`). Use it
+	// instead of opening a raw socket, so the tunnel plugin can run with no
+	// network capability of its own and the gateway owns the composition.
+	// nil only against an old gateway with no HostTunnel support.
+	DialUpstream DialUpstreamFunc
 }
 
 // TunnelDialRequest is what Dial callbacks receive when the gateway
@@ -637,6 +646,11 @@ type TunnelDialRequest struct {
 	Handle  any
 	Network string
 	Addr    string
+	// DialUpstream opens an upstream transport connection for this tunnel,
+	// gateway-routed (direct or via the parent) — the same primitive as on
+	// TunnelOpenRequest, for tunnels that establish their transport
+	// per-Dial (e.g. a SOCKS tunnel dialing the proxy on each Dial).
+	DialUpstream DialUpstreamFunc
 }
 
 // ErrNoSuchType is returned by the SDK when the gateway invokes a

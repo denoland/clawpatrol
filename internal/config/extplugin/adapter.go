@@ -881,6 +881,16 @@ type dynamicTunnelBody struct {
 	canonicalJSON []byte
 }
 
+// dynamicTunnelBody is the CompiledTunnel.Body for a plugin tunnel; it
+// implements runtime.TunnelRuntime by delegating to its adapter so the
+// gateway's TunnelManager.Acquire can Open it (and thread a `via` parent)
+// exactly like a built-in tunnel.
+func (b *dynamicTunnelBody) Sharing() runtime.TunnelSharing { return b.adapter.Sharing() }
+
+func (b *dynamicTunnelBody) Open(ctx context.Context, host runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
+	return b.adapter.Open(ctx, host, via)
+}
+
 // tunnelAdapter implements runtime.TunnelRuntime via OpenTunnel /
 // Dial / CloseTunnel RPCs.
 type tunnelAdapter struct {
@@ -890,10 +900,21 @@ type tunnelAdapter struct {
 
 func (a *tunnelAdapter) Sharing() runtime.TunnelSharing { return runtime.TunnelShareSingleton }
 
-func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, _ runtime.Tunnel) (runtime.Tunnel, error) {
+func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
 	body, ok := tunnelBodyOf(host)
 	if !ok {
 		return nil, fmt.Errorf("extplugin: tunnel %q has no dynamic body", host.Name)
+	}
+	// Register this tunnel's transport-dial route and hand the plugin an
+	// opaque token. The plugin opens its transport by echoing the token to
+	// HostTunnel.DialUpstream; the gateway routes that dial through the
+	// parent tunnel when chained (`via = <tunnel>`, via != nil) or directly
+	// (via == nil) with its own dialer. The plugin never knows the route —
+	// it just dials, like an endpoint plugin's Conn.DialUpstream. The token
+	// is registered for every real tunnel, direct or chained.
+	var dialToken string
+	if a.client.routeReg != nil {
+		dialToken = a.client.routeReg.add(via) // via may be nil (direct route)
 	}
 	var (
 		credSec   []byte
@@ -907,19 +928,24 @@ func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, _ run
 		}
 	}
 	resp, err := a.client.tunnel.OpenTunnel(ctx, &pb.OpenTunnelRequest{
-		TunnelTypeName:   a.typeName,
-		TunnelInstance:   body.instanceName,
-		CanonicalJson:    body.canonicalJSON,
-		CredentialSecret: credSec,
-		CredentialExtras: credExtra,
+		TunnelTypeName:      a.typeName,
+		TunnelInstance:      body.instanceName,
+		CanonicalJson:       body.canonicalJSON,
+		CredentialSecret:    credSec,
+		CredentialExtras:    credExtra,
+		TransportDialHandle: dialToken,
 	})
 	if err != nil {
+		if dialToken != "" {
+			a.client.routeReg.remove(dialToken)
+		}
 		return nil, fmt.Errorf("extplugin: OpenTunnel: %w", err)
 	}
 	return &remoteTunnel{
-		client: a.client,
-		handle: resp.Handle,
-		logger: host.Logger,
+		client:    a.client,
+		handle:    resp.Handle,
+		logger:    host.Logger,
+		dialToken: dialToken,
 	}, nil
 }
 
@@ -948,9 +974,10 @@ var tunnelBodies = struct {
 // remoteTunnel is the runtime.Tunnel handle returned from Open. Each
 // Dial call opens a fresh bidi stream against the subprocess.
 type remoteTunnel struct {
-	client *Client
-	handle string
-	logger *log.Logger
+	client    *Client
+	handle    string
+	logger    *log.Logger
+	dialToken string // non-empty when chained through a parent (`via`)
 }
 
 func (t *remoteTunnel) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -969,6 +996,9 @@ func (t *remoteTunnel) Dial(ctx context.Context, network, addr string) (net.Conn
 }
 
 func (t *remoteTunnel) Close() error {
+	if t.dialToken != "" && t.client.routeReg != nil {
+		t.client.routeReg.remove(t.dialToken)
+	}
 	_, err := t.client.tunnel.CloseTunnel(context.Background(), &pb.CloseTunnelRequest{Handle: t.handle})
 	return err
 }

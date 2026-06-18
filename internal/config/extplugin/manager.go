@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"slices"
 	"sort"
@@ -46,6 +47,13 @@ type Manager struct {
 	// opaque bytes across restarts. nil disables state (plugins that try to
 	// use it get an error); the gateway wires its BlobStore here.
 	blobs runtime.BlobStore
+
+	// transportDial is the gateway's direct upstream dialer, used to serve a
+	// tunnel plugin's HostTunnel.DialUpstream when the tunnel has no parent
+	// (no `via`). The gateway wires its own dialer here; nil means a tunnel
+	// plugin with no via can't open its transport (the CLI install/probe
+	// paths leave it nil — they never run a tunnel).
+	transportDial func(network, addr string) (net.Conn, error)
 
 	// ghBase overrides the GitHub API base URL (tests point it at an
 	// httptest server); empty means api.github.com. prov gates a
@@ -132,6 +140,22 @@ func (m *Manager) blobStore() runtime.BlobStore {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.blobs
+}
+
+// SetTransportDialer wires the gateway's direct upstream dialer, used to
+// serve a tunnel plugin's HostTunnel.DialUpstream when the tunnel has no
+// `via` parent. The gateway main provides its own dialer; CLI
+// install/probe paths leave it nil (they never run a tunnel).
+func (m *Manager) SetTransportDialer(d func(network, addr string) (net.Conn, error)) {
+	m.mu.Lock()
+	m.transportDial = d
+	m.mu.Unlock()
+}
+
+func (m *Manager) transportDialer() func(network, addr string) (net.Conn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transportDial
 }
 
 // VerifyProvenance turns on GitHub build-provenance attestation checks
@@ -310,10 +334,14 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 	// neither service (no idle broker goroutine).
 	gc := &grpcClient{}
 	var sessions *sessionRegistry
+	var routeReg *transportRouteRegistry
 	if stateNS != "" {
 		gc.hostState = newHostState(m.blobStore, stateNS)
 		sessions = newSessionRegistry()
 		gc.sessions = sessions
+		routeReg = newTransportRouteRegistry()
+		gc.routeReg = routeReg
+		gc.transportDial = m.transportDialer()
 	}
 	cli := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
@@ -328,6 +356,16 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 		SkipHostEnv:      true,
 		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
 		Logger:           m.logger,
+		// Multiplex the host-services broker (HostState/HostControl/
+		// HostTunnel) over the plugin's main gRPC connection instead of a
+		// separate unix socket. The broker's own socket would land in the
+		// gateway's temp dir, which the namespaces sandbox's private /tmp
+		// hides from the plugin — so a sandboxed plugin could never reach
+		// host services. Multiplexing reuses the main connection (already
+		// sandbox-visible), so it works under the sandbox. Both sides run
+		// the same go-plugin version, so the plugin negotiates support
+		// automatically.
+		GRPCBrokerMultiplex: true,
 	})
 	c := &Client{
 		source:         source,
@@ -337,6 +375,7 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 		socketDir:      spec.SocketDir,
 		gp:             cli,
 		sessions:       sessions,
+		routeReg:       routeReg,
 	}
 	rpcCli, err := cli.Client()
 	if err != nil {
@@ -1104,6 +1143,11 @@ type Client struct {
 	// resolves Evaluate calls against it. Shared with the grpcClient that
 	// serves the bundle.
 	sessions *sessionRegistry
+	// routeReg holds the parent tunnels this plugin's tunnels are chained
+	// through; the tunnelAdapter registers a parent at Open and the
+	// broker-served hostTunnel resolves it at DialVia. Shared with the
+	// grpcClient. nil on the probe path (no tunnels run).
+	routeReg *transportRouteRegistry
 }
 
 // SandboxMode reports which sandbox backend the subprocess runs
@@ -1156,8 +1200,10 @@ func (c *Client) TunnelRPC() pb.TunnelClient { return c.tunnel }
 // the HostState service to the plugin over the broker.
 type grpcClient struct {
 	plugin.NetRPCUnsupportedPlugin
-	hostState pb.HostStateServer // nil = state service disabled
-	sessions  *sessionRegistry   // nil = HostControl disabled (probe path)
+	hostState     pb.HostStateServer      // nil = state service disabled
+	sessions      *sessionRegistry        // nil = HostControl disabled (probe path)
+	routeReg      *transportRouteRegistry // nil = HostTunnel disabled (probe path)
+	transportDial func(network, addr string) (net.Conn, error)
 }
 
 func (g *grpcClient) GRPCServer(_ *plugin.GRPCBroker, _ *grpc.Server) error {
@@ -1170,14 +1216,16 @@ func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, co
 	// it in the background; the plugin only dials lazily on its first call.
 	// When the client tears down, the broker closes and AcceptAndServe
 	// returns.
-	if broker == nil || (g.hostState == nil && g.sessions == nil) {
+	if broker == nil || (g.hostState == nil && g.sessions == nil && g.routeReg == nil) {
 		return conn, nil
 	}
-	hs, sessions := g.hostState, g.sessions
+	hs, sessions, routeReg, transportDial := g.hostState, g.sessions, g.routeReg, g.transportDial
 	go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
 		// HostControl calls are session-scoped via metadata; the interceptor
 		// resolves the token once. HostState carries no token and passes
-		// through (the interceptor only acts on a present token).
+		// through (the interceptor only acts on a present token). HostTunnel
+		// is streaming and capability-scoped by its transport-dial token, so it is not
+		// covered by the unary interceptor.
 		if sessions != nil {
 			opts = append(opts, grpc.ChainUnaryInterceptor(sessionUnaryInterceptor(sessions)))
 		}
@@ -1187,6 +1235,9 @@ func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, co
 		}
 		if sessions != nil {
 			pb.RegisterHostControlServer(s, hostControl{})
+		}
+		if routeReg != nil {
+			pb.RegisterHostTunnelServer(s, &hostTunnel{reg: routeReg, directDial: transportDial})
 		}
 		return s
 	})

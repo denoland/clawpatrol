@@ -1001,6 +1001,9 @@ func serveStreamRead(req *pb.StreamRead, mu *sync.Mutex, streams map[string]*str
 type tunnelHandle struct {
 	def    TunnelDef
 	handle any
+	// dialUpstream opens this tunnel's transport, gateway-routed; reused by
+	// Dial for tunnels that establish their transport per-Dial.
+	dialUpstream DialUpstreamFunc
 }
 
 func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb.OpenTunnelResponse, error) {
@@ -1008,12 +1011,14 @@ func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb
 	if !ok {
 		return nil, fmt.Errorf("%w: tunnel %q", ErrNoSuchType, req.TunnelTypeName)
 	}
+	dialUpstream := transportDialer(req.GetTransportDialHandle())
 	openReq := TunnelOpenRequest{
 		TunnelTypeName:   req.TunnelTypeName,
 		TunnelInstance:   req.TunnelInstance,
 		CanonicalConfig:  req.CanonicalJson,
 		CredentialSecret: req.CredentialSecret,
 		CredentialExtras: req.CredentialExtras,
+		DialUpstream:     dialUpstream,
 	}
 	var (
 		handle any
@@ -1028,7 +1033,7 @@ func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb
 		handle = req.TunnelInstance
 	}
 	id := fmt.Sprintf("t%d-%s", s.tunHandleID.Add(1), req.TunnelInstance)
-	s.tunHandles.Store(id, &tunnelHandle{def: def, handle: handle})
+	s.tunHandles.Store(id, &tunnelHandle{def: def, handle: handle, dialUpstream: dialUpstream})
 	return &pb.OpenTunnelResponse{Handle: id}, nil
 }
 
@@ -1120,9 +1125,10 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 	}()
 
 	dialErr := invokeTunnelDial(ctx, th.def, TunnelDialRequest{
-		Handle:  th.handle,
-		Network: initMsg.Init.Network,
-		Addr:    initMsg.Init.Addr,
+		Handle:       th.handle,
+		Network:      initMsg.Init.Network,
+		Addr:         initMsg.Init.Addr,
+		DialUpstream: th.dialUpstream,
 	}, upstream)
 	_ = upstream.Close()
 	closer()
