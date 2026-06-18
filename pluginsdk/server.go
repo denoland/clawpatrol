@@ -1014,6 +1014,7 @@ func (s *server) OpenTunnel(ctx context.Context, req *pb.OpenTunnelRequest) (*pb
 		CanonicalConfig:  req.CanonicalJson,
 		CredentialSecret: req.CredentialSecret,
 		CredentialExtras: req.CredentialExtras,
+		Via:              newTunnelVia(req.GetViaTunnelHandle()),
 	}
 	var (
 		handle any

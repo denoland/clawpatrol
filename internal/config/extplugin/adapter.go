@@ -890,10 +890,20 @@ type tunnelAdapter struct {
 
 func (a *tunnelAdapter) Sharing() runtime.TunnelSharing { return runtime.TunnelShareSingleton }
 
-func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, _ runtime.Tunnel) (runtime.Tunnel, error) {
+func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
 	body, ok := tunnelBodyOf(host)
 	if !ok {
 		return nil, fmt.Errorf("extplugin: tunnel %q has no dynamic body", host.Name)
+	}
+	// If this tunnel is chained through a parent (`via = <tunnel>`),
+	// register the already-acquired parent under an opaque token and hand
+	// the token to the plugin. The plugin routes its own transport
+	// connection through the parent by echoing the token to
+	// HostTunnel.DialVia. The gateway owns the composition; the plugin
+	// never holds the parent directly.
+	var viaToken string
+	if via != nil && a.client.viaReg != nil {
+		viaToken = a.client.viaReg.add(via)
 	}
 	var (
 		credSec   []byte
@@ -912,14 +922,19 @@ func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, _ run
 		CanonicalJson:    body.canonicalJSON,
 		CredentialSecret: credSec,
 		CredentialExtras: credExtra,
+		ViaTunnelHandle:  viaToken,
 	})
 	if err != nil {
+		if viaToken != "" {
+			a.client.viaReg.remove(viaToken)
+		}
 		return nil, fmt.Errorf("extplugin: OpenTunnel: %w", err)
 	}
 	return &remoteTunnel{
-		client: a.client,
-		handle: resp.Handle,
-		logger: host.Logger,
+		client:   a.client,
+		handle:   resp.Handle,
+		logger:   host.Logger,
+		viaToken: viaToken,
 	}, nil
 }
 
@@ -948,9 +963,10 @@ var tunnelBodies = struct {
 // remoteTunnel is the runtime.Tunnel handle returned from Open. Each
 // Dial call opens a fresh bidi stream against the subprocess.
 type remoteTunnel struct {
-	client *Client
-	handle string
-	logger *log.Logger
+	client   *Client
+	handle   string
+	logger   *log.Logger
+	viaToken string // non-empty when chained through a parent (`via`)
 }
 
 func (t *remoteTunnel) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -969,6 +985,9 @@ func (t *remoteTunnel) Dial(ctx context.Context, network, addr string) (net.Conn
 }
 
 func (t *remoteTunnel) Close() error {
+	if t.viaToken != "" && t.client.viaReg != nil {
+		t.client.viaReg.remove(t.viaToken)
+	}
 	_, err := t.client.tunnel.CloseTunnel(context.Background(), &pb.CloseTunnelRequest{Handle: t.handle})
 	return err
 }

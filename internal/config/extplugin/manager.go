@@ -310,10 +310,13 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 	// neither service (no idle broker goroutine).
 	gc := &grpcClient{}
 	var sessions *sessionRegistry
+	var viaReg *viaRegistry
 	if stateNS != "" {
 		gc.hostState = newHostState(m.blobStore, stateNS)
 		sessions = newSessionRegistry()
 		gc.sessions = sessions
+		viaReg = newViaRegistry()
+		gc.viaReg = viaReg
 	}
 	cli := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
@@ -337,6 +340,7 @@ func (m *Manager) spawnClient(ctx context.Context, source string, spec sandbox.S
 		socketDir:      spec.SocketDir,
 		gp:             cli,
 		sessions:       sessions,
+		viaReg:         viaReg,
 	}
 	rpcCli, err := cli.Client()
 	if err != nil {
@@ -1104,6 +1108,11 @@ type Client struct {
 	// resolves Evaluate calls against it. Shared with the grpcClient that
 	// serves the bundle.
 	sessions *sessionRegistry
+	// viaReg holds the parent tunnels this plugin's tunnels are chained
+	// through; the tunnelAdapter registers a parent at Open and the
+	// broker-served hostTunnel resolves it at DialVia. Shared with the
+	// grpcClient. nil on the probe path (no tunnels run).
+	viaReg *viaRegistry
 }
 
 // SandboxMode reports which sandbox backend the subprocess runs
@@ -1158,6 +1167,7 @@ type grpcClient struct {
 	plugin.NetRPCUnsupportedPlugin
 	hostState pb.HostStateServer // nil = state service disabled
 	sessions  *sessionRegistry   // nil = HostControl disabled (probe path)
+	viaReg    *viaRegistry       // nil = HostTunnel disabled (probe path)
 }
 
 func (g *grpcClient) GRPCServer(_ *plugin.GRPCBroker, _ *grpc.Server) error {
@@ -1170,14 +1180,16 @@ func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, co
 	// it in the background; the plugin only dials lazily on its first call.
 	// When the client tears down, the broker closes and AcceptAndServe
 	// returns.
-	if broker == nil || (g.hostState == nil && g.sessions == nil) {
+	if broker == nil || (g.hostState == nil && g.sessions == nil && g.viaReg == nil) {
 		return conn, nil
 	}
-	hs, sessions := g.hostState, g.sessions
+	hs, sessions, viaReg := g.hostState, g.sessions, g.viaReg
 	go broker.AcceptAndServe(HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
 		// HostControl calls are session-scoped via metadata; the interceptor
 		// resolves the token once. HostState carries no token and passes
-		// through (the interceptor only acts on a present token).
+		// through (the interceptor only acts on a present token). HostTunnel
+		// is streaming and capability-scoped by its via token, so it is not
+		// covered by the unary interceptor.
 		if sessions != nil {
 			opts = append(opts, grpc.ChainUnaryInterceptor(sessionUnaryInterceptor(sessions)))
 		}
@@ -1187,6 +1199,9 @@ func (g *grpcClient) GRPCClient(_ context.Context, broker *plugin.GRPCBroker, co
 		}
 		if sessions != nil {
 			pb.RegisterHostControlServer(s, hostControl{})
+		}
+		if viaReg != nil {
+			pb.RegisterHostTunnelServer(s, &hostTunnel{reg: viaReg})
 		}
 		return s
 	})

@@ -629,6 +629,14 @@ type TunnelOpenRequest struct {
 	CanonicalConfig  []byte
 	CredentialSecret []byte
 	CredentialExtras map[string]string
+	// Via is non-nil when this tunnel is chained through a PARENT tunnel
+	// (`via = <tunnel>` in the gateway config). Use it inside Open to route
+	// this tunnel's own transport connection through the parent instead of
+	// dialing it directly: a WireGuard tunnel asks Via for a "udp" conduit
+	// to its endpoint; an SSH tunnel asks for a "tcp" conn to its bastion.
+	// nil means no parent — dial the transport directly (the plugin holds
+	// the outbound network capability). The gateway owns the composition.
+	Via *TunnelVia
 }
 
 // TunnelDialRequest is what Dial callbacks receive when the gateway

@@ -635,6 +635,14 @@ message OpenTunnelRequest {
   // Optional credential bound to the tunnel.
   bytes  credential_secret = 4;
   map<string,string> credential_extras = 5;
+  // via_tunnel_handle is set (non-empty) when this tunnel is chained
+  // through a parent tunnel (`via = <tunnel>` in the gateway config).
+  // It is an opaque token the gateway assigns; the plugin echoes it back
+  // in a HostTunnel.DialVia init to route its transport connection
+  // through the parent. Empty means no parent — the plugin dials its
+  // transport directly (it has the outbound network capability). The
+  // gateway owns the composition; the plugin only names the parent.
+  string via_tunnel_handle = 6;
 }
 
 message OpenTunnelResponse {
@@ -745,4 +753,25 @@ message EvaluateVerdict {
   string action = 1; // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
   string reason = 2;
   string rule = 3;
+}
+
+// HostTunnel lets a tunnel plugin route its own transport connection
+// through a PARENT tunnel (`via = <tunnel>`). Gateway-served, like
+// HostState/HostControl: the plugin is the client. The gateway resolves
+// the parent tunnel (built-in or another plugin) named by the opaque
+// via_tunnel_handle it handed the plugin at OpenTunnel, dials through it
+// (parent.Dial(network, addr)), and pumps bytes over this stream. This
+// is how WireGuard-over-SOCKS works: the WG plugin asks for a udp
+// conduit to its endpoint, the gateway routes it through the SOCKS
+// parent. The gateway owns the composition; the plugin only names the
+// parent (by echoing the handle).
+service HostTunnel {
+  // DialVia opens one connection THROUGH the calling tunnel's parent.
+  // The first DialMessage MUST be a DialInit whose tunnel_handle is the
+  // via_tunnel_handle from OpenTunnelRequest, and whose network/addr name
+  // the transport target ("udp"/"tcp", "host:port"). For network="udp"
+  // the byte stream carries length-prefixed datagrams (a 2-byte
+  // big-endian length per packet) so the parent can bridge to a real
+  // datagram transport (e.g. SOCKS5 UDP ASSOCIATE).
+  rpc DialVia(stream DialMessage) returns (stream DialMessage);
 }
