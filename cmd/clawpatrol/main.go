@@ -2032,6 +2032,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			}
 			g.sink.Emit(Event{
 				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
+				ID: ev.ID, Phase: ev.Phase, Status: ev.Status,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,

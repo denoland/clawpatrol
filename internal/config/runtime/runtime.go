@@ -311,6 +311,21 @@ type ConnEvent struct {
 	Approver     string
 	ApproverType string
 	ApproverBy   string
+
+	// ID / Phase give a plugin action the same start→end lifecycle the
+	// built-in HTTP path uses: the adapter emits Phase "start" (in-flight)
+	// when an action is evaluated and "end" (carrying Status + result
+	// facets) when the plugin reports its outcome via ActionResult, keyed
+	// by the same ID so the dashboard merges them. Empty Phase means a
+	// single terminal event (the legacy behavior, e.g. a denial).
+	ID    string
+	Phase string
+	// Status is the action's outcome — lifted from the result schema's
+	// title field (e.g. an AWS error code, "200"). Set on the end event.
+	Status string
+	// ResultFacets is the after-the-fact report payload (values keyed by
+	// the facet's result_fields). Set on the end event alongside Status.
+	ResultFacets map[string]any
 }
 
 // Secret is what credential plugins receive at injection time. The
