@@ -833,6 +833,101 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr, wsSessionID string, payload []by
 	g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 }
 
+// codexWSTurn assembles a GenAI turn from a Codex WebSocket frame
+// sequence. Codex's /backend-api/codex/responses runs over a WS upgrade
+// (see the WS-upgrade branch in mitmHTTPS) rather than the HTTP/SSE path
+// trackLLMUsage handles, so a turn's request and response arrive on
+// separate frames: the client→server request envelope carries the
+// prompt / model / tools, and the server→client response.completed frame
+// carries the output and usage. observeRequest stashes the envelope;
+// observeResponse returns a ready-to-record completion when the terminal
+// frame lands. The two WS pump goroutines (client→server and
+// server→client) call these concurrently, so the stashed state is mutex
+// guarded.
+type codexWSTurn struct {
+	mu          sync.Mutex
+	reqEnvelope []byte
+	start       time.Time
+}
+
+// observeRequest records a client→server request envelope — the frame
+// carrying the `input` array. Latest-wins: the most recent envelope seen
+// before a completion is the one paired with it.
+func (t *codexWSTurn) observeRequest(payload []byte, now time.Time) {
+	var probe struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if json.Unmarshal(payload, &probe) != nil || len(probe.Input) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.reqEnvelope = append([]byte(nil), payload...)
+	t.start = now
+	t.mu.Unlock()
+}
+
+// codexWSCompletion is the assembled pieces of one Codex WS turn, ready to
+// hand to recordGenAITurn. respBody is the inner `response` object of the
+// terminal frame — a Responses-API response body that maps through
+// mapOpenAITurn exactly like the HTTP path's; reqBody is the paired request
+// envelope (nil if no request frame was seen on this connection).
+type codexWSCompletion struct {
+	reqBody   []byte
+	respBody  []byte
+	reqModel  string
+	respModel string
+	in, out   int64
+	start     time.Time
+}
+
+// observeResponse inspects a server→client frame. On a terminal
+// response.completed / .incomplete / .failed frame it returns the assembled
+// completion; every other frame returns nil. The request envelope is
+// consumed so a stray duplicate terminal frame can't re-emit a span.
+func (t *codexWSTurn) observeResponse(payload []byte) *codexWSCompletion {
+	var msg struct {
+		Type     string          `json:"type"`
+		Response json.RawMessage `json:"response"`
+	}
+	if json.Unmarshal(payload, &msg) != nil {
+		return nil
+	}
+	if !isResponsesTerminalEvent(msg.Type) || len(msg.Response) == 0 {
+		return nil
+	}
+	var resp struct {
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	_ = json.Unmarshal(msg.Response, &resp)
+
+	t.mu.Lock()
+	reqBody := t.reqEnvelope
+	start := t.start
+	t.reqEnvelope = nil
+	t.mu.Unlock()
+
+	// Prefer the request's model (e.g. "gpt-5-codex"); the response may
+	// echo a dated variant. Fall back to the response model when the
+	// request frame wasn't captured.
+	reqModel := codexRequestModel(reqBody)
+	if reqModel == "" {
+		reqModel = resp.Model
+	}
+	return &codexWSCompletion{
+		reqBody:   reqBody,
+		respBody:  append([]byte(nil), msg.Response...),
+		reqModel:  reqModel,
+		respModel: resp.Model,
+		in:        resp.Usage.InputTokens,
+		out:       resp.Usage.OutputTokens,
+		start:     start,
+	}
+}
+
 // codexToolTitle formats a tool-call frame into "▸ name(arg)". Codex's
 // `arguments` field is a JSON string whose shape varies per tool —
 // shell.command[], apply_patch.input, file_search.query, etc. We pull
