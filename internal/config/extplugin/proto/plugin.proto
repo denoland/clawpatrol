@@ -545,12 +545,17 @@ message ActionVerdict {
 }
 
 // ActionResult is the after-the-fact counterpart of EvaluateAction: the
-// plugin reports an action's outcome once the response is known, keyed by
-// the same call_id. It mirrors EvaluateAction field-for-field —
-// result_json conforms to the facet's result_fields schema, and `streams`
-// carries FACET_STREAM result fields (e.g. a response body) the gateway
-// pulls up to its cap and cancels. The result field marked `title` becomes
-// the action's status.
+// plugin reports an action's outcome once the response is known. It mirrors
+// EvaluateAction field-for-field — result_json conforms to the facet's
+// result_fields schema, and `streams` carries FACET_STREAM result fields
+// (e.g. a response body) the gateway pulls up to its cap and cancels. The
+// result field marked `title` becomes the action's status.
+//
+// v1 is conn-scoped: the result finalizes the connection's current action,
+// so call_id is unset (the common evaluate path runs inline over
+// HostControl with no call_id). call_id is reserved for a future per-call
+// correlation that would let a pipelined endpoint report several
+// concurrent actions' results out of order.
 message ActionResult {
   string call_id     = 1;
   bytes  result_json = 2;

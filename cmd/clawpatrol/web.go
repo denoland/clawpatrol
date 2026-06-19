@@ -2248,9 +2248,16 @@ func (w *webMux) apiAnalytics(
 	// the same range + agent as the events query above.
 	var totalCount int64
 	var errorCount sql.NullInt64
+	// Mirror statusClass: an error is a non-empty status that is either
+	// non-numeric (a named plugin error like "AccessDenied") or a numeric
+	// HTTP status >= 400. A bare `status >= 400` is wrong now that status is
+	// TEXT — SQLite sorts every text value above all numbers, so it would
+	// count "", "OK", and every named status as an error.
 	_ = w.g.db.QueryRow(
 		`SELECT COUNT(*),
-		        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)
+		        SUM(CASE WHEN status IS NOT NULL AND status <> ''
+		                  AND (NOT (status GLOB '[0-9]*') OR CAST(status AS INTEGER) >= 400)
+		                 THEN 1 ELSE 0 END)
 		 FROM actions WHERE `+where, whereArgs...,
 	).Scan(&totalCount, &errorCount)
 
