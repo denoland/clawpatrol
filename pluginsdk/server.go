@@ -13,8 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -47,9 +47,9 @@ func Run(p *Plugin) {
 		os.Exit(0)
 	}
 	plugin.Serve(&plugin.ServeConfig{
-		HandshakeConfig: extplugin.HandshakeConfig,
+		HandshakeConfig: wire.HandshakeConfig,
 		Plugins: map[string]plugin.Plugin{
-			extplugin.PluginName: &grpcServer{srv: srv},
+			wire.PluginName: &grpcServer{srv: srv},
 		},
 		GRPCServer: plugin.DefaultGRPCServer,
 	})
@@ -590,7 +590,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 			if err != nil {
 				return Verdict{}, fmt.Errorf("pluginsdk: host control plane: %w", err)
 			}
-			mctx := metadata.AppendToOutgoingContext(ctx, extplugin.SessionMetadataKey, conn.SessionToken)
+			mctx := metadata.AppendToOutgoingContext(ctx, wire.SessionMetadataKey, conn.SessionToken)
 			v, err := cli.Evaluate(mctx, &pb.EvaluateRequest{FacetName: facet, ActionJson: j, Summary: summary})
 			if err != nil {
 				return Verdict{}, fmt.Errorf("pluginsdk: HostControl.Evaluate: %w", err)

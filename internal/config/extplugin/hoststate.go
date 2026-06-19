@@ -4,6 +4,7 @@ import (
 	"context"
 
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,8 +27,8 @@ import (
 // gateway serves host services on and the plugin dials. A constant is
 // safe because clawpatrol never calls GRPCBroker.NextId() — the brokered
 // upstream dial multiplexes over the HandleConn stream, not the broker —
-// so nothing else competes for stream ids.
-const HostServicesBrokerID uint32 = 1
+// so nothing else competes for stream ids. Canonical definition in wire.
+const HostServicesBrokerID = wire.HostServicesBrokerID
 
 // maxStateValueBytes caps a single stored value. The known consumers
 // (host keys, key material, a client_id) are well under a kilobyte; the

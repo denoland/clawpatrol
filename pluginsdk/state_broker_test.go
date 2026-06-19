@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 )
@@ -48,7 +48,7 @@ func (p *brokerTestPlugin) GRPCServer(broker *goplugin.GRPCBroker, _ *grpc.Serve
 }
 
 func (p *brokerTestPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, c *grpc.ClientConn) (any, error) {
-	go broker.AcceptAndServe(extplugin.HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
+	go broker.AcceptAndServe(wire.HostServicesBrokerID, func(opts []grpc.ServerOption) *grpc.Server {
 		srv := grpc.NewServer(opts...)
 		pb.RegisterHostStateServer(srv, p.host)
 		return srv

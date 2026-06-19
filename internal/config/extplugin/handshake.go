@@ -8,22 +8,15 @@
 package extplugin
 
 import (
-	"github.com/hashicorp/go-plugin"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 )
 
-// HandshakeConfig is the magic-cookie pair every clawpatrol plugin
-// subprocess must echo back. A mismatch means the gateway is
-// invoking the wrong binary, or the binary is from an incompatible
-// build of the SDK; go-plugin refuses to start in either case.
-//
-// ProtocolVersion bumps when the wire protocol breaks compatibility.
-var HandshakeConfig = plugin.HandshakeConfig{
-	ProtocolVersion:  1,
-	MagicCookieKey:   "CLAWPATROL_PLUGIN",
-	MagicCookieValue: "clawpatrol-plugin-v1",
-}
+// HandshakeConfig and PluginName are the go-plugin handshake shared by the
+// gateway and every plugin. The canonical definitions live in the wire
+// leaf package — kept dependency-light so the SDK (and thus a plugin's
+// binary) doesn't pull the manager's graph just to name them. These
+// aliases keep extplugin's many in-package references unchanged.
+var HandshakeConfig = wire.HandshakeConfig
 
 // PluginName is the registered plugin name in go-plugin's plugin map.
-// Every clawpatrol plugin exports a single entry under this key whose
-// gRPC service set covers Manifest / Build / HandleConn / Tunnel.
-const PluginName = "clawpatrol"
+const PluginName = wire.PluginName

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -32,8 +33,8 @@ import (
 
 // SessionMetadataKey is the gRPC metadata key the per-connection session
 // token rides under on every HostControl call. Lower-case per gRPC's
-// metadata convention.
-const SessionMetadataKey = "clawpatrol-session"
+// metadata convention. Canonical definition in wire.
+const SessionMetadataKey = wire.SessionMetadataKey
 
 // Verdict is the gateway's decision on one Evaluate call. Mirrors
 // runtime / pluginsdk.Verdict so the host-served surface and the existing
