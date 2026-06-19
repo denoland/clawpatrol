@@ -291,7 +291,7 @@ func TestRecordGenAITurnOpenAINoContent(t *testing.T) {
 		"message":{"role":"assistant","content":"secret completion"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":10,"completion_tokens":20}}`
 	g.recordGenAITurn("openai", "s_oai", "api.openai.com", "gpt-4o", "gpt-4o", 10, 20,
-		[]byte(req), []byte(resp), time.Time{})
+		[]byte(req), []byte(resp), time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -349,7 +349,7 @@ func TestRecordGenAITurnOpenAIWithContent(t *testing.T) {
 		"message":{"role":"assistant","content":"general kenobi"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":1,"completion_tokens":2}}`
 	g.recordGenAITurn("openai", "s_oai", "api.openai.com", "gpt-4o", "gpt-4o", 1, 2,
-		[]byte(req), []byte(resp), time.Time{})
+		[]byte(req), []byte(resp), time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {

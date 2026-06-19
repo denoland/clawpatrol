@@ -1083,7 +1083,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		if sid == "" && title != "" {
 			sid = shortHash(title)
 		}
-		g.recordGenAITurn("anthropic", sid, host, reqInfo.Model, respModel, in, out, reqBody, respBody, reqStart)
+		g.recordGenAITurn("anthropic", sid, host, reqInfo.Model, respModel, in, out, reqBody, respBody, reqStart, ip)
 		if sid == "" {
 			return // heartbeat/probe with no session info
 		}
@@ -1100,7 +1100,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
-		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart)
+		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart, ip)
 		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	case "codex_ws_usage":
 		// chatgpt.com Codex backend. Two transports:
@@ -1130,7 +1130,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		if sid == "" {
 			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
 		}
-		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart)
+		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart, ip)
 		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	}
 }
