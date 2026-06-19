@@ -112,6 +112,16 @@ type ReportFieldSpec struct {
 	Name  string
 	Kind  ReportValueKind
 	Label string
+	// Description is a longer explanation shown in the dashboard's
+	// per-action facet table; falls back to Label when empty.
+	Description string
+	// Title marks the field whose value is the action's primary
+	// identifier — the activity log renders it as the "verb" instead of
+	// the HTTP method. At most one field per facet sets it.
+	Title bool
+	// DetailOnly keeps the field out of the compact activity-log row; it
+	// still appears in the per-action detail table.
+	DetailOnly bool
 }
 
 // registry holds every facet registered at init time. The blank-

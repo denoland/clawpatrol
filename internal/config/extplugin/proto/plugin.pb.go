@@ -563,7 +563,20 @@ type FacetFieldDecl struct {
 	// The gateway substitutes a kind-zero value (empty string, empty
 	// list, empty map, 0) before CEL evaluation so rule conditions
 	// can reference them without `has()` guards.
-	Optional      bool `protobuf:"varint,4,opt,name=optional,proto3" json:"optional,omitempty"`
+	Optional bool `protobuf:"varint,4,opt,name=optional,proto3" json:"optional,omitempty"`
+	// description is a human explanation of the field shown in the
+	// dashboard's per-action facet table (e.g. "API action (CloudTrail)").
+	// Falls back to label when empty.
+	Description string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	// title marks the single field whose value is the action's primary
+	// identifier — shown as the activity log's "verb" instead of the HTTP
+	// method (e.g. an AWS plugin marks iam_action). At most one per facet.
+	Title bool `protobuf:"varint,6,opt,name=title,proto3" json:"title,omitempty"`
+	// detail_only keeps the field out of the compact activity-log row
+	// (it still appears in the per-action detail). Use for fields made
+	// redundant by the title field (e.g. AWS action/service once
+	// iam_action is the title).
+	DetailOnly    bool `protobuf:"varint,7,opt,name=detail_only,json=detailOnly,proto3" json:"detail_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -622,6 +635,27 @@ func (x *FacetFieldDecl) GetLabel() string {
 func (x *FacetFieldDecl) GetOptional() bool {
 	if x != nil {
 		return x.Optional
+	}
+	return false
+}
+
+func (x *FacetFieldDecl) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *FacetFieldDecl) GetTitle() bool {
+	if x != nil {
+		return x.Title
+	}
+	return false
+}
+
+func (x *FacetFieldDecl) GetDetailOnly() bool {
+	if x != nil {
+		return x.DetailOnly
 	}
 	return false
 }
@@ -4453,12 +4487,16 @@ const file_plugin_proto_rawDesc = "" +
 	"privileged\"]\n" +
 	"\tFacetDecl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
-	"\x06fields\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.FacetFieldDeclR\x06fields\"\x8b\x01\n" +
+	"\x06fields\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.FacetFieldDeclR\x06fields\"\xe4\x01\n" +
 	"\x0eFacetFieldDecl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1f.clawpatrol.plugin.v1.FacetKindR\x04kind\x12\x14\n" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x12\x1a\n" +
-	"\boptional\x18\x04 \x01(\bR\boptional\"C\n" +
+	"\boptional\x18\x04 \x01(\bR\boptional\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\x12\x14\n" +
+	"\x05title\x18\x06 \x01(\bR\x05title\x12\x1f\n" +
+	"\vdetail_only\x18\a \x01(\bR\n" +
+	"detailOnly\"C\n" +
 	"\x06Schema\x129\n" +
 	"\x06fields\x18\x01 \x03(\v2!.clawpatrol.plugin.v1.SchemaFieldR\x06fields\"^\n" +
 	"\vSchemaField\x12\x12\n" +

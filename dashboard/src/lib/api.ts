@@ -613,13 +613,25 @@ export async function applyGeneratedRule(
 // dashboard fetches it once at boot and uses it to render
 // per-family columns from the facets payload without hardcoding the
 // list of protocol families.
+export type FacetField = {
+  name: string;
+  kind: string;
+  label?: string;
+  // description: longer explanation for the per-action facet table.
+  description?: string;
+  // title: this field's value is the row's primary identifier (the "verb").
+  title?: boolean;
+  // detail_only: omit from the compact activity-log row (still in detail).
+  detail_only?: boolean;
+};
+
 export type FacetSchema = {
   name: string;
   endpoint_families: string[];
   transport?: string;
   hitl_query_label?: string;
   host_is_resource: boolean;
-  report_fields: Array<{ name: string; kind: string; label?: string }>;
+  report_fields: Array<FacetField>;
 };
 
 export async function getFacets(): Promise<FacetSchema[]> {

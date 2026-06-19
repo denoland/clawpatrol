@@ -177,10 +177,13 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		fields := make([]*pb.FacetFieldDecl, 0, len(f.Fields))
 		for _, fld := range f.Fields {
 			fields = append(fields, &pb.FacetFieldDecl{
-				Name:     fld.Name,
-				Kind:     pb.FacetKind(fld.Kind),
-				Label:    fld.Label,
-				Optional: fld.Optional,
+				Name:        fld.Name,
+				Kind:        pb.FacetKind(fld.Kind),
+				Label:       fld.Label,
+				Optional:    fld.Optional,
+				Description: fld.Description,
+				Title:       fld.Title,
+				DetailOnly:  fld.DetailOnly,
 			})
 		}
 		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})

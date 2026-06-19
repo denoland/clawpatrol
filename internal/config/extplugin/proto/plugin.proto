@@ -101,6 +101,19 @@ message FacetFieldDecl {
   // list, empty map, 0) before CEL evaluation so rule conditions
   // can reference them without `has()` guards.
   bool optional = 4;
+  // description is a human explanation of the field shown in the
+  // dashboard's per-action facet table (e.g. "API action (CloudTrail)").
+  // Falls back to label when empty.
+  string description = 5;
+  // title marks the single field whose value is the action's primary
+  // identifier — shown as the activity log's "verb" instead of the HTTP
+  // method (e.g. an AWS plugin marks iam_action). At most one per facet.
+  bool title = 6;
+  // detail_only keeps the field out of the compact activity-log row
+  // (it still appears in the per-action detail). Use for fields made
+  // redundant by the title field (e.g. AWS action/service once
+  // iam_action is the title).
+  bool detail_only = 7;
 }
 
 enum FacetKind {

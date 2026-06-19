@@ -2287,9 +2287,12 @@ func (w *webMux) apiAnalytics(
 func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 	_ = r
 	type reportFieldJSON struct {
-		Name  string `json:"name"`
-		Kind  string `json:"kind"`
-		Label string `json:"label,omitempty"`
+		Name        string `json:"name"`
+		Kind        string `json:"kind"`
+		Label       string `json:"label,omitempty"`
+		Description string `json:"description,omitempty"`
+		Title       bool   `json:"title,omitempty"`
+		DetailOnly  bool   `json:"detail_only,omitempty"`
 	}
 	type facetJSON struct {
 		Name             string            `json:"name"`
@@ -2314,6 +2317,7 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 		for i, fk := range fks {
 			entry.ReportFields[i] = reportFieldJSON{
 				Name: fk.Name, Kind: reportKindName(fk.Kind), Label: fk.Label,
+				Description: fk.Description, Title: fk.Title, DetailOnly: fk.DetailOnly,
 			}
 		}
 		out = append(out, entry)

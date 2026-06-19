@@ -584,43 +584,62 @@ function headerFromFacets(
 // report-field the schema declares for which the event carries a
 // non-empty value; unknown families fall back to the raw facets
 // object so the operator still sees what was captured.
-function facetDetailRows(
-  ev: EventRecord,
-  schema: FacetSchema | undefined,
-): Array<{ name: string; label: string; value: string }> {
+type FacetRow = { key: string; facet: string; description: string; value: string };
+
+function facetDetailRows(ev: EventRecord, schema: FacetSchema | undefined): FacetRow[] {
   const facets = ev.facets;
   if (!facets || Object.keys(facets).length === 0) return [];
   if (!schema) {
     return Object.entries(facets).map(([k, v]) => ({
-      name: k,
-      label: k,
+      key: k,
+      facet: k,
+      description: "",
       value: typeof v === "string" ? v : JSON.stringify(v),
     }));
   }
-  const out: Array<{ name: string; label: string; value: string }> = [];
+  const out: FacetRow[] = [];
   for (const f of schema.report_fields) {
     const v = formatFacetValue(f.kind, facets[f.name]);
-    if (v) out.push({ name: f.name, label: f.label || f.name, value: v });
+    if (!v) continue;
+    out.push({
+      // The fully-qualified CEL name (e.g. "aws.action") is what an
+      // operator writes in a matching rule — show it verbatim.
+      key: f.name,
+      facet: `${schema.name}.${f.name}`,
+      description: f.description || f.label || "",
+      value: v,
+    });
   }
   return out;
 }
 
-// Facets renders the per-family report payload using the same
-// monospace key:value layout as the Request/Response headers list,
-// so the detail page reads consistently regardless of which facet
-// owns the row. No masking: the facets payload is policy metadata,
+// Facets renders the per-family report payload as a three-column table —
+// the fully-qualified facet name (what you write in a rule), a human
+// description, and the captured value — so an operator can see exactly
+// what's matchable. No masking: the facets payload is policy metadata,
 // not secret material (credentials live in headers).
-function Facets({ rows }: { rows: Array<{ name: string; label: string; value: string }> }) {
+function Facets({ rows }: { rows: FacetRow[] }) {
   return (
-    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs leading-relaxed">
-      {rows.map((r) => (
-        <div key={r.name}>
-          <span className="font-semibold text-text">{r.label}</span>
-          <span className="text-text-subtle">: </span>
-          <span className="text-text-muted">{r.value}</span>
-        </div>
-      ))}
-    </pre>
+    <div className="overflow-auto px-4 py-3">
+      <table className="w-full font-mono text-xs">
+        <thead>
+          <tr className="text-2xs uppercase tracking-wider text-text-subtle">
+            <th className="text-left font-semibold pb-1.5 pr-4">Facet</th>
+            <th className="text-left font-semibold pb-1.5 pr-4">Description</th>
+            <th className="text-left font-semibold pb-1.5">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key} className="align-top border-t border-canvas-muted">
+              <td className="py-1.5 pr-4 font-semibold text-text whitespace-nowrap">{r.facet}</td>
+              <td className="py-1.5 pr-4 text-text-subtle">{r.description}</td>
+              <td className="py-1.5 text-text-muted break-all">{r.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

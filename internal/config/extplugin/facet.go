@@ -127,9 +127,12 @@ func protoFacetFieldsToSpec(in []*pb.FacetFieldDecl) []facet.ReportFieldSpec {
 	out := make([]facet.ReportFieldSpec, 0, len(in))
 	for _, f := range in {
 		out = append(out, facet.ReportFieldSpec{
-			Name:  f.Name,
-			Kind:  pluginFacetKind(f.Kind),
-			Label: f.Label,
+			Name:        f.Name,
+			Kind:        pluginFacetKind(f.Kind),
+			Label:       f.Label,
+			Description: f.Description,
+			Title:       f.Title,
+			DetailOnly:  f.DetailOnly,
 		})
 	}
 	return out

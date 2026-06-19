@@ -125,6 +125,18 @@ type FacetField struct {
 	Kind     FacetKind
 	Label    string
 	Optional bool
+	// Description is a human explanation of the field, shown in the
+	// dashboard's per-action facet table (e.g. "API action (CloudTrail)").
+	// Falls back to Label when empty.
+	Description string
+	// Title marks this as the action's primary identifier — shown as the
+	// activity log's "verb" instead of the HTTP method. At most one field
+	// per facet should set it (e.g. an AWS plugin marks iam_action).
+	Title bool
+	// DetailOnly keeps the field out of the compact activity-log row (it
+	// still appears in the per-action detail). Use for fields the Title
+	// makes redundant (e.g. AWS action/service once iam_action is Title).
+	DetailOnly bool
 }
 
 // FacetKind mirrors pb.FacetKind.
