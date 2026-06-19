@@ -390,3 +390,51 @@ func TestRecordGenAITurnOpenAIWithContent(t *testing.T) {
 		t.Errorf("tool defs = %#v", defs)
 	}
 }
+
+// TestTrackLLMUsageCodexModelFromRequest covers the Codex
+// /backend-api/codex/responses path: its SSE response body carries
+// neither the model (it rides the OpenAI-Model response header) nor
+// token usage, so sourcing the model only from the response left
+// recordGenAITurn's guard unsatisfied and the GenAI span was dropped.
+// The model must fall back to the request body so the turn is recorded.
+func TestTrackLLMUsageCodexModelFromRequest(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry {}
+}
+`), "base.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{}
+	g.cfg.Store(gw)
+	g.agents = NewAgentRegistry()
+
+	// Request carries the model; the SSE response has no model and no
+	// parseable usage — exactly the shape that produced no span before.
+	reqBody := []byte(`{"model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	respBody := []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n")
+
+	g.trackLLMUsage(nil, "codex_ws_usage", "chatgpt.com",
+		"/backend-api/codex/responses", reqBody, respBody, "sess-1", time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (codex turn dropped — model not sourced from request)", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex", got)
+	}
+}

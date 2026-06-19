@@ -1114,6 +1114,15 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		}
 		title := codexResponsesRequestTitle(reqBody)
 		model, in, out := parseOpenAIResponse(respBody)
+		// Codex's SSE response body carries neither the model (it rides the
+		// OpenAI-Model response header) nor, on many turns, token usage —
+		// so the response alone leaves recordGenAITurn's model/usage guard
+		// unsatisfied and the GenAI span is silently dropped. Source the
+		// model from the request body, the same place the dashboard usage
+		// path reads it, so the turn is recorded.
+		if model == "" {
+			model = codexRequestModel(reqBody)
+		}
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
