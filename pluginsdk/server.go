@@ -174,21 +174,31 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		})
 	}
 	for _, f := range s.plug.Facets {
-		fields := make([]*pb.FacetFieldDecl, 0, len(f.Fields))
-		for _, fld := range f.Fields {
-			fields = append(fields, &pb.FacetFieldDecl{
-				Name:        fld.Name,
-				Kind:        pb.FacetKind(fld.Kind),
-				Label:       fld.Label,
-				Optional:    fld.Optional,
-				Description: fld.Description,
-				Title:       fld.Title,
-				DetailOnly:  fld.DetailOnly,
-			})
-		}
-		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
+		resp.Facets = append(resp.Facets, &pb.FacetDecl{
+			Name:         f.Name,
+			Fields:       facetFieldsToProto(f.Fields),
+			ResultFields: facetFieldsToProto(f.ResultFields),
+		})
 	}
 	return resp, nil
+}
+
+// facetFieldsToProto maps SDK facet fields (request or result schema) onto
+// their proto form.
+func facetFieldsToProto(in []FacetField) []*pb.FacetFieldDecl {
+	out := make([]*pb.FacetFieldDecl, 0, len(in))
+	for _, fld := range in {
+		out = append(out, &pb.FacetFieldDecl{
+			Name:        fld.Name,
+			Kind:        pb.FacetKind(fld.Kind),
+			Label:       fld.Label,
+			Optional:    fld.Optional,
+			Description: fld.Description,
+			Title:       fld.Title,
+			DetailOnly:  fld.DetailOnly,
+		})
+	}
+	return out
 }
 
 func networkAccessToProto(n NetworkAccess) pb.NetworkAccess {

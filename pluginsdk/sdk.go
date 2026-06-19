@@ -108,6 +108,13 @@ const (
 type FacetDef struct {
 	Name   string
 	Fields []FacetField
+	// ResultFields is the after-the-fact schema a plugin reports via
+	// Conn.SetResult once an action's response is known. It mirrors Fields
+	// (same FacetField type, so Description/Title/DetailOnly and the
+	// FacetStream kind apply): the field marked Title becomes the action's
+	// status, a FacetStream field is a response body the gateway caps.
+	// Empty for facets that report nothing after the response.
+	ResultFields []FacetField
 }
 
 // FacetField declares one column in the facet's schema. Kind tells
