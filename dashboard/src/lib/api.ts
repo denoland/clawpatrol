@@ -632,6 +632,9 @@ export type FacetSchema = {
   hitl_query_label?: string;
   host_is_resource: boolean;
   report_fields: Array<FacetField>;
+  // result_fields declares the after-the-fact result schema (e.g. the
+  // action's status). Only emitted by facets that have one.
+  result_fields?: Array<FacetField>;
 };
 
 export async function getFacets(): Promise<FacetSchema[]> {

@@ -90,12 +90,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   const { verb, body } = header;
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
   const facetFields = facetDetailRows(ev, schema);
+  const resultFields = resultDetailRows(ev, schema);
   const hasReq = !!ev.req_body;
   const hasResp = !!ev.resp_body;
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
   const hasFacets = !isSQL && facetFields.length > 0;
-  const hasSections = hasFacets || hasReq || hasResp || hasReqH || hasRespH;
+  const hasResult = !isSQL && resultFields.length > 0;
+  const hasSections = hasFacets || hasResult || hasReq || hasResp || hasReqH || hasRespH;
 
   return (
     <Shell
@@ -158,6 +160,11 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
+            </Section>
+          )}
+          {hasResult && (
+            <Section title="Result">
+              <Facets rows={resultFields} />
             </Section>
           )}
           {hasReqH && (
@@ -569,6 +576,29 @@ function facetDetailRows(ev: EventRecord, schema: FacetSchema | undefined): Face
       facet: `${schema.name}.${f.name}`,
       description: f.description || f.label || "",
       value: v,
+    });
+  }
+  return out;
+}
+
+// resultDetailRows returns the rows shown in the "result" section —
+// the facet's result-field schema (e.g. the action's status). The
+// only value available today is the action's status, which maps to
+// the result field flagged `title`; the remaining declared fields
+// have no per-field value yet, so they're skipped.
+function resultDetailRows(ev: EventRecord, schema: FacetSchema | undefined): FacetRow[] {
+  const fields = schema?.result_fields;
+  if (!fields || fields.length === 0) return [];
+  const status = ev.status ?? "";
+  if (!status) return [];
+  const out: FacetRow[] = [];
+  for (const f of fields) {
+    if (!f.title) continue;
+    out.push({
+      key: f.name,
+      facet: `${schema!.name}.${f.name}`,
+      description: f.description || f.label || "",
+      value: status,
     });
   }
   return out;

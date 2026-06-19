@@ -249,7 +249,10 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
       >
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ApprovalStatusIcon ev={ev} inFlight={inFlight} />
-        <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11 flex items-center">
+        <span
+          className="font-mono text-2xs font-semibold text-text-muted shrink-0 w-44 truncate flex items-center"
+          title={inspected ? verb : undefined}
+        >
           {inspected ? verb : <LockGlyph />}
         </span>
         <span

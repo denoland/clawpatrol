@@ -2308,6 +2308,7 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 		HITLQueryLabel   string            `json:"hitl_query_label,omitempty"`
 		HostIsResource   bool              `json:"host_is_resource"`
 		ReportFields     []reportFieldJSON `json:"report_fields"`
+		ResultFields     []reportFieldJSON `json:"result_fields,omitempty"`
 	}
 	all := facet.All()
 	out := make([]facetJSON, 0, len(all))
@@ -2325,6 +2326,21 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 			entry.ReportFields[i] = reportFieldJSON{
 				Name: fk.Name, Kind: reportKindName(fk.Kind), Label: fk.Label,
 				Description: fk.Description, Title: fk.Title, DetailOnly: fk.DetailOnly,
+			}
+		}
+		// result_fields is the after-the-fact result schema, exposed
+		// only by facets that implement the optional accessor (plugin
+		// facets). Don't widen the core facet.Runtime interface for it.
+		if rf, ok := f.(interface {
+			ResultFields() []facet.ReportFieldSpec
+		}); ok {
+			rfs := rf.ResultFields()
+			entry.ResultFields = make([]reportFieldJSON, len(rfs))
+			for i, fk := range rfs {
+				entry.ResultFields[i] = reportFieldJSON{
+					Name: fk.Name, Kind: reportKindName(fk.Kind), Label: fk.Label,
+					Description: fk.Description, Title: fk.Title, DetailOnly: fk.DetailOnly,
+				}
 			}
 		}
 		out = append(out, entry)

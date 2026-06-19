@@ -58,6 +58,7 @@ func (p *pluginFacet) Transport() string                     { return "" }
 func (p *pluginFacet) HITLQueryLabel() string                { return "Action" }
 func (p *pluginFacet) HostIsResource() bool                  { return false }
 func (p *pluginFacet) ReportFields() []facet.ReportFieldSpec { return p.reportFields }
+func (p *pluginFacet) ResultFields() []facet.ReportFieldSpec { return p.resultFields }
 func (p *pluginFacet) PrepareRequest(*match.Request)         {}
 func (p *pluginFacet) Report(*match.Request) map[string]any  { return nil }
 
