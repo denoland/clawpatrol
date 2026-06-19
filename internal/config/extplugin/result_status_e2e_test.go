@@ -2,10 +2,13 @@ package extplugin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,6 +102,9 @@ func registerResultFacet(t *testing.T) {
 		},
 		ResultFields: []*pb.FacetFieldDecl{
 			{Name: "status", Kind: pb.FacetKind_FACET_STRING, Title: true},
+			// body is the FACET_STREAM result field — a response body the
+			// gateway pulls up to its cap and cancels.
+			{Name: "body", Kind: pb.FacetKind_FACET_STREAM},
 		},
 	}); diags.HasErrors() {
 		t.Fatalf("registerFacet: %v", diags)
@@ -122,8 +128,11 @@ func startResultPlugin(t *testing.T, handle func(ctx context.Context, conn *plug
 		Name:    "resulttestplugin",
 		Version: "0.0.1",
 		Facets: []pluginsdk.FacetDef{{
-			Name:         resultFacetName,
-			ResultFields: []pluginsdk.FacetField{{Name: "status", Title: true}},
+			Name: resultFacetName,
+			ResultFields: []pluginsdk.FacetField{
+				{Name: "status", Title: true},
+				{Name: "body", Kind: pluginsdk.FacetStream},
+			},
 		}},
 		Endpoints: []pluginsdk.EndpointDef{endpoint},
 	})
@@ -163,14 +172,22 @@ func startResultPlugin(t *testing.T, handle func(ctx context.Context, conn *plug
 // runResultConn drives one connection through the adapter with the supplied
 // agent behaviour and returns the emitted events.
 func runResultConn(t *testing.T, adapter *endpointAdapter, ep *config.CompiledEndpoint, drive func(agent net.Conn)) []runtime.ConnEvent {
+	return runResultConnCap(t, adapter, ep, 0, drive)
+}
+
+// runResultConnCap is runResultConn with an explicit response-body cap on the
+// ConnHandle (0 = gateway default). The body cap bounds the FACET_STREAM
+// response-body sample the gateway pulls.
+func runResultConnCap(t *testing.T, adapter *endpointAdapter, ep *config.CompiledEndpoint, bodyCap int, drive func(agent net.Conn)) []runtime.ConnEvent {
 	t.Helper()
 	var mu sync.Mutex
 	var events []runtime.ConnEvent
 	ch := &runtime.ConnHandle{
-		Endpoint:     ep,
-		PeerIP:       "1.2.3.4",
-		UpstreamHost: "api.example.test",
-		DstPort:      443,
+		Endpoint:       ep,
+		PeerIP:         "1.2.3.4",
+		UpstreamHost:   "api.example.test",
+		DstPort:        443,
+		BodyStorageCap: bodyCap,
 		Emit: func(ev runtime.ConnEvent) {
 			mu.Lock()
 			events = append(events, ev)
@@ -330,5 +347,150 @@ func TestEndpointSetResultStatusNoResponseBody(t *testing.T) {
 	}
 	if end.Status != "204" {
 		t.Fatalf("end.Status=%q, want \"204\"; events=%+v", end.Status, events)
+	}
+}
+
+// cancelTrackingReader wraps a body reader and records whether the SDK closed
+// it (the graceful response to the gateway's StreamCancel) versus the plugin
+// observing a hard read error. Used to assert that capping/cancelling a
+// response-body stream does not error the plugin.
+type cancelTrackingReader struct {
+	r      io.Reader
+	closed atomic.Bool
+}
+
+func (c *cancelTrackingReader) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *cancelTrackingReader) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// bodyResultHandle returns a HandleConn that evaluates (allowed), reports its
+// outcome via SetResult with a FACET_STREAM body of the given size, writes a
+// short response, and returns. The reader it offers is recorded so the test
+// can assert the gateway's cancel closed it gracefully.
+func bodyResultHandle(bodySize int, reader **cancelTrackingReader) func(ctx context.Context, conn *pluginsdk.Conn) error {
+	return func(ctx context.Context, conn *pluginsdk.Conn) error {
+		br := bufio.NewReader(conn)
+		if _, err := readHTTPRequestLine(br); err != nil {
+			return err
+		}
+		v, err := conn.Evaluate(ctx, resultFacetName, map[string]any{"verb": "GET"}, "GET /")
+		if err != nil {
+			return err
+		}
+		if v.Action != "allow" && v.Action != "hitl_allow" {
+			return nil
+		}
+		body := bytes.Repeat([]byte("A"), bodySize)
+		ctr := &cancelTrackingReader{r: bytes.NewReader(body)}
+		*reader = ctr
+		if err := conn.SetResult(ctx, map[string]any{
+			"status": "200",
+			"body":   pluginsdk.Stream(ctr),
+		}); err != nil {
+			return err
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+		return nil
+	}
+}
+
+// TestEndpointSetResultBodyCapped offers a response body LARGER than the cap.
+// The gateway must pull up to the cap, append the truncation marker, and set
+// the sample on the end event — and cancelling the stream must not error the
+// plugin (its reader is closed cleanly, HandleConn returns nil).
+func TestEndpointSetResultBodyCapped(t *testing.T) {
+	const cap = 16
+	var reader *cancelTrackingReader
+	adapter, ep := startResultPlugin(t, bodyResultHandle(cap*8, &reader))
+
+	var handleErr error
+	var mu sync.Mutex
+	var events []runtime.ConnEvent
+	ch := &runtime.ConnHandle{
+		Endpoint:       ep,
+		PeerIP:         "1.2.3.4",
+		UpstreamHost:   "api.example.test",
+		DstPort:        443,
+		BodyStorageCap: cap,
+		Emit: func(ev runtime.ConnEvent) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		},
+	}
+	gw, agent := tcpPipe(t)
+	ch.Conn = gw
+	done := make(chan struct{})
+	go func() { handleErr = adapter.HandleConn(context.Background(), ch); close(done) }()
+	go func() {
+		_, _ = agent.Write([]byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
+		_, _ = io.Copy(io.Discard, agent)
+		_ = agent.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("HandleConn did not return")
+	}
+
+	mu.Lock()
+	evs := append([]runtime.ConnEvent(nil), events...)
+	mu.Unlock()
+	_, end := startEnd(evs)
+	if end == nil {
+		t.Fatalf("no end event; events=%+v", evs)
+	}
+	if end.Status != "200" {
+		t.Errorf("end.Status=%q, want \"200\"", end.Status)
+	}
+	if !strings.HasSuffix(end.RespBody, bodyTruncatedMarker) {
+		t.Fatalf("RespBody missing truncation marker; got %q", end.RespBody)
+	}
+	prefix := strings.TrimSuffix(end.RespBody, bodyTruncatedMarker)
+	if len(prefix) != cap {
+		t.Errorf("capped prefix len=%d, want %d; RespBody=%q", len(prefix), cap, end.RespBody)
+	}
+	if prefix != strings.Repeat("A", cap) {
+		t.Errorf("capped prefix=%q, want %d A's", prefix, cap)
+	}
+	if end.RespSha == "" {
+		t.Errorf("RespSha empty for a non-empty body")
+	}
+	if handleErr != nil {
+		t.Errorf("plugin HandleConn errored by gateway cancel: %v", handleErr)
+	}
+	if reader == nil || !reader.closed.Load() {
+		t.Errorf("plugin body reader was not closed by the gateway's StreamCancel (graceful cancel)")
+	}
+}
+
+// TestEndpointSetResultBodySmall offers a response body SMALLER than the cap.
+// The full body must surface on the end event with no truncation marker.
+func TestEndpointSetResultBodySmall(t *testing.T) {
+	const cap = 4096
+	const bodyLen = 11
+	want := strings.Repeat("A", bodyLen)
+	var reader *cancelTrackingReader
+	adapter, ep := startResultPlugin(t, bodyResultHandle(bodyLen, &reader))
+
+	events := runResultConnCap(t, adapter, ep, cap, func(agent net.Conn) {
+		_, _ = agent.Write([]byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
+		_, _ = io.Copy(io.Discard, agent)
+		_ = agent.Close()
+	})
+	_, end := startEnd(events)
+	if end == nil {
+		t.Fatalf("no end event; events=%+v", events)
+	}
+	if end.Status != "200" {
+		t.Errorf("end.Status=%q, want \"200\"", end.Status)
+	}
+	if strings.Contains(end.RespBody, bodyTruncatedMarker) {
+		t.Errorf("small body should not be truncated; RespBody=%q", end.RespBody)
+	}
+	if end.RespBody != want {
+		t.Errorf("RespBody=%q, want %q", end.RespBody, want)
 	}
 }

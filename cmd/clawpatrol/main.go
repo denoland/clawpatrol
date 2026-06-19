@@ -2026,6 +2026,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			}
 			return g.dialUpstream(ctx, network, addr, serverName, ep, profile)
 		},
+		BodyStorageCap: g.cfg.Load().BodyStorageLimit(),
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
 				return
@@ -2040,6 +2041,8 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Approver:     ev.Approver,
 				ApproverType: ev.ApproverType,
 				ApproverBy:   ev.ApproverBy,
+				RespBody:     ev.RespBody,
+				RespSha:      ev.RespSha,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {

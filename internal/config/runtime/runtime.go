@@ -268,6 +268,12 @@ type ConnHandle struct {
 	// SNI the client sent. nil when the dispatcher can't mint
 	// (gateway has no CA).
 	MintCert func(host string) (*tls.Certificate, error)
+	// BodyStorageCap is the most response-body the gateway buffers when a
+	// plugin offers a FACET_STREAM result field (cfg.BodyStorageLimit()).
+	// It matches the cap the built-in HTTP sampler uses, so plugin and
+	// built-in response samples are bounded identically. Zero means use the
+	// default (config.DefaultBodyStorageLimit).
+	BodyStorageCap int
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to
@@ -326,6 +332,19 @@ type ConnEvent struct {
 	// ResultFacets is the after-the-fact report payload (values keyed by
 	// the facet's result_fields). Set on the end event alongside Status.
 	ResultFacets map[string]any
+
+	// RespBody is the plugin-reported, gateway-capped response sample —
+	// the after-the-fact counterpart of a request-side body. The plugin
+	// offers the body as a FACET_STREAM result field; the gateway pulls it
+	// up to its body-storage cap, appends the truncation marker when the
+	// body overran the cap, and cancels the stream. Set on the end event,
+	// it lands on Event.RespBody and renders in the request detail page's
+	// "Response body" section exactly like the built-in HTTP path's sample.
+	RespBody string
+	// RespSha is the hex SHA-256 of the full (uncapped) response body the
+	// plugin streamed, mirroring the built-in HTTP path. Empty when the
+	// plugin reported no body. Set on the end event alongside RespBody.
+	RespSha string
 }
 
 // Secret is what credential plugins receive at injection time. The

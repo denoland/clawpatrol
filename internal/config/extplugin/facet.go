@@ -50,6 +50,10 @@ type pluginFacet struct {
 	// reports no result schema.
 	resultFields []facet.ReportFieldSpec
 	resultTitle  string
+	// resultBodyField is the name of the FACET_STREAM result field — the
+	// response body the gateway pulls (up to its body-storage cap) and
+	// cancels. For v1 a facet declares at most one; "" when none.
+	resultBodyField string
 }
 
 func (p *pluginFacet) Name() string                          { return p.name }
@@ -127,14 +131,22 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) hcl.Diagnostics {
 			break
 		}
 	}
+	resultBodyField := ""
+	for _, rf := range decl.ResultFields {
+		if rf.Kind == pb.FacetKind_FACET_STREAM {
+			resultBodyField = rf.Name
+			break
+		}
+	}
 	pf := &pluginFacet{
-		name:           decl.Name,
-		reportFields:   protoFacetFieldsToSpec(decl.Fields),
-		kindByField:    kindByField,
-		optionalFields: optional,
-		streamFields:   streams,
-		resultFields:   resultFields,
-		resultTitle:    resultTitle,
+		name:            decl.Name,
+		reportFields:    protoFacetFieldsToSpec(decl.Fields),
+		kindByField:     kindByField,
+		optionalFields:  optional,
+		streamFields:    streams,
+		resultFields:    resultFields,
+		resultTitle:     resultTitle,
+		resultBodyField: resultBodyField,
 	}
 	facet.Register(pf)
 	return nil

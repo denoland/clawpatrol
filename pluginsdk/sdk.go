@@ -624,8 +624,12 @@ func (c *Conn) Evaluate(ctx context.Context, facet string, action map[string]any
 // action's status on the dashboard. Call it once, after the response is
 // read, for the action this connection just evaluated.
 //
-// (First cut: scalar result fields only. FacetStream result fields — a
-// response body the gateway streams and caps — are a follow-up.)
+// A result field declared FacetStream is a response body: hand it a
+// pluginsdk.Stream(r) value and the gateway pulls the stream up to its
+// body-storage cap, shows the sample in the request detail page, then
+// cancels — the plugin's reader sees the cancel as a clean close and is
+// not errored by it. Scalar fields stay inline in result_json. The plugin
+// has no size opinion; the gateway owns buffering.
 func (c *Conn) SetResult(ctx context.Context, result map[string]any) error {
 	if c.setResult == nil {
 		return errors.New("pluginsdk: Conn.SetResult not wired (running without a gateway?)")

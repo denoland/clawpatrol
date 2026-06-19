@@ -518,16 +518,6 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		return stream.Send(m)
 	}
 
-	conn.setResult = func(_ context.Context, result map[string]any) error {
-		// First cut: scalar result fields only (the body-stream support that
-		// FacetStream result fields will need is a follow-up). The gateway
-		// correlates this to the conn's current action, so no call_id.
-		j, err := json.Marshal(result)
-		if err != nil {
-			return fmt.Errorf("pluginsdk: marshal result: %w", err)
-		}
-		return doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Result{Result: &pb.ActionResult{ResultJson: j}}})
-	}
 	conn.emit = func(ev ConnEvent) {
 		facets, _ := json.Marshal(ev.Facets)
 		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Event{Event: &pb.ConnEvent{
@@ -557,6 +547,50 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	var streamsMu sync.Mutex
 	streams := map[string]*streamReg{}
 	var streamSeq atomic.Uint64
+
+	conn.setResult = func(_ context.Context, result map[string]any) error {
+		// Stream-valued result fields (the response body a plugin offers via
+		// pluginsdk.Stream) are split out of result_json into
+		// ActionResult.streams and registered in the same stream table the
+		// request side uses — the gateway pulls them with the identical
+		// StreamRead/StreamChunk loop and StreamCancel. Scalars stay in
+		// result_json. The gateway correlates this to the conn's current
+		// action, so no call_id.
+		resultForJSON := result
+		streamHandles := map[string]string(nil)
+		for k, v := range result {
+			sv, ok := v.(StreamValue)
+			if !ok {
+				continue
+			}
+			if streamHandles == nil {
+				// Lazy clone so we don't mutate the caller's map; nil-out
+				// stream entries in the JSON copy (handles ride in streams).
+				resultForJSON = make(map[string]any, len(result))
+				for kk, vv := range result {
+					if _, isStream := vv.(StreamValue); isStream {
+						resultForJSON[kk] = nil
+					} else {
+						resultForJSON[kk] = vv
+					}
+				}
+				streamHandles = map[string]string{}
+			}
+			handle := fmt.Sprintf("s%d", streamSeq.Add(1))
+			streamsMu.Lock()
+			streams[handle] = &streamReg{r: sv.R}
+			streamsMu.Unlock()
+			streamHandles[k] = handle
+		}
+		j, err := json.Marshal(resultForJSON)
+		if err != nil {
+			return fmt.Errorf("pluginsdk: marshal result: %w", err)
+		}
+		return doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Result{Result: &pb.ActionResult{
+			ResultJson: j,
+			Streams:    streamHandles,
+		}}})
+	}
 
 	// dials tracks brokered upstream connections (Conn.DialUpstream)
 	// keyed by dial_id. The recv goroutine routes DialUpstreamReply /

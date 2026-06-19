@@ -2,7 +2,9 @@ package extplugin
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -395,10 +397,24 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 			case *pb.ConnMessage_Result:
 				// The plugin reports an action's outcome after the response;
 				// finalize the conn's in-flight action (emit its end event
-				// carrying the status). Synchronous so it completes before the
-				// trailing Close frame, leaving the flush-on-return a no-op.
-				rs.finish(k.Result.ResultJson)
+				// carrying the status). When the result carries a FACET_STREAM
+				// body the gateway pulls it (up to the body cap) before
+				// emitting the end — and that pull issues StreamRead and waits
+				// for StreamChunk, which arrive HERE on this same recv loop. So
+				// the pull MUST run off this goroutine or it deadlocks: finish
+				// spawns it and the end event is emitted from that goroutine.
+				rs.finish(ctx, k.Result, doSend, streamReply)
 			case *pb.ConnMessage_Close:
+				// A response-body pull spawned by finish needs this recv loop
+				// to keep routing its StreamChunk frames. The plugin may queue
+				// ConnClose (HandleConn returned) before the pull reaches the
+				// cap/EOF, so don't tear down yet: keep reading and routing
+				// StreamChunks until the pull completes. The pull bounds itself
+				// (cap or EOF, then StreamCancel); ctx cancellation unblocks it
+				// if the stream dies.
+				if done := rs.pullInFlight(); done != nil {
+					drainBodyPull(stream, done, getStreamCh)
+				}
 				pluginDone <- nil
 				return
 			}
@@ -452,6 +468,84 @@ func halfCloseWrite(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
+}
+
+// bodyTruncatedMarker is appended to a persisted response-body sample when
+// the body exceeded the gateway's body-storage cap. It is byte-for-byte the
+// marker the built-in HTTP sampler emits (cmd/clawpatrol/web.go's
+// bodyTruncatedMarker), so the dashboard's BODY_TRUNCATED_MARKER handling
+// renders a plugin response body's "truncated" badge with no extra wiring.
+const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
+
+// bodySampler caps a plugin-streamed response body to the gateway's
+// body-storage limit and hashes the bytes it captured, mirroring the
+// built-in HTTP path's sampler so plugin and built-in response samples look
+// identical on the dashboard. The gateway pulls at most cap+1 bytes (the
+// extra byte distinguishes a body that exactly fills the cap from one that
+// overran it) and cancels the stream, so the SHA covers the captured sample
+// rather than the full upstream body — the gateway never sees more than the
+// cap by design.
+type bodySampler struct {
+	cap int
+	buf []byte
+}
+
+func newBodySampler(capBytes int) *bodySampler {
+	if capBytes < 0 {
+		capBytes = 0
+	}
+	return &bodySampler{cap: capBytes}
+}
+
+func (b *bodySampler) write(p []byte) { b.buf = append(b.buf, p...) }
+
+// truncated reports whether more bytes were pulled than the cap keeps — the
+// caller pulls cap+1 bytes precisely so this is detectable.
+func (b *bodySampler) truncated() bool { return len(b.buf) > b.cap }
+
+// sample returns the capped body preview: the first cap bytes, with the
+// truncation marker appended when the body overran the cap. Binary bodies
+// are rendered as a hex prefix, matching the built-in sampler.
+func (b *bodySampler) sample() string {
+	if len(b.buf) == 0 {
+		return ""
+	}
+	keep := b.buf
+	if len(keep) > b.cap {
+		keep = keep[:b.cap]
+	}
+	var out string
+	if isPrintable(keep) {
+		out = string(keep)
+	} else {
+		out = "binary:" + hex.EncodeToString(keep[:min(64, len(keep))])
+	}
+	if b.truncated() {
+		out += bodyTruncatedMarker
+	}
+	return out
+}
+
+// sha is the hex SHA-256 of the captured sample bytes (at most cap+1). Empty
+// when nothing was captured.
+func (b *bodySampler) sha() string {
+	if len(b.buf) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(b.buf)
+	return hex.EncodeToString(sum[:])
+}
+
+// isPrintable mirrors the built-in sampler's predicate (web.go) so a binary
+// plugin response body is rendered as a hex prefix here too, not as garbled
+// text on the dashboard.
+func isPrintable(b []byte) bool {
+	for _, x := range b {
+		if x == 0 || (x < 0x20 && x != '\n' && x != '\r' && x != '\t') {
+			return false
+		}
+	}
+	return true
 }
 
 // streamCapBytesForRule is how many bytes the gateway pulls from a
@@ -678,19 +772,34 @@ func emitEvaluation(ch *runtime.ConnHandle, rs *resultState, summary string, act
 // connection's current action. Sequential request/response only — begin()
 // flushes any prior unfinished action so it can't be orphaned.
 type resultState struct {
-	mu      sync.Mutex
-	ch      *runtime.ConnHandle
-	title   string // result-schema title field name → Status
-	pending *runtime.ConnEvent
-	ended   bool
+	mu        sync.Mutex
+	ch        *runtime.ConnHandle
+	title     string // result-schema title field name → Status
+	bodyField string // result-schema FACET_STREAM field name → RespBody
+	bodyCap   int    // gateway body-storage cap for the response sample
+	pending   *runtime.ConnEvent
+	ended     bool
+	// pulling, when non-nil, signals an in-flight response-body pull
+	// spawned by finish: it is closed once the pull completes and the end
+	// event has been emitted. flush (deferred on pumpConn return) and the
+	// recv loop's ConnClose handler wait on it so the body pull isn't cut
+	// short and the end event isn't double-emitted. Held under mu.
+	pulling chan struct{}
 }
 
 func newResultState(ch *runtime.ConnHandle) *resultState {
 	rs := &resultState{ch: ch}
-	if ch.Endpoint != nil {
-		if pf := facetFor(ch.Endpoint.Family); pf != nil {
-			rs.title = pf.resultTitle
+	if ch != nil {
+		rs.bodyCap = ch.BodyStorageCap
+		if ch.Endpoint != nil {
+			if pf := facetFor(ch.Endpoint.Family); pf != nil {
+				rs.title = pf.resultTitle
+				rs.bodyField = pf.resultBodyField
+			}
 		}
+	}
+	if rs.bodyCap <= 0 {
+		rs.bodyCap = int(config.DefaultBodyStorageLimit)
 	}
 	return rs
 }
@@ -707,31 +816,163 @@ func (rs *resultState) begin(ev runtime.ConnEvent) {
 	}
 }
 
-// finish emits the end event carrying the plugin-reported status, lifted
-// from the result schema's title field in result_json.
-func (rs *resultState) finish(resultJSON []byte) {
+// finish finalizes the conn's in-flight action from a plugin ActionResult.
+// It lifts the plugin-reported status from the result schema's title field,
+// then:
+//
+//   - With no FACET_STREAM body stream, it emits the end event synchronously
+//     — identical to the status-only path before response bodies existed.
+//   - With a body stream, the gateway must pull it (up to the body cap) and
+//     fold the sample onto the end event. The pull issues StreamRead and
+//     waits for StreamChunk, both of which travel the recv loop that calls
+//     finish; pulling here would deadlock. So finish spawns the pull on its
+//     own goroutine, records rs.pulling, and that goroutine emits the end
+//     event when the pull completes. flush and the ConnClose handler wait on
+//     rs.pulling so the body isn't truncated and the end isn't double-emitted.
+func (rs *resultState) finish(ctx context.Context, result *pb.ActionResult, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	if rs.pending == nil || rs.ended {
+		rs.mu.Unlock()
 		return
 	}
 	end := *rs.pending
 	end.Phase = "end"
-	if rs.title != "" && len(resultJSON) > 0 {
+	if rs.title != "" && len(result.GetResultJson()) > 0 {
 		var rj map[string]any
-		if json.Unmarshal(resultJSON, &rj) == nil {
+		if json.Unmarshal(result.GetResultJson(), &rj) == nil {
 			if val, ok := rj[rs.title]; ok && val != nil {
 				end.Status = fmt.Sprint(val)
 			}
 		}
 	}
+
+	// Identify the response-body stream handle, if the result offers one.
+	handle := ""
+	if rs.bodyField != "" {
+		handle = result.GetStreams()[rs.bodyField]
+	}
+	if handle == "" {
+		// Status-only path: emit now, no pull. Unchanged from before.
+		rs.ended = true
+		emit := rs.ch.Emit
+		rs.mu.Unlock()
+		if emit != nil {
+			emit(end)
+		}
+		return
+	}
+
+	// Body path: mark the action ended (no other path may emit it) and hand
+	// the end event to a pull goroutine. ended is set under the lock now so
+	// flush/ConnClose can't race a duplicate emit; the goroutine owns the
+	// single emit once the pull finishes.
 	rs.ended = true
-	if rs.ch.Emit != nil {
-		rs.ch.Emit(end)
+	done := make(chan struct{})
+	rs.pulling = done
+	emit := rs.ch.Emit
+	cap := rs.bodyCap
+	rs.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		body, sha := pullBodySample(ctx, doSend, streamReply, handle, cap)
+		end.RespBody = body
+		end.RespSha = sha
+		if emit != nil {
+			emit(end)
+		}
+	}()
+}
+
+// awaitPull blocks until any in-flight response-body pull spawned by finish
+// has completed (its end event emitted). Safe to call when none is in
+// flight. Used by flush and the recv loop's ConnClose handler so the pull —
+// which needs the recv loop alive to receive StreamChunk frames — isn't cut
+// short, and so the end event is emitted exactly once.
+func (rs *resultState) awaitPull() {
+	if done := rs.pullInFlight(); done != nil {
+		<-done
 	}
 }
 
+// pullInFlight returns the completion channel of an in-flight body pull, or
+// nil when none is running.
+func (rs *resultState) pullInFlight() <-chan struct{} {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.pulling == nil {
+		return nil
+	}
+	return rs.pulling
+}
+
+// drainBodyPull keeps reading the plugin stream and routing StreamChunk
+// frames to the in-flight body pull until that pull completes (done closes).
+// It is called from the recv loop's ConnClose handler: the plugin queued
+// ConnClose before the pull reached cap/EOF, so the loop would otherwise tear
+// down with chunks still owed to the pull. Non-StreamChunk frames arriving
+// here (the plugin shutting down) are dropped — the conn is closing. A recv
+// error ends the drain; the pull then unblocks on ctx cancellation.
+func drainBodyPull(stream pb.Endpoint_HandleConnClient, done <-chan struct{}, getStreamCh func(handle string) chan *pb.StreamChunk) {
+	type recvRes struct {
+		msg *pb.ConnMessage
+		err error
+	}
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		ch := make(chan recvRes, 1)
+		go func() {
+			m, err := stream.Recv()
+			ch <- recvRes{m, err}
+		}()
+		select {
+		case <-done:
+			return
+		case r := <-ch:
+			if r.err != nil {
+				return
+			}
+			if sc, ok := r.msg.GetKind().(*pb.ConnMessage_StreamChunk); ok {
+				replyCh := getStreamCh(sc.StreamChunk.Handle)
+				select {
+				case replyCh <- sc.StreamChunk:
+				default:
+				}
+			}
+		}
+	}
+}
+
+// pullBodySample pulls a plugin-offered FACET_STREAM response body up to the
+// gateway's body-storage cap, then cancels the stream. It returns the body
+// sample (capped, with the truncation marker appended when the body overran
+// the cap) and the hex SHA-256 of the full streamed bytes — the same shape
+// the built-in HTTP sampler produces, so the dashboard renders it
+// identically. Cancelling a stream the SDK is still serving is graceful: the
+// SDK drops the registered reader and the plugin's source sees a clean close.
+func pullBodySample(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, capBytes int) (sample, sha string) {
+	bs := newBodySampler(capBytes)
+	// Read one extra byte past the cap so we can tell a body that exactly
+	// fills the cap (no marker) from one that overran it (marker), matching
+	// the built-in sampler's n > cap truncation test.
+	pullLimit := capBytes + 1
+	data, _ := pullStream(ctx, doSend, streamReply, handle, pullLimit)
+	// Always cancel so the plugin can release its source, even on EOF.
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamCancel{StreamCancel: &pb.StreamCancel{Handle: handle}}})
+	bs.write(data)
+	return bs.sample(), bs.sha()
+}
+
 func (rs *resultState) flush() {
+	// Wait for any in-flight body pull to emit its end event first, so we
+	// don't race it (it already set rs.ended under the lock, so flushLocked
+	// would no-op — but the pull must still get to run to completion and
+	// emit). After it returns, flushLocked handles the no-result case.
+	rs.awaitPull()
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.flushLocked()
