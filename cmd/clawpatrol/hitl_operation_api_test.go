@@ -134,8 +134,11 @@ func assertHITLOperationAcceptedResponse(t *testing.T, status int, header http.H
 	if body["upstream_called"] != false {
 		t.Fatalf("upstream_called = %v, want false", body["upstream_called"])
 	}
-	if body["retry_original_request"] != true {
-		t.Fatalf("retry_original_request = %v, want true", body["retry_original_request"])
+	if body["poll_operation_status"] != true {
+		t.Fatalf("poll_operation_status = %v, want true", body["poll_operation_status"])
+	}
+	if _, ok := body["retry_original_request"]; ok {
+		t.Fatalf("retry_original_request should be absent while polling: %#v", body)
 	}
 	if msg, _ := body["message"].(string); !strings.Contains(msg, "upstream service") || !strings.Contains(msg, "status_url") {
 		t.Fatalf("message is not useful agent guidance: %q", msg)
@@ -282,12 +285,13 @@ func TestHITLOperationStatusEndpointReturnsStateSpecificEnvelope(t *testing.T) {
 		wantUpstream        bool
 		wantRetryAfter      bool
 		wantRetryEnvelope   bool
+		wantPollStatus      bool
 		wantExpiredReason   string
 		wantCompletedAt     bool
 		wantNoRetryEnvelope bool
 	}{
-		{name: "sync waiting", op: syncWaiting, wantState: HITLOperationStateSyncWaiting, wantTerminal: false, wantUpstream: false, wantRetryAfter: true},
-		{name: "pending", op: pending, wantState: HITLOperationStatePendingApproval, wantTerminal: false, wantUpstream: false, wantRetryAfter: true},
+		{name: "sync waiting", op: syncWaiting, wantState: HITLOperationStateSyncWaiting, wantTerminal: false, wantUpstream: false, wantRetryAfter: true, wantPollStatus: true},
+		{name: "pending", op: pending, wantState: HITLOperationStatePendingApproval, wantTerminal: false, wantUpstream: false, wantRetryAfter: true, wantPollStatus: true},
 		{name: "approved", op: approved, wantState: HITLOperationStateApprovedWaitingForRetry, wantTerminal: false, wantUpstream: false, wantRetryEnvelope: true},
 		{name: "executing", op: executing, wantState: HITLOperationStateExecutingUpstream, wantTerminal: false, wantUpstream: true},
 		{name: "denied", op: denied, wantState: HITLOperationStateDenied, wantTerminal: true, wantUpstream: false, wantNoRetryEnvelope: true},
@@ -330,6 +334,16 @@ func TestHITLOperationStatusEndpointReturnsStateSpecificEnvelope(t *testing.T) {
 			}
 			if msg, _ := body["message"].(string); msg == "" {
 				t.Fatalf("message is empty: %#v", body)
+			}
+			if tc.wantPollStatus {
+				if body["poll_operation_status"] != true {
+					t.Fatalf("poll_operation_status = %v, want true", body["poll_operation_status"])
+				}
+				if _, ok := body["retry_original_request"]; ok {
+					t.Fatalf("retry_original_request should be absent for %s: %#v", tc.wantState, body)
+				}
+			} else if _, ok := body["poll_operation_status"]; ok {
+				t.Fatalf("poll_operation_status should be absent for %s: %#v", tc.wantState, body)
 			}
 			if tc.wantRetryEnvelope {
 				if body["retry_original_request"] != true {

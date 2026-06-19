@@ -897,7 +897,7 @@ func hitlOperationStatusBody(op HITLOperation, statusURL string, upstreamCalled 
 
 	switch op.State {
 	case HITLOperationStateSyncWaiting, HITLOperationStatePendingApproval:
-		body["retry_original_request"] = true
+		body["poll_operation_status"] = true
 		if !op.ApprovalExpiresAt.IsZero() {
 			body["approval_expires_at"] = op.ApprovalExpiresAt.UTC().Format(time.RFC3339Nano)
 		}

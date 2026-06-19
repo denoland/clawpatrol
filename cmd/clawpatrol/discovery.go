@@ -737,8 +737,11 @@ The 202 body is JSON describing the parked operation. The fields you act on:
 		`header). Poll THIS url; do not build your own — the template is %s.
 - state: the current state (see below).
 - terminal: true once the operation has reached a final state and will not change.
-- retry_original_request: true while you should still be working the operation (poll, or retry once `+
-		`approved).
+- poll_operation_status: true while you should keep polling status_url (the operation is parked `+
+		`waiting on a human). Mutually exclusive with retry_original_request.
+- retry_original_request: true once a human has approved and you should RE-SEND the original `+
+		`request to execute it (see approved_waiting_for_retry below). Mutually exclusive with `+
+		`poll_operation_status.
 The 202 also carries a Retry-After header (suggested %d seconds) — wait that long between polls.
 
 Poll status_url with GET until the state resolves. The states:
