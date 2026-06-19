@@ -906,12 +906,12 @@ func (rs *resultState) finish(ctx context.Context, result *pb.ActionResult, doSe
 	done := make(chan struct{})
 	rs.pulling = done
 	emit := rs.ch.Emit
-	cap := rs.bodyCap
+	capBytes := rs.bodyCap
 	rs.mu.Unlock()
 
 	go func() {
 		defer close(done)
-		body, sha := pullBodySample(ctx, doSend, streamReply, streamDead, handle, cap)
+		body, sha := pullBodySample(ctx, doSend, streamReply, streamDead, handle, capBytes)
 		end.RespBody = body
 		end.RespSha = sha
 		if emit != nil {

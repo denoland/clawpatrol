@@ -401,9 +401,9 @@ func bodyResultHandle(bodySize int, reader **cancelTrackingReader) func(ctx cont
 // the sample on the end event — and cancelling the stream must not error the
 // plugin (its reader is closed cleanly, HandleConn returns nil).
 func TestEndpointSetResultBodyCapped(t *testing.T) {
-	const cap = 16
+	const capBytes = 16
 	var reader *cancelTrackingReader
-	adapter, ep := startResultPlugin(t, bodyResultHandle(cap*8, &reader))
+	adapter, ep := startResultPlugin(t, bodyResultHandle(capBytes*8, &reader))
 
 	var handleErr error
 	var mu sync.Mutex
@@ -413,7 +413,7 @@ func TestEndpointSetResultBodyCapped(t *testing.T) {
 		PeerIP:         "1.2.3.4",
 		UpstreamHost:   "api.example.test",
 		DstPort:        443,
-		BodyStorageCap: cap,
+		BodyStorageCap: capBytes,
 		Emit: func(ev runtime.ConnEvent) {
 			mu.Lock()
 			events = append(events, ev)
@@ -449,11 +449,11 @@ func TestEndpointSetResultBodyCapped(t *testing.T) {
 		t.Fatalf("RespBody missing truncation marker; got %q", end.RespBody)
 	}
 	prefix := strings.TrimSuffix(end.RespBody, bodyTruncatedMarker)
-	if len(prefix) != cap {
-		t.Errorf("capped prefix len=%d, want %d; RespBody=%q", len(prefix), cap, end.RespBody)
+	if len(prefix) != capBytes {
+		t.Errorf("capped prefix len=%d, want %d; RespBody=%q", len(prefix), capBytes, end.RespBody)
 	}
-	if prefix != strings.Repeat("A", cap) {
-		t.Errorf("capped prefix=%q, want %d A's", prefix, cap)
+	if prefix != strings.Repeat("A", capBytes) {
+		t.Errorf("capped prefix=%q, want %d A's", prefix, capBytes)
 	}
 	if end.RespSha == "" {
 		t.Errorf("RespSha empty for a non-empty body")
@@ -685,13 +685,13 @@ func TestEndpointSetResultBodyPullConnErrorsNoHang(t *testing.T) {
 // TestEndpointSetResultBodySmall offers a response body SMALLER than the cap.
 // The full body must surface on the end event with no truncation marker.
 func TestEndpointSetResultBodySmall(t *testing.T) {
-	const cap = 4096
+	const capBytes = 4096
 	const bodyLen = 11
 	want := strings.Repeat("A", bodyLen)
 	var reader *cancelTrackingReader
 	adapter, ep := startResultPlugin(t, bodyResultHandle(bodyLen, &reader))
 
-	events := runResultConnCap(t, adapter, ep, cap, func(agent net.Conn) {
+	events := runResultConnCap(t, adapter, ep, capBytes, func(agent net.Conn) {
 		_, _ = agent.Write([]byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
 		_, _ = io.Copy(io.Discard, agent)
 		_ = agent.Close()
