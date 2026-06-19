@@ -2726,7 +2726,15 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		var trackBuf *bytes.Buffer
 		if trackKind != "" && resp.StatusCode == 200 {
 			ct := resp.Header.Get("Content-Type")
-			if strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
+			// Codex's /backend-api/codex/responses SSE responses come back
+			// through Cloudflare with NO Content-Type header, so an empty ct
+			// is treated as eligible too — otherwise the codex HTTP/SSE turn
+			// is never buffered and trackLLMUsage (the GenAI span source)
+			// never fires, while WS codex and Content-Type-bearing providers
+			// (Anthropic) record fine. trackKind is only set for the LLM
+			// hosts and trackLLMUsage re-gates on path, so this won't capture
+			// unrelated traffic.
+			if ct == "" || strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
 				trackBuf = &bytes.Buffer{}
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
