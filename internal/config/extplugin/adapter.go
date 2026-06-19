@@ -20,6 +20,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/match"
 	"github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -190,11 +191,15 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 	// Evaluate over the broker (no EvaluateAction frame / call_id) — the
 	// session closure runs the same evaluateDecoded core the frame handler
 	// does. Removed when the connection ends so no context dangles.
+	// rs carries the start→end lifecycle for this conn's actions, shared by
+	// the inline (HostControl) and frame evaluate paths and the ActionResult
+	// handler in pumpConn.
+	rs := newResultState(ch)
 	var sessionToken string
 	if a.client != nil && a.client.sessions != nil {
 		tok, remove := a.client.sessions.register(&session{
 			evaluate: func(_ context.Context, _ string, actionJSON []byte, summary string) (Verdict, error) {
-				return evaluateInline(ch, summary, actionJSON), nil
+				return evaluateInline(ch, rs, summary, actionJSON), nil
 			},
 		})
 		sessionToken = tok
@@ -225,7 +230,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		return fmt.Errorf("extplugin: send ConnInit: %w", err)
 	}
 
-	return pumpConn(ctx, conn, stream, ch)
+	return pumpConn(ctx, conn, stream, ch, rs)
 }
 
 // pumpConn runs two goroutines:
@@ -244,7 +249,11 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 // sendMu serializes everything that writes to the stream — the data
 // pump, async event forwarding, the close on shutdown, and verdict
 // replies fired from per-evaluate goroutines.
-func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, ch *runtime.ConnHandle) error {
+func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, ch *runtime.ConnHandle, rs *resultState) error {
+	// Guarantee an end event for every started action: a plugin that
+	// doesn't report (or a dropped conn) still persists its in-flight
+	// action with an empty status rather than leaving an orphaned start.
+	defer rs.flush()
 	var sendMu sync.Mutex
 	doSend := func(m *pb.ConnMessage) error {
 		sendMu.Lock()
@@ -351,7 +360,7 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 				// Run rule + approve chain off the recv loop so a
 				// HITL-blocking call doesn't stall data flow or
 				// other concurrent evaluations.
-				go handleEvaluate(ctx, ch, k.Evaluate, doSend, streamReply)
+				go handleEvaluate(ctx, ch, rs, k.Evaluate, doSend, streamReply)
 			case *pb.ConnMessage_StreamChunk:
 				replyCh := getStreamCh(k.StreamChunk.Handle)
 				select {
@@ -383,6 +392,12 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 					dials.remove(k.DialClose.DialId)
 					d.close()
 				}
+			case *pb.ConnMessage_Result:
+				// The plugin reports an action's outcome after the response;
+				// finalize the conn's in-flight action (emit its end event
+				// carrying the status). Synchronous so it completes before the
+				// trailing Close frame, leaving the flush-on-return a no-op.
+				rs.finish(k.Result.ResultJson)
 			case *pb.ConnMessage_Close:
 				pluginDone <- nil
 				return
@@ -458,11 +473,11 @@ const streamCapBytesForLog = 1024
 // ConnEvent so the action lands on the dashboard event sink with
 // the action map as the facet payload — plugins don't need to
 // double-emit via Conn.Emit.
-func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
+func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, rs *resultState, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
 	action, derr := decodeAction(ev.ActionJson)
 	if derr != nil {
 		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", derr)}
-		emitEvaluation(ch, ev.Summary, action, v)
+		emitEvaluation(ch, rs, ev.Summary, action, v)
 		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
 		return
 	}
@@ -501,7 +516,7 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	}
 
 	v := evaluateDecoded(ch, ev.Summary, action, streamBytes, truncated)
-	emitEvaluation(ch, ev.Summary, action, v)
+	emitEvaluation(ch, rs, ev.Summary, action, v)
 	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
 }
 
@@ -608,34 +623,133 @@ func evaluateDecoded(ch *runtime.ConnHandle, summary string, action map[string]a
 // event, and returns the verdict. The frame analogue is handleEvaluate; a
 // malformed payload becomes an "error" verdict here too, not a transport
 // error.
-func evaluateInline(ch *runtime.ConnHandle, summary string, actionJSON []byte) Verdict {
+func evaluateInline(ch *runtime.ConnHandle, rs *resultState, summary string, actionJSON []byte) Verdict {
 	action, err := decodeAction(actionJSON)
 	if err != nil {
 		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", err)}
-		emitEvaluation(ch, summary, action, v)
+		emitEvaluation(ch, rs, summary, action, v)
 		return v
 	}
 	v := evaluateDecoded(ch, summary, action, nil, false)
-	emitEvaluation(ch, summary, action, v)
+	emitEvaluation(ch, rs, summary, action, v)
 	return v
 }
 
-// emitEvaluation logs one EvaluateAction onto the gateway event
-// sink so the action shows up on the dashboard alongside built-in
-// facet events. Verb / Summary are pulled from the action so the
-// log line is human-readable; the action map rides as Facets.
-func emitEvaluation(ch *runtime.ConnHandle, summary string, action map[string]any, v Verdict) {
+// emitEvaluation logs one EvaluateAction onto the gateway event sink so the
+// action shows up on the dashboard alongside built-in facet events. Verb /
+// Summary are pulled from the action so the log line is human-readable; the
+// action map rides as Facets.
+//
+// When rs is non-nil and the verdict allows the request through, the action
+// is emitted as an in-flight "start" and the lifecycle is handed to rs,
+// which emits the "end" (carrying the plugin-reported Status) once an
+// ActionResult arrives or the connection closes. Terminal verdicts (deny /
+// error — no response is coming) emit a single complete event.
+func emitEvaluation(ch *runtime.ConnHandle, rs *resultState, summary string, action map[string]any, v Verdict) {
 	if ch.Emit == nil {
 		return
 	}
-	ch.Emit(runtime.ConnEvent{
+	ev := runtime.ConnEvent{
 		Action:  v.Action,
 		Reason:  v.Reason,
 		Verb:    stringField(action, "verb"),
 		Summary: summary,
 		Facets:  action,
 		Rule:    v.Rule,
-	})
+	}
+	if rs != nil && (v.Action == "allow" || v.Action == "hitl_allow") {
+		ev.ID = uuid.Must(uuid.NewV7()).String()
+		ev.Phase = "start"
+		rs.begin(ev)
+		return
+	}
+	ch.Emit(ev)
+}
+
+// resultState gives a plugin endpoint's action the same start→end lifecycle
+// the built-in HTTP path uses. emitEvaluation calls begin() with the
+// in-flight "start" event when a request is allowed through; the plugin
+// later reports the outcome via an ActionResult frame (finish), or the
+// connection closes (flush) — either way the action persists exactly once
+// as the "end" event, and the dashboard merges start→end by ID.
+//
+// Conn-scoped, not call_id-scoped: Conn.Evaluate's common no-stream path
+// runs inline over HostControl with no call_id, so the result finalizes the
+// connection's current action. Sequential request/response only — begin()
+// flushes any prior unfinished action so it can't be orphaned.
+type resultState struct {
+	mu      sync.Mutex
+	ch      *runtime.ConnHandle
+	title   string // result-schema title field name → Status
+	pending *runtime.ConnEvent
+	ended   bool
+}
+
+func newResultState(ch *runtime.ConnHandle) *resultState {
+	rs := &resultState{ch: ch}
+	if ch.Endpoint != nil {
+		if pf := facetFor(ch.Endpoint.Family); pf != nil {
+			rs.title = pf.resultTitle
+		}
+	}
+	return rs
+}
+
+func (rs *resultState) begin(ev runtime.ConnEvent) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.flushLocked() // end any prior unfinished action so it isn't orphaned
+	cp := ev
+	rs.pending = &cp
+	rs.ended = false
+	if rs.ch.Emit != nil {
+		rs.ch.Emit(ev)
+	}
+}
+
+// finish emits the end event carrying the plugin-reported status, lifted
+// from the result schema's title field in result_json.
+func (rs *resultState) finish(resultJSON []byte) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.pending == nil || rs.ended {
+		return
+	}
+	end := *rs.pending
+	end.Phase = "end"
+	if rs.title != "" && len(resultJSON) > 0 {
+		var rj map[string]any
+		if json.Unmarshal(resultJSON, &rj) == nil {
+			if val, ok := rj[rs.title]; ok && val != nil {
+				end.Status = fmt.Sprint(val)
+			}
+		}
+	}
+	rs.ended = true
+	if rs.ch.Emit != nil {
+		rs.ch.Emit(end)
+	}
+}
+
+func (rs *resultState) flush() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.flushLocked()
+}
+
+// flushLocked persists an unfinished action — no ActionResult arrived (a
+// plugin that doesn't report, or a closed conn) — as the end event with an
+// empty status, so the action is never lost. Caller holds rs.mu.
+func (rs *resultState) flushLocked() {
+	if rs.pending == nil || rs.ended {
+		return
+	}
+	end := *rs.pending
+	end.Phase = "end"
+	rs.ended = true
+	if rs.ch.Emit != nil {
+		rs.ch.Emit(end)
+	}
 }
 
 func stringField(m map[string]any, key string) string {

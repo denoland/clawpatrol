@@ -518,6 +518,16 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		return stream.Send(m)
 	}
 
+	conn.setResult = func(_ context.Context, result map[string]any) error {
+		// First cut: scalar result fields only (the body-stream support that
+		// FacetStream result fields will need is a follow-up). The gateway
+		// correlates this to the conn's current action, so no call_id.
+		j, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("pluginsdk: marshal result: %w", err)
+		}
+		return doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Result{Result: &pb.ActionResult{ResultJson: j}}})
+	}
 	conn.emit = func(ev ConnEvent) {
 		facets, _ := json.Marshal(ev.Facets)
 		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Event{Event: &pb.ConnEvent{

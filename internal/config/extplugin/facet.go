@@ -44,6 +44,12 @@ type pluginFacet struct {
 	// fail-closed-on-truncation contract (req.Truncated marks the
 	// stream paths CEL-unknown) applies to plugin facets.
 	streamFields []string
+	// resultFields is the after-the-fact schema (FacetDecl.result_fields);
+	// resultTitle is the name of the result field marked Title — the
+	// field the adapter lifts into the action's Status. "" when the facet
+	// reports no result schema.
+	resultFields []facet.ReportFieldSpec
+	resultTitle  string
 }
 
 func (p *pluginFacet) Name() string                          { return p.name }
@@ -112,12 +118,22 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) hcl.Diagnostics {
 			streams = append(streams, f.Name)
 		}
 	}
+	resultFields := protoFacetFieldsToSpec(decl.ResultFields)
+	resultTitle := ""
+	for _, rf := range resultFields {
+		if rf.Title {
+			resultTitle = rf.Name
+			break
+		}
+	}
 	pf := &pluginFacet{
 		name:           decl.Name,
 		reportFields:   protoFacetFieldsToSpec(decl.Fields),
 		kindByField:    kindByField,
 		optionalFields: optional,
 		streamFields:   streams,
+		resultFields:   resultFields,
+		resultTitle:    resultTitle,
 	}
 	facet.Register(pf)
 	return nil
