@@ -438,3 +438,115 @@ gateway {
 		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex", got)
 	}
 }
+
+// TestCodexWSTurnAssembly covers the production Codex transport: the
+// /backend-api/codex/responses request is a WebSocket upgrade, so the turn
+// arrives as separate frames (client→server request envelope, then a
+// server→client response.completed frame) routed through handleWSUpgrade —
+// the HTTP-path trackLLMUsage never fires. The codexWSTurn assembler must
+// pair the frames and produce a completion that records a correct gen_ai
+// span with model, usage, and (under the content opt-in) prompt/output.
+func TestCodexWSTurnAssembly(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+
+	// client→server: the full request envelope (prompt + model + tools).
+	reqEnvelope := []byte(`{"model":"gpt-5-codex","instructions":"be terse",` +
+		`"tools":[{"type":"function","name":"shell","description":"run a shell command","parameters":{"p":1}}],` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"list files"}]}]}`)
+	// server→client: response.completed carries usage + output nested under
+	// `response` — no model and no token usage live at the frame top level,
+	// which is why a single-frame parse dropped the span before.
+	completed := []byte(`{"type":"response.completed","response":{` +
+		`"id":"resp_ws_1","model":"gpt-5-codex-2026","status":"completed",` +
+		`"usage":{"input_tokens":11,"output_tokens":7},` +
+		`"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`)
+
+	turn := &codexWSTurn{}
+	turn.observeRequest(reqEnvelope, time.Time{})
+	// A non-terminal server frame must not emit anything.
+	if c := turn.observeResponse([]byte(`{"type":"response.created","response":{"id":"resp_ws_1"}}`)); c != nil {
+		t.Fatalf("response.created should not produce a completion")
+	}
+	c := turn.observeResponse(completed)
+	if c == nil {
+		t.Fatal("response.completed produced no completion (WS turn dropped)")
+	}
+	g.recordGenAITurn("openai", "s_ws", "chatgpt.com", c.reqModel, c.respModel,
+		c.in, c.out, c.reqBody, c.respBody, c.start, "100.64.0.1")
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex", got)
+	}
+	if got := m["gen_ai.response.model"].AsString(); got != "gpt-5-codex-2026" {
+		t.Errorf("gen_ai.response.model = %q, want gpt-5-codex-2026", got)
+	}
+	if got := m["gen_ai.response.id"].AsString(); got != "resp_ws_1" {
+		t.Errorf("gen_ai.response.id = %q, want resp_ws_1", got)
+	}
+	if got := m["gen_ai.usage.input_tokens"].AsInt64(); got != 11 {
+		t.Errorf("input_tokens = %d, want 11", got)
+	}
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 7 {
+		t.Errorf("output_tokens = %d, want 7", got)
+	}
+	if fr := m["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "completed" {
+		t.Errorf("finish_reasons = %v, want [completed]", fr)
+	}
+	// Content opt-in: the user prompt and assistant output ride the span.
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("input.messages: %v", err)
+	}
+	if len(input) != 1 || input[0].Role != "user" || len(input[0].Parts) != 1 || input[0].Parts[0].Content != "list files" {
+		t.Errorf("input.messages = %#v", input)
+	}
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("output.messages: %v", err)
+	}
+	if len(output) != 1 || len(output[0].Parts) != 1 || output[0].Parts[0].Content != "ok" {
+		t.Errorf("output.messages = %#v", output)
+	}
+	// Tool definition (name+type) rides the span.
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("tool.definitions: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "shell" {
+		t.Errorf("tool defs = %#v", defs)
+	}
+}
+
+// TestCodexWSTurnFallsBackToResponseModel verifies a completion seen with no
+// preceding request frame (e.g. connection observed mid-turn) still records a
+// span, sourcing the model from the response.
+func TestCodexWSTurnFallsBackToResponseModel(t *testing.T) {
+	turn := &codexWSTurn{}
+	c := turn.observeResponse([]byte(`{"type":"response.completed","response":{` +
+		`"id":"r1","model":"gpt-5-codex","usage":{"input_tokens":3,"output_tokens":2}}}`))
+	if c == nil {
+		t.Fatal("completion dropped when no request frame was seen")
+	}
+	if c.reqBody != nil {
+		t.Errorf("reqBody = %q, want nil", c.reqBody)
+	}
+	if c.reqModel != "gpt-5-codex" {
+		t.Errorf("reqModel = %q, want gpt-5-codex (response fallback)", c.reqModel)
+	}
+	if c.in != 3 || c.out != 2 {
+		t.Errorf("usage in/out = %d/%d, want 3/2", c.in, c.out)
+	}
+}

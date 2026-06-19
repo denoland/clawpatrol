@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 )
@@ -193,10 +194,29 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 		wsSessionID = req.Header.Get("Sec-Websocket-Key") // unique per handshake
 	}
 
-	var onPayload func([]byte)
+	// Codex WS frames feed two observers: trackCodexWSUsage keeps the
+	// dashboard session live (both directions), and codexWSTurn assembles
+	// a GenAI span from the client→server request envelope plus the
+	// server→client response.completed frame — the WS transport's
+	// equivalent of the HTTP/SSE path's trackLLMUsage span.
+	var onClientPayload, onServerPayload func([]byte)
 	if trackKindFor(upstream) == "codex_ws_usage" {
-		onPayload = func(text []byte) {
+		turn := &codexWSTurn{}
+		convID := "ws_" + shortHash(agentAddr)
+		if wsSessionID != "" {
+			convID = "s_" + shortHash(wsSessionID)
+		}
+		onClientPayload = func(text []byte) {
 			g.trackCodexWSUsage(agentAddr, wsSessionID, text)
+			turn.observeRequest(text, time.Now())
+		}
+		onServerPayload = func(text []byte) {
+			g.trackCodexWSUsage(agentAddr, wsSessionID, text)
+			if c := turn.observeResponse(text); c != nil {
+				g.recordGenAITurn("openai", convID, upstream,
+					c.reqModel, c.respModel, c.in, c.out,
+					c.reqBody, c.respBody, c.start, agentAddr)
+			}
 		}
 	}
 
@@ -215,8 +235,8 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 			}
 		}
 	}
-	clientToServer := wrapPayload("c→s", onPayload)
-	serverToClient := wrapPayload("s→c", onPayload)
+	clientToServer := wrapPayload("c→s", onClientPayload)
+	serverToClient := wrapPayload("s→c", onServerPayload)
 
 	// Per-frame byte tracker fed to AgentRegistry.track. Calling once
 	// at session close was insufficient — the dashboard sparkline
