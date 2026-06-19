@@ -14,7 +14,7 @@ import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
 import { CopyButton } from "./CopyButton";
-import { ApprovalStatusIcon, LockGlyph } from "./LiveRequests";
+import { ApprovalStatusIcon, LockGlyph, rowDescriptors } from "./LiveRequests";
 import { Main } from "./Main";
 import { Modal } from "./Modal";
 import { PageTitle, type Crumb } from "./PageTitle";
@@ -95,7 +95,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
         verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(),
         body: "",
       }
-    : headerFromFacets(ev, schema);
+    : rowDescriptors(ev, schema);
   const { verb, body } = header;
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
   const facetFields = facetDetailRows(ev, schema);
@@ -549,34 +549,6 @@ function Shell({
       {children}
     </Main>
   );
-}
-
-// headerFromFacets picks the verb + body strings for the event
-// header. With a known facet schema, the leading column is
-// method/verb and the trailing body collapses every other report
-// field (status excepted, since it has its own coloured slot). New
-// protocol facets render correctly without touching this file.
-function headerFromFacets(
-  ev: EventRecord,
-  schema: FacetSchema | undefined,
-): { verb: string; body: string } {
-  const facets = ev.facets ?? {};
-  if (schema && Object.keys(facets).length > 0) {
-    const leadName =
-      schema.report_fields.find((f) => f.name === "method")?.name ??
-      schema.report_fields.find((f) => f.name === "verb")?.name ??
-      "";
-    const verbField = leadName ? schema.report_fields.find((f) => f.name === leadName) : undefined;
-    const verb = verbField ? formatFacetValue(verbField.kind, facets[leadName]) : "";
-    const bodyParts: string[] = [];
-    for (const f of schema.report_fields) {
-      if (f.name === leadName || f.name === "status") continue;
-      const v = formatFacetValue(f.kind, facets[f.name]);
-      if (v) bodyParts.push(v);
-    }
-    return { verb, body: bodyParts.join(" · ") };
-  }
-  return { verb: ev.method ?? "", body: ev.path ?? "" };
 }
 
 // facetDetailRows returns the per-family fields shown in the

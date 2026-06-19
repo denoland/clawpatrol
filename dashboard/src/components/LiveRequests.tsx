@@ -181,7 +181,7 @@ function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] 
 // protocol plugins drop in without dashboard edits; falls back to
 // the legacy method/path stuffing when facets aren't populated
 // (pre-migration rows / unknown families).
-function rowDescriptors(
+export function rowDescriptors(
   ev: EventRecord,
   schema: FacetSchema | undefined,
 ): { verb: string; body: string } {
