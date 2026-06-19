@@ -82,6 +82,47 @@ func TestInstallUpdateLock(t *testing.T) {
 	}
 }
 
+// TestInstallUpgradeAcceptsNewVersionCommit drives the re-pointed-tag fix
+// end-to-end: an attested plugin pinned at v1.2.0/commit-aaa is upgraded to
+// v1.3.0, whose attestation vouches a different commit (commit-bbb). The new
+// commit belongs to a new version, so it is NOT a re-pointed tag — the
+// upgrade must re-pin it rather than fail closed (which it did before the
+// fix, the changed commit wrongly tripping the guard).
+func TestInstallUpgradeAcceptsNewVersionCommit(t *testing.T) {
+	owner, repo := "acme", "myplugin"
+	plats := []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"}
+	if !slices.Contains(plats, platformToken()) {
+		plats = append(plats, platformToken())
+	}
+	srv := newReleaseServer(t, owner, repo, []relSpec{
+		mkRelease(t, repo, "1.2.0", plats),
+		mkRelease(t, repo, "1.3.0", plats),
+	})
+
+	m, _ := newFetchTestManager(t, srv.URL)
+	m.prov = stubProv{commit: "commit-bbb"} // the fetched (newest) release's attestation
+	sp := config.PluginSource{Name: repo, Source: "github.com/acme/myplugin", Version: "~> 1.2", Network: "outbound"}
+	specs := []config.PluginSource{sp}
+	ctx := context.Background()
+
+	// Pinned to v1.2.0 with an attested commit-aaa.
+	m.lock.setSource(repo, "github.com/acme/myplugin", "v1.2.0", "~> 1.2", "commit-aaa", true)
+	if err := m.lock.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.Install(ctx, specs, nil, true)
+	if err != nil {
+		t.Fatalf("upgrade to a newer attested version must not be blocked, got: %v", err)
+	}
+	if len(res) != 1 || res[0].Version != "v1.3.0" || !res[0].Updated {
+		t.Fatalf("update = %+v, want v1.2.0 -> v1.3.0 updated", res)
+	}
+	if e, _ := m.lock.get(repo); e.Version != "v1.3.0" || e.Commit != "commit-bbb" {
+		t.Fatalf("after upgrade entry = version %q commit %q, want v1.3.0 / commit-bbb", e.Version, e.Commit)
+	}
+}
+
 // TestInstallUpgradeClearsPrivileged is the regression test for the
 // silent-privilege-grant bypass: a manifest-less UPGRADE of a
 // previously-privileged-approved plugin must not let the new binary inherit
