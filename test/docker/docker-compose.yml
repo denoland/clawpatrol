@@ -24,7 +24,7 @@ services:
     volumes:
       - gateway-state:/var/lib/clawpatrol
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/info"]
       interval: 2s
       timeout: 2s
       retries: 30
