@@ -1282,25 +1282,30 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 			return
 		}
 		title := codexResponsesRequestTitle(reqBody)
-		model, in, out := parseOpenAIResponse(respBody)
-		// Codex's SSE response body carries neither the model (it rides the
-		// OpenAI-Model response header) nor, on many turns, token usage —
-		// so the response alone leaves recordGenAITurn's model/usage guard
-		// unsatisfied and the GenAI span is silently dropped. Source the
-		// model from the request body, the same place the dashboard usage
-		// path reads it, so the turn is recorded.
-		if model == "" {
-			model = codexRequestModel(reqBody)
+		respModel, in, out := parseOpenAIResponse(respBody)
+		// gen_ai.request.model must be the model the client asked for
+		// (e.g. "gpt-5-codex"), not the dated variant the response echoes
+		// ("gpt-5-codex-2026"). Codex's SSE response body carries neither
+		// the request model (it rides the OpenAI-Model response header) nor,
+		// on many turns, token usage, so source the request model from the
+		// request body — the same split the WS path (handleWSUpgrade →
+		// codexWSTurn) uses, so both transports emit identical spans. Fall
+		// back to the response model when the request body wasn't captured
+		// (e.g. oversized/truncated), which also keeps recordGenAITurn's
+		// model/usage guard satisfied so the turn is still recorded.
+		reqModel := codexRequestModel(reqBody)
+		if reqModel == "" {
+			reqModel = respModel
 		}
-		if model == "" && in == 0 && out == 0 && title == "" {
+		if reqModel == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
 		sid := shortHash(sessionHint)
 		if sid == "" {
 			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
 		}
-		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart, ip)
-		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
+		g.recordGenAITurn("openai", sid, host, reqModel, respModel, in, out, reqBody, respBody, reqStart, ip)
+		g.agents.recordLLMUsage(ip, "codex", sid, title, reqModel, in, out)
 	}
 }
 
@@ -2800,7 +2805,15 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		var trackBuf *bytes.Buffer
 		if trackKind != "" && resp.StatusCode == 200 {
 			ct := resp.Header.Get("Content-Type")
-			if strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
+			// Codex's /backend-api/codex/responses SSE responses come back
+			// through Cloudflare with NO Content-Type header, so an empty ct
+			// is treated as eligible too — otherwise the codex HTTP/SSE turn
+			// is never buffered and trackLLMUsage (the GenAI span source)
+			// never fires, while WS codex and Content-Type-bearing providers
+			// (Anthropic) record fine. trackKind is only set for the LLM
+			// hosts and trackLLMUsage re-gates on path, so this won't capture
+			// unrelated traffic.
+			if ct == "" || strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
 				trackBuf = &bytes.Buffer{}
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}

@@ -661,3 +661,93 @@ func TestCodexSpliceOutputPrefersExisting(t *testing.T) {
 		t.Errorf("splice mutated a populated response: %s", got)
 	}
 }
+
+// TestCodexHTTPTurnSpanMatchesWS covers the non-WebSocket Codex transport:
+// a plain HTTP POST to /backend-api/codex/responses whose SSE body ends in a
+// response.completed event. This drives the same chatgpt.com codex_ws_usage
+// branch of trackLLMUsage the production HTTP client hits, and asserts the
+// emitted span is identical to the WebSocket TUI's (TestCodexWSTurnAssembly):
+// same provider, request/response model split, usage, finish reason, and —
+// under the content opt-in — input/output messages and tool definitions.
+//
+// The request envelope and completed payload are byte-for-byte the ones
+// TestCodexWSTurnAssembly feeds the WS assembler, so a divergence here is a
+// real transport asymmetry, not a fixture difference. The request asks for
+// "gpt-5-codex" while the response echoes the dated "gpt-5-codex-2026"; the
+// span must report the requested model under gen_ai.request.model (the SSE
+// body never carries it), not the dated variant — the bug that made the HTTP
+// path's span differ from the WS path's.
+func TestCodexHTTPTurnSpanMatchesWS(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+	g.agents = NewAgentRegistry()
+
+	reqBody := []byte(`{"model":"gpt-5-codex","instructions":"be terse",` +
+		`"tools":[{"type":"function","name":"shell","description":"run a shell command","parameters":{"p":1}}],` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"list files"}]}]}`)
+	// SSE stream: a non-terminal snapshot then the terminal completed event,
+	// which carries the model + usage + output under `response`.
+	respBody := []byte(
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_http_1\"}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{" +
+			"\"id\":\"resp_http_1\",\"model\":\"gpt-5-codex-2026\",\"status\":\"completed\"," +
+			"\"usage\":{\"input_tokens\":11,\"output_tokens\":7}," +
+			"\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n")
+
+	g.trackLLMUsage(nil, "codex_ws_usage", "chatgpt.com",
+		"/backend-api/codex/responses", reqBody, respBody, "sess-1", time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (non-WS codex turn dropped)", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex (the requested model, not the response's dated variant)", got)
+	}
+	if got := m["gen_ai.response.model"].AsString(); got != "gpt-5-codex-2026" {
+		t.Errorf("gen_ai.response.model = %q, want gpt-5-codex-2026", got)
+	}
+	if got := m["gen_ai.response.id"].AsString(); got != "resp_http_1" {
+		t.Errorf("gen_ai.response.id = %q, want resp_http_1", got)
+	}
+	if got := m["gen_ai.usage.input_tokens"].AsInt64(); got != 11 {
+		t.Errorf("input_tokens = %d, want 11", got)
+	}
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 7 {
+		t.Errorf("output_tokens = %d, want 7", got)
+	}
+	if fr := m["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "completed" {
+		t.Errorf("finish_reasons = %v, want [completed]", fr)
+	}
+	// Content opt-in: the user prompt and assistant output ride the span.
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("input.messages: %v", err)
+	}
+	if len(input) != 1 || input[0].Role != "user" || len(input[0].Parts) != 1 || input[0].Parts[0].Content != "list files" {
+		t.Errorf("input.messages = %#v", input)
+	}
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("output.messages: %v", err)
+	}
+	if len(output) != 1 || len(output[0].Parts) != 1 || output[0].Parts[0].Content != "ok" {
+		t.Errorf("output.messages = %#v", output)
+	}
+	// Tool definition (name+type) rides the span.
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("tool.definitions: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "shell" {
+		t.Errorf("tool defs = %#v", defs)
+	}
+}
