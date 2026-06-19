@@ -341,9 +341,12 @@ type ConnEvent struct {
 	// it lands on Event.RespBody and renders in the request detail page's
 	// "Response body" section exactly like the built-in HTTP path's sample.
 	RespBody string
-	// RespSha is the hex SHA-256 of the full (uncapped) response body the
-	// plugin streamed, mirroring the built-in HTTP path. Empty when the
-	// plugin reported no body. Set on the end event alongside RespBody.
+	// RespSha is the hex SHA-256 of the captured response-body sample (at
+	// most cap+1 bytes), NOT the full upstream body. Unlike the built-in HTTP
+	// sampler — which hashes every byte — the plugin path deliberately stops
+	// pulling at the body cap and cancels the stream, so the gateway never
+	// sees the bytes past the cap and cannot hash them. Empty when the plugin
+	// reported no body. Set on the end event alongside RespBody.
 	RespSha string
 }
 

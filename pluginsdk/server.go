@@ -992,6 +992,15 @@ func callbackPanicError(where string, r any) error {
 // the recv goroutine flips on StreamCancel. The serveStreamRead
 // helper checks cancelled before each read so a slow reader can't
 // re-enable a stream the gateway already abandoned.
+//
+// Note: a streamReg is removed from the streams map only on read EOF/error
+// (serveStreamRead) or StreamCancel. If the gateway pulls a body, finds what
+// it needs, and tears the conn down WITHOUT sending StreamCancel (e.g. an
+// abnormal recv-loop exit on the gateway side), the entry — and its open
+// reader — can linger until the whole conn's recv goroutine returns and the
+// SDK drops the per-conn streams map. Minor: it is conn-scoped, so it is
+// reclaimed when the connection ends, but a long-lived conn that never gets a
+// StreamCancel holds the reader open until then.
 type streamReg struct {
 	r         io.Reader
 	mu        sync.Mutex

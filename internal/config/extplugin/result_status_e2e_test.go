@@ -466,6 +466,222 @@ func TestEndpointSetResultBodyCapped(t *testing.T) {
 	}
 }
 
+// blockingBodyReader serves a fixed prefix once, then parks every subsequent
+// Read until release is closed. It signals reading exactly once (the first
+// time the SDK pulls a chunk on the gateway's behalf) so a test can learn the
+// gateway's body pull is genuinely in flight before it tears the transport
+// down. Returning io.EOF after release lets the parked Read unwind cleanly.
+type blockingBodyReader struct {
+	prefix    []byte
+	served    atomic.Bool
+	reading   chan struct{} // closed once, when the first Read lands
+	readingMu sync.Once
+	release   chan struct{} // test closes this to unblock the parked Read
+}
+
+func newBlockingBodyReader(prefix []byte) *blockingBodyReader {
+	return &blockingBodyReader{
+		prefix:  prefix,
+		reading: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingBodyReader) Read(p []byte) (int, error) {
+	b.readingMu.Do(func() { close(b.reading) })
+	if b.served.CompareAndSwap(false, true) {
+		n := copy(p, b.prefix)
+		return n, nil
+	}
+	// Park until the test releases us; then report EOF so the SDK reader
+	// goroutine unwinds without leaking.
+	<-b.release
+	return 0, io.EOF
+}
+
+// TestEndpointSetResultBodyPullConnErrorsNoHang is the regression for the
+// mid-pull deadlock: a response-body pull is in flight (the gateway issued a
+// StreamRead and is parked waiting for the next StreamChunk) when the plugin
+// connection dies UNCLEANLY — the transport is torn down, so the recv loop
+// exits via stream.Recv()'s error path, NOT a clean ConnClose. Before the fix
+// the parked pull could only be released by ctx cancellation, which can't fire
+// because HandleConn's deferred flush awaits that very pull: a permanent hang.
+//
+// Asserts: the end event is still emitted exactly once, carrying the status
+// and the partial body captured before the abort, and HandleConn returns —
+// all within a deadline, so a regression hangs the test instead of passing.
+func TestEndpointSetResultBodyPullConnErrorsNoHang(t *testing.T) {
+	registerResultFacet(t)
+
+	body := newBlockingBodyReader([]byte("PARTIAL-BODY"))
+	handlerBlocked := make(chan struct{})
+	handle := func(ctx context.Context, conn *pluginsdk.Conn) error {
+		br := bufio.NewReader(conn)
+		if _, err := readHTTPRequestLine(br); err != nil {
+			return err
+		}
+		v, err := conn.Evaluate(ctx, resultFacetName, map[string]any{"verb": "GET"}, "GET /")
+		if err != nil {
+			return err
+		}
+		if v.Action != "allow" && v.Action != "hitl_allow" {
+			return nil
+		}
+		if err := conn.SetResult(ctx, map[string]any{
+			"status": "200",
+			"body":   pluginsdk.Stream(body),
+		}); err != nil {
+			return err
+		}
+		// Do NOT return: returning would queue a clean ConnClose, which the
+		// drainBodyPull path already handles. We want the recv loop to exit
+		// via the transport-error path instead, so block until torn down.
+		close(handlerBlocked)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	// Build the wiring inline (rather than via startResultPlugin) so we keep a
+	// handle on the go-plugin client and can sever the transport mid-pull.
+	endpoint := pluginsdk.EndpointDef{
+		TypeName:   "resulttest_api",
+		Family:     resultFacetName,
+		TLSMode:    pluginsdk.TLSNone,
+		HandleConn: handle,
+	}
+	sdkSrv := pluginsdk.NewEndpointServerForTest(&pluginsdk.Plugin{
+		Name:    "resulttestplugin",
+		Version: "0.0.1",
+		Facets: []pluginsdk.FacetDef{{
+			Name: resultFacetName,
+			ResultFields: []pluginsdk.FacetField{
+				{Name: "status", Title: true},
+				{Name: "body", Kind: pluginsdk.FacetStream},
+			},
+		}},
+		Endpoints: []pluginsdk.EndpointDef{endpoint},
+	})
+	sessions := newSessionRegistry()
+	p := &sdkEndpointPlugin{server: sdkSrv, sessions: sessions}
+	gpClient, _ := goplugin.TestPluginGRPCConn(t, true, map[string]goplugin.Plugin{"x": p})
+	t.Cleanup(func() { _ = gpClient.Close() })
+	raw, err := gpClient.Dispense("x")
+	if err != nil {
+		t.Fatalf("dispense: %v", err)
+	}
+	grpcConn, ok := raw.(*grpc.ClientConn)
+	if !ok {
+		t.Fatalf("dispense returned %T, want *grpc.ClientConn", raw)
+	}
+	client := &Client{endpoint: pb.NewEndpointClient(grpcConn), sessions: sessions}
+	adapter := &endpointAdapter{client: client, typeName: "resulttest_api"}
+
+	m, err := facet.NewMatcher(resultFacetName, "resulttest.verb == 'GET'")
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	ep := &config.CompiledEndpoint{
+		Name:   "resulttest-ep",
+		Family: resultFacetName,
+		Rules: []*config.CompiledRule{
+			{Name: "allow-get", Matcher: m, Outcome: config.Outcome{Verdict: "allow"}},
+		},
+		Plugin: &config.Plugin{Family: resultFacetName},
+		Body:   &dynamicEndpointBody{adapter: adapter, instanceName: "resulttest1"},
+	}
+
+	const bodyCap = 4096
+	var mu sync.Mutex
+	var events []runtime.ConnEvent
+	ch := &runtime.ConnHandle{
+		Endpoint:       ep,
+		PeerIP:         "1.2.3.4",
+		UpstreamHost:   "api.example.test",
+		DstPort:        443,
+		BodyStorageCap: bodyCap,
+		Emit: func(ev runtime.ConnEvent) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		},
+	}
+	gw, agent := tcpPipe(t)
+	ch.Conn = gw
+
+	done := make(chan error, 1)
+	go func() { done <- adapter.HandleConn(context.Background(), ch) }()
+	go func() {
+		_, _ = agent.Write([]byte("GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\n"))
+		// Drain in the background; the conn is torn down by the transport
+		// sever below, not the agent.
+		_, _ = io.Copy(io.Discard, agent)
+	}()
+
+	// Wait until the gateway's body pull is genuinely in flight: the SDK's
+	// reader has been invoked (first StreamRead delivered) and the handler is
+	// parked after SetResult.
+	select {
+	case <-body.reading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("body pull never started (reader Read not invoked)")
+	}
+	select {
+	case <-handlerBlocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reached its post-SetResult block")
+	}
+
+	// Sever the plugin transport. The gateway's stream.Recv() now errors and
+	// the recv loop exits via its NON-ConnClose path, with the pull parked.
+	_ = gpClient.Close()
+	close(body.release)
+	// Close the agent side too so pumpConn's teardown doesn't sit on the
+	// 30s connDrainTimeout waiting for the agent to read a response that the
+	// dead plugin will never produce. This is orthogonal to the deadlock: the
+	// pull is released by streamDead regardless, but closing the agent keeps
+	// the test's deadline tight and exercises the agentDone teardown path
+	// whose deferred flush is exactly where the pre-fix hang lived.
+	_ = agent.Close()
+
+	// The fix must release the parked pull and let HandleConn return. A
+	// regression hangs here instead.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HandleConn did not return after mid-pull transport error (deadlock regression)")
+	}
+
+	mu.Lock()
+	evs := append([]runtime.ConnEvent(nil), events...)
+	mu.Unlock()
+
+	start, end := startEnd(evs)
+	if start == nil {
+		t.Fatalf("no start event; events=%+v", evs)
+	}
+	if end == nil {
+		t.Fatalf("no end event — action lost on mid-pull abort; events=%+v", evs)
+	}
+	// Exactly one end event (no double-emit between the pull goroutine and
+	// flush).
+	ends := 0
+	for i := range evs {
+		if evs[i].Phase == "end" {
+			ends++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("want exactly one end event, got %d; events=%+v", ends, evs)
+	}
+	if end.Status != "200" {
+		t.Errorf("end.Status=%q, want \"200\"; events=%+v", end.Status, evs)
+	}
+	// The partial body captured before the abort surfaces on the end event.
+	if end.RespBody != "PARTIAL-BODY" {
+		t.Errorf("end.RespBody=%q, want %q (partial body before abort)", end.RespBody, "PARTIAL-BODY")
+	}
+}
+
 // TestEndpointSetResultBodySmall offers a response body SMALLER than the cap.
 // The full body must surface on the end event with no truncation marker.
 func TestEndpointSetResultBodySmall(t *testing.T) {
