@@ -848,11 +848,21 @@ type codexWSTurn struct {
 	mu          sync.Mutex
 	reqEnvelope []byte
 	start       time.Time
+	// outputItems holds the finished output items (message / reasoning /
+	// function_call) accumulated from response.output_item.done frames,
+	// keyed by output_index (latest-wins); outputOrder preserves first-seen
+	// order. Codex's terminal response.completed frame carries an empty
+	// output array — the real output rides these per-item frames — so they
+	// are spliced into the response body when the terminal frame lands.
+	outputItems map[int]json.RawMessage
+	outputOrder []int
 }
 
 // observeRequest records a client→server request envelope — the frame
 // carrying the `input` array. Latest-wins: the most recent envelope seen
-// before a completion is the one paired with it.
+// before a completion is the one paired with it. A new request envelope
+// starts a new turn, so any output items accumulated for a prior,
+// terminal-less turn are dropped.
 func (t *codexWSTurn) observeRequest(payload []byte, now time.Time) {
 	var probe struct {
 		Input json.RawMessage `json:"input"`
@@ -863,6 +873,8 @@ func (t *codexWSTurn) observeRequest(payload []byte, now time.Time) {
 	t.mu.Lock()
 	t.reqEnvelope = append([]byte(nil), payload...)
 	t.start = now
+	t.outputItems = nil
+	t.outputOrder = nil
 	t.mu.Unlock()
 }
 
@@ -886,10 +898,28 @@ type codexWSCompletion struct {
 // consumed so a stray duplicate terminal frame can't re-emit a span.
 func (t *codexWSTurn) observeResponse(payload []byte) *codexWSCompletion {
 	var msg struct {
-		Type     string          `json:"type"`
-		Response json.RawMessage `json:"response"`
+		Type        string          `json:"type"`
+		Response    json.RawMessage `json:"response"`
+		Item        json.RawMessage `json:"item"`
+		OutputIndex int             `json:"output_index"`
 	}
 	if json.Unmarshal(payload, &msg) != nil {
+		return nil
+	}
+	// A finished output item (message / reasoning / function_call). Codex
+	// streams the real output on these frames; the terminal frame's output
+	// is always empty. Stash by output_index (latest-wins) to splice in
+	// when the terminal frame lands.
+	if msg.Type == "response.output_item.done" && len(msg.Item) > 0 {
+		t.mu.Lock()
+		if t.outputItems == nil {
+			t.outputItems = map[int]json.RawMessage{}
+		}
+		if _, seen := t.outputItems[msg.OutputIndex]; !seen {
+			t.outputOrder = append(t.outputOrder, msg.OutputIndex)
+		}
+		t.outputItems[msg.OutputIndex] = append([]byte(nil), msg.Item...)
+		t.mu.Unlock()
 		return nil
 	}
 	if !isResponsesTerminalEvent(msg.Type) || len(msg.Response) == 0 {
@@ -907,8 +937,16 @@ func (t *codexWSTurn) observeResponse(payload []byte) *codexWSCompletion {
 	t.mu.Lock()
 	reqBody := t.reqEnvelope
 	start := t.start
+	items := t.outputItems
+	order := t.outputOrder
 	t.reqEnvelope = nil
+	t.outputItems = nil
+	t.outputOrder = nil
 	t.mu.Unlock()
+
+	// Codex's terminal response carries output:[]; splice the accumulated
+	// per-item output in so mapOpenAITurn extracts gen_ai.output.messages.
+	respBody := codexSpliceOutput(msg.Response, items, order)
 
 	// Prefer the request's model (e.g. "gpt-5-codex"); the response may
 	// echo a dated variant. Fall back to the response model when the
@@ -919,13 +957,49 @@ func (t *codexWSTurn) observeResponse(payload []byte) *codexWSCompletion {
 	}
 	return &codexWSCompletion{
 		reqBody:   reqBody,
-		respBody:  append([]byte(nil), msg.Response...),
+		respBody:  respBody,
 		reqModel:  reqModel,
 		respModel: resp.Model,
 		in:        resp.Usage.InputTokens,
 		out:       resp.Usage.OutputTokens,
 		start:     start,
 	}
+}
+
+// codexSpliceOutput returns the terminal response object with its `output`
+// array replaced by the items accumulated from response.output_item.done
+// frames, keyed by output_index in first-seen order. Codex's terminal frame
+// always carries output:[], so without this the assistant output is lost.
+// When the response already carries a non-empty output (e.g. a future Codex
+// change, or the standard OpenAI Responses API), or no items were collected,
+// the response is returned unchanged.
+func codexSpliceOutput(response json.RawMessage, items map[int]json.RawMessage, order []int) []byte {
+	verbatim := append([]byte(nil), response...)
+	if len(items) == 0 {
+		return verbatim
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(response, &obj) != nil {
+		return verbatim
+	}
+	var existing []json.RawMessage
+	if json.Unmarshal(obj["output"], &existing) == nil && len(existing) > 0 {
+		return verbatim
+	}
+	arr := make([]json.RawMessage, 0, len(order))
+	for _, i := range order {
+		arr = append(arr, items[i])
+	}
+	outJS, err := json.Marshal(arr)
+	if err != nil {
+		return verbatim
+	}
+	obj["output"] = outJS
+	spliced, err := json.Marshal(obj)
+	if err != nil {
+		return verbatim
+	}
+	return spliced
 }
 
 // codexToolTitle formats a tool-call frame into "▸ name(arg)". Codex's

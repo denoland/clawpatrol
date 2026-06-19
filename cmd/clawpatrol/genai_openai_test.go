@@ -550,3 +550,114 @@ func TestCodexWSTurnFallsBackToResponseModel(t *testing.T) {
 		t.Errorf("usage in/out = %d/%d, want 3/2", c.in, c.out)
 	}
 }
+
+// TestOpenAIResponseContentCodexSSEEmptyTerminal mirrors the real Codex
+// /backend-api/codex/responses stream: the terminal response.completed
+// frame carries output:[] (empty), while the finished output items —
+// reasoning + assistant message — ride per-item response.output_item.done
+// events. The reconstruction must fall back to those items so the output is
+// not lost. Payload shapes are taken verbatim from a captured Codex turn.
+func TestOpenAIResponseContentCodexSSEEmptyTerminal(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_x\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"content_index\":0,\"delta\":\"ban\",\"output_index\":1}\n\n" +
+		"data: {\"type\":\"response.output_text.done\",\"content_index\":0,\"output_index\":1,\"text\":\"banana\"}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"banana\"}]}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"status\":\"completed\",\"output\":[],\"usage\":{\"output_tokens\":5}}}\n\n"
+	parts, finish := openAIResponseContent([]byte(body))
+	if finish != "completed" {
+		t.Errorf("finish = %q, want completed", finish)
+	}
+	want := []genAIPart{
+		{Type: "reasoning", Content: "thinking"},
+		{Type: "text", Content: "banana"},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Errorf("parts = %#v, want %#v", parts, want)
+	}
+}
+
+// TestOpenAIResponseSSECodexTruncated covers a Codex stream cut off before
+// the terminal frame: the output items seen so far must still reconstruct
+// the output rather than yielding nothing.
+func TestOpenAIResponseSSECodexTruncated(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_y\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n"
+	parts, _ := openAIResponseContent([]byte(body))
+	want := []genAIPart{{Type: "text", Content: "hi"}}
+	if !reflect.DeepEqual(parts, want) {
+		t.Errorf("parts = %#v, want %#v", parts, want)
+	}
+}
+
+// TestCodexWSTurnOutputFromItemDoneFrames covers the production Codex WS
+// transport with realistic frames: the assistant output rides a
+// response.output_item.done frame and the terminal response.completed frame
+// carries output:[] (empty) plus usage. The assembler must splice the
+// per-item output into the response so the recorded span carries
+// gen_ai.output.messages.
+func TestCodexWSTurnOutputFromItemDoneFrames(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+
+	reqEnvelope := []byte(`{"model":"gpt-5-codex",` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"say banana"}]}]}`)
+	// Real Codex frame ordering: a finished output item, then a terminal
+	// response.completed whose output is empty.
+	itemDone := []byte(`{"type":"response.output_item.done","output_index":0,"item":{` +
+		`"id":"msg_1","type":"message","status":"completed","role":"assistant",` +
+		`"content":[{"type":"output_text","text":"banana"}]}}`)
+	completed := []byte(`{"type":"response.completed","response":{` +
+		`"id":"resp_ws_2","model":"gpt-5-codex","status":"completed",` +
+		`"usage":{"input_tokens":24950,"output_tokens":5},"output":[]}}`)
+
+	turn := &codexWSTurn{}
+	turn.observeRequest(reqEnvelope, time.Time{})
+	if c := turn.observeResponse(itemDone); c != nil {
+		t.Fatalf("response.output_item.done should not produce a completion")
+	}
+	c := turn.observeResponse(completed)
+	if c == nil {
+		t.Fatal("response.completed produced no completion (WS turn dropped)")
+	}
+	g.recordGenAITurn("openai", "s_ws", "chatgpt.com", c.reqModel, c.respModel,
+		c.in, c.out, c.reqBody, c.respBody, c.start, "100.64.0.1")
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 5 {
+		t.Errorf("output_tokens = %d, want 5", got)
+	}
+	var output []genAIChatMessage
+	raw := m["gen_ai.output.messages"].AsString()
+	if raw == "" {
+		t.Fatal("gen_ai.output.messages missing — output not spliced from item.done frame")
+	}
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		t.Fatalf("output.messages: %v (raw %q)", err, raw)
+	}
+	if len(output) != 1 || output[0].Role != "assistant" ||
+		len(output[0].Parts) != 1 || output[0].Parts[0].Content != "banana" {
+		t.Errorf("output.messages = %#v", output)
+	}
+}
+
+// TestCodexSpliceOutputPrefersExisting verifies the splice is a no-op when
+// the terminal response already carries a populated output (e.g. the
+// standard OpenAI Responses API, or a future Codex change) — the verbatim
+// response is returned and the accumulated items are ignored.
+func TestCodexSpliceOutputPrefersExisting(t *testing.T) {
+	response := json.RawMessage(`{"id":"r","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"real"}]}]}`)
+	items := map[int]json.RawMessage{0: json.RawMessage(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"stale"}]}`)}
+	got := codexSpliceOutput(response, items, []int{0})
+	if !reflect.DeepEqual([]byte(response), got) {
+		t.Errorf("splice mutated a populated response: %s", got)
+	}
+}
