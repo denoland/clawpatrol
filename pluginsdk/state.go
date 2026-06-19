@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin/wire"
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 )
@@ -95,7 +95,7 @@ func hostServicesConn() (*grpc.ClientConn, error) {
 			hostConnErr = errors.New("pluginsdk: host services unavailable (no gateway broker)")
 			return
 		}
-		hostConn, hostConnErr = b.Dial(extplugin.HostServicesBrokerID)
+		hostConn, hostConnErr = b.Dial(wire.HostServicesBrokerID)
 	})
 	return hostConn, hostConnErr
 }
