@@ -89,18 +89,20 @@ func New(out *log.Logger) *Manager {
 	level := hclog.Info
 	var output io.Writer = hclogWriter{out}
 	// CLAWPATROL_PLUGIN_LOG raises the plugin-subprocess log level
-	// (trace/debug/info/warn/error). At trace/debug this surfaces the
-	// plugin's own stderr — invaluable when a sandboxed plugin dies
-	// before the go-plugin handshake. When no gateway log sink is wired
-	// (e.g. `validate`), send it to stderr so it isn't discarded.
+	// (trace/debug/info/warn/error/off). At trace/debug this surfaces the
+	// plugin's own stderr — invaluable when a sandboxed plugin dies before
+	// the go-plugin handshake. When no gateway log sink is wired (e.g.
+	// `validate`), send it to stderr so it isn't discarded. An unrecognized
+	// value is ignored (level stays Info) with a warning, rather than
+	// silently jumping to max verbosity on a typo.
 	if v := os.Getenv("CLAWPATROL_PLUGIN_LOG"); v != "" {
 		if lvl := hclog.LevelFromString(v); lvl != hclog.NoLevel {
 			level = lvl
+			if out == nil {
+				output = os.Stderr
+			}
 		} else {
-			level = hclog.Trace
-		}
-		if out == nil {
-			output = os.Stderr
+			fmt.Fprintf(os.Stderr, "clawpatrol: ignoring invalid CLAWPATROL_PLUGIN_LOG=%q (want trace|debug|info|warn|error|off)\n", v)
 		}
 	}
 	logger := hclog.New(&hclog.LoggerOptions{

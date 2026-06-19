@@ -246,6 +246,7 @@ device-side knobs:
 |---|---|
 | `CLAWPATROL_RUN_CONF` | Override the WG conf path `clawpatrol run` reads |
 | `CLAWPATROL_DEBUG` | Print the relay / auto-expose diagnostic lines, which are otherwise silent |
+| `CLAWPATROL_PLUGIN_LOG` | Raise the external-plugin subprocess log level (`trace`/`debug`/`info`/`warn`/`error`/`off`); at `trace`/`debug` surfaces a sandboxed plugin's own stderr, useful when a plugin dies before the handshake completes |
 | `CLAWPATROL_NO_ENV` | Skip the env pushdown (`SSL_CERT_FILE`, placeholders) when wrapping a command |
 | `CLAWPATROL_NO_SUDO` | Force the unprivileged user-namespace path even when passwordless `sudo` is available (see [Root and `sudo` inside `clawpatrol run`](#root-and-sudo-inside-clawpatrol-run-linux)); `sudo` won't work inside the wrapper |
 | `CLAWPATROL_TELEMETRY` | `0` to disable telemetry (same as `DO_NOT_TRACK=1`) |
