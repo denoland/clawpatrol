@@ -83,8 +83,10 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 			return nil, fmt.Errorf("plugin %q: %w", sp.Name, err)
 		}
 		// A version (or re-download) that loses provenance is blocked until
-		// the operator accepts it with `clawpatrol plugins approve`.
-		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
+		// the operator accepts it with `clawpatrol plugins approve`. A new
+		// version's changed commit is not a re-point (r.TagName != the locked
+		// version), so an explicit upgrade is re-pinned, not blocked.
+		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res, r.TagName); err != nil {
 			return nil, err
 		}
 		m.lock.setSource(sp.Name, p.slug(), r.TagName, strings.TrimSpace(sp.Version), res.commit, res.attested)

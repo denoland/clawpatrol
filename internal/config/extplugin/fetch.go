@@ -530,7 +530,7 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 			return "", nil, fmt.Errorf(
 				"downloaded binary hash %s is not in the lockfile (expected one of %v); refusing", res.binSHA, entry.Hashes)
 		}
-		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res); err != nil {
+		if err := checkProvenanceNotDowngraded(sp.Name, mode, entry, res, r.TagName); err != nil {
 			_ = os.Remove(res.path)
 			return "", nil, err
 		}
@@ -586,10 +586,16 @@ func (f *fetcher) staticManifest(ctx context.Context, p parsedSource, r ghReleas
 
 // checkProvenanceNotDowngraded fails closed when a freshly-fetched binary
 // has weaker provenance than the lockfile recorded: it lost the
-// attestation entirely, or its attestation now names a different source
-// commit (a re-pointed tag). Skipped when the operator set provenance =
-// "off". The fix is `clawpatrol plugins approve`.
-func checkProvenanceNotDowngraded(name string, mode provenanceMode, entry lockEntry, res fetchResult) error {
+// attestation entirely, or — for the *same* version — its attestation now
+// names a different source commit (the tag was re-pointed). An explicit
+// upgrade to a *new* version legitimately carries a new commit and is
+// re-pinned by the caller, not blocked. Skipped when the operator set
+// provenance = "off". The fix is `clawpatrol plugins approve`.
+//
+// fetchedVersion is the tag actually fetched: it equals entry.Version on
+// the load / keep-pinned path, and is the newest satisfying tag on an
+// explicit `plugins update` (upgrade), where it may differ.
+func checkProvenanceNotDowngraded(name string, mode provenanceMode, entry lockEntry, res fetchResult, fetchedVersion string) error {
 	if mode == provOff {
 		return nil
 	}
@@ -599,10 +605,14 @@ func checkProvenanceNotDowngraded(name string, mode provenanceMode, entry lockEn
 				"a benign plugin's build dropping provenance looks exactly like this. "+
 				"If you trust it, re-approve: clawpatrol plugins approve %s", name, name)
 	}
-	if entry.Commit != "" && res.commit != "" && res.commit != entry.Commit {
+	// A changed attested commit is only a re-pointed-tag signal when the
+	// version is unchanged: the same tag now vouches a different commit. A
+	// new version naturally has a new commit, so an upgrade is accepted.
+	if entry.Commit != "" && res.commit != "" && res.commit != entry.Commit && fetchedVersion == entry.Version {
 		return fmt.Errorf(
-			"plugin %q: attested source commit %s does not match the locked commit %s (a re-pointed tag); "+
-				"run `clawpatrol plugins update %s` or re-approve it", name, res.commit, entry.Commit, name)
+			"plugin %q: attested source commit %s does not match the locked commit %s (the %s tag was re-pointed); "+
+				"if you trust the new build, re-approve: clawpatrol plugins approve %s",
+			name, res.commit, entry.Commit, entry.Version, name)
 	}
 	return nil
 }

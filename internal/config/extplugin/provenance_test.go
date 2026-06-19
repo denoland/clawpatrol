@@ -184,6 +184,35 @@ func TestProvenanceRecordsAndPinsCommit(t *testing.T) {
 	}
 }
 
+// TestProvenanceCommitCheckIsVersionAware covers that the re-pointed-tag
+// guard fires only for a re-download of the *same* version, not for an
+// explicit upgrade to a *new* version (whose commit legitimately differs).
+// Without this distinction `clawpatrol plugins update` to a newer attested
+// release is wrongly blocked.
+func TestProvenanceCommitCheckIsVersionAware(t *testing.T) {
+	entry := lockEntry{Version: "v1.0.0", Commit: "commit-aaa", Attested: true}
+	res := fetchResult{commit: "commit-bbb", attested: true}
+
+	// Same tag, different commit: the tag was re-pointed -> blocked.
+	if err := checkProvenanceNotDowngraded("p", provWarn, entry, res, "v1.0.0"); err == nil ||
+		!strings.Contains(err.Error(), "re-pointed") {
+		t.Fatalf("same-version commit change should be blocked, got: %v", err)
+	}
+	// Newer version, different commit: a legitimate upgrade -> accepted.
+	if err := checkProvenanceNotDowngraded("p", provWarn, entry, res, "v1.1.0"); err != nil {
+		t.Fatalf("upgrade to a new version must not be blocked, got: %v", err)
+	}
+	// A lost attestation still blocks, regardless of the version change.
+	if err := checkProvenanceNotDowngraded("p", provWarn, entry, fetchResult{}, "v1.1.0"); err == nil ||
+		!strings.Contains(err.Error(), "lost its build-provenance") {
+		t.Fatalf("lost attestation should block, got: %v", err)
+	}
+	// provenance = "off" disables every check.
+	if err := checkProvenanceNotDowngraded("p", provOff, entry, fetchResult{}, "v1.0.0"); err != nil {
+		t.Fatalf("provOff should skip checks, got: %v", err)
+	}
+}
+
 // TestProvenanceDowngradeBlockedUntilApproved covers the TOFU model: a
 // plugin recorded as attested that loses provenance is blocked on load
 // until Approve (accept=true) re-records the lower level.
