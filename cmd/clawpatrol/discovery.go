@@ -332,6 +332,57 @@ type DiscoveryHITL struct {
 	// request it currently has parked awaiting human approval. The full URL
 	// is `https://` + the internal host + this path.
 	PendingPath string `json:"pending_path"`
+	// Async documents the asynchronous-approval fallback: when a gated
+	// endpoint is configured to hand back a 202 after a synchronous wait
+	// window instead of holding the connection indefinitely. Present only
+	// when at least one of this profile's endpoints can go async; nil on a
+	// purely synchronous deployment so the sync docs above stand alone.
+	Async *DiscoveryHITLAsync `json:"async,omitempty"`
+}
+
+// DiscoveryHITLAsync documents the async-approval fallback for this
+// profile: the 202-then-poll protocol an agent follows when a gated
+// request is not approved within an endpoint's synchronous wait window.
+// Every field is rendered from the live serving constants so the
+// documented flow can't drift from the served one.
+type DiscoveryHITLAsync struct {
+	// Explanation is the human/LLM-readable description of the 202 + poll +
+	// retry protocol, with the exact response field names the agent reads.
+	// Carried in JSON and rendered verbatim into the markdown async
+	// subsection so both consumers get identical guidance.
+	Explanation string `json:"explanation"`
+	// StatusPathTemplate is the path template for the status-polling
+	// endpoint, with `{operation_id}` standing in for the parked
+	// operation's id. The concrete, ready-to-poll URL is returned in the
+	// 202's `status_url` field (and Location header); this template only
+	// shows the shape.
+	StatusPathTemplate string `json:"status_path_template"`
+	// RetryHeader is the request header an agent sets, with the operation
+	// id as its value, when it retries the original request after approval.
+	RetryHeader string `json:"retry_header"`
+	// PollIntervalSeconds is the gateway's suggested poll interval — the
+	// value it puts in the Retry-After header on a 202 and on a still-pending
+	// status response.
+	PollIntervalSeconds int `json:"poll_interval_seconds"`
+	// Endpoints lists, per gated endpoint that can go async, the
+	// synchronous wait window before it returns a 202 and how long the
+	// parked operation then stays pollable.
+	Endpoints []DiscoveryHITLAsyncEndpoint `json:"endpoints"`
+}
+
+// DiscoveryHITLAsyncEndpoint is one gated endpoint's async timing: the
+// synchronous wait window after which a still-unapproved request returns
+// a 202, and the lifetime of the parked operation once it goes async.
+type DiscoveryHITLAsyncEndpoint struct {
+	Name string `json:"name"`
+	// SyncWait is the synchronous hold window (sync_wait_timeout). A request
+	// to this endpoint that a human has not decided within this window
+	// returns a 202 and continues asynchronously.
+	SyncWait string `json:"sync_wait"`
+	// PollTTL is how long the operation stays pollable after it goes async
+	// (the approver's overall timeout minus the sync wait window). Once it
+	// elapses with no decision the operation becomes `expired`.
+	PollTTL string `json:"poll_ttl"`
 }
 
 // isEmpty reports whether the profile grants nothing — no endpoints and
@@ -496,7 +547,7 @@ func buildDiscoveryManifest(policy *config.CompiledPolicy, profileName string) *
 	// An empty profile has nothing to gate or poll, so it gets the empty-
 	// state guidance below instead.
 	if !m.isEmpty() {
-		m.HITL = buildDiscoveryHITL(m.Endpoints)
+		m.HITL = buildDiscoveryHITL(policy, prof, m.Endpoints)
 	}
 
 	// A profile that grants nothing leaves the agent with nothing to act
@@ -554,19 +605,92 @@ func isHumanApprover(policy *config.CompiledPolicy, name string) bool {
 // HITL bool can never disagree. Always returns a value for a non-empty
 // profile: the explanation and poll path are useful even when no endpoint
 // is currently gated, since rules can change under the agent.
-func buildDiscoveryHITL(eps []DiscoveryEndpoint) *DiscoveryHITL {
+//
+// policy + prof drive the async fallback: an endpoint goes async only when
+// the profile opts into async grants and the gating approver is async-
+// capable with a synchronous wait window. When no endpoint qualifies the
+// Async block is left nil and the manifest documents the synchronous flow
+// alone.
+func buildDiscoveryHITL(policy *config.CompiledPolicy, prof *config.CompiledProfile, eps []DiscoveryEndpoint) *DiscoveryHITL {
 	gated := []string{}
+	asyncEps := []DiscoveryHITLAsyncEndpoint{}
 	for _, ep := range eps {
 		if ep.HITL {
 			gated = append(gated, ep.Name)
 		}
+		if syncWait, pollTTL, ok := endpointAsyncHITL(policy, prof, ep.Name); ok {
+			asyncEps = append(asyncEps, DiscoveryHITLAsyncEndpoint{
+				Name:     ep.Name,
+				SyncWait: syncWait.String(),
+				PollTTL:  pollTTL.String(),
+			})
+		}
 	}
 	sort.Strings(gated)
-	return &DiscoveryHITL{
+	h := &DiscoveryHITL{
 		Explanation:    hitlManifestExplanation(),
 		GatedEndpoints: gated,
 		PendingPath:    hitlPendingPath,
 	}
+	if len(asyncEps) > 0 {
+		sort.Slice(asyncEps, func(i, j int) bool { return asyncEps[i].Name < asyncEps[j].Name })
+		h.Async = &DiscoveryHITLAsync{
+			Explanation:         hitlAsyncManifestExplanation(),
+			StatusPathTemplate:  hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix,
+			RetryHeader:         hitlRetryOperationHeader,
+			PollIntervalSeconds: hitlDefaultRetryAfterSeconds,
+			Endpoints:           asyncEps,
+		}
+	}
+	return h
+}
+
+// endpointAsyncHITL reports whether a request to the named endpoint can
+// fall back to asynchronous approval for this profile, and if so the
+// synchronous wait window before it returns a 202 and the lifetime of the
+// parked operation thereafter. It mirrors the gateway's live activation
+// rule (asyncHumanApproverFor + maybeStartAsyncHITLOperation): the profile
+// must opt into async grants, the matching rule's approve chain must be
+// exactly one async-capable human approver (not the built-in dashboard),
+// and that approver must declare a positive sync_wait_timeout. An endpoint
+// gated only synchronously — dashboard approver, multi-stage chain, or no
+// sync window — reports false and is documented by the synchronous flow.
+//
+// When several gated rules qualify, the earliest hand-back wins: the agent
+// is told the soonest a request here could go async (smallest sync wait).
+func endpointAsyncHITL(policy *config.CompiledPolicy, prof *config.CompiledProfile, endpointName string) (syncWait, pollTTL time.Duration, ok bool) {
+	if policy == nil || prof == nil || !prof.HITLAsyncGrants {
+		return 0, 0, false
+	}
+	ep := prof.Endpoints[endpointName]
+	if ep == nil {
+		return 0, 0, false
+	}
+	for _, rule := range ep.Rules {
+		if rule == nil || rule.Disabled {
+			continue
+		}
+		stages := rule.Outcome.Approve
+		if len(stages) != 1 || stages[0].Name == "dashboard" {
+			continue
+		}
+		ent := policy.Approvers[stages[0].Name]
+		if ent == nil {
+			continue
+		}
+		rt, isAsync := ent.Body.(hitlAsyncGrantRuntime)
+		if !isAsync || !rt.HITLAsyncGrantEnabled() {
+			continue
+		}
+		sw := rt.HITLSyncWaitTimeout()
+		if sw <= 0 {
+			continue
+		}
+		if !ok || sw < syncWait {
+			syncWait, pollTTL, ok = sw, rt.HITLAsyncApprovalTTL(policy), true
+		}
+	}
+	return syncWait, pollTTL, ok
 }
 
 // hitlManifestExplanation is the prose an agent reads to understand that a
@@ -591,6 +715,47 @@ The gateway parks the request synchronously: it holds your connection open until
 To see everything currently waiting on a human for your device, GET %s. It lists each parked `+
 		`action — its method, endpoint, and redacted target — so you can tell what is held without `+
 		`keeping the original connection in view.`, pendingURL)
+}
+
+// hitlAsyncManifestExplanation is the prose for the async-approval
+// fallback: the 202-then-poll-then-retry protocol. Built from the live
+// serving constants (status path, retry header, suggested poll interval)
+// so the documented field names and flow can't drift from what the
+// gateway actually returns. Listed endpoints (with their per-endpoint sync
+// wait windows) accompany this text in the rendered manifest.
+func hitlAsyncManifestExplanation() string {
+	statusTemplate := hitlOperationStatusPrefix + "{operation_id}" + hitlOperationStatusSuffix
+	return fmt.Sprintf(`Some gated endpoints do not hold your connection forever. Each such endpoint has a `+
+		`synchronous wait window (its sync_wait_timeout, listed per endpoint below): if a human has `+
+		`not decided within that window, the gateway stops holding the connection and answers with `+
+		`HTTP 202 Accepted. A 202 is NOT success and NOT failure — it means "parked for human `+
+		`approval, continuing asynchronously." Do not treat it as either; switch to polling.
+
+The 202 body is JSON describing the parked operation. The fields you act on:
+- operation_id: the parked operation's id.
+- status_url: the absolute URL to poll for this operation's status (also returned in the Location `+
+		`header). Poll THIS url; do not build your own — the template is %s.
+- state: the current state (see below).
+- terminal: true once the operation has reached a final state and will not change.
+- retry_original_request: true while you should still be working the operation (poll, or retry once `+
+		`approved).
+The 202 also carries a Retry-After header (suggested %d seconds) — wait that long between polls.
+
+Poll status_url with GET until the state resolves. The states:
+- sync_waiting / pending_approval: still waiting on a human; keep polling (honoring Retry-After). No `+
+		`upstream call has happened. pending_approval includes an approval_expires_at — the operation `+
+		`stays pollable until then; only after that does it become expired, so keep polling a pending `+
+		`operation rather than giving up early.
+- approved_waiting_for_retry: a human approved it, but the gateway has NOT called upstream yet. To `+
+		`execute it, RE-SEND the exact same original request with the header %s set to the operation_id, `+
+		`before retry_expires_at. The retry is what performs the upstream call.
+- denied: a human rejected it; do not retry. Stop.
+- expired: the approval window or the post-approval retry window elapsed with no (or no acted-on) `+
+		`decision; do not retry. Stop. expired is distinct from pending_approval — pending means keep `+
+		`polling, expired means it is over.
+
+You can also GET status_url at any time without a prior 202 to re-check an operation you already `+
+		`know the id of.`, statusTemplate, hitlDefaultRetryAfterSeconds, hitlRetryOperationHeader)
 }
 
 // buildDiscoveryEnvVars collects the environment variables this profile
@@ -923,6 +1088,18 @@ func (m *DiscoveryManifest) Markdown() string {
 			b.WriteString(".\n\n")
 		} else {
 			b.WriteString("None of this profile's endpoints currently gate requests behind human approval.\n\n")
+		}
+		if m.HITL.Async != nil {
+			b.WriteString("### Asynchronous approval (202 + polling)\n\n")
+			b.WriteString(m.HITL.Async.Explanation)
+			b.WriteString("\n\n")
+			b.WriteString("Endpoints that fall back to asynchronous approval, and the synchronous wait " +
+				"window before each returns a 202:\n\n")
+			for _, ae := range m.HITL.Async.Endpoints {
+				fmt.Fprintf(&b, "- %s: returns 202 after %s of waiting; the parked operation then stays "+
+					"pollable for %s.\n", ae.Name, ae.SyncWait, ae.PollTTL)
+			}
+			b.WriteString("\n")
 		}
 	}
 
