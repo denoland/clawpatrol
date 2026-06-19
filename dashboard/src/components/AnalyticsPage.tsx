@@ -1,6 +1,7 @@
 import * as Plot from "@observablehq/plot";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getAnalytics, type Agent, type EventRecord } from "../lib/api";
+import { statusClass } from "../lib/format";
 import { Main } from "./Main";
 import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
@@ -144,7 +145,10 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     const p99 = lats.length ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
     const devices = new Set(filtered.map((e) => e.agent_ip).filter(Boolean)).size;
     if (hasFilter) {
-      const errs = filtered.filter((e) => (e.status ?? 0) >= 400).length;
+      const errs = filtered.filter((e) => {
+        const c = statusClass(e.status);
+        return c === "4xx" || c === "5xx" || c === "error";
+      }).length;
       const errPct = sampleN > 0 ? (errs / sampleN) * 100 : 0;
       return { n: sampleN, avg, p99, errPct, devices };
     }
@@ -337,16 +341,8 @@ function LatencyChart({
         host: e.host,
         id: e.id,
         device: agentNames.get(e.agent_ip ?? "") ?? e.agent_ip ?? "?",
-        statusCode: e.status ?? 0,
-        status: e.status
-          ? e.status >= 500
-            ? "5xx"
-            : e.status >= 400
-              ? "4xx"
-              : e.status >= 300
-                ? "3xx"
-                : "2xx"
-          : "\u2014",
+        statusCode: e.status ?? "",
+        status: statusClass(e.status) || "\u2014",
       }));
 
     const colorField = colorBy === "status" ? "status" : colorBy === "device" ? "device" : "host";

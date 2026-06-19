@@ -1759,7 +1759,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		agentIP      sql.NullString
 		method       sql.NullString
 		path         sql.NullString
-		status       sql.NullInt64
+		status       sql.NullString
 		in, ot       sql.NullInt64
 		ms           sql.NullInt64
 		action       sql.NullString
@@ -1805,7 +1805,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 	e.AgentIP = agentIP.String
 	e.Method = method.String
 	e.Path = path.String
-	e.Status = int(status.Int64)
+	e.Status = status.String
 	e.In = in.Int64
 	e.Out = ot.Int64
 	e.Ms = ms.Int64
@@ -2205,7 +2205,7 @@ func (w *webMux) apiAnalytics(
 			agentIP  sql.NullString
 			method   sql.NullString
 			path     sql.NullString
-			status   sql.NullInt64
+			status   sql.NullString
 			in, ot   sql.NullInt64
 			ms       sql.NullInt64
 			action   sql.NullString
@@ -2227,7 +2227,7 @@ func (w *webMux) apiAnalytics(
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
-		e.Status = int(status.Int64)
+		e.Status = status.String
 		e.In = in.Int64
 		e.Out = ot.Int64
 		e.Ms = ms.Int64
@@ -2370,6 +2370,33 @@ func writeJSON(rw http.ResponseWriter, v any) {
 // Event sink + sampling helpers (fed by g.handle/mitm/splice; consumed
 // by the dashboard SSE stream and the on-disk event log).
 
+// statusClass buckets a status string for metrics + dashboard coloring: a
+// numeric HTTP-style status by its leading digit (2xx..5xx), a non-empty
+// non-numeric status (e.g. a plugin's "AccessDenied") as "error" — a named
+// status is a failure; a successful plugin reports a 2xx — and an empty
+// status as "".
+func statusClass(status string) string {
+	if status == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(status)
+	if err != nil {
+		return "error"
+	}
+	switch {
+	case n >= 500:
+		return "5xx"
+	case n >= 400:
+		return "4xx"
+	case n >= 300:
+		return "3xx"
+	case n >= 200:
+		return "2xx"
+	default:
+		return ""
+	}
+}
+
 type Event struct {
 	Ts      time.Time `json:"ts"`
 	ID      string    `json:"id,omitempty"`    // UUIDv7; correlates start/end/frame + DB key
@@ -2380,7 +2407,7 @@ type Event struct {
 	Host    string    `json:"host"`
 	Method  string    `json:"method,omitempty"`
 	Path    string    `json:"path,omitempty"`
-	Status  int       `json:"status,omitempty"`
+	Status  string    `json:"status,omitempty"`
 	In      int64     `json:"in,omitempty"`
 	Out     int64     `json:"out,omitempty"`
 	Ms      int64     `json:"ms"`
@@ -2509,7 +2536,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			agentIP      sql.NullString
 			method       sql.NullString
 			path         sql.NullString
-			status       sql.NullInt64
+			status       sql.NullString
 			in, ot       sql.NullInt64
 			ms           sql.NullInt64
 			action       sql.NullString
@@ -2541,7 +2568,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
-		e.Status = int(status.Int64)
+		e.Status = status.String
 		e.In = in.Int64
 		e.Out = ot.Int64
 		e.Ms = ms.Int64

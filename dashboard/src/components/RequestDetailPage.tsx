@@ -11,7 +11,7 @@ import {
 } from "../lib/api";
 import { copyText, headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
-import { fmtDateTime } from "../lib/format";
+import { fmtDateTime, statusColorClass } from "../lib/format";
 import { Button } from "./Button";
 import { CopyButton } from "./CopyButton";
 import { ApprovalStatusIcon, LockGlyph, rowDescriptors } from "./LiveRequests";
@@ -70,17 +70,8 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   }
 
   const time = fmtDateTime(ev.ts);
-  const status = ev.status || 0;
-  const statusColor =
-    status >= 500
-      ? "text-danger-500"
-      : status >= 400
-        ? "text-rust-500"
-        : status >= 300
-          ? "text-butter-600"
-          : status >= 200
-            ? "text-success-600"
-            : "text-text-muted";
+  const status = ev.status ?? "";
+  const statusColor = statusColorClass(status);
   const schema = ev.family ? byFamily[ev.family] : undefined;
   // SQL-family records come from the postgres / clickhouse_native
   // conn-family plugins. They populate Facets with verb / tables /
@@ -126,9 +117,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
             )
           )}
           {!isSQL && (
-            <span className={"text-sm tabular-nums font-semibold " + statusColor}>
-              {status || "\u2014"}
-            </span>
+            <span className={"text-sm font-semibold " + statusColor}>{status || "\u2014"}</span>
           )}
           <span className="text-sm text-text break-all font-mono" title={fullUrl}>
             {fullUrl}

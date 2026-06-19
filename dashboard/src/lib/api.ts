@@ -529,7 +529,7 @@ export type EventRecord = {
   host: string;
   method?: string;
   path?: string;
-  status?: number;
+  status?: string;
   in?: number;
   out?: number;
   ms: number;

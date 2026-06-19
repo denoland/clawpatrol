@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type EventRecord, type FacetSchema } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
-import { fmtTime } from "../lib/format";
+import { fmtTime, statusColorClass } from "../lib/format";
 
 type RowState = EventRecord & {
   frames?: { direction: string; frame: string; ts: string }[];
@@ -224,18 +224,8 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
     : undefined;
   const time = fmtTime(ev.ts);
   const inFlight = ev.phase === "start";
-  const status = ev.status || 0;
-  const statusColor = inFlight
-    ? "text-text-subtle"
-    : status >= 500
-      ? "text-danger-500"
-      : status >= 400
-        ? "text-rust-500"
-        : status >= 300
-          ? "text-butter-600"
-          : status >= 200
-            ? "text-success-600"
-            : "text-text-muted";
+  const status = ev.status ?? "";
+  const statusColor = inFlight ? "text-text-subtle" : statusColorClass(status);
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
   // "splice"/"relay" forward the bytes without inspecting them, so
@@ -262,7 +252,10 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11 flex items-center">
           {inspected ? verb : <LockGlyph />}
         </span>
-        <span className={"text-xs tabular-nums shrink-0 w-9 " + statusColor}>
+        <span
+          className={"text-xs shrink-0 w-14 truncate " + statusColor}
+          title={status || undefined}
+        >
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
         <span className="text-xs text-text truncate flex-1 min-w-0" title={ev.host + sep + body}>
