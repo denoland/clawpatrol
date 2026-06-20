@@ -791,6 +791,61 @@ condition outcome depends on one is auto-denied (the same
 unevaluable fail-close that protects the built-in HTTPS body
 buffer).
 
+### Reporting the outcome: status and a response body
+
+`Conn.SetResult` is the after-the-fact counterpart of `Evaluate`:
+once the response is known, the plugin reports the action's
+outcome. It mirrors the request side — a result schema of named
+fields, declared in the manifest as `FacetDef.ResultFields` (the
+same `FacetField` shape, so `Title` / `Description` / `DetailOnly`
+and `Kind: pluginsdk.FacetStream` all apply):
+
+```go
+Facets: []pluginsdk.FacetDef{{
+    Name:   "example_smtp",
+    Fields: []pluginsdk.FacetField{ /* request fields */ },
+    ResultFields: []pluginsdk.FacetField{
+        {Name: "status", Kind: pluginsdk.FacetString, Title: true,
+            Description: "Delivery status"},
+        {Name: "response_body", Kind: pluginsdk.FacetStream,
+            Description: "Server reply"},
+    },
+}},
+```
+
+The plugin reports the result once, after the response, on the
+connection:
+
+```go
+_ = conn.SetResult(ctx, map[string]any{
+    "status":        "250",
+    "response_body": pluginsdk.Stream(replyReader),
+})
+```
+
+The gateway:
+
+- Lifts the field marked `Title: true` into the action's
+  **status** — the free-form string shown in the activity log's
+  status slot and on the request detail page (an HTTP code like
+  `200`, a protocol code like `250`, or a named error like
+  `AccessDenied`).
+- Treats a `FacetStream` result field as the **response body**: it
+  pulls the stream up to its body-storage cap
+  (`gateway.limits.body_storage`, default 4 KiB), buffers and
+  truncates it exactly like the built-in HTTP path, and renders it
+  in the detail page's *Response body* section.
+
+As on the request side, the gateway **owns the cap**: the plugin
+offers a reader and has no size opinion. When the gateway has read
+enough it cancels the stream; the plugin's reader is simply dropped
+and is never blocked — so reporting a body never stalls or
+truncates the response the plugin is still sending to the agent.
+
+`SetResult` is best-effort and finalizes the connection's current
+action (the one it just evaluated); call it once, after the
+response is known.
+
 ### Optional facet fields
 
 Fields marked `Optional: true` may be omitted from the action
