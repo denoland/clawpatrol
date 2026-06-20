@@ -817,8 +817,7 @@ func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
 		// re-ran the doomed AAAA lookup on every connection. Probe the other
 		// family to classify, and attach a synthetic SOA so the negative
 		// result caches (RFC 2308).
-		var de *net.DNSError
-		if err != nil && !(errors.As(err, &de) && de.IsNotFound) {
+		if err != nil && !isNotFound(err) {
 			return errorResp(q, dns.RcodeServerFailure)
 		}
 		other := "ip6"
@@ -829,7 +828,7 @@ func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
 		switch {
 		case oerr == nil && len(oips) > 0:
 			return negResponse(q, dns.RcodeSuccess) // NODATA: exists in the other family
-		case oerr != nil && !(errors.As(oerr, &de) && de.IsNotFound):
+		case oerr != nil && !isNotFound(oerr):
 			// The other-family probe failed transiently — we can't prove the
 			// name is absent, so don't cache a negative. SERVFAIL is uncached.
 			return errorResp(q, dns.RcodeServerFailure)
@@ -886,6 +885,15 @@ func errorResp(q *dns.Msg, rcode int) *dns.Msg {
 	r := new(dns.Msg)
 	r.SetRcode(q, rcode)
 	return r
+}
+
+// isNotFound reports whether err is the resolver's authoritative "no such
+// record" signal (NXDOMAIN / NODATA), as opposed to a transient failure
+// (SERVFAIL / timeout). Go folds the not-found cases into net.DNSError with
+// IsNotFound set; everything else is treated as transient.
+func isNotFound(err error) bool {
+	var de *net.DNSError
+	return errors.As(err, &de) && de.IsNotFound
 }
 
 // negTTL bounds how long downstream resolvers cache a negative (NODATA /

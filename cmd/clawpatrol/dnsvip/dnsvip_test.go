@@ -791,3 +791,25 @@ func TestSynthServfailWhenOtherFamilyProbeIsTransient(t *testing.T) {
 		t.Fatalf("rcode = %s, want SERVFAIL (a transient probe failure must not cache NXDOMAIN)", dns.RcodeToString[resp.Rcode])
 	}
 }
+
+// TestSynthNodataWhenAddressesDontMatchFamily covers the defensive branch
+// where the resolver returns addresses but none match the queried family
+// (so the answer loop emits nothing): the result must be NODATA with an SOA,
+// not an empty NOERROR that fails to cache nor a mis-typed answer.
+func TestSynthNodataWhenAddressesDontMatchFamily(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, _, _ string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(140, 82, 112, 5)}, nil // v4 returned for an AAAA query
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 0 {
+		t.Fatalf("want NODATA (NOERROR, no answer); got rcode=%s answers=%d",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if findSOA(resp) == nil {
+		t.Error("wrong-family NODATA must carry an SOA")
+	}
+}
