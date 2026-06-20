@@ -25,6 +25,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -49,6 +50,12 @@ import (
 // own lookup onto the agent's in-flight tunnelled query and deadlock
 // both — the same hardening unclaw landed in dns.ts.
 var hostResolver = &net.Resolver{PreferGo: true}
+
+// lookupIP is the A/AAAA resolution the synth path uses. A package var so
+// tests can substitute deterministic results for the host resolver.
+var lookupIP = func(ctx context.Context, network, host string) ([]net.IP, error) {
+	return hostResolver.LookupIP(ctx, network, host)
+}
 
 // RequiresVIP is the marker an endpoint plugin's body implements when
 // its hostnames need DNS-VIP interception (because the wire protocol
@@ -790,15 +797,35 @@ func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
 	name := strings.TrimSuffix(qd.Name, ".")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	ips, err := hostResolver.LookupIP(ctx, network, name)
-	if err != nil || len(ips) == 0 {
-		// LookupIP folds DNS error codes (NXDOMAIN, SERVFAIL,
-		// timeout) into a single error type. Treat any failure as
-		// NXDOMAIN — the gateway has already exhausted its local
-		// resolver chain, and there's nowhere else to consult that
-		// would know about an internal name the operator's machine
-		// doesn't know about either.
-		return errorResp(q, dns.RcodeNameError)
+	ips, err := lookupIP(ctx, network, name)
+	if len(ips) == 0 {
+		// No address of the requested family. Go's resolver collapses three
+		// cases into one error, but they need different answers — and getting
+		// it wrong defeats negative caching:
+		//
+		//   transient (SERVFAIL / timeout)               → SERVFAIL, uncached.
+		//   NODATA (name exists, no record of this type) → NOERROR + SOA.
+		//   NXDOMAIN (name exists in no family)          → NXDOMAIN + SOA.
+		//
+		// The common case is an IPv4-only host (api.github.com and most of the
+		// internet) queried for AAAA: that is NODATA, not NXDOMAIN. The old
+		// code returned a bare NXDOMAIN there — wrong (the name has an A
+		// record) and, with no SOA, uncacheable, so a downstream resolver
+		// re-ran the doomed AAAA lookup on every connection. Probe the other
+		// family to classify, and attach a synthetic SOA so the negative
+		// result caches (RFC 2308).
+		var de *net.DNSError
+		if err != nil && !(errors.As(err, &de) && de.IsNotFound) {
+			return errorResp(q, dns.RcodeServerFailure)
+		}
+		other := "ip6"
+		if network == "ip6" {
+			other = "ip4"
+		}
+		if oips, oerr := lookupIP(ctx, other, name); oerr == nil && len(oips) > 0 {
+			return negResponse(q, dns.RcodeSuccess) // NODATA: exists in the other family
+		}
+		return negResponse(q, dns.RcodeNameError) // NXDOMAIN: resolves in no family
 	}
 	resp := new(dns.Msg)
 	resp.SetReply(q)
@@ -822,11 +849,9 @@ func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
 		}
 	}
 	if len(resp.Answer) == 0 {
-		// Resolver returned addresses but none matched the query
-		// family (e.g. AAAA query, IPv4-only host). Empty NOERROR
-		// response — same shape DNS servers use for "name exists,
-		// no records of this type."
-		return resp
+		// Resolver returned addresses but none matched the query family.
+		// NODATA with a synthetic SOA so the negative result caches.
+		return negResponse(q, dns.RcodeSuccess)
 	}
 	return resp
 }
@@ -851,4 +876,56 @@ func errorResp(q *dns.Msg, rcode int) *dns.Msg {
 	r := new(dns.Msg)
 	r.SetRcode(q, rcode)
 	return r
+}
+
+// negTTL bounds how long downstream resolvers cache a negative (NODATA /
+// NXDOMAIN) answer, via the synthetic SOA below. Matches the positive
+// answer TTL: long enough to collapse a burst of connections to a v4-only
+// host into a single AAAA lookup, short enough that a host gaining IPv6 is
+// noticed promptly.
+const negTTL = 30
+
+// negResponse builds a cacheable negative answer: NODATA when rcode is
+// RcodeSuccess ("the name exists, but has no record of this type"), NXDOMAIN
+// when RcodeNameError. It carries a synthetic SOA in the authority section so
+// downstream resolvers can derive a negative-cache TTL (RFC 2308) — without
+// one the answer is uncacheable and the query repeats on every connection.
+func negResponse(q *dns.Msg, rcode int) *dns.Msg {
+	r := new(dns.Msg)
+	r.SetRcode(q, rcode)
+	r.RecursionAvailable = true
+	if len(q.Question) > 0 {
+		r.Ns = []dns.RR{negSOA(q.Question[0].Name)}
+	}
+	return r
+}
+
+// negSOA mints a minimal SOA for negative-cache signalling. The owner names
+// the zone the negative answer covers — it must be an *ancestor* of the
+// queried name, not the name itself: downstream resolvers (systemd-resolved)
+// only negative-cache when the SOA owner is a proper enclosing zone. Strip
+// the leftmost label, matching what real authoritative servers return
+// (`api.github.com` AAAA → owner `github.com.`). MNAME / RNAME are
+// placeholders (the record exists only to carry a TTL, never to be
+// followed); Minttl and the header TTL bound the cache.
+func negSOA(name string) *dns.SOA {
+	owner := name
+	if i := strings.IndexByte(name, '.'); i >= 0 && i < len(name)-1 {
+		owner = name[i+1:]
+	}
+	return &dns.SOA{
+		Hdr: dns.RR_Header{
+			Name:   owner,
+			Rrtype: dns.TypeSOA,
+			Class:  dns.ClassINET,
+			Ttl:    negTTL,
+		},
+		Ns:      "clawpatrol.invalid.",
+		Mbox:    "clawpatrol.invalid.",
+		Serial:  1,
+		Refresh: 3600,
+		Retry:   600,
+		Expire:  86400,
+		Minttl:  negTTL,
+	}
 }
