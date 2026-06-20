@@ -329,6 +329,21 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
+					// The agent hung up. Before telling the plugin (ConnClose
+					// terminates its HandleConn and tears the stream down), wait
+					// for any in-flight result-body pull to finish: that pull,
+					// spawned by finish from the plugin's ActionResult, needs the
+					// plugin alive to serve its StreamRead, and an aws-shaped
+					// one-shot client reaches here right after reading the
+					// response — by which point the ActionResult (sent ahead of
+					// the response) has already been processed and the pull is in
+					// flight. Sending ConnClose first would race the plugin's
+					// teardown ahead of the body StreamChunk and the pull would be
+					// released empty by streamDead, dropping the response body
+					// (and, with tighter timing, the status). awaitPull is a no-op
+					// when nothing is pulling, so the long-lived / no-result paths
+					// are unchanged.
+					rs.awaitPull()
 					_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: &pb.ConnClose{}}})
 					agentDone <- nil
 				} else {
