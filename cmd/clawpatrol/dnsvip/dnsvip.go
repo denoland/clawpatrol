@@ -771,9 +771,12 @@ func (a *Allocator) lazyAllocateForPattern(hostname string) bool {
 // records) and matches operator intent — if the agent's resolv.conf
 // names a specific resolver, that resolver answers TXT lookups.
 //
-// Errors collapse to NXDOMAIN (synthesised path) or SERVFAIL (relay
-// path). The split keeps the synth path's "name doesn't exist"
-// signal distinct from the relay path's "upstream unreachable".
+// The synth path classifies an empty result: a transient resolver
+// failure is SERVFAIL (uncached), a name with no record of the queried
+// family but records of the other is NODATA, and a name that resolves in
+// no family is NXDOMAIN — the latter two carrying an SOA so they
+// negative-cache. The relay path collapses any failure to SERVFAIL
+// ("upstream unreachable").
 func (a *Allocator) forwardUpstream(q *dns.Msg, dstIP string) *dns.Msg {
 	if len(q.Question) == 0 {
 		return errorResp(q, dns.RcodeFormatError)
@@ -822,10 +825,17 @@ func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
 		if network == "ip6" {
 			other = "ip4"
 		}
-		if oips, oerr := lookupIP(ctx, other, name); oerr == nil && len(oips) > 0 {
+		oips, oerr := lookupIP(ctx, other, name)
+		switch {
+		case oerr == nil && len(oips) > 0:
 			return negResponse(q, dns.RcodeSuccess) // NODATA: exists in the other family
+		case oerr != nil && !(errors.As(oerr, &de) && de.IsNotFound):
+			// The other-family probe failed transiently — we can't prove the
+			// name is absent, so don't cache a negative. SERVFAIL is uncached.
+			return errorResp(q, dns.RcodeServerFailure)
+		default:
+			return negResponse(q, dns.RcodeNameError) // NXDOMAIN: resolves in no family
 		}
-		return negResponse(q, dns.RcodeNameError) // NXDOMAIN: resolves in no family
 	}
 	resp := new(dns.Msg)
 	resp.SetReply(q)

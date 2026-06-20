@@ -769,3 +769,25 @@ func TestNegSOAOwnerIsParentZone(t *testing.T) {
 		}
 	}
 }
+
+// TestSynthServfailWhenOtherFamilyProbeIsTransient: the queried family is a
+// genuine not-found, but the other-family probe (used to tell NODATA from
+// NXDOMAIN) fails transiently. We can't prove the name is absent, so the
+// answer must be SERVFAIL — never a cached NXDOMAIN for a name that might
+// exist in the other family.
+func TestSynthServfailWhenOtherFamilyProbeIsTransient(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, network, _ string) ([]net.IP, error) {
+		if network == "ip6" { // queried family: genuine not-found
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+		}
+		return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true} // probe: transient
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s, want SERVFAIL (a transient probe failure must not cache NXDOMAIN)", dns.RcodeToString[resp.Rcode])
+	}
+}
