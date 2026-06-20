@@ -461,8 +461,20 @@ func TestEndpointSetResultBodyCapped(t *testing.T) {
 	if handleErr != nil {
 		t.Errorf("plugin HandleConn errored by gateway cancel: %v", handleErr)
 	}
-	if reader == nil || !reader.closed.Load() {
-		t.Errorf("plugin body reader was not closed by the gateway's StreamCancel (graceful cancel)")
+	if reader == nil {
+		t.Errorf("plugin body reader was nil")
+	} else {
+		// The gateway's StreamCancel and the SDK closing the plugin's reader
+		// are asynchronous to the end event (the gateway emits the end as soon
+		// as it has the capped sample; the cancel propagates separately). Wait,
+		// bounded, for the close to land rather than racing it.
+		deadline := time.Now().Add(2 * time.Second)
+		for !reader.closed.Load() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !reader.closed.Load() {
+			t.Errorf("plugin body reader was not closed by the gateway's StreamCancel (graceful cancel)")
+		}
 	}
 }
 
