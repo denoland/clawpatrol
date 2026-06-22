@@ -7,6 +7,47 @@ import (
 	"testing"
 )
 
+func TestWSUpstreamAddrAndServerName(t *testing.T) {
+	tests := []struct {
+		name       string
+		upstream   string
+		wantAddr   string
+		wantServer string
+	}{
+		{
+			name:       "bare host defaults to HTTPS",
+			upstream:   "api.example.com",
+			wantAddr:   "api.example.com:443",
+			wantServer: "api.example.com",
+		},
+		{
+			name:       "configured port is preserved",
+			upstream:   "10.1.1.100:6443",
+			wantAddr:   "10.1.1.100:6443",
+			wantServer: "10.1.1.100",
+		},
+		{
+			name:       "bracketed IPv6 port is preserved",
+			upstream:   "[fd00::10]:6443",
+			wantAddr:   "[fd00::10]:6443",
+			wantServer: "fd00::10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotAddr, gotServer, err := wsUpstreamAddrAndServerName(tt.upstream)
+			if err != nil {
+				t.Fatalf("wsUpstreamAddrAndServerName(%q): %v", tt.upstream, err)
+			}
+			if gotAddr != tt.wantAddr || gotServer != tt.wantServer {
+				t.Fatalf("wsUpstreamAddrAndServerName(%q) = (%q, %q), want (%q, %q)",
+					tt.upstream, gotAddr, gotServer, tt.wantAddr, tt.wantServer)
+			}
+		})
+	}
+}
+
 func TestPumpWSRewritesMaskedClientTextPayload(t *testing.T) {
 	placeholder := []byte("DISCORD_PLACEHOLDER")
 	actual := []byte("real.discord.token")

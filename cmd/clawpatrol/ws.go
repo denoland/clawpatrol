@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/hostmatch"
 )
 
 const (
@@ -84,16 +85,30 @@ func isWSUpgrade(req *http.Request) bool {
 	return strings.Contains(conn, "upgrade") && upg == "websocket"
 }
 
+func wsUpstreamAddrAndServerName(upstream string) (addr, serverName string, err error) {
+	host, port, err := hostmatch.SplitHostPort(upstream)
+	if err != nil {
+		return "", "", err
+	}
+	if port == "" {
+		port = "443"
+	}
+	return net.JoinHostPort(host, port), host, nil
+}
+
 // dialWSUpstream opens the upstream TLS connection used by the raw WS bridge.
 // mTLS endpoints keep using dialUpstream so credential plugins can populate the
 // stdlib TLS config; all other WS upstreams use browser TLS while still honoring
 // endpoint tunnel configuration via dialBrowserTLS.
 func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
-	addr := net.JoinHostPort(upstream, "443")
-	if endpointWantsClientCert(ep) {
-		return g.dialUpstream(ctx, "tcp", addr, upstream, ep, profile)
+	addr, serverName, err := wsUpstreamAddrAndServerName(upstream)
+	if err != nil {
+		return nil, fmt.Errorf("parse websocket upstream %q: %w", upstream, err)
 	}
-	return g.dialBrowserTLS(ctx, "tcp", addr, upstream, ep)
+	if endpointWantsClientCert(ep) {
+		return g.dialUpstream(ctx, "tcp", addr, serverName, ep, profile)
+	}
+	return g.dialBrowserTLS(ctx, "tcp", addr, serverName, ep)
 }
 
 // handleWSUpgrade swaps the http.Transport-driven request loop for a

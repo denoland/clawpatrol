@@ -85,13 +85,7 @@ func (g *Gateway) servePorts() {}
 func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint, _ string) (net.Conn, error) {
 	cfg := &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}}
 
-	if ep != nil && ep.Body != nil {
-		if cfgr, ok := ep.Body.(runtime.EndpointTLSConfigurer); ok {
-			if err := cfgr.ConfigureUpstreamTLS(cfg); err != nil {
-				log.Printf("upstream tls %s: %v — dialing with default roots", serverName, err)
-			}
-		}
-	}
+	configureEndpointTLS(cfg, serverName, ep)
 
 	if ep != nil {
 		for _, ent := range ep.Credentials {
@@ -127,6 +121,17 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 	return tc, nil
 }
 
+func configureEndpointTLS(cfg *tls.Config, serverName string, ep *config.CompiledEndpoint) {
+	if ep == nil || ep.Body == nil {
+		return
+	}
+	if cfgr, ok := ep.Body.(runtime.EndpointTLSConfigurer); ok {
+		if err := cfgr.ConfigureUpstreamTLS(cfg); err != nil {
+			log.Printf("upstream tls %s: %v — dialing with default roots", serverName, err)
+		}
+	}
+}
+
 // dialBrowserTLS opens a tunnel-aware TCP connection and performs a uTLS
 // handshake using Chrome's TLS fingerprint (HelloChrome_Auto), with ALPN
 // forced to http/1.1. Used for WS upgrades to chatgpt.com — Cloudflare WAF
@@ -140,15 +145,28 @@ func (g *Gateway) dialBrowserTLS(ctx context.Context, network, addr, serverName 
 	if err != nil {
 		return nil, err
 	}
-	return browserTLSOver(ctx, raw, serverName)
+	cfg := &tls.Config{ServerName: serverName}
+	configureEndpointTLS(cfg, serverName, ep)
+	// utls.Config is a distinct type from tls.Config, so the endpoint's
+	// settings have to be copied over by hand. Only the verification-
+	// relevant fields cross: ServerName, RootCAs, and InsecureSkipVerify.
+	// That covers every EndpointTLSConfigurer today (kubernetes sets only
+	// RootCAs). A future configurer that sets MinVersion, Certificates,
+	// VerifyPeerCertificate, etc. would have those silently dropped on the
+	// browser-TLS path — extend the copy here if that ever happens.
+	return browserTLSOver(ctx, raw, &utls.Config{
+		ServerName:         cfg.ServerName,
+		RootCAs:            cfg.RootCAs,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	})
 }
 
-func browserTLSOver(ctx context.Context, raw net.Conn, serverName string) (net.Conn, error) {
+func browserTLSOver(ctx context.Context, raw net.Conn, cfg *utls.Config) (net.Conn, error) {
 	// HelloChrome_Auto bakes ALPN ["h2","http/1.1"] into the ClientHello.
 	// We need http/1.1 only (WS upgrade requires HTTP/1.1; raw response
 	// reader breaks on h2 SETTINGS frames). Apply preset spec, mutate
 	// ALPNExtension, then handshake.
-	c := utls.UClient(raw, &utls.Config{ServerName: serverName}, utls.HelloCustom)
+	c := utls.UClient(raw, cfg, utls.HelloCustom)
 	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 	if err != nil {
 		_ = raw.Close()
