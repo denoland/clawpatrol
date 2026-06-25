@@ -685,15 +685,14 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 // startDynamicMCPFlow drives auth-code OAuth flows with RFC 7591
 // dynamic client registration. Plugins may pin a provider-accepted
 // redirect URI (Amplitude uses a localhost loopback URI); otherwise we
-// register the dashboard's own /oauth/callback page when the dashboard
-// origin is provider-acceptable. If the dashboard is served as plain
-// HTTP on a non-loopback tailnet host, fall back to a loopback redirect
-// URI. Providers such as Notion reject non-loopback HTTP redirects, but
-// accept loopback HTTP for native-client style flows; the browser may
-// land on a refused loopback page, and the dashboard's copy-paste code
-// fallback can complete the exchange.
+// register the dashboard's own /oauth/callback page, which
+// auto-exchanges via /api/oauth/exchange when it loads, with copy-paste
+// from the URL bar as a fallback.
 func (w *webMux) startDynamicMCPFlow(rw http.ResponseWriter, r *http.Request, id string, flow *OAuthIntegration) {
-	redirectURI := w.dynamicMCPRedirectURI(r, flow)
+	redirectURI := strings.TrimSpace(flow.OAuth.RedirectURI)
+	if redirectURI == "" {
+		redirectURI = w.dashboardRedirectURI(r, "/oauth/callback")
+	}
 	clientID, err := registerOAuthClient(r.Context(), flow.OAuth.RegisterURL, redirectURI, flow.OAuth.Scopes)
 	if err != nil {
 		http.Error(rw, "dynamic client registration: "+err.Error(), http.StatusBadGateway)
@@ -735,22 +734,6 @@ func (w *webMux) startDynamicMCPFlow(rw http.ResponseWriter, r *http.Request, id
 	writeJSON(rw, map[string]string{"auth_url": authURL, "state": state})
 }
 
-// dynamicMCPRedirectURI picks the redirect URI to register for dynamic
-// MCP OAuth flows. A configured plugin URI always wins. Otherwise use
-// the dashboard callback when it is HTTPS or HTTP loopback; for HTTP
-// tailnet/private hosts, use a loopback URI accepted by native-client
-// OAuth servers and rely on the dashboard's manual code paste fallback.
-func (w *webMux) dynamicMCPRedirectURI(r *http.Request, flow *OAuthIntegration) string {
-	if redirectURI := strings.TrimSpace(flow.OAuth.RedirectURI); redirectURI != "" {
-		return redirectURI
-	}
-	redirectURI := w.dashboardRedirectURI(r, "/oauth/callback")
-	if oauthRedirectURIAcceptedByBrowserProviders(redirectURI) {
-		return redirectURI
-	}
-	return "http://127.0.0.1:39173/oauth/callback"
-}
-
 // dashboardRedirectURI builds a same-origin URL on the dashboard host
 // the browser used to hit /api/oauth/start. Used as the registered
 // redirect_uri for dynamic-registration flows so the OAuth callback
@@ -765,22 +748,6 @@ func (w *webMux) dashboardRedirectURI(r *http.Request, path string) string {
 		host = "localhost"
 	}
 	return scheme + "://" + host + path
-}
-
-func oauthRedirectURIAcceptedByBrowserProviders(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	switch u.Scheme {
-	case "https":
-		return u.Host != ""
-	case "http":
-		host := strings.ToLower(u.Hostname())
-		return host == "localhost" || host == "127.0.0.1" || host == "::1"
-	default:
-		return false
-	}
 }
 
 // registerOAuthClient performs RFC 7591 dynamic client registration
