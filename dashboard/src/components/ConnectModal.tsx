@@ -25,36 +25,34 @@ export function ConnectModal({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  const [startAttempt, setStartAttempt] = useState(0);
+  const [starting, setStarting] = useState(false);
   // The picker only appears when the plugin declared optional scopes.
-  // Plugins that don't surface a picker fall straight through to the
-  // OAuth start (started=true on mount).
   const optionalGroups = oauth?.optional_scopes ?? [];
   const baseScopes = oauth?.base_scopes ?? [];
   const showsScopePicker = optionalGroups.length > 0;
-  const [started, setStarted] = useState(!showsScopePicker);
+  const [started, setStarted] = useState(false);
   const [extras, setExtras] = useState<Set<string>>(() => new Set());
   const baseSet = new Set(baseScopes);
 
-  useEffect(() => {
-    if (!started) return;
+  async function startOAuth(extraScopes?: string[]) {
+    setStarted(true);
+    setStarting(true);
+    setStart(null);
     setErr(null);
-    const extraList = showsScopePicker ? Array.from(extras) : undefined;
-    oauthStart(id, extraList)
-      .then((r) => {
-        setStart(r);
-        if (r.flow === "device") {
-          window.open(r.verification_uri, "_blank", "noopener,noreferrer");
-        } else {
-          window.open((r as any).auth_url, "_blank", "noopener,noreferrer");
-        }
-      })
-      .catch((e: Error) => setErr(String(e.message ?? e)));
-    // extras intentionally captured at the moment of "continue" — the
-    // checklist is frozen once we kick off the OAuth flow, so don't
-    // rerun this effect on later toggles.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, started, startAttempt]);
+    try {
+      const r = await oauthStart(id, extraScopes);
+      setStart(r);
+      if (r.flow === "device") {
+        window.open(r.verification_uri, "_blank", "noopener,noreferrer");
+      } else {
+        window.open((r as any).auth_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (e: any) {
+      setErr(String(e.message ?? e));
+    } finally {
+      setStarting(false);
+    }
+  }
 
   // Stable ref to onDone — parent re-renders (App refreshes integrations
   // every 3s) reset the lambda otherwise, killing the polling interval
@@ -225,9 +223,23 @@ export function ConnectModal({
               <Button variant="outline" onClick={onClose}>
                 cancel
               </Button>
-              <Button onClick={() => setStarted(true)}>
-                continue ({baseScopes.length + extras.size} scopes)
+              <Button onClick={() => startOAuth(Array.from(extras))} disabled={starting}>
+                {starting
+                  ? "opening browser…"
+                  : `continue (${baseScopes.length + extras.size} scopes)`}
               </Button>
+            </div>
+          </div>
+        ) : !started ? (
+          <div className="space-y-3">
+            <div className="text-xs text-text-muted leading-relaxed">
+              Open your browser to complete the OAuth connection.
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={onClose}>
+                cancel
+              </Button>
+              <Button onClick={() => startOAuth()}>connect</Button>
             </div>
           </div>
         ) : !start ? (
@@ -241,7 +253,7 @@ export function ConnectModal({
                 <Button variant="outline" onClick={onClose}>
                   cancel
                 </Button>
-                <Button onClick={() => setStartAttempt((n) => n + 1)}>try again</Button>
+                <Button onClick={() => startOAuth()}>try again</Button>
               </div>
             )}
           </div>
