@@ -684,10 +684,10 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 
 // startDynamicMCPFlow drives auth-code OAuth flows with RFC 7591
 // dynamic client registration. Plugins may pin a provider-accepted
-// redirect URI (Amplitude uses a localhost loopback URI); otherwise we
-// register the dashboard's own /oauth/callback page, which
-// auto-exchanges via /api/oauth/exchange when it loads, with copy-paste
-// from the URL bar as a fallback.
+// redirect URI (e.g. a localhost loopback URI for providers that reject
+// the dashboard's redirect); otherwise we register the dashboard's own
+// /oauth/callback page, which auto-exchanges via /api/oauth/exchange
+// when it loads, with copy-paste from the URL bar as a fallback.
 func (w *webMux) startDynamicMCPFlow(rw http.ResponseWriter, r *http.Request, id string, flow *OAuthIntegration) {
 	redirectURI := strings.TrimSpace(flow.OAuth.RedirectURI)
 	if redirectURI == "" {
