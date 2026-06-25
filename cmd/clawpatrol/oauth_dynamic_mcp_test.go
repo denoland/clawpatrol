@@ -264,6 +264,111 @@ func TestStartDynamicMCPFlowUsesConfiguredRedirectURI(t *testing.T) {
 	}
 }
 
+func TestStartDynamicMCPFlowFallsBackToLoopbackForHTTPDashboard(t *testing.T) {
+	registerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			RedirectURIs []string `json:"redirect_uris"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			failOAuthTestHandler(t, w, "decode register body: %v", err)
+			return
+		}
+		if len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "http://127.0.0.1:39173/oauth/callback" {
+			failOAuthTestHandler(t, w, "redirect_uris = %#v, want loopback callback", got.RedirectURIs)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"client_id":"client-loopback-fallback"}`))
+	}))
+	defer registerServer.Close()
+
+	w := &webMux{sessions: map[string]*oauthSession{}}
+	req := httptest.NewRequest(http.MethodPost, "http://clawpatrol-gateway:8080/api/oauth/start", nil)
+	rr := httptest.NewRecorder()
+	w.startDynamicMCPFlow(rr, req, "notion", &OAuthIntegration{
+		OAuth: OAuthConfig{
+			AuthURL:     "https://mcp.notion.com/authorize",
+			TokenURL:    "https://mcp.notion.com/token",
+			RegisterURL: registerServer.URL,
+		},
+	})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		AuthURL string `json:"auth_url"`
+		State   string `json:"state"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	authURL, err := url.Parse(body.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth_url: %v", err)
+	}
+	if got := authURL.Query().Get("redirect_uri"); got != "http://127.0.0.1:39173/oauth/callback" {
+		t.Fatalf("auth_url redirect_uri = %q, want loopback callback", got)
+	}
+	w.mu.Lock()
+	sess := w.sessions[body.State]
+	w.mu.Unlock()
+	if sess == nil {
+		t.Fatalf("missing session for state %q", body.State)
+	}
+	if got := sess.cfg.RedirectURL; got != "http://127.0.0.1:39173/oauth/callback" {
+		t.Fatalf("session redirect URL = %q, want loopback callback", got)
+	}
+}
+
+func TestStartDynamicMCPFlowUsesDashboardRedirectForHTTPS(t *testing.T) {
+	registerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got struct {
+			RedirectURIs []string `json:"redirect_uris"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			failOAuthTestHandler(t, w, "decode register body: %v", err)
+			return
+		}
+		if len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://clawpatrol-gateway:8080/oauth/callback" {
+			failOAuthTestHandler(t, w, "redirect_uris = %#v, want HTTPS dashboard callback", got.RedirectURIs)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"client_id":"client-https"}`))
+	}))
+	defer registerServer.Close()
+
+	w := &webMux{sessions: map[string]*oauthSession{}}
+	req := httptest.NewRequest(http.MethodPost, "http://clawpatrol-gateway:8080/api/oauth/start", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	w.startDynamicMCPFlow(rr, req, "notion", &OAuthIntegration{
+		OAuth: OAuthConfig{
+			AuthURL:     "https://mcp.notion.com/authorize",
+			TokenURL:    "https://mcp.notion.com/token",
+			RegisterURL: registerServer.URL,
+		},
+	})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		AuthURL string `json:"auth_url"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	authURL, err := url.Parse(body.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth_url: %v", err)
+	}
+	if got := authURL.Query().Get("redirect_uri"); got != "https://clawpatrol-gateway:8080/oauth/callback" {
+		t.Fatalf("auth_url redirect_uri = %q, want HTTPS dashboard callback", got)
+	}
+}
+
 func TestRegisterOAuthClientIncludesScopes(t *testing.T) {
 	var got map[string]any
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
