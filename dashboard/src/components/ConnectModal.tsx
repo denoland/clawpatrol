@@ -17,8 +17,8 @@ type ConnectState =
   | { kind: "idle" }
   | { kind: "starting" }
   | { kind: "startError"; message: string; extraScopes?: string[] }
-  | { kind: "device"; start: DeviceStart; error?: string }
-  | { kind: "authCode"; start: AuthCodeStart; error?: string }
+  | { kind: "device"; start: DeviceStart; browserOpened: boolean; error?: string }
+  | { kind: "authCode"; start: AuthCodeStart; browserOpened: boolean; error?: string }
   | { kind: "done" };
 
 export function ConnectModal({
@@ -45,17 +45,31 @@ export function ConnectModal({
   const baseSet = new Set(baseScopes);
 
   async function startOAuth(extraScopes?: string[]) {
+    // Open synchronously while still inside the click gesture so popup
+    // blockers treat the OAuth tab as user-initiated. Navigate it after
+    // oauthStart returns; if the start call fails, close the parked tab.
+    const popup = window.open("about:blank", "_blank");
+    if (popup) {
+      popup.opener = null;
+    }
     setState({ kind: "starting" });
     try {
       const start = await oauthStart(id, extraScopes);
+      const url = start.flow === "device" ? start.verification_uri : start.auth_url;
+      if (popup) {
+        popup.location.href = url;
+      }
       if (start.flow === "device") {
-        setState({ kind: "device", start });
-        window.open(start.verification_uri, "_blank", "noopener,noreferrer");
+        setState({ kind: "device", start, browserOpened: popup !== null });
       } else {
-        setState({ kind: "authCode", start });
-        window.open(start.auth_url, "_blank", "noopener,noreferrer");
+        setState({ kind: "authCode", start, browserOpened: popup !== null });
       }
     } catch (e: any) {
+      try {
+        popup?.close();
+      } catch {
+        /* ignore */
+      }
       setState({ kind: "startError", message: String(e.message ?? e), extraScopes });
     }
   }
@@ -144,13 +158,18 @@ export function ConnectModal({
     if (state.kind !== "authCode") return;
     const start = state.start;
     setBusy(true);
-    setState({ kind: "authCode", start });
+    setState({ kind: "authCode", start, browserOpened: state.browserOpened });
     try {
       await oauthExchange(start.state, code);
       setState({ kind: "done" });
       setTimeout(onDone, 800);
     } catch (e: any) {
-      setState({ kind: "authCode", start, error: String(e.message ?? e) });
+      setState({
+        kind: "authCode",
+        start,
+        browserOpened: state.browserOpened,
+        error: String(e.message ?? e),
+      });
     } finally {
       setBusy(false);
     }
@@ -270,8 +289,16 @@ export function ConnectModal({
         ) : state.kind === "device" ? (
           <div className="space-y-3">
             <div className="text-xs text-text-muted leading-relaxed">
-              browser opened to <code className="text-text">{state.start.verification_uri}</code>.
-              enter this code:
+              {state.browserOpened ? "browser opened to " : "Open "}
+              <a
+                href={state.start.verification_uri}
+                target="_blank"
+                rel="noreferrer"
+                className="underline text-text"
+              >
+                {state.start.verification_uri}
+              </a>
+              . enter this code:
             </div>
             <div className="font-mono text-3xl tracking-[.18em] text-text text-center py-3 bg-canvas-muted border border-canvas-300 rounded select-all">
               {state.start.user_code}
@@ -287,7 +314,23 @@ export function ConnectModal({
         ) : (
           <div className="space-y-3">
             <div className="text-sm text-text-muted font-sans leading-relaxed">
-              Browser opened. Log in, then paste the code from the redirect URL bar (after{" "}
+              {state.browserOpened ? (
+                <>Browser opened.</>
+              ) : (
+                <>
+                  Browser popup was blocked. Open{" "}
+                  <a
+                    href={state.start.auth_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline text-text"
+                  >
+                    the OAuth URL
+                  </a>
+                  .
+                </>
+              )}{" "}
+              Log in, then paste the code from the redirect URL bar (after{" "}
               <code className="text-text">?code=</code>) here:
             </div>
             <form onSubmit={submit}>
