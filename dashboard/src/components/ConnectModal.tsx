@@ -313,7 +313,7 @@ export function ConnectModal({
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="text-sm text-text-muted font-sans leading-relaxed">
+            <div id="oauth-code-help" className="text-sm text-text-muted font-sans leading-relaxed">
               {state.browserOpened ? (
                 <>Browser opened.</>
               ) : (
@@ -330,20 +330,33 @@ export function ConnectModal({
                   .
                 </>
               )}{" "}
-              Log in, then paste the code from the redirect URL bar (after{" "}
-              <code className="text-text">?code=</code>) here:
+              After logging in, this may connect automatically. If it doesn't, paste the redirect
+              URL from the tab opened for this login attempt, or paste the value of the{" "}
+              <code className="text-text">code</code> parameter below. If the redirect lands on a{" "}
+              <code className="text-text">localhost</code> page that fails to connect, that's
+              expected — copy its URL anyway.
             </div>
             <form onSubmit={submit}>
               <input
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                placeholder="paste code here"
+                placeholder="paste full redirect URL or code here"
+                aria-label="Redirect URL or authorization code"
+                aria-describedby={
+                  state.error ? "oauth-code-help oauth-code-error" : "oauth-code-help"
+                }
                 className="w-full text-xs border border-canvas-dark rounded px-2 py-2 focus:outline-none focus:border-text font-mono transition-colors"
                 autoFocus
               />
               {state.error && (
-                <div className="text-xs text-rust-700 mt-2 break-all">{state.error}</div>
+                <div
+                  id="oauth-code-error"
+                  role="alert"
+                  className="text-xs text-rust-700 mt-2 break-all"
+                >
+                  {state.error}
+                </div>
               )}
               <div className="flex gap-2 mt-8 justify-end">
                 <Button variant="outline" onClick={onClose}>

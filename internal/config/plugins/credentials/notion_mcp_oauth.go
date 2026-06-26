@@ -47,6 +47,17 @@ func (n *NotionMCPOAuth) OAuthFlow() *config.OAuthIntegration {
 			AuthURL:     "https://mcp.notion.com/authorize",
 			TokenURL:    "https://mcp.notion.com/token",
 			RegisterURL: "https://mcp.notion.com/register",
+			// Notion rejects non-loopback redirect URIs over plain HTTP,
+			// and the dashboard may itself be served over plain HTTP (e.g.
+			// on a tailnet/private host), so we can't register the
+			// dashboard's own /oauth/callback page. A localhost loopback
+			// URI is the one plain-HTTP redirect Notion accepts. Nothing
+			// listens on it by design — after authorizing, the operator
+			// copies the full redirected localhost URL out of the browser
+			// address bar (the connection will appear to fail, which is
+			// expected) and pastes it into the dashboard's connect modal,
+			// where the code is parsed server-side.
+			RedirectURI: "http://localhost:8900/callback",
 		},
 	}
 }
