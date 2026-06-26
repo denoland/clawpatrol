@@ -473,7 +473,7 @@ func (m *Manager) resolvePluginBinary(ctx context.Context, sp config.PluginSourc
 		return sp.Source, nil, nil // local path: existing behavior
 	}
 	mode := provenanceModeOf(sp)
-	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	f := newFetcher(m.cacheDirLocked(), m.ghBase, m.prov, m.logger)
 
 	entry, have := m.lock.get(sp.Name)
 

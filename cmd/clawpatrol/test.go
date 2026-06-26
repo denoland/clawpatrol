@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
-	"github.com/denoland/clawpatrol/internal/config/extplugin"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -54,12 +53,18 @@ func testCmd(args []string) (stdout, stderr string, code int) {
 			return testUsage, "", 0
 		}
 	}
-	if len(args) != 2 {
+	cacheDir, rest, ok := parseVerifyFlags("test", args)
+	if !ok || len(rest) != 2 {
 		return "", testUsage, 2
 	}
-	cfgPath, target := args[0], args[1]
+	cfgPath, target := rest[0], rest[1]
 
-	config.SetPluginLoader(extplugin.New(nil))
+	// No lockfile here, unlike validate: `test` replays policy fixtures and
+	// loads plugins first-use, so a missing/incomplete lockfile doesn't turn
+	// into a spurious permission-escalation error.
+	mgr, cleanup := newVerifyPluginManager(cacheDir)
+	defer cleanup()
+	config.SetPluginLoader(mgr)
 	_, policy, err := loadConfig(cfgPath)
 	if err != nil {
 		return "", fmt.Sprintf("load config: %v", err), 2

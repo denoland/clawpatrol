@@ -42,6 +42,15 @@ type Manager struct {
 	logger   hclog.Logger
 	lock     *lockStore
 	stateDir string // gateway secret-store dir; read_paths may not overlap it
+	// cacheDir is the root for cached plugin binaries (<cacheDir>/plugins).
+	// Empty means "use stateDir" — the gateway-run and `plugins
+	// install|update|lock` paths leave it unset, so the cache lands beside
+	// the gateway's state as before. The verification commands (validate,
+	// test) set it via the --plugin-cache-dir flag so a config pointing at
+	// a production state_dir (e.g. /var/lib/clawpatrol) can be linted on a
+	// dev machine without writing there. Distinct from stateDir, which
+	// stays the secret-store dir for the sandbox read_paths-overlap check.
+	cacheDir string
 
 	// blobs backs the per-plugin HostState service (the v2 state service):
 	// a plugin calls into the gateway over the go-plugin broker to persist
@@ -145,6 +154,17 @@ func (m *Manager) setStateDir(d string) {
 // from the resolved config so the cache lands in the same place.
 func (m *Manager) SetStateDir(d string) { m.setStateDir(d) }
 
+// SetCacheDir overrides the root for cached plugin binaries, independent
+// of the gateway state dir. The verification commands set it from
+// --plugin-cache-dir so they can lint a config whose state_dir isn't
+// writable here. LoadPlugins deliberately does not touch cacheDir, so a
+// value set here survives a config load.
+func (m *Manager) SetCacheDir(d string) {
+	m.mu.Lock()
+	m.cacheDir = d
+	m.mu.Unlock()
+}
+
 // SetBlobStore wires the persistent byte store that backs the per-plugin
 // HostState service. Without it, a plugin that calls State gets an error
 // (the gateway main provides one; the CLI install/probe paths leave it
@@ -198,6 +218,19 @@ func (m *Manager) VerifyProvenance(enabled bool) {
 func (m *Manager) stateDirLocked() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stateDir
+}
+
+// cacheDirLocked returns the root plugin binaries are cached under
+// (<dir>/plugins): cacheDir when set, otherwise stateDir (the historical
+// location). Reads both fields under a single lock — it must not call
+// stateDirLocked, which would re-lock m.mu.
+func (m *Manager) cacheDirLocked() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cacheDir != "" {
+		return m.cacheDir
+	}
 	return m.stateDir
 }
 
