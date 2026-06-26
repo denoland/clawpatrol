@@ -562,6 +562,90 @@ func TestDiscoveryHITLAbsentWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestDiscoveryAsyncHITL covers the async-fallback summary: only an
+// endpoint gated by an async-capable approver with a sync wait window is
+// listed as going async, with the right timing; sync-only gated endpoints
+// (no sync window, or a dashboard approver) stay out of the async block
+// while remaining in the gated set; and the documented protocol carries
+// the exact field names and constants the gateway actually serves.
+func TestDiscoveryAsyncHITL(t *testing.T) {
+	policy := compileDiscoveryFile(t, "hitl_async.hcl")
+	m := buildDiscoveryManifest(policy, "ops")
+
+	if m.HITL == nil {
+		t.Fatal("manifest HITL summary missing")
+	}
+	// All three gated endpoints (async deploy, sync-only release + admin)
+	// are still in the gated set; status has no rule.
+	if got := strings.Join(m.HITL.GatedEndpoints, ","); got != "admin,deploy,release" {
+		t.Errorf("gated endpoints = %q, want admin,deploy,release", got)
+	}
+
+	if m.HITL.Async == nil {
+		t.Fatal("async HITL block missing")
+	}
+	a := m.HITL.Async
+	// Only deploy goes async: release has async_grant but no sync window,
+	// admin is a dashboard approver, status is not gated at all.
+	if len(a.Endpoints) != 1 || a.Endpoints[0].Name != "deploy" {
+		t.Fatalf("async endpoints = %+v, want only deploy", a.Endpoints)
+	}
+	if a.Endpoints[0].SyncWait != "1m30s" {
+		t.Errorf("deploy sync_wait = %q, want 1m30s", a.Endpoints[0].SyncWait)
+	}
+	// poll TTL = approver timeout (600s) - sync wait (90s) = 8m30s.
+	if a.Endpoints[0].PollTTL != "8m30s" {
+		t.Errorf("deploy poll_ttl = %q, want 8m30s", a.Endpoints[0].PollTTL)
+	}
+	if a.StatusPathTemplate != "/api/hitl/operations/{operation_id}/status" {
+		t.Errorf("status path template = %q", a.StatusPathTemplate)
+	}
+	if a.RetryHeader != "Clawpatrol-HITL-Operation" {
+		t.Errorf("retry header = %q", a.RetryHeader)
+	}
+	if a.PollIntervalSeconds != 5 {
+		t.Errorf("poll interval = %d, want 5", a.PollIntervalSeconds)
+	}
+	// The protocol prose must name the fields and states an agent acts on.
+	for _, want := range []string{"202", "operation_id", "status_url", "approved_waiting_for_retry", "pending_approval", "expired", "retry_expires_at"} {
+		if !strings.Contains(a.Explanation, want) {
+			t.Errorf("async explanation missing %q:\n%s", want, a.Explanation)
+		}
+	}
+
+	// Markdown carries the async subsection and the per-endpoint timing.
+	md := m.Markdown()
+	if !strings.Contains(md, "### Asynchronous approval (202 + polling)") {
+		t.Errorf("markdown missing async subsection:\n%s", md)
+	}
+	if !strings.Contains(md, "deploy: returns 202 after 1m30s") {
+		t.Errorf("markdown missing deploy async timing:\n%s", md)
+	}
+	if strings.Contains(md, "release: returns 202") || strings.Contains(md, "admin: returns 202") {
+		t.Errorf("sync-only endpoint leaked into async list:\n%s", md)
+	}
+}
+
+// TestDiscoveryAsyncHITLAbsentWithoutOptIn: the async block is omitted
+// when the profile does not opt into async grants, even though the same
+// approver is async-capable — the gateway would never hand back a 202, so
+// the manifest must not promise it.
+func TestDiscoveryAsyncHITLAbsentWithoutOptIn(t *testing.T) {
+	// hitl.hcl gates deploy via a plain human approver (no async_grant, no
+	// profile opt-in): sync HITL summary present, async block absent.
+	policy := compileDiscoveryFile(t, "hitl.hcl")
+	m := buildDiscoveryManifest(policy, "ops")
+	if m.HITL == nil {
+		t.Fatal("manifest HITL summary missing")
+	}
+	if m.HITL.Async != nil {
+		t.Errorf("async block should be absent without async config, got %+v", m.HITL.Async)
+	}
+	if strings.Contains(m.Markdown(), "Asynchronous approval") {
+		t.Errorf("markdown should not document async without async config")
+	}
+}
+
 func TestIsInternalHost(t *testing.T) {
 	cases := map[string]bool{
 		"clawpatrol.internal":      true,

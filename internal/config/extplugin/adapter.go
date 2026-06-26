@@ -2,7 +2,9 @@ package extplugin
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/match"
 	"github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -190,11 +193,15 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 	// Evaluate over the broker (no EvaluateAction frame / call_id) — the
 	// session closure runs the same evaluateDecoded core the frame handler
 	// does. Removed when the connection ends so no context dangles.
+	// rs carries the start→end lifecycle for this conn's actions, shared by
+	// the inline (HostControl) and frame evaluate paths and the ActionResult
+	// handler in pumpConn.
+	rs := newResultState(ch)
 	var sessionToken string
 	if a.client != nil && a.client.sessions != nil {
 		tok, remove := a.client.sessions.register(&session{
 			evaluate: func(_ context.Context, _ string, actionJSON []byte, summary string) (Verdict, error) {
-				return evaluateInline(ch, summary, actionJSON), nil
+				return evaluateInline(ch, rs, summary, actionJSON), nil
 			},
 		})
 		sessionToken = tok
@@ -225,7 +232,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		return fmt.Errorf("extplugin: send ConnInit: %w", err)
 	}
 
-	return pumpConn(ctx, conn, stream, ch)
+	return pumpConn(ctx, conn, stream, ch, rs)
 }
 
 // pumpConn runs two goroutines:
@@ -244,7 +251,11 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 // sendMu serializes everything that writes to the stream — the data
 // pump, async event forwarding, the close on shutdown, and verdict
 // replies fired from per-evaluate goroutines.
-func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, ch *runtime.ConnHandle) error {
+func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, ch *runtime.ConnHandle, rs *resultState) error {
+	// Guarantee an end event for every started action: a plugin that
+	// doesn't report (or a dropped conn) still persists its in-flight
+	// action with an empty status rather than leaving an orphaned start.
+	defer rs.flush()
 	var sendMu sync.Mutex
 	doSend := func(m *pb.ConnMessage) error {
 		sendMu.Lock()
@@ -288,6 +299,21 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 	agentDone := make(chan error, 1)
 	pluginDone := make(chan error, 1)
 
+	// streamDead is the recv-loop-scoped abort signal for in-flight stream
+	// pulls. The recv loop is the ONLY goroutine that routes StreamChunk
+	// frames to a parked pullStream; once it exits — for ANY reason, clean
+	// ConnClose or recv/write error or plugin crash — no chunk can reach a
+	// pull, so a pull waiting on its reply channel would hang until ctx
+	// cancellation (which only fires after HandleConn returns, but HandleConn
+	// can't return because its deferred flush awaits that very pull: a
+	// deadlock). The recv loop closes this via defer on every exit, releasing
+	// any parked pull with its partial body so the end event still emits and
+	// flush unblocks. On a clean ConnClose the loop first drainBodyPulls to
+	// completion (capturing the full capped body), THEN returns and closes
+	// streamDead — by then the pull is already done, so the close is a no-op
+	// for it; the abort only bites on abnormal exits.
+	streamDead := make(chan struct{})
+
 	// agent -> plugin
 	go func() {
 		buf := make([]byte, 32*1024)
@@ -303,6 +329,21 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
+					// The agent hung up. Before telling the plugin (ConnClose
+					// terminates its HandleConn and tears the stream down), wait
+					// for any in-flight result-body pull to finish: that pull,
+					// spawned by finish from the plugin's ActionResult, needs the
+					// plugin alive to serve its StreamRead, and an aws-shaped
+					// one-shot client reaches here right after reading the
+					// response — by which point the ActionResult (sent ahead of
+					// the response) has already been processed and the pull is in
+					// flight. Sending ConnClose first would race the plugin's
+					// teardown ahead of the body StreamChunk and the pull would be
+					// released empty by streamDead, dropping the response body
+					// (and, with tighter timing, the status). awaitPull is a no-op
+					// when nothing is pulling, so the long-lived / no-result paths
+					// are unchanged.
+					rs.awaitPull()
 					_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: &pb.ConnClose{}}})
 					agentDone <- nil
 				} else {
@@ -315,6 +356,12 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 
 	// plugin -> agent
 	go func() {
+		// Release any in-flight body pull on EVERY exit from this loop, not
+		// just the ConnClose case: a recv error, an agent conn.Write failure,
+		// EOF, or a plugin crash would otherwise leave a pull parked on a
+		// StreamChunk that can never arrive (this loop is the only router for
+		// it), which deadlocks flush → HandleConn → ctx cancellation.
+		defer close(streamDead)
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
@@ -351,7 +398,7 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 				// Run rule + approve chain off the recv loop so a
 				// HITL-blocking call doesn't stall data flow or
 				// other concurrent evaluations.
-				go handleEvaluate(ctx, ch, k.Evaluate, doSend, streamReply)
+				go handleEvaluate(ctx, ch, rs, k.Evaluate, doSend, streamReply, streamDead)
 			case *pb.ConnMessage_StreamChunk:
 				replyCh := getStreamCh(k.StreamChunk.Handle)
 				select {
@@ -383,7 +430,29 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 					dials.remove(k.DialClose.DialId)
 					d.close()
 				}
+			case *pb.ConnMessage_Result:
+				// The plugin reports an action's outcome after the response;
+				// finalize the conn's in-flight action (emit its end event
+				// carrying the status). When the result carries a FACET_STREAM
+				// body the gateway pulls it (up to the body cap) before
+				// emitting the end — and that pull issues StreamRead and waits
+				// for StreamChunk, which arrive HERE on this same recv loop. So
+				// the pull MUST run off this goroutine or it deadlocks: finish
+				// spawns it and the end event is emitted from that goroutine.
+				rs.finish(ctx, k.Result, doSend, streamReply, streamDead)
 			case *pb.ConnMessage_Close:
+				// A response-body pull spawned by finish needs this recv loop
+				// to keep routing its StreamChunk frames. The plugin may queue
+				// ConnClose (HandleConn returned) before the pull reaches the
+				// cap/EOF, so don't tear down yet: keep reading and routing
+				// StreamChunks until the pull completes. The pull bounds itself
+				// (cap or EOF, then StreamCancel). On a clean close drainBodyPull
+				// runs it to completion (full capped body); if the stream dies
+				// mid-drain, the deferred close(streamDead) below releases the
+				// pull with whatever it captured.
+				if done := rs.pullInFlight(); done != nil {
+					drainBodyPull(stream, done, getStreamCh)
+				}
 				pluginDone <- nil
 				return
 			}
@@ -439,6 +508,84 @@ func halfCloseWrite(c net.Conn) {
 	}
 }
 
+// bodyTruncatedMarker is appended to a persisted response-body sample when
+// the body exceeded the gateway's body-storage cap. It is byte-for-byte the
+// marker the built-in HTTP sampler emits (cmd/clawpatrol/web.go's
+// bodyTruncatedMarker), so the dashboard's BODY_TRUNCATED_MARKER handling
+// renders a plugin response body's "truncated" badge with no extra wiring.
+const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
+
+// bodySampler caps a plugin-streamed response body to the gateway's
+// body-storage limit and hashes the bytes it captured, mirroring the
+// built-in HTTP path's sampler so plugin and built-in response samples look
+// identical on the dashboard. The gateway pulls at most cap+1 bytes (the
+// extra byte distinguishes a body that exactly fills the cap from one that
+// overran it) and cancels the stream, so the SHA covers the captured sample
+// rather than the full upstream body — the gateway never sees more than the
+// cap by design.
+type bodySampler struct {
+	cap int
+	buf []byte
+}
+
+func newBodySampler(capBytes int) *bodySampler {
+	if capBytes < 0 {
+		capBytes = 0
+	}
+	return &bodySampler{cap: capBytes}
+}
+
+func (b *bodySampler) write(p []byte) { b.buf = append(b.buf, p...) }
+
+// truncated reports whether more bytes were pulled than the cap keeps — the
+// caller pulls cap+1 bytes precisely so this is detectable.
+func (b *bodySampler) truncated() bool { return len(b.buf) > b.cap }
+
+// sample returns the capped body preview: the first cap bytes, with the
+// truncation marker appended when the body overran the cap. Binary bodies
+// are rendered as a hex prefix, matching the built-in sampler.
+func (b *bodySampler) sample() string {
+	if len(b.buf) == 0 {
+		return ""
+	}
+	keep := b.buf
+	if len(keep) > b.cap {
+		keep = keep[:b.cap]
+	}
+	var out string
+	if isPrintable(keep) {
+		out = string(keep)
+	} else {
+		out = "binary:" + hex.EncodeToString(keep[:min(64, len(keep))])
+	}
+	if b.truncated() {
+		out += bodyTruncatedMarker
+	}
+	return out
+}
+
+// sha is the hex SHA-256 of the captured sample bytes (at most cap+1). Empty
+// when nothing was captured.
+func (b *bodySampler) sha() string {
+	if len(b.buf) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(b.buf)
+	return hex.EncodeToString(sum[:])
+}
+
+// isPrintable mirrors the built-in sampler's predicate (web.go) so a binary
+// plugin response body is rendered as a hex prefix here too, not as garbled
+// text on the dashboard.
+func isPrintable(b []byte) bool {
+	for _, x := range b {
+		if x == 0 || (x < 0x20 && x != '\n' && x != '\r' && x != '\t') {
+			return false
+		}
+	}
+	return true
+}
+
 // streamCapBytesForRule is how many bytes the gateway pulls from a
 // stream-typed facet field when at least one rule on the endpoint
 // references it. CEL needs the full value to evaluate predicates
@@ -458,11 +605,11 @@ const streamCapBytesForLog = 1024
 // ConnEvent so the action lands on the dashboard event sink with
 // the action map as the facet payload — plugins don't need to
 // double-emit via Conn.Emit.
-func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
+func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, rs *resultState, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, streamDead <-chan struct{}) {
 	action, derr := decodeAction(ev.ActionJson)
 	if derr != nil {
 		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", derr)}
-		emitEvaluation(ch, ev.Summary, action, v)
+		emitEvaluation(ch, rs, ev.Summary, action, v)
 		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
 		return
 	}
@@ -488,7 +635,7 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			if pf != nil && !needed[fieldName] {
 				limit = streamCapBytesForLog
 			}
-			data, hit := pullStream(ctx, doSend, streamReply, handle, limit)
+			data, hit := pullStream(ctx, doSend, streamReply, streamDead, handle, limit)
 			if hit {
 				truncated = true
 			}
@@ -501,7 +648,7 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	}
 
 	v := evaluateDecoded(ch, ev.Summary, action, streamBytes, truncated)
-	emitEvaluation(ch, ev.Summary, action, v)
+	emitEvaluation(ch, rs, ev.Summary, action, v)
 	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: actionVerdict(ev.CallId, v)}})
 }
 
@@ -608,34 +755,301 @@ func evaluateDecoded(ch *runtime.ConnHandle, summary string, action map[string]a
 // event, and returns the verdict. The frame analogue is handleEvaluate; a
 // malformed payload becomes an "error" verdict here too, not a transport
 // error.
-func evaluateInline(ch *runtime.ConnHandle, summary string, actionJSON []byte) Verdict {
+func evaluateInline(ch *runtime.ConnHandle, rs *resultState, summary string, actionJSON []byte) Verdict {
 	action, err := decodeAction(actionJSON)
 	if err != nil {
 		v := Verdict{Action: "error", Reason: fmt.Sprintf("malformed action_json: %v", err)}
-		emitEvaluation(ch, summary, action, v)
+		emitEvaluation(ch, rs, summary, action, v)
 		return v
 	}
 	v := evaluateDecoded(ch, summary, action, nil, false)
-	emitEvaluation(ch, summary, action, v)
+	emitEvaluation(ch, rs, summary, action, v)
 	return v
 }
 
-// emitEvaluation logs one EvaluateAction onto the gateway event
-// sink so the action shows up on the dashboard alongside built-in
-// facet events. Verb / Summary are pulled from the action so the
-// log line is human-readable; the action map rides as Facets.
-func emitEvaluation(ch *runtime.ConnHandle, summary string, action map[string]any, v Verdict) {
+// emitEvaluation logs one EvaluateAction onto the gateway event sink so the
+// action shows up on the dashboard alongside built-in facet events. Verb /
+// Summary are pulled from the action so the log line is human-readable; the
+// action map rides as Facets.
+//
+// When rs is non-nil and the verdict allows the request through, the action
+// is emitted as an in-flight "start" and the lifecycle is handed to rs,
+// which emits the "end" (carrying the plugin-reported Status) once an
+// ActionResult arrives or the connection closes. Terminal verdicts (deny /
+// error — no response is coming) emit a single complete event.
+func emitEvaluation(ch *runtime.ConnHandle, rs *resultState, summary string, action map[string]any, v Verdict) {
 	if ch.Emit == nil {
 		return
 	}
-	ch.Emit(runtime.ConnEvent{
+	ev := runtime.ConnEvent{
 		Action:  v.Action,
 		Reason:  v.Reason,
 		Verb:    stringField(action, "verb"),
 		Summary: summary,
 		Facets:  action,
 		Rule:    v.Rule,
-	})
+	}
+	if rs != nil && (v.Action == "allow" || v.Action == "hitl_allow") {
+		ev.ID = uuid.Must(uuid.NewV7()).String()
+		ev.Phase = "start"
+		rs.begin(ev)
+		return
+	}
+	ch.Emit(ev)
+}
+
+// resultState gives a plugin endpoint's action the same start→end lifecycle
+// the built-in HTTP path uses. emitEvaluation calls begin() with the
+// in-flight "start" event when a request is allowed through; the plugin
+// later reports the outcome via an ActionResult frame (finish), or the
+// connection closes (flush) — either way the action persists exactly once
+// as the "end" event, and the dashboard merges start→end by ID.
+//
+// Conn-scoped, not call_id-scoped: Conn.Evaluate's common no-stream path
+// runs inline over HostControl with no call_id, so the result finalizes the
+// connection's current action. Sequential request/response only — begin()
+// flushes any prior unfinished action so it can't be orphaned.
+type resultState struct {
+	mu        sync.Mutex
+	ch        *runtime.ConnHandle
+	title     string // result-schema title field name → Status
+	bodyField string // result-schema FACET_STREAM field name → RespBody
+	bodyCap   int    // gateway body-storage cap for the response sample
+	pending   *runtime.ConnEvent
+	ended     bool
+	// pulling, when non-nil, signals an in-flight response-body pull
+	// spawned by finish: it is closed once the pull completes and the end
+	// event has been emitted. flush (deferred on pumpConn return) and the
+	// recv loop's ConnClose handler wait on it so the body pull isn't cut
+	// short and the end event isn't double-emitted. Held under mu.
+	pulling chan struct{}
+}
+
+func newResultState(ch *runtime.ConnHandle) *resultState {
+	rs := &resultState{ch: ch}
+	if ch != nil {
+		rs.bodyCap = ch.BodyStorageCap
+		if ch.Endpoint != nil {
+			if pf := facetFor(ch.Endpoint.Family); pf != nil {
+				rs.title = pf.resultTitle
+				rs.bodyField = pf.resultBodyField
+			}
+		}
+	}
+	if rs.bodyCap <= 0 {
+		rs.bodyCap = int(config.DefaultBodyStorageLimit)
+	}
+	return rs
+}
+
+func (rs *resultState) begin(ev runtime.ConnEvent) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.flushLocked() // end any prior unfinished action so it isn't orphaned
+	cp := ev
+	rs.pending = &cp
+	rs.ended = false
+	// Clear any stale pull handle from a prior action. flushLocked above
+	// can't reach this case (it no-ops when the prior action already ended,
+	// which a body pull always does), but a defensive clear keeps a second
+	// begin() from leaving pullInFlight pointing at a closed channel that a
+	// later flush/ConnClose would treat as still in flight.
+	rs.pulling = nil
+	if rs.ch.Emit != nil {
+		rs.ch.Emit(ev)
+	}
+}
+
+// finish finalizes the conn's in-flight action from a plugin ActionResult.
+// It lifts the plugin-reported status from the result schema's title field,
+// then:
+//
+//   - With no FACET_STREAM body stream, it emits the end event synchronously
+//     — identical to the status-only path before response bodies existed.
+//   - With a body stream, the gateway must pull it (up to the body cap) and
+//     fold the sample onto the end event. The pull issues StreamRead and
+//     waits for StreamChunk, both of which travel the recv loop that calls
+//     finish; pulling here would deadlock. So finish spawns the pull on its
+//     own goroutine, records rs.pulling, and that goroutine emits the end
+//     event when the pull completes. flush and the ConnClose handler wait on
+//     rs.pulling so the body isn't truncated and the end isn't double-emitted.
+//
+// streamDead is the recv-loop abort signal threaded into the pull: the recv
+// loop closes it on EVERY exit, so a pull parked waiting for a StreamChunk
+// that can never arrive (the loop is gone — recv error, agent write failure,
+// plugin crash) is released with its partial body instead of hanging. The end
+// event is still emitted exactly once (here, from the pull goroutine) so the
+// action persists even on an abnormal teardown.
+func (rs *resultState) finish(ctx context.Context, result *pb.ActionResult, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, streamDead <-chan struct{}) {
+	rs.mu.Lock()
+	if rs.pending == nil || rs.ended {
+		rs.mu.Unlock()
+		return
+	}
+	end := *rs.pending
+	end.Phase = "end"
+	if rs.title != "" && len(result.GetResultJson()) > 0 {
+		var rj map[string]any
+		if json.Unmarshal(result.GetResultJson(), &rj) == nil {
+			if val, ok := rj[rs.title]; ok && val != nil {
+				end.Status = fmt.Sprint(val)
+			}
+		}
+	}
+
+	// Identify the response-body stream handle, if the result offers one.
+	handle := ""
+	if rs.bodyField != "" {
+		handle = result.GetStreams()[rs.bodyField]
+	}
+	if handle == "" {
+		// Status-only path: emit now, no pull. Unchanged from before.
+		rs.ended = true
+		emit := rs.ch.Emit
+		rs.mu.Unlock()
+		if emit != nil {
+			emit(end)
+		}
+		return
+	}
+
+	// Body path: mark the action ended (no other path may emit it) and hand
+	// the end event to a pull goroutine. ended is set under the lock now so
+	// flush/ConnClose can't race a duplicate emit; the goroutine owns the
+	// single emit once the pull finishes.
+	rs.ended = true
+	done := make(chan struct{})
+	rs.pulling = done
+	emit := rs.ch.Emit
+	capBytes := rs.bodyCap
+	rs.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		body, sha := pullBodySample(ctx, doSend, streamReply, streamDead, handle, capBytes)
+		end.RespBody = body
+		end.RespSha = sha
+		if emit != nil {
+			emit(end)
+		}
+	}()
+}
+
+// awaitPull blocks until any in-flight response-body pull spawned by finish
+// has completed (its end event emitted). Safe to call when none is in
+// flight. Used by flush and the recv loop's ConnClose handler so the pull —
+// which needs the recv loop alive to receive StreamChunk frames — isn't cut
+// short, and so the end event is emitted exactly once.
+func (rs *resultState) awaitPull() {
+	if done := rs.pullInFlight(); done != nil {
+		<-done
+	}
+}
+
+// pullInFlight returns the completion channel of an in-flight body pull, or
+// nil when none is running.
+func (rs *resultState) pullInFlight() <-chan struct{} {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.pulling == nil {
+		return nil
+	}
+	return rs.pulling
+}
+
+// drainBodyPull keeps reading the plugin stream and routing StreamChunk
+// frames to the in-flight body pull until that pull completes (done closes).
+// It is called from the recv loop's ConnClose handler: the plugin queued
+// ConnClose before the pull reached cap/EOF, so the loop would otherwise tear
+// down with chunks still owed to the pull. Non-StreamChunk frames arriving
+// here (the plugin shutting down) are dropped — the conn is closing. A recv
+// error ends the drain; the recv loop then returns and its deferred
+// close(streamDead) releases the still-parked pull with its partial body (no
+// wait for ctx cancellation).
+func drainBodyPull(stream pb.Endpoint_HandleConnClient, done <-chan struct{}, getStreamCh func(handle string) chan *pb.StreamChunk) {
+	type recvRes struct {
+		msg *pb.ConnMessage
+		err error
+	}
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		ch := make(chan recvRes, 1)
+		go func() {
+			m, err := stream.Recv()
+			ch <- recvRes{m, err}
+		}()
+		select {
+		case <-done:
+			return
+		case r := <-ch:
+			if r.err != nil {
+				return
+			}
+			if sc, ok := r.msg.GetKind().(*pb.ConnMessage_StreamChunk); ok {
+				replyCh := getStreamCh(sc.StreamChunk.Handle)
+				select {
+				case replyCh <- sc.StreamChunk:
+				default:
+				}
+			}
+		}
+	}
+}
+
+// pullBodySample pulls a plugin-offered FACET_STREAM response body up to the
+// gateway's body-storage cap, then cancels the stream. It returns the body
+// sample (capped, with the truncation marker appended when the body overran
+// the cap) and the hex SHA-256 of the captured sample (at most cap+1 bytes).
+//
+// Unlike the built-in HTTP sampler, this SHA does NOT cover the full upstream
+// body: the gateway deliberately stops pulling at cap+1 and cancels the
+// stream, so it never sees the bytes past the cap and cannot hash them. That
+// is by design — the gateway bounds how much of a plugin response it buffers.
+// The sample's shape (capped preview + truncation marker) still matches the
+// built-in path so the dashboard renders it identically. Cancelling a stream
+// the SDK is still serving is graceful: the SDK drops the registered reader
+// and the plugin's source sees a clean close.
+func pullBodySample(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, streamDead <-chan struct{}, handle string, capBytes int) (sample, sha string) {
+	bs := newBodySampler(capBytes)
+	// Read one extra byte past the cap so we can tell a body that exactly
+	// fills the cap (no marker) from one that overran it (marker), matching
+	// the built-in sampler's n > cap truncation test.
+	pullLimit := capBytes + 1
+	data, _ := pullStream(ctx, doSend, streamReply, streamDead, handle, pullLimit)
+	// Always cancel so the plugin can release its source, even on EOF.
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamCancel{StreamCancel: &pb.StreamCancel{Handle: handle}}})
+	bs.write(data)
+	return bs.sample(), bs.sha()
+}
+
+func (rs *resultState) flush() {
+	// Wait for any in-flight body pull to emit its end event first, so we
+	// don't race it (it already set rs.ended under the lock, so flushLocked
+	// would no-op — but the pull must still get to run to completion and
+	// emit). After it returns, flushLocked handles the no-result case.
+	rs.awaitPull()
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.flushLocked()
+}
+
+// flushLocked persists an unfinished action — no ActionResult arrived (a
+// plugin that doesn't report, or a closed conn) — as the end event with an
+// empty status, so the action is never lost. Caller holds rs.mu.
+func (rs *resultState) flushLocked() {
+	if rs.pending == nil || rs.ended {
+		return
+	}
+	end := *rs.pending
+	end.Phase = "end"
+	rs.ended = true
+	if rs.ch.Emit != nil {
+		rs.ch.Emit(end)
+	}
 }
 
 func stringField(m map[string]any, key string) string {
@@ -806,7 +1220,16 @@ func streamFieldsNeeded(rules []*config.CompiledRule, _ string) map[string]bool 
 // cap (and not because the stream eof'd). Errors and read failures
 // land here as eof, not truncation — we have no way to tell from
 // outside whether the plugin had more bytes to give.
-func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, limit int) (data []byte, truncated bool) {
+//
+// streamDead is the recv-loop-scoped abort signal: the recv loop closes it
+// (via defer) on EVERY exit — clean ConnClose, recv error, agent write
+// failure, EOF, plugin crash. Once it's closed no more StreamChunk frames
+// can arrive (the loop that routes them is gone), so a pull parked on its
+// reply channel would hang until ctx cancellation. Selecting on it here
+// releases the pull immediately with whatever bytes it has buffered. We do
+// not flag a streamDead abort as truncation: like a recv error, we can't
+// tell from outside whether the plugin had more bytes to give.
+func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, streamDead <-chan struct{}, handle string, limit int) (data []byte, truncated bool) {
 	if limit <= 0 {
 		return nil, false
 	}
@@ -819,6 +1242,13 @@ func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamR
 		ch := streamReply(handle)
 		if ch == nil {
 			return out, false
+		}
+		// Bail before issuing another StreamRead if the recv loop is already
+		// gone — no chunk could ever come back for it.
+		select {
+		case <-streamDead:
+			return out, false
+		default:
 		}
 		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamRead{StreamRead: &pb.StreamRead{
 			Handle: handle, MaxBytes: uint32(want),
@@ -844,6 +1274,10 @@ func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamR
 			if chunk.Eof {
 				return out, false
 			}
+		case <-streamDead:
+			// Recv loop exited (clean or abnormal) while we waited for a
+			// chunk: no further chunk can arrive. Return the partial body.
+			return out, false
 		case <-ctx.Done():
 			return out, false
 		}

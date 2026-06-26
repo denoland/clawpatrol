@@ -89,7 +89,15 @@ enum NetworkAccess {
 // auto-namespaced by the gateway as "<plugin>.<name>".
 message FacetDecl {
   string name = 1;
+  // fields is the request-time schema: what EvaluateAction.action_json
+  // conforms to, and what rules match on.
   repeated FacetFieldDecl fields = 2;
+  // result_fields is the after-the-fact schema, what ActionResult.result_json
+  // conforms to. It reuses FacetFieldDecl, so title/description/detail_only
+  // and FACET_STREAM apply: the field marked `title` is the action's status,
+  // and a FACET_STREAM result field is a response body the gateway streams
+  // and caps. Empty for facets that report nothing after the response.
+  repeated FacetFieldDecl result_fields = 3;
 }
 
 message FacetFieldDecl {
@@ -101,6 +109,19 @@ message FacetFieldDecl {
   // list, empty map, 0) before CEL evaluation so rule conditions
   // can reference them without `has()` guards.
   bool optional = 4;
+  // description is a human explanation of the field shown in the
+  // dashboard's per-action facet table (e.g. "API action (CloudTrail)").
+  // Falls back to label when empty.
+  string description = 5;
+  // title marks the single field whose value is the action's primary
+  // identifier — shown as the activity log's "verb" instead of the HTTP
+  // method (e.g. an AWS plugin marks iam_action). At most one per facet.
+  bool title = 6;
+  // detail_only keeps the field out of the compact activity-log row
+  // (it still appears in the per-action detail). Use for fields made
+  // redundant by the title field (e.g. AWS action/service once
+  // iam_action is the title).
+  bool detail_only = 7;
 }
 
 enum FacetKind {
@@ -413,6 +434,8 @@ message ConnMessage {
     DialUpstreamReply   dial_reply   = 11;  // gateway -> plugin
     DialUpstreamData    dial_data    = 12;  // both directions
     DialUpstreamClose   dial_close   = 13;  // both directions
+
+    ActionResult result = 14;  // plugin -> gateway (after-the-fact outcome)
   }
 }
 
@@ -519,6 +542,24 @@ message ActionVerdict {
   string action  = 2;   // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
   string reason  = 3;
   string rule    = 4;   // matched rule name, or "" when no rule fired
+}
+
+// ActionResult is the after-the-fact counterpart of EvaluateAction: the
+// plugin reports an action's outcome once the response is known. It mirrors
+// EvaluateAction field-for-field — result_json conforms to the facet's
+// result_fields schema, and `streams` carries FACET_STREAM result fields
+// (e.g. a response body) the gateway pulls up to its cap and cancels. The
+// result field marked `title` becomes the action's status.
+//
+// v1 is conn-scoped: the result finalizes the connection's current action,
+// so call_id is unset (the common evaluate path runs inline over
+// HostControl with no call_id). call_id is reserved for a future per-call
+// correlation that would let a pipelined endpoint report several
+// concurrent actions' results out of order.
+message ActionResult {
+  string call_id     = 1;
+  bytes  result_json = 2;
+  map<string, string> streams = 3;
 }
 
 message ConnInit {

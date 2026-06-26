@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -463,7 +464,7 @@ func devSeedAction(r *rand.Rand, devices []devSeedDevice, ts time.Time) Event {
 		Host:     ep.host,
 		Method:   method,
 		Path:     path,
-		Status:   status,
+		Status:   strconv.Itoa(status),
 		In:       int64(50 + r.Intn(10000)),
 		Out:      int64(50 + r.Intn(50000)),
 		Ms:       devSeedLatency(r),

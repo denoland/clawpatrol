@@ -338,7 +338,7 @@ gateway {
 	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 1, 2,
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"yo"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	if n := len(sr.Ended()); n != 0 {
 		t.Fatalf("got %d spans with telemetry disabled, want 0", n)
@@ -368,7 +368,7 @@ gateway {
 	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"secret"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -417,7 +417,7 @@ gateway {
 	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"system":"be terse","messages":[{"role":"user","content":"hi there"}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"hello back"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -569,7 +569,7 @@ gateway {
 	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","description":"secret","input_schema":{"type":"object"}}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -611,7 +611,7 @@ gateway {
 	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","description":"Look up the weather","input_schema":{"type":"object","properties":{"location":{"type":"string"}}}}]}`),
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -720,7 +720,7 @@ gateway {
 		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
 		[]byte(`{"model":"claude-3-5-sonnet-20241022","max_tokens":2048,"stream":false,"temperature":0.7,"top_p":0.9,"top_k":50,"stop_sequences":["STOP"],"messages":[{"role":"user","content":"hi"}]}`),
 		[]byte(`{"id":"msg_01XYZ","model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":256,"cache_creation_input_tokens":64},"content":[{"type":"text","text":"hello"}]}`),
-		time.Time{})
+		time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -763,5 +763,75 @@ gateway {
 	}
 	if got := m["gen_ai.usage.cache_creation.input_tokens"].AsInt64(); got != 64 {
 		t.Errorf("cache_creation.input_tokens = %d, want 64", got)
+	}
+}
+
+// TestRecordGenAITurnDeviceAttributes asserts the clawpatrol.device.*
+// attributes are resolved from the calling device's peer IP via the
+// onboard registry / profileFor path, and that an unknown device omits
+// the name/owner attributes rather than emitting a wrong value.
+func TestRecordGenAITurnDeviceAttributes(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry {}
+}
+`), "device.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{onboard: newOnboardRegistry()}
+	g.cfg.Store(gw)
+
+	const ip = "10.55.0.7"
+	g.onboard.SetHostname(ip, "laptop-01")
+	g.onboard.SetOwner(ip, "alice@example.com")
+	g.onboard.AssignProfile(ip, "engineering")
+
+	req := []byte(`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`)
+	resp := []byte(`{"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","content":[{"type":"text","text":"yo"}]}`)
+
+	// Known device: all three attributes resolve.
+	g.recordGenAITurn("anthropic", "s_abc123", "api.anthropic.com",
+		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+		req, resp, time.Time{}, ip)
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["clawpatrol.device.name"].AsString(); got != "laptop-01" {
+		t.Errorf("clawpatrol.device.name = %q, want laptop-01", got)
+	}
+	if got := m["clawpatrol.device.profile"].AsString(); got != "engineering" {
+		t.Errorf("clawpatrol.device.profile = %q, want engineering", got)
+	}
+	if got := m["clawpatrol.device.owner"].AsString(); got != "alice@example.com" {
+		t.Errorf("clawpatrol.device.owner = %q, want alice@example.com", got)
+	}
+
+	// Unknown device: name/owner omitted rather than emitting a wrong value.
+	g.recordGenAITurn("anthropic", "s_def456", "api.anthropic.com",
+		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", 10, 20,
+		req, resp, time.Time{}, "10.55.0.99")
+
+	spans = sr.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("got %d spans, want 2", len(spans))
+	}
+	m = attrMap(spans[1].Attributes())
+	if _, ok := m["clawpatrol.device.name"]; ok {
+		t.Errorf("clawpatrol.device.name set for unknown device: %q", m["clawpatrol.device.name"].AsString())
+	}
+	if _, ok := m["clawpatrol.device.owner"]; ok {
+		t.Errorf("clawpatrol.device.owner set for unknown device: %q", m["clawpatrol.device.owner"].AsString())
 	}
 }

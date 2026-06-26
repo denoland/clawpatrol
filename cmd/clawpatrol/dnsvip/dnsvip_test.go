@@ -1,6 +1,7 @@
 package dnsvip
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net"
@@ -667,5 +668,148 @@ func TestPersistLockedWrapsErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "dnsvip:") {
 		t.Errorf("persist error not wrapped with dnsvip prefix: %v", err)
+	}
+}
+
+// findSOA returns the first SOA in a message's authority section, or nil.
+func findSOA(m *dns.Msg) *dns.SOA {
+	for _, rr := range m.Ns {
+		if soa, ok := rr.(*dns.SOA); ok {
+			return soa
+		}
+	}
+	return nil
+}
+
+// TestSynthAAAANodataForV4OnlyHost is the regression for the negative-cache
+// bug: an AAAA query for a host that has an A record but no AAAA must be
+// answered NODATA (NOERROR, empty answer) with an SOA whose owner is the
+// parent zone — not the old bare NXDOMAIN, which was both wrong (the name
+// exists) and uncacheable (no SOA), so resolvers re-ran the lookup on every
+// connection.
+func TestSynthAAAANodataForV4OnlyHost(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, network, _ string) ([]net.IP, error) {
+		if network == "ip4" {
+			return []net.IP{net.IPv4(140, 82, 112, 5)}, nil
+		}
+		return nil, &net.DNSError{Err: "no such host", Name: "api.github.com", IsNotFound: true}
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR (NODATA)", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("want empty answer, got %d records", len(resp.Answer))
+	}
+	soa := findSOA(resp)
+	if soa == nil {
+		t.Fatal("NODATA response carries no SOA — downstream resolvers can't negative-cache it")
+	}
+	if soa.Hdr.Name != "github.com." {
+		t.Errorf("SOA owner = %q, want github.com. (the parent zone)", soa.Hdr.Name)
+	}
+	if soa.Hdr.Ttl == 0 || soa.Minttl == 0 {
+		t.Errorf("SOA TTL/Minttl must be > 0 for negative caching; got ttl=%d minttl=%d", soa.Hdr.Ttl, soa.Minttl)
+	}
+}
+
+// TestSynthNXDomainWhenNoFamilyResolves: a name that resolves in neither
+// family is a true NXDOMAIN — and it too must carry an SOA so the negative
+// caches.
+func TestSynthNXDomainWhenNoFamilyResolves(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, _, _ string) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("nope.example.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeNameError {
+		t.Fatalf("rcode = %s, want NXDOMAIN", dns.RcodeToString[resp.Rcode])
+	}
+	if findSOA(resp) == nil {
+		t.Error("NXDOMAIN response carries no SOA — it won't negative-cache")
+	}
+}
+
+// TestSynthServfailOnTransientError: a transient resolver failure (not a
+// not-found) must surface as SERVFAIL, never a cached NXDOMAIN — caching a
+// transient outage would persist it for the whole negative TTL.
+func TestSynthServfailOnTransientError(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, _, _ string) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true}
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestNegSOAOwnerIsParentZone pins the owner-name derivation: the SOA owner
+// must be an ancestor of the queried name (the parent zone), which is what
+// makes systemd-resolved negative-cache the answer.
+func TestNegSOAOwnerIsParentZone(t *testing.T) {
+	cases := map[string]string{
+		"api.github.com.": "github.com.",
+		"github.com.":     "com.",
+		"com.":            "com.", // no parent to strip to; keep as-is
+	}
+	for in, want := range cases {
+		if got := negSOA(in).Hdr.Name; got != want {
+			t.Errorf("negSOA(%q) owner = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestSynthServfailWhenOtherFamilyProbeIsTransient: the queried family is a
+// genuine not-found, but the other-family probe (used to tell NODATA from
+// NXDOMAIN) fails transiently. We can't prove the name is absent, so the
+// answer must be SERVFAIL — never a cached NXDOMAIN for a name that might
+// exist in the other family.
+func TestSynthServfailWhenOtherFamilyProbeIsTransient(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, network, _ string) ([]net.IP, error) {
+		if network == "ip6" { // queried family: genuine not-found
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+		}
+		return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true} // probe: transient
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s, want SERVFAIL (a transient probe failure must not cache NXDOMAIN)", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestSynthNodataWhenAddressesDontMatchFamily covers the defensive branch
+// where the resolver returns addresses but none match the queried family
+// (so the answer loop emits nothing): the result must be NODATA with an SOA,
+// not an empty NOERROR that fails to cache nor a mis-typed answer.
+func TestSynthNodataWhenAddressesDontMatchFamily(t *testing.T) {
+	restore := lookupIP
+	t.Cleanup(func() { lookupIP = restore })
+	lookupIP = func(_ context.Context, _, _ string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(140, 82, 112, 5)}, nil // v4 returned for an AAAA query
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.github.com.", dns.TypeAAAA)
+	resp := synthIPResponse(q, "ip6")
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 0 {
+		t.Fatalf("want NODATA (NOERROR, no answer); got rcode=%s answers=%d",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if findSOA(resp) == nil {
+		t.Error("wrong-family NODATA must carry an SOA")
 	}
 }

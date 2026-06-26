@@ -291,7 +291,7 @@ func TestRecordGenAITurnOpenAINoContent(t *testing.T) {
 		"message":{"role":"assistant","content":"secret completion"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":10,"completion_tokens":20}}`
 	g.recordGenAITurn("openai", "s_oai", "api.openai.com", "gpt-4o", "gpt-4o", 10, 20,
-		[]byte(req), []byte(resp), time.Time{})
+		[]byte(req), []byte(resp), time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -349,7 +349,7 @@ func TestRecordGenAITurnOpenAIWithContent(t *testing.T) {
 		"message":{"role":"assistant","content":"general kenobi"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":1,"completion_tokens":2}}`
 	g.recordGenAITurn("openai", "s_oai", "api.openai.com", "gpt-4o", "gpt-4o", 1, 2,
-		[]byte(req), []byte(resp), time.Time{})
+		[]byte(req), []byte(resp), time.Time{}, "")
 
 	spans := sr.Ended()
 	if len(spans) != 1 {
@@ -387,6 +387,367 @@ func TestRecordGenAITurnOpenAIWithContent(t *testing.T) {
 		t.Fatalf("tool.definitions: %v", err)
 	}
 	if len(defs) != 1 || defs[0].Description != "the desc" || string(defs[0].Parameters) != `{"p":1}` {
+		t.Errorf("tool defs = %#v", defs)
+	}
+}
+
+// TestTrackLLMUsageCodexModelFromRequest covers the Codex
+// /backend-api/codex/responses path: its SSE response body carries
+// neither the model (it rides the OpenAI-Model response header) nor
+// token usage, so sourcing the model only from the response left
+// recordGenAITurn's guard unsatisfied and the GenAI span was dropped.
+// The model must fall back to the request body so the turn is recorded.
+func TestTrackLLMUsageCodexModelFromRequest(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+  genai_telemetry {}
+}
+`), "base.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	g := &Gateway{}
+	g.cfg.Store(gw)
+	g.agents = NewAgentRegistry()
+
+	// Request carries the model; the SSE response has no model and no
+	// parseable usage — exactly the shape that produced no span before.
+	reqBody := []byte(`{"model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	respBody := []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n")
+
+	g.trackLLMUsage(nil, "codex_ws_usage", "chatgpt.com",
+		"/backend-api/codex/responses", reqBody, respBody, "sess-1", time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (codex turn dropped — model not sourced from request)", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex", got)
+	}
+}
+
+// TestCodexWSTurnAssembly covers the production Codex transport: the
+// /backend-api/codex/responses request is a WebSocket upgrade, so the turn
+// arrives as separate frames (client→server request envelope, then a
+// server→client response.completed frame) routed through handleWSUpgrade —
+// the HTTP-path trackLLMUsage never fires. The codexWSTurn assembler must
+// pair the frames and produce a completion that records a correct gen_ai
+// span with model, usage, and (under the content opt-in) prompt/output.
+func TestCodexWSTurnAssembly(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+
+	// client→server: the full request envelope (prompt + model + tools).
+	reqEnvelope := []byte(`{"model":"gpt-5-codex","instructions":"be terse",` +
+		`"tools":[{"type":"function","name":"shell","description":"run a shell command","parameters":{"p":1}}],` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"list files"}]}]}`)
+	// server→client: response.completed carries usage + output nested under
+	// `response` — no model and no token usage live at the frame top level,
+	// which is why a single-frame parse dropped the span before.
+	completed := []byte(`{"type":"response.completed","response":{` +
+		`"id":"resp_ws_1","model":"gpt-5-codex-2026","status":"completed",` +
+		`"usage":{"input_tokens":11,"output_tokens":7},` +
+		`"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`)
+
+	turn := &codexWSTurn{}
+	turn.observeRequest(reqEnvelope, time.Time{})
+	// A non-terminal server frame must not emit anything.
+	if c := turn.observeResponse([]byte(`{"type":"response.created","response":{"id":"resp_ws_1"}}`)); c != nil {
+		t.Fatalf("response.created should not produce a completion")
+	}
+	c := turn.observeResponse(completed)
+	if c == nil {
+		t.Fatal("response.completed produced no completion (WS turn dropped)")
+	}
+	g.recordGenAITurn("openai", "s_ws", "chatgpt.com", c.reqModel, c.respModel,
+		c.in, c.out, c.reqBody, c.respBody, c.start, "100.64.0.1")
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex", got)
+	}
+	if got := m["gen_ai.response.model"].AsString(); got != "gpt-5-codex-2026" {
+		t.Errorf("gen_ai.response.model = %q, want gpt-5-codex-2026", got)
+	}
+	if got := m["gen_ai.response.id"].AsString(); got != "resp_ws_1" {
+		t.Errorf("gen_ai.response.id = %q, want resp_ws_1", got)
+	}
+	if got := m["gen_ai.usage.input_tokens"].AsInt64(); got != 11 {
+		t.Errorf("input_tokens = %d, want 11", got)
+	}
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 7 {
+		t.Errorf("output_tokens = %d, want 7", got)
+	}
+	if fr := m["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "completed" {
+		t.Errorf("finish_reasons = %v, want [completed]", fr)
+	}
+	// Content opt-in: the user prompt and assistant output ride the span.
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("input.messages: %v", err)
+	}
+	if len(input) != 1 || input[0].Role != "user" || len(input[0].Parts) != 1 || input[0].Parts[0].Content != "list files" {
+		t.Errorf("input.messages = %#v", input)
+	}
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("output.messages: %v", err)
+	}
+	if len(output) != 1 || len(output[0].Parts) != 1 || output[0].Parts[0].Content != "ok" {
+		t.Errorf("output.messages = %#v", output)
+	}
+	// Tool definition (name+type) rides the span.
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("tool.definitions: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "shell" {
+		t.Errorf("tool defs = %#v", defs)
+	}
+}
+
+// TestCodexWSTurnFallsBackToResponseModel verifies a completion seen with no
+// preceding request frame (e.g. connection observed mid-turn) still records a
+// span, sourcing the model from the response.
+func TestCodexWSTurnFallsBackToResponseModel(t *testing.T) {
+	turn := &codexWSTurn{}
+	c := turn.observeResponse([]byte(`{"type":"response.completed","response":{` +
+		`"id":"r1","model":"gpt-5-codex","usage":{"input_tokens":3,"output_tokens":2}}}`))
+	if c == nil {
+		t.Fatal("completion dropped when no request frame was seen")
+	}
+	if c.reqBody != nil {
+		t.Errorf("reqBody = %q, want nil", c.reqBody)
+	}
+	if c.reqModel != "gpt-5-codex" {
+		t.Errorf("reqModel = %q, want gpt-5-codex (response fallback)", c.reqModel)
+	}
+	if c.in != 3 || c.out != 2 {
+		t.Errorf("usage in/out = %d/%d, want 3/2", c.in, c.out)
+	}
+}
+
+// TestOpenAIResponseContentCodexSSEEmptyTerminal mirrors the real Codex
+// /backend-api/codex/responses stream: the terminal response.completed
+// frame carries output:[] (empty), while the finished output items —
+// reasoning + assistant message — ride per-item response.output_item.done
+// events. The reconstruction must fall back to those items so the output is
+// not lost. Payload shapes are taken verbatim from a captured Codex turn.
+func TestOpenAIResponseContentCodexSSEEmptyTerminal(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_x\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"content_index\":0,\"delta\":\"ban\",\"output_index\":1}\n\n" +
+		"data: {\"type\":\"response.output_text.done\",\"content_index\":0,\"output_index\":1,\"text\":\"banana\"}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"banana\"}]}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"status\":\"completed\",\"output\":[],\"usage\":{\"output_tokens\":5}}}\n\n"
+	parts, finish := openAIResponseContent([]byte(body))
+	if finish != "completed" {
+		t.Errorf("finish = %q, want completed", finish)
+	}
+	want := []genAIPart{
+		{Type: "reasoning", Content: "thinking"},
+		{Type: "text", Content: "banana"},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Errorf("parts = %#v, want %#v", parts, want)
+	}
+}
+
+// TestOpenAIResponseSSECodexTruncated covers a Codex stream cut off before
+// the terminal frame: the output items seen so far must still reconstruct
+// the output rather than yielding nothing.
+func TestOpenAIResponseSSECodexTruncated(t *testing.T) {
+	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_y\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n"
+	parts, _ := openAIResponseContent([]byte(body))
+	want := []genAIPart{{Type: "text", Content: "hi"}}
+	if !reflect.DeepEqual(parts, want) {
+		t.Errorf("parts = %#v, want %#v", parts, want)
+	}
+}
+
+// TestCodexWSTurnOutputFromItemDoneFrames covers the production Codex WS
+// transport with realistic frames: the assistant output rides a
+// response.output_item.done frame and the terminal response.completed frame
+// carries output:[] (empty) plus usage. The assembler must splice the
+// per-item output into the response so the recorded span carries
+// gen_ai.output.messages.
+func TestCodexWSTurnOutputFromItemDoneFrames(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+
+	reqEnvelope := []byte(`{"model":"gpt-5-codex",` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"say banana"}]}]}`)
+	// Real Codex frame ordering: a finished output item, then a terminal
+	// response.completed whose output is empty.
+	itemDone := []byte(`{"type":"response.output_item.done","output_index":0,"item":{` +
+		`"id":"msg_1","type":"message","status":"completed","role":"assistant",` +
+		`"content":[{"type":"output_text","text":"banana"}]}}`)
+	completed := []byte(`{"type":"response.completed","response":{` +
+		`"id":"resp_ws_2","model":"gpt-5-codex","status":"completed",` +
+		`"usage":{"input_tokens":24950,"output_tokens":5},"output":[]}}`)
+
+	turn := &codexWSTurn{}
+	turn.observeRequest(reqEnvelope, time.Time{})
+	if c := turn.observeResponse(itemDone); c != nil {
+		t.Fatalf("response.output_item.done should not produce a completion")
+	}
+	c := turn.observeResponse(completed)
+	if c == nil {
+		t.Fatal("response.completed produced no completion (WS turn dropped)")
+	}
+	g.recordGenAITurn("openai", "s_ws", "chatgpt.com", c.reqModel, c.respModel,
+		c.in, c.out, c.reqBody, c.respBody, c.start, "100.64.0.1")
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 5 {
+		t.Errorf("output_tokens = %d, want 5", got)
+	}
+	var output []genAIChatMessage
+	raw := m["gen_ai.output.messages"].AsString()
+	if raw == "" {
+		t.Fatal("gen_ai.output.messages missing — output not spliced from item.done frame")
+	}
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		t.Fatalf("output.messages: %v (raw %q)", err, raw)
+	}
+	if len(output) != 1 || output[0].Role != "assistant" ||
+		len(output[0].Parts) != 1 || output[0].Parts[0].Content != "banana" {
+		t.Errorf("output.messages = %#v", output)
+	}
+}
+
+// TestCodexSpliceOutputPrefersExisting verifies the splice is a no-op when
+// the terminal response already carries a populated output (e.g. the
+// standard OpenAI Responses API, or a future Codex change) — the verbatim
+// response is returned and the accumulated items are ignored.
+func TestCodexSpliceOutputPrefersExisting(t *testing.T) {
+	response := json.RawMessage(`{"id":"r","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"real"}]}]}`)
+	items := map[int]json.RawMessage{0: json.RawMessage(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"stale"}]}`)}
+	got := codexSpliceOutput(response, items, []int{0})
+	if !reflect.DeepEqual([]byte(response), got) {
+		t.Errorf("splice mutated a populated response: %s", got)
+	}
+}
+
+// TestCodexHTTPTurnSpanMatchesWS covers the non-WebSocket Codex transport:
+// a plain HTTP POST to /backend-api/codex/responses whose SSE body ends in a
+// response.completed event. This drives the same chatgpt.com codex_ws_usage
+// branch of trackLLMUsage the production HTTP client hits, and asserts the
+// emitted span is identical to the WebSocket TUI's (TestCodexWSTurnAssembly):
+// same provider, request/response model split, usage, finish reason, and —
+// under the content opt-in — input/output messages and tool definitions.
+//
+// The request envelope and completed payload are byte-for-byte the ones
+// TestCodexWSTurnAssembly feeds the WS assembler, so a divergence here is a
+// real transport asymmetry, not a fixture difference. The request asks for
+// "gpt-5-codex" while the response echoes the dated "gpt-5-codex-2026"; the
+// span must report the requested model under gen_ai.request.model (the SSE
+// body never carries it), not the dated variant — the bug that made the HTTP
+// path's span differ from the WS path's.
+func TestCodexHTTPTurnSpanMatchesWS(t *testing.T) {
+	sr, tp := newRecordingTracer(t)
+	prev := genaiTracer
+	genaiTracer = tp.Tracer("test")
+	defer func() { genaiTracer = prev }()
+
+	g := newGenAIGateway(t, true)
+	g.agents = NewAgentRegistry()
+
+	reqBody := []byte(`{"model":"gpt-5-codex","instructions":"be terse",` +
+		`"tools":[{"type":"function","name":"shell","description":"run a shell command","parameters":{"p":1}}],` +
+		`"input":[{"role":"user","content":[{"type":"input_text","text":"list files"}]}]}`)
+	// SSE stream: a non-terminal snapshot then the terminal completed event,
+	// which carries the model + usage + output under `response`.
+	respBody := []byte(
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_http_1\"}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{" +
+			"\"id\":\"resp_http_1\",\"model\":\"gpt-5-codex-2026\",\"status\":\"completed\"," +
+			"\"usage\":{\"input_tokens\":11,\"output_tokens\":7}," +
+			"\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n")
+
+	g.trackLLMUsage(nil, "codex_ws_usage", "chatgpt.com",
+		"/backend-api/codex/responses", reqBody, respBody, "sess-1", time.Time{})
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (non-WS codex turn dropped)", len(spans))
+	}
+	m := attrMap(spans[0].Attributes())
+	if got := m["gen_ai.provider.name"].AsString(); got != "openai" {
+		t.Errorf("gen_ai.provider.name = %q, want openai", got)
+	}
+	if got := m["gen_ai.request.model"].AsString(); got != "gpt-5-codex" {
+		t.Errorf("gen_ai.request.model = %q, want gpt-5-codex (the requested model, not the response's dated variant)", got)
+	}
+	if got := m["gen_ai.response.model"].AsString(); got != "gpt-5-codex-2026" {
+		t.Errorf("gen_ai.response.model = %q, want gpt-5-codex-2026", got)
+	}
+	if got := m["gen_ai.response.id"].AsString(); got != "resp_http_1" {
+		t.Errorf("gen_ai.response.id = %q, want resp_http_1", got)
+	}
+	if got := m["gen_ai.usage.input_tokens"].AsInt64(); got != 11 {
+		t.Errorf("input_tokens = %d, want 11", got)
+	}
+	if got := m["gen_ai.usage.output_tokens"].AsInt64(); got != 7 {
+		t.Errorf("output_tokens = %d, want 7", got)
+	}
+	if fr := m["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "completed" {
+		t.Errorf("finish_reasons = %v, want [completed]", fr)
+	}
+	// Content opt-in: the user prompt and assistant output ride the span.
+	var input []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.input.messages"].AsString()), &input); err != nil {
+		t.Fatalf("input.messages: %v", err)
+	}
+	if len(input) != 1 || input[0].Role != "user" || len(input[0].Parts) != 1 || input[0].Parts[0].Content != "list files" {
+		t.Errorf("input.messages = %#v", input)
+	}
+	var output []genAIChatMessage
+	if err := json.Unmarshal([]byte(m["gen_ai.output.messages"].AsString()), &output); err != nil {
+		t.Fatalf("output.messages: %v", err)
+	}
+	if len(output) != 1 || len(output[0].Parts) != 1 || output[0].Parts[0].Content != "ok" {
+		t.Errorf("output.messages = %#v", output)
+	}
+	// Tool definition (name+type) rides the span.
+	var defs []genAIToolDef
+	if err := json.Unmarshal([]byte(m["gen_ai.tool.definitions"].AsString()), &defs); err != nil {
+		t.Fatalf("tool.definitions: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "shell" {
 		t.Errorf("tool defs = %#v", defs)
 	}
 }

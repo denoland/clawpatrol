@@ -86,3 +86,37 @@ export function fmtExpiry(unix?: number): string {
   if (sec < 86400) return "in " + Math.floor(sec / 3600) + "h";
   return "in " + Math.floor(sec / 86400) + "d";
 }
+
+// statusClass buckets an action status string for coloring + analytics: a
+// numeric HTTP-style status by its leading digit, a non-empty non-numeric
+// status (e.g. a plugin's "AccessDenied") as "error" — a named status is a
+// failure; success reports a 2xx — and an empty status as "".
+export function statusClass(
+  status: string | undefined,
+): "" | "2xx" | "3xx" | "4xx" | "5xx" | "error" {
+  if (!status) return "";
+  const n = Number(status);
+  if (Number.isNaN(n)) return "error";
+  if (n >= 500) return "5xx";
+  if (n >= 400) return "4xx";
+  if (n >= 300) return "3xx";
+  if (n >= 200) return "2xx";
+  return "";
+}
+
+// statusColorClass maps a status string to a Tailwind text color.
+export function statusColorClass(status: string | undefined): string {
+  switch (statusClass(status)) {
+    case "5xx":
+      return "text-danger-500";
+    case "error":
+    case "4xx":
+      return "text-rust-500";
+    case "3xx":
+      return "text-butter-600";
+    case "2xx":
+      return "text-success-600";
+    default:
+      return "text-text-muted";
+  }
+}

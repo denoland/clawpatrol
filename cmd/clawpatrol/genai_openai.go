@@ -310,10 +310,15 @@ func openAIResponsesOutput(output json.RawMessage) []genAIPart {
 // openAIResponseSSE reconstructs the assistant response from a streaming
 // body. A Responses-API stream ends with a terminal event carrying the
 // full response object (response.completed / .incomplete / .failed) — when
-// present it is parsed exactly like a non-streaming Responses body.
-// Otherwise the body is a Chat Completions stream whose choice deltas are
-// accumulated: text content concatenates, and tool-call fragments
-// accumulate by index.
+// its output is populated it is parsed exactly like a non-streaming
+// Responses body. Codex's /backend-api/codex/responses stream is the
+// exception: its terminal frame's output is always empty ([]), and the
+// finished output items ride the per-item response.output_item.done events
+// instead — so those are accumulated (by output_index, latest-wins) and
+// used to reconstruct the output when the terminal output is empty or no
+// terminal event arrives. Otherwise the body is a Chat Completions stream
+// whose choice deltas are accumulated: text content concatenates, and
+// tool-call fragments accumulate by index.
 func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 	type toolAccum struct {
 		id   string
@@ -321,16 +326,20 @@ func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 		args strings.Builder
 	}
 	var (
-		text     strings.Builder
-		tools    = map[int]*toolAccum{}
-		order    []int
-		haveChat bool
+		text      strings.Builder
+		tools     = map[int]*toolAccum{}
+		order     []int
+		haveChat  bool
+		respItems = map[int]json.RawMessage{}
+		respOrder []int
 	)
 	for _, payload := range sseDataPayloads(body) {
 		var ev struct {
-			Type     string          `json:"type"`
-			Response json.RawMessage `json:"response"`
-			Choices  []struct {
+			Type        string          `json:"type"`
+			Response    json.RawMessage `json:"response"`
+			Item        json.RawMessage `json:"item"`
+			OutputIndex int             `json:"output_index"`
+			Choices     []struct {
 				FinishReason string `json:"finish_reason"`
 				Delta        struct {
 					Content   string `json:"content"`
@@ -348,10 +357,22 @@ func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 		if json.Unmarshal(payload, &ev) != nil {
 			continue
 		}
+		// Responses-API per-item completion: a fully-formed output item
+		// (message / reasoning / function_call). Codex delivers the real
+		// output here, not on the terminal frame. Latest-wins per index.
+		if ev.Type == "response.output_item.done" && len(ev.Item) > 0 {
+			if _, seen := respItems[ev.OutputIndex]; !seen {
+				respOrder = append(respOrder, ev.OutputIndex)
+			}
+			respItems[ev.OutputIndex] = ev.Item
+			continue
+		}
 		// Responses-API terminal event: the embedded response object
-		// carries the complete output, so parse it as a full body. Only
-		// the terminal events carry the final state — response.created /
-		// .in_progress snapshots also embed a (still-empty) response.
+		// carries the final state. Its output is the source of truth when
+		// populated; when empty (Codex) fall back to the items accumulated
+		// from response.output_item.done events. Only the terminal events
+		// carry the final state — response.created / .in_progress snapshots
+		// also embed a (still-empty) response.
 		if isResponsesTerminalEvent(ev.Type) && len(ev.Response) > 0 {
 			var r struct {
 				Output            json.RawMessage `json:"output"`
@@ -361,7 +382,11 @@ func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 				} `json:"incomplete_details"`
 			}
 			if json.Unmarshal(ev.Response, &r) == nil {
-				return openAIResponsesOutput(r.Output), responsesFinish(r.Status, r.IncompleteDetails.Reason)
+				finish = responsesFinish(r.Status, r.IncompleteDetails.Reason)
+				if out := openAIResponsesOutput(r.Output); len(out) > 0 {
+					return out, finish
+				}
+				return assembleResponsesOutput(respItems, respOrder), finish
 			}
 			continue
 		}
@@ -391,7 +416,9 @@ func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 		}
 	}
 	if !haveChat {
-		return nil, finish
+		// No chat deltas and no terminal frame (e.g. a truncated Codex
+		// stream): reconstruct from the per-item events seen so far.
+		return assembleResponsesOutput(respItems, respOrder), finish
 	}
 	if text.Len() > 0 {
 		parts = append(parts, genAIPart{Type: "text", Content: text.String()})
@@ -406,6 +433,26 @@ func openAIResponseSSE(body []byte) (parts []genAIPart, finish string) {
 		})
 	}
 	return parts, finish
+}
+
+// assembleResponsesOutput maps the output items accumulated from
+// response.output_item.done events into GenAI parts, reusing the
+// non-streaming Responses output mapper. items is keyed by output_index;
+// order preserves first-seen index order. Returns nil when no items were
+// collected.
+func assembleResponsesOutput(items map[int]json.RawMessage, order []int) []genAIPart {
+	if len(items) == 0 {
+		return nil
+	}
+	arr := make([]json.RawMessage, 0, len(order))
+	for _, i := range order {
+		arr = append(arr, items[i])
+	}
+	js, err := json.Marshal(arr)
+	if err != nil {
+		return nil
+	}
+	return openAIResponsesOutput(js)
 }
 
 // openAIContentMessages extracts the ordered input messages from an

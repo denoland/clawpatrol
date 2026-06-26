@@ -297,23 +297,12 @@ func otelRecordVerdict(verdict string) {
 	))
 }
 
-func otelRecordRequest(d time.Duration, verdict string, status int) {
+func otelRecordRequest(d time.Duration, verdict, status string) {
 	if mReqDuration == nil {
 		return
 	}
-	klass := ""
-	switch {
-	case status >= 500:
-		klass = "5xx"
-	case status >= 400:
-		klass = "4xx"
-	case status >= 300:
-		klass = "3xx"
-	case status >= 200:
-		klass = "2xx"
-	}
 	mReqDuration.Record(context.Background(), d.Seconds(), metric.WithAttributes(
 		attribute.String("verdict", verdict),
-		attribute.String("status_class", klass),
+		attribute.String("status_class", statusClass(status)),
 	))
 }

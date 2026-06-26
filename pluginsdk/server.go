@@ -174,18 +174,31 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		})
 	}
 	for _, f := range s.plug.Facets {
-		fields := make([]*pb.FacetFieldDecl, 0, len(f.Fields))
-		for _, fld := range f.Fields {
-			fields = append(fields, &pb.FacetFieldDecl{
-				Name:     fld.Name,
-				Kind:     pb.FacetKind(fld.Kind),
-				Label:    fld.Label,
-				Optional: fld.Optional,
-			})
-		}
-		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
+		resp.Facets = append(resp.Facets, &pb.FacetDecl{
+			Name:         f.Name,
+			Fields:       facetFieldsToProto(f.Fields),
+			ResultFields: facetFieldsToProto(f.ResultFields),
+		})
 	}
 	return resp, nil
+}
+
+// facetFieldsToProto maps SDK facet fields (request or result schema) onto
+// their proto form.
+func facetFieldsToProto(in []FacetField) []*pb.FacetFieldDecl {
+	out := make([]*pb.FacetFieldDecl, 0, len(in))
+	for _, fld := range in {
+		out = append(out, &pb.FacetFieldDecl{
+			Name:        fld.Name,
+			Kind:        pb.FacetKind(fld.Kind),
+			Label:       fld.Label,
+			Optional:    fld.Optional,
+			Description: fld.Description,
+			Title:       fld.Title,
+			DetailOnly:  fld.DetailOnly,
+		})
+	}
+	return out
 }
 
 func networkAccessToProto(n NetworkAccess) pb.NetworkAccess {
@@ -534,6 +547,50 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	var streamsMu sync.Mutex
 	streams := map[string]*streamReg{}
 	var streamSeq atomic.Uint64
+
+	conn.setResult = func(_ context.Context, result map[string]any) error {
+		// Stream-valued result fields (the response body a plugin offers via
+		// pluginsdk.Stream) are split out of result_json into
+		// ActionResult.streams and registered in the same stream table the
+		// request side uses — the gateway pulls them with the identical
+		// StreamRead/StreamChunk loop and StreamCancel. Scalars stay in
+		// result_json. The gateway correlates this to the conn's current
+		// action, so no call_id.
+		resultForJSON := result
+		streamHandles := map[string]string(nil)
+		for k, v := range result {
+			sv, ok := v.(StreamValue)
+			if !ok {
+				continue
+			}
+			if streamHandles == nil {
+				// Lazy clone so we don't mutate the caller's map; nil-out
+				// stream entries in the JSON copy (handles ride in streams).
+				resultForJSON = make(map[string]any, len(result))
+				for kk, vv := range result {
+					if _, isStream := vv.(StreamValue); isStream {
+						resultForJSON[kk] = nil
+					} else {
+						resultForJSON[kk] = vv
+					}
+				}
+				streamHandles = map[string]string{}
+			}
+			handle := fmt.Sprintf("s%d", streamSeq.Add(1))
+			streamsMu.Lock()
+			streams[handle] = &streamReg{r: sv.R}
+			streamsMu.Unlock()
+			streamHandles[k] = handle
+		}
+		j, err := json.Marshal(resultForJSON)
+		if err != nil {
+			return fmt.Errorf("pluginsdk: marshal result: %w", err)
+		}
+		return doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Result{Result: &pb.ActionResult{
+			ResultJson: j,
+			Streams:    streamHandles,
+		}}})
+	}
 
 	// dials tracks brokered upstream connections (Conn.DialUpstream)
 	// keyed by dial_id. The recv goroutine routes DialUpstreamReply /
@@ -935,6 +992,15 @@ func callbackPanicError(where string, r any) error {
 // the recv goroutine flips on StreamCancel. The serveStreamRead
 // helper checks cancelled before each read so a slow reader can't
 // re-enable a stream the gateway already abandoned.
+//
+// Note: a streamReg is removed from the streams map only on read EOF/error
+// (serveStreamRead) or StreamCancel. If the gateway pulls a body, finds what
+// it needs, and tears the conn down WITHOUT sending StreamCancel (e.g. an
+// abnormal recv-loop exit on the gateway side), the entry — and its open
+// reader — can linger until the whole conn's recv goroutine returns and the
+// SDK drops the per-conn streams map. Minor: it is conn-scoped, so it is
+// reclaimed when the connection ends, but a long-lived conn that never gets a
+// StreamCancel holds the reader open until then.
 type streamReg struct {
 	r         io.Reader
 	mu        sync.Mutex

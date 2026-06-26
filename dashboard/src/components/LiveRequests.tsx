@@ -1,11 +1,23 @@
 import { useEffect, useState } from "react";
 import { type EventRecord, type FacetSchema } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
-import { fmtTime } from "../lib/format";
+import { fmtTime, statusColorClass } from "../lib/format";
 
 type RowState = EventRecord & {
   frames?: { direction: string; frame: string; ts: string }[];
 };
+
+function isDeniedAction(ev: EventRecord): boolean {
+  return ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
+}
+
+// A "quiet" dial is an allowed brokered-dial action — the gateway→upstream
+// dial a plugin endpoint makes (e.g. an AWS call's dial to *.amazonaws.com).
+// It carries no metadata, so it's hidden unless the operator opts in. A
+// denied dial is a blocked egress and is never hidden.
+function isQuietDial(ev: EventRecord): boolean {
+  return ev.method === "dial" && !isDeniedAction(ev);
+}
 
 export function LiveRequests({
   agentIP,
@@ -17,6 +29,11 @@ export function LiveRequests({
   height?: string;
 }) {
   const [events, setEvents] = useState<RowState[]>([]);
+  // Allowed brokered "dial" actions are the plumbing behind a plugin
+  // endpoint (an AWS API call's gateway→AWS dial); they carry no metadata
+  // and just clutter the log, so hide them by default. Denied dials are a
+  // real egress block and always show (isQuietDial excludes them).
+  const [showDials, setShowDials] = useState(false);
   const { byFamily } = useFacets();
 
   useEffect(() => {
@@ -72,6 +89,9 @@ export function LiveRequests({
     };
   }, [agentIP, max]);
 
+  const hiddenDials = events.reduce((n, e) => n + (isQuietDial(e) ? 1 : 0), 0);
+  const shown = showDials ? events : events.filter((e) => !isQuietDial(e));
+
   return (
     <div
       className="flex flex-col bg-canvas border-1.5 border-navy overflow-hidden"
@@ -81,18 +101,28 @@ export function LiveRequests({
         <span>Live requests</span>
         <span className="ml-2 text-success-500 tabular-nums flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
-          {events.length}
+          {shown.length}
         </span>
+        {hiddenDials > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowDials((v) => !v)}
+            className="ml-auto normal-case tracking-normal font-normal text-2xs text-text-subtle hover:text-text-muted"
+            title="Brokered upstream dials carry no metadata; hidden by default"
+          >
+            {showDials ? "hide" : "show"} {hiddenDials} dial{hiddenDials === 1 ? "" : "s"}
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto">
-        {events.length === 0 ? (
+        {shown.length === 0 ? (
           <div className="px-5 py-8 text-center text-xs text-text-subtle flex items-center justify-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
             Waiting for requests
             <AnimatedDots />
           </div>
         ) : (
-          events.map((e, i) => (
+          shown.map((e, i) => (
             <Row key={i} ev={e} schema={e.family ? byFamily[e.family] : undefined} />
           ))
         )}
@@ -151,25 +181,27 @@ function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] 
 // protocol plugins drop in without dashboard edits; falls back to
 // the legacy method/path stuffing when facets aren't populated
 // (pre-migration rows / unknown families).
-function rowDescriptors(
+export function rowDescriptors(
   ev: EventRecord,
   schema: FacetSchema | undefined,
 ): { verb: string; body: string } {
   const facets = ev.facets ?? {};
   if (schema && Object.keys(facets).length > 0) {
-    // Convention shared by the built-in facets: the leading column
-    // is either "method" (HTTPS) or "verb" (SQL / k8s); the rest of
-    // the report fields render into the trailing body. The schema
-    // controls how each value formats.
-    const leadName =
-      schema.report_fields.find((f) => f.name === "method")?.name ??
-      schema.report_fields.find((f) => f.name === "verb")?.name ??
-      "";
-    const verbField = leadName ? schema.report_fields.find((f) => f.name === leadName) : undefined;
-    const verb = verbField ? formatFacetValue(verbField.kind, facets[leadName]) : "";
+    // The leading column (the "verb") is the field the facet marks as
+    // `title` — e.g. an AWS plugin marks iam_action so the row reads
+    // "s3:ListBucket" rather than "POST". Facets that declare no title
+    // (the built-ins) fall back to the method/verb-named field. The rest
+    // of the report fields render into the trailing body, except those
+    // marked `detail_only` (kept for the per-action detail view).
+    const lead =
+      schema.report_fields.find((f) => f.title) ??
+      schema.report_fields.find((f) => f.name === "method") ??
+      schema.report_fields.find((f) => f.name === "verb");
+    const verb = lead ? formatFacetValue(lead.kind, facets[lead.name]) : "";
     const bodyParts: string[] = [];
     for (const f of schema.report_fields) {
-      if (f.name === leadName) continue;
+      if (lead && f.name === lead.name) continue;
+      if (f.detail_only) continue;
       // Status is rendered in its own coloured slot below — don't
       // duplicate it in the body.
       if (f.name === "status") continue;
@@ -192,18 +224,8 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
     : undefined;
   const time = fmtTime(ev.ts);
   const inFlight = ev.phase === "start";
-  const status = ev.status || 0;
-  const statusColor = inFlight
-    ? "text-text-subtle"
-    : status >= 500
-      ? "text-danger-500"
-      : status >= 400
-        ? "text-rust-500"
-        : status >= 300
-          ? "text-butter-600"
-          : status >= 200
-            ? "text-success-600"
-            : "text-text-muted";
+  const status = ev.status ?? "";
+  const statusColor = inFlight ? "text-text-subtle" : statusColorClass(status);
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
   // "splice"/"relay" forward the bytes without inspecting them, so
@@ -227,10 +249,16 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
       >
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ApprovalStatusIcon ev={ev} inFlight={inFlight} />
-        <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11 flex items-center">
+        <span
+          className="font-mono text-2xs font-semibold text-text-muted shrink-0 w-28 truncate flex items-center"
+          title={inspected ? verb : undefined}
+        >
           {inspected ? verb : <LockGlyph />}
         </span>
-        <span className={"text-xs tabular-nums shrink-0 w-9 " + statusColor}>
+        <span
+          className={"text-xs shrink-0 w-14 truncate " + statusColor}
+          title={status || undefined}
+        >
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
         <span className="text-xs text-text truncate flex-1 min-w-0" title={ev.host + sep + body}>

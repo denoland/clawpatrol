@@ -114,6 +114,16 @@ type genAITurn struct {
 	ServerAddress string
 	ServerPort    int
 
+	// Device identity of the calling device (clawpatrol.device.*),
+	// resolved from the connection peer IP via the same device/profile
+	// path the discovery endpoint and dispatch use — never tokens or
+	// headers. Empty fields are omitted from the span: name and owner are
+	// empty for an unknown device; profile falls back to the default
+	// profile that governs unclaimed peers.
+	DeviceName    string // clawpatrol.device.name
+	DeviceProfile string // clawpatrol.device.profile
+	DeviceOwner   string // clawpatrol.device.owner
+
 	// Request sampling parameters (gen_ai.request.*). Pointers/zero-checks
 	// distinguish "not set in the request" from a real zero value
 	// (temperature 0 is valid and common).
@@ -174,6 +184,16 @@ func emitGenAISpan(tracer trace.Tracer, t genAITurn, includeContent bool) {
 	}
 	if t.ServerPort > 0 {
 		attrs = append(attrs, attribute.Int("server.port", t.ServerPort))
+	}
+	// clawpatrol.device.* — the device that made the intercepted request.
+	if t.DeviceName != "" {
+		attrs = append(attrs, attribute.String("clawpatrol.device.name", t.DeviceName))
+	}
+	if t.DeviceProfile != "" {
+		attrs = append(attrs, attribute.String("clawpatrol.device.profile", t.DeviceProfile))
+	}
+	if t.DeviceOwner != "" {
+		attrs = append(attrs, attribute.String("clawpatrol.device.owner", t.DeviceOwner))
 	}
 	if t.RequestModel != "" {
 		attrs = append(attrs, attribute.String("gen_ai.request.model", t.RequestModel))
@@ -295,10 +315,11 @@ func genAIContentAttrs(t genAITurn) []attribute.KeyValue {
 // gen_ai.provider.name value ("anthropic"/"openai"); convID is the
 // session correlation key emitted as gen_ai.conversation.id (empty when
 // the turn carries no session info); serverAddr is the upstream host the
-// turn went to (server.address, port 443). Content is parsed from the
-// bodies only when content capture is opted in, so the disabled and
-// no-content paths stay cheap.
-func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time) {
+// turn went to (server.address, port 443); agentIP is the calling
+// device's resolved peer IP, used to attach the clawpatrol.device.*
+// attributes. Content is parsed from the bodies only when content
+// capture is opted in, so the disabled and no-content paths stay cheap.
+func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respModel string, in, out int64, reqBody, respBody []byte, start time.Time, agentIP string) {
 	cfg := g.cfg.Load()
 	if genaiTracer == nil || !cfg.GenAITelemetryEnabled() {
 		return
@@ -327,6 +348,7 @@ func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respMo
 	if serverAddr != "" {
 		turn.ServerPort = 443
 	}
+	g.fillDeviceAttrs(&turn, agentIP)
 	includeContent := cfg.GenAITelemetryIncludeContent()
 	// Per-provider field mapping fills the shared genAITurn from each
 	// provider's own wire format. The representation and exporter
@@ -338,6 +360,24 @@ func (g *Gateway) recordGenAITurn(provider, convID, serverAddr, reqModel, respMo
 		mapOpenAITurn(&turn, reqBody, respBody, includeContent)
 	}
 	emitGenAISpan(genaiTracer, turn, includeContent)
+}
+
+// fillDeviceAttrs resolves the calling device's identity for the
+// clawpatrol.device.* span attributes from its peer IP, reusing the same
+// onboard registry / profileFor path the discovery endpoint and dispatch
+// use (never tokens or headers). Each field is best-effort: name and
+// owner stay empty for an unknown device, while profile falls back to
+// the default profile that governs unclaimed peers — matching how the
+// profile is resolved everywhere else. emitGenAISpan omits empty fields.
+func (g *Gateway) fillDeviceAttrs(turn *genAITurn, agentIP string) {
+	if agentIP == "" {
+		return
+	}
+	turn.DeviceProfile = g.profileFor(agentIP)
+	if g.onboard != nil {
+		turn.DeviceName = g.onboard.HostnameForIP(agentIP)
+		turn.DeviceOwner = g.onboard.OwnerForIP(agentIP)
+	}
 }
 
 // mapClaudeTurn fills the GenAI turn from an Anthropic /v1/messages

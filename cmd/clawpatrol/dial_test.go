@@ -2,9 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +36,17 @@ func (fakeSecretStore) Get(string) (runtime.Secret, error) {
 	return runtime.Secret{}, nil
 }
 
+type fakeEndpointTLSConfigurer struct {
+	configured atomic.Int32
+	rootCAs    *x509.CertPool
+}
+
+func (c *fakeEndpointTLSConfigurer) ConfigureUpstreamTLS(cfg *tls.Config) error {
+	c.configured.Add(1)
+	cfg.RootCAs = c.rootCAs
+	return nil
+}
+
 func endpointWithTunnelAndTLSCredential(name string, tunnel *config.CompiledTunnel, credential *fakeTLSCredential) *config.CompiledEndpoint {
 	return &config.CompiledEndpoint{
 		Name:   name,
@@ -36,6 +55,26 @@ func endpointWithTunnelAndTLSCredential(name string, tunnel *config.CompiledTunn
 			Symbol: &config.Symbol{Name: "mtls"},
 			Body:   credential,
 		}},
+	}
+}
+
+func TestBrowserTLSUsesEndpointTLSConfig(t *testing.T) {
+	server, roots, serverName := newSelfSignedTLSServer(t)
+	defer server.Close()
+
+	tlsConfig := &fakeEndpointTLSConfigurer{rootCAs: roots}
+	ep := &config.CompiledEndpoint{Name: "browser", Body: tlsConfig}
+	g := &Gateway{dialer: &net.Dialer{}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := g.dialBrowserTLS(ctx, "tcp", server.Listener.Addr().String(), serverName, ep)
+	if err != nil {
+		t.Fatalf("dialBrowserTLS: %v", err)
+	}
+	_ = conn.Close()
+	if got := tlsConfig.configured.Load(); got != 1 {
+		t.Fatalf("EndpointTLSConfigurer call count = %d, want 1", got)
 	}
 }
 
@@ -162,6 +201,48 @@ func TestTransportBrowserTLSWithClientCertUsesDialUpstream(t *testing.T) {
 	if got := fake.dialCount.Load(); got != 1 {
 		t.Fatalf("fake tunnel Dial count = %d, want 1", got)
 	}
+}
+
+func newSelfSignedTLSServer(t *testing.T) (*httptest.Server, *x509.CertPool, string) {
+	t.Helper()
+
+	serverName := "kubernetes.test"
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: serverName},
+		DNSNames:              []string{serverName},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	cert := tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  priv,
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(parsed)
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{"http/1.1"},
+	}
+	server.StartTLS()
+	return server, roots, serverName
 }
 
 func TestDialWSUpstreamWithClientCertUsesDialUpstream(t *testing.T) {

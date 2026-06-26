@@ -44,6 +44,16 @@ type pluginFacet struct {
 	// fail-closed-on-truncation contract (req.Truncated marks the
 	// stream paths CEL-unknown) applies to plugin facets.
 	streamFields []string
+	// resultFields is the after-the-fact schema (FacetDecl.result_fields);
+	// resultTitle is the name of the result field marked Title — the
+	// field the adapter lifts into the action's Status. "" when the facet
+	// reports no result schema.
+	resultFields []facet.ReportFieldSpec
+	resultTitle  string
+	// resultBodyField is the name of the FACET_STREAM result field — the
+	// response body the gateway pulls (up to its body-storage cap) and
+	// cancels. For v1 a facet declares at most one; "" when none.
+	resultBodyField string
 }
 
 func (p *pluginFacet) Name() string                          { return p.name }
@@ -52,6 +62,7 @@ func (p *pluginFacet) Transport() string                     { return "" }
 func (p *pluginFacet) HITLQueryLabel() string                { return "Action" }
 func (p *pluginFacet) HostIsResource() bool                  { return false }
 func (p *pluginFacet) ReportFields() []facet.ReportFieldSpec { return p.reportFields }
+func (p *pluginFacet) ResultFields() []facet.ReportFieldSpec { return p.resultFields }
 func (p *pluginFacet) PrepareRequest(*match.Request)         {}
 func (p *pluginFacet) Report(*match.Request) map[string]any  { return nil }
 
@@ -112,12 +123,30 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) hcl.Diagnostics {
 			streams = append(streams, f.Name)
 		}
 	}
+	resultFields := protoFacetFieldsToSpec(decl.ResultFields)
+	resultTitle := ""
+	for _, rf := range resultFields {
+		if rf.Title {
+			resultTitle = rf.Name
+			break
+		}
+	}
+	resultBodyField := ""
+	for _, rf := range decl.ResultFields {
+		if rf.Kind == pb.FacetKind_FACET_STREAM {
+			resultBodyField = rf.Name
+			break
+		}
+	}
 	pf := &pluginFacet{
-		name:           decl.Name,
-		reportFields:   protoFacetFieldsToSpec(decl.Fields),
-		kindByField:    kindByField,
-		optionalFields: optional,
-		streamFields:   streams,
+		name:            decl.Name,
+		reportFields:    protoFacetFieldsToSpec(decl.Fields),
+		kindByField:     kindByField,
+		optionalFields:  optional,
+		streamFields:    streams,
+		resultFields:    resultFields,
+		resultTitle:     resultTitle,
+		resultBodyField: resultBodyField,
 	}
 	facet.Register(pf)
 	return nil
@@ -127,9 +156,12 @@ func protoFacetFieldsToSpec(in []*pb.FacetFieldDecl) []facet.ReportFieldSpec {
 	out := make([]facet.ReportFieldSpec, 0, len(in))
 	for _, f := range in {
 		out = append(out, facet.ReportFieldSpec{
-			Name:  f.Name,
-			Kind:  pluginFacetKind(f.Kind),
-			Label: f.Label,
+			Name:        f.Name,
+			Kind:        pluginFacetKind(f.Kind),
+			Label:       f.Label,
+			Description: f.Description,
+			Title:       f.Title,
+			DetailOnly:  f.DetailOnly,
 		})
 	}
 	return out

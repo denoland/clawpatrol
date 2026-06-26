@@ -164,7 +164,7 @@ func TestHostControlEvaluateThroughMatcher(t *testing.T) {
 	sessions := newSessionRegistry()
 	token, _ := sessions.register(&session{
 		evaluate: func(_ context.Context, _ string, actionJSON []byte, summary string) (Verdict, error) {
-			return evaluateInline(ch, summary, actionJSON), nil
+			return evaluateInline(ch, nil, summary, actionJSON), nil
 		},
 	})
 

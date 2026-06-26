@@ -268,6 +268,12 @@ type ConnHandle struct {
 	// SNI the client sent. nil when the dispatcher can't mint
 	// (gateway has no CA).
 	MintCert func(host string) (*tls.Certificate, error)
+	// BodyStorageCap is the most response-body the gateway buffers when a
+	// plugin offers a FACET_STREAM result field (cfg.BodyStorageLimit()).
+	// It matches the cap the built-in HTTP sampler uses, so plugin and
+	// built-in response samples are bounded identically. Zero means use the
+	// default (config.DefaultBodyStorageLimit).
+	BodyStorageCap int
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to
@@ -311,6 +317,37 @@ type ConnEvent struct {
 	Approver     string
 	ApproverType string
 	ApproverBy   string
+
+	// ID / Phase give a plugin action the same start→end lifecycle the
+	// built-in HTTP path uses: the adapter emits Phase "start" (in-flight)
+	// when an action is evaluated and "end" (carrying Status + result
+	// facets) when the plugin reports its outcome via ActionResult, keyed
+	// by the same ID so the dashboard merges them. Empty Phase means a
+	// single terminal event (the legacy behavior, e.g. a denial).
+	ID    string
+	Phase string
+	// Status is the action's outcome — lifted from the result schema's
+	// title field (e.g. an AWS error code, "200"). Set on the end event.
+	Status string
+	// ResultFacets is the after-the-fact report payload (values keyed by
+	// the facet's result_fields). Set on the end event alongside Status.
+	ResultFacets map[string]any
+
+	// RespBody is the plugin-reported, gateway-capped response sample —
+	// the after-the-fact counterpart of a request-side body. The plugin
+	// offers the body as a FACET_STREAM result field; the gateway pulls it
+	// up to its body-storage cap, appends the truncation marker when the
+	// body overran the cap, and cancels the stream. Set on the end event,
+	// it lands on Event.RespBody and renders in the request detail page's
+	// "Response body" section exactly like the built-in HTTP path's sample.
+	RespBody string
+	// RespSha is the hex SHA-256 of the captured response-body sample (at
+	// most cap+1 bytes), NOT the full upstream body. Unlike the built-in HTTP
+	// sampler — which hashes every byte — the plugin path deliberately stops
+	// pulling at the body cap and cancels the stream, so the gateway never
+	// sees the bytes past the cap and cannot hash them. Empty when the plugin
+	// reported no body. Set on the end event alongside RespBody.
+	RespSha string
 }
 
 // Secret is what credential plugins receive at injection time. The

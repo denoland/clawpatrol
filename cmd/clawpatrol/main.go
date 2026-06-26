@@ -833,6 +833,175 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr, wsSessionID string, payload []by
 	g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 }
 
+// codexWSTurn assembles a GenAI turn from a Codex WebSocket frame
+// sequence. Codex's /backend-api/codex/responses runs over a WS upgrade
+// (see the WS-upgrade branch in mitmHTTPS) rather than the HTTP/SSE path
+// trackLLMUsage handles, so a turn's request and response arrive on
+// separate frames: the client→server request envelope carries the
+// prompt / model / tools, and the server→client response.completed frame
+// carries the output and usage. observeRequest stashes the envelope;
+// observeResponse returns a ready-to-record completion when the terminal
+// frame lands. The two WS pump goroutines (client→server and
+// server→client) call these concurrently, so the stashed state is mutex
+// guarded.
+type codexWSTurn struct {
+	mu          sync.Mutex
+	reqEnvelope []byte
+	start       time.Time
+	// outputItems holds the finished output items (message / reasoning /
+	// function_call) accumulated from response.output_item.done frames,
+	// keyed by output_index (latest-wins); outputOrder preserves first-seen
+	// order. Codex's terminal response.completed frame carries an empty
+	// output array — the real output rides these per-item frames — so they
+	// are spliced into the response body when the terminal frame lands.
+	outputItems map[int]json.RawMessage
+	outputOrder []int
+}
+
+// observeRequest records a client→server request envelope — the frame
+// carrying the `input` array. Latest-wins: the most recent envelope seen
+// before a completion is the one paired with it. A new request envelope
+// starts a new turn, so any output items accumulated for a prior,
+// terminal-less turn are dropped.
+func (t *codexWSTurn) observeRequest(payload []byte, now time.Time) {
+	var probe struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if json.Unmarshal(payload, &probe) != nil || len(probe.Input) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.reqEnvelope = append([]byte(nil), payload...)
+	t.start = now
+	t.outputItems = nil
+	t.outputOrder = nil
+	t.mu.Unlock()
+}
+
+// codexWSCompletion is the assembled pieces of one Codex WS turn, ready to
+// hand to recordGenAITurn. respBody is the inner `response` object of the
+// terminal frame — a Responses-API response body that maps through
+// mapOpenAITurn exactly like the HTTP path's; reqBody is the paired request
+// envelope (nil if no request frame was seen on this connection).
+type codexWSCompletion struct {
+	reqBody   []byte
+	respBody  []byte
+	reqModel  string
+	respModel string
+	in, out   int64
+	start     time.Time
+}
+
+// observeResponse inspects a server→client frame. On a terminal
+// response.completed / .incomplete / .failed frame it returns the assembled
+// completion; every other frame returns nil. The request envelope is
+// consumed so a stray duplicate terminal frame can't re-emit a span.
+func (t *codexWSTurn) observeResponse(payload []byte) *codexWSCompletion {
+	var msg struct {
+		Type        string          `json:"type"`
+		Response    json.RawMessage `json:"response"`
+		Item        json.RawMessage `json:"item"`
+		OutputIndex int             `json:"output_index"`
+	}
+	if json.Unmarshal(payload, &msg) != nil {
+		return nil
+	}
+	// A finished output item (message / reasoning / function_call). Codex
+	// streams the real output on these frames; the terminal frame's output
+	// is always empty. Stash by output_index (latest-wins) to splice in
+	// when the terminal frame lands.
+	if msg.Type == "response.output_item.done" && len(msg.Item) > 0 {
+		t.mu.Lock()
+		if t.outputItems == nil {
+			t.outputItems = map[int]json.RawMessage{}
+		}
+		if _, seen := t.outputItems[msg.OutputIndex]; !seen {
+			t.outputOrder = append(t.outputOrder, msg.OutputIndex)
+		}
+		t.outputItems[msg.OutputIndex] = append([]byte(nil), msg.Item...)
+		t.mu.Unlock()
+		return nil
+	}
+	if !isResponsesTerminalEvent(msg.Type) || len(msg.Response) == 0 {
+		return nil
+	}
+	var resp struct {
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	_ = json.Unmarshal(msg.Response, &resp)
+
+	t.mu.Lock()
+	reqBody := t.reqEnvelope
+	start := t.start
+	items := t.outputItems
+	order := t.outputOrder
+	t.reqEnvelope = nil
+	t.outputItems = nil
+	t.outputOrder = nil
+	t.mu.Unlock()
+
+	// Codex's terminal response carries output:[]; splice the accumulated
+	// per-item output in so mapOpenAITurn extracts gen_ai.output.messages.
+	respBody := codexSpliceOutput(msg.Response, items, order)
+
+	// Prefer the request's model (e.g. "gpt-5-codex"); the response may
+	// echo a dated variant. Fall back to the response model when the
+	// request frame wasn't captured.
+	reqModel := codexRequestModel(reqBody)
+	if reqModel == "" {
+		reqModel = resp.Model
+	}
+	return &codexWSCompletion{
+		reqBody:   reqBody,
+		respBody:  respBody,
+		reqModel:  reqModel,
+		respModel: resp.Model,
+		in:        resp.Usage.InputTokens,
+		out:       resp.Usage.OutputTokens,
+		start:     start,
+	}
+}
+
+// codexSpliceOutput returns the terminal response object with its `output`
+// array replaced by the items accumulated from response.output_item.done
+// frames, keyed by output_index in first-seen order. Codex's terminal frame
+// always carries output:[], so without this the assistant output is lost.
+// When the response already carries a non-empty output (e.g. a future Codex
+// change, or the standard OpenAI Responses API), or no items were collected,
+// the response is returned unchanged.
+func codexSpliceOutput(response json.RawMessage, items map[int]json.RawMessage, order []int) []byte {
+	verbatim := append([]byte(nil), response...)
+	if len(items) == 0 {
+		return verbatim
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(response, &obj) != nil {
+		return verbatim
+	}
+	var existing []json.RawMessage
+	if json.Unmarshal(obj["output"], &existing) == nil && len(existing) > 0 {
+		return verbatim
+	}
+	arr := make([]json.RawMessage, 0, len(order))
+	for _, i := range order {
+		arr = append(arr, items[i])
+	}
+	outJS, err := json.Marshal(arr)
+	if err != nil {
+		return verbatim
+	}
+	obj["output"] = outJS
+	spliced, err := json.Marshal(obj)
+	if err != nil {
+		return verbatim
+	}
+	return spliced
+}
+
 // codexToolTitle formats a tool-call frame into "▸ name(arg)". Codex's
 // `arguments` field is a JSON string whose shape varies per tool —
 // shell.command[], apply_patch.input, file_search.query, etc. We pull
@@ -1083,7 +1252,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		if sid == "" && title != "" {
 			sid = shortHash(title)
 		}
-		g.recordGenAITurn("anthropic", sid, host, reqInfo.Model, respModel, in, out, reqBody, respBody, reqStart)
+		g.recordGenAITurn("anthropic", sid, host, reqInfo.Model, respModel, in, out, reqBody, respBody, reqStart, ip)
 		if sid == "" {
 			return // heartbeat/probe with no session info
 		}
@@ -1100,7 +1269,7 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
-		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart)
+		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart, ip)
 		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	case "codex_ws_usage":
 		// chatgpt.com Codex backend. Two transports:
@@ -1113,16 +1282,30 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, host, path string, reqBody, re
 			return
 		}
 		title := codexResponsesRequestTitle(reqBody)
-		model, in, out := parseOpenAIResponse(respBody)
-		if model == "" && in == 0 && out == 0 && title == "" {
+		respModel, in, out := parseOpenAIResponse(respBody)
+		// gen_ai.request.model must be the model the client asked for
+		// (e.g. "gpt-5-codex"), not the dated variant the response echoes
+		// ("gpt-5-codex-2026"). Codex's SSE response body carries neither
+		// the request model (it rides the OpenAI-Model response header) nor,
+		// on many turns, token usage, so source the request model from the
+		// request body — the same split the WS path (handleWSUpgrade →
+		// codexWSTurn) uses, so both transports emit identical spans. Fall
+		// back to the response model when the request body wasn't captured
+		// (e.g. oversized/truncated), which also keeps recordGenAITurn's
+		// model/usage guard satisfied so the turn is still recorded.
+		reqModel := codexRequestModel(reqBody)
+		if reqModel == "" {
+			reqModel = respModel
+		}
+		if reqModel == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
 		sid := shortHash(sessionHint)
 		if sid == "" {
 			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
 		}
-		g.recordGenAITurn("openai", sid, host, model, model, in, out, reqBody, respBody, reqStart)
-		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
+		g.recordGenAITurn("openai", sid, host, reqModel, respModel, in, out, reqBody, respBody, reqStart, ip)
+		g.agents.recordLLMUsage(ip, "codex", sid, title, reqModel, in, out)
 	}
 }
 
@@ -1843,12 +2026,14 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			}
 			return g.dialUpstream(ctx, network, addr, serverName, ep, profile)
 		},
+		BodyStorageCap: g.cfg.Load().BodyStorageLimit(),
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
 				return
 			}
 			g.sink.Emit(Event{
 				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
+				ID: ev.ID, Phase: ev.Phase, Status: ev.Status,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
@@ -1856,6 +2041,8 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Approver:     ev.Approver,
 				ApproverType: ev.ApproverType,
 				ApproverBy:   ev.ApproverBy,
+				RespBody:     ev.RespBody,
+				RespSha:      ev.RespSha,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -2245,7 +2432,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				status, contentType, body := hitlRetryRelayFailure(err)
 				log.Printf("hitl retry rejected %s %s %s operation %q: %v", host, req.Method, req.URL.Path, retryOperationID, err)
 				_, _ = fmt.Fprintf(tc, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), contentType, len(body), body)
-				ev.Status = status
+				ev.Status = strconv.Itoa(status)
 				ev.Action = "hitl_retry_rejected"
 				ev.Reason = hitlRetryMismatchErrorValue
 				if status == http.StatusNotFound {
@@ -2309,7 +2496,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						log.Printf("hitl async pending response write %s: %v", asyncOp.ID, err)
 					}
 					_ = tc.SetWriteDeadline(time.Time{})
-					ev.Status = http.StatusAccepted
+					ev.Status = "202"
 					ev.Action = "hitl_async_pending"
 					ev.Approver = v.ApproverName
 					ev.ApproverType = v.ApproverType
@@ -2331,7 +2518,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				log.Printf("denied %s %s %s: %s (by %s/%s/%s)",
 					host, req.Method, req.URL.Path, reason, v.ApproverType, v.ApproverName, v.By)
 				_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
-				ev.Status = 403
+				ev.Status = "403"
 				ev.Action = "denied"
 				ev.Approver = v.ApproverName
 				ev.ApproverType = v.ApproverType
@@ -2369,7 +2556,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				}
 			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
-			ev.Status = 403
+			ev.Status = "403"
 			ev.Action = "deny"
 			ev.Reason = reason
 			ev.Ms = time.Since(start).Milliseconds()
@@ -2417,7 +2604,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				if r.Body != nil {
 					defer func() { _ = r.Body.Close() }()
 				}
-				ev.Status = r.StatusCode
+				ev.Status = strconv.Itoa(r.StatusCode)
 				ev.Action = "synth"
 				// Synthetic responses are clawpatrol-generated, so the
 				// stock plugins don't set auth-bearing headers — but
@@ -2503,7 +2690,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 							if rw, ok := injector.(runtime.HTTPRequestRewriter); ok && rw.RewritesHTTPRequest() {
 								log.Printf("transform %s: %v; failing closed", cc.Credential.Symbol.Name, err)
 								_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-								ev.Status = 502
+								ev.Status = "502"
 								ev.Action = "error"
 								ev.Reason = err.Error()
 								ev.Ms = time.Since(start).Milliseconds()
@@ -2564,7 +2751,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamSucceeded, err)
 				}
 			}
-			ev.Status = 101
+			ev.Status = "101"
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
 			return
@@ -2609,7 +2796,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				}
 			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-			ev.Status = 502
+			ev.Status = "502"
 			ev.Action = "error"
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
@@ -2622,7 +2809,15 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		var trackBuf *bytes.Buffer
 		if trackKind != "" && resp.StatusCode == 200 {
 			ct := resp.Header.Get("Content-Type")
-			if strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
+			// Codex's /backend-api/codex/responses SSE responses come back
+			// through Cloudflare with NO Content-Type header, so an empty ct
+			// is treated as eligible too — otherwise the codex HTTP/SSE turn
+			// is never buffered and trackLLMUsage (the GenAI span source)
+			// never fires, while WS codex and Content-Type-bearing providers
+			// (Anthropic) record fine. trackKind is only set for the LLM
+			// hosts and trackLLMUsage re-gates on path, so this won't capture
+			// unrelated traffic.
+			if ct == "" || strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
 				trackBuf = &bytes.Buffer{}
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
@@ -2694,7 +2889,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				log.Printf("hitl async operation upstream terminal %s: %v", asyncOp.ID, err)
 			}
 		}
-		ev.Status = resp.StatusCode
+		ev.Status = strconv.Itoa(resp.StatusCode)
 		ev.ReqHeaders = flatHeadersRedacted(req.Header, reqBodySecretRedactions)
 		ev.In = reqS.n
 		ev.Out = respS.n

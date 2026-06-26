@@ -1,0 +1,129 @@
+{
+  "profile": "ops",
+  "endpoints": [
+    {
+      "name": "admin",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "admin.example"
+      ],
+      "credentials": [
+        {
+          "name": "admin",
+          "type": "bearer_token",
+          "placeholder": "PH_ADMIN"
+        }
+      ],
+      "hint": "curl https://admin.example/ -H \"Authorization: Bearer PH_ADMIN\"",
+      "hitl": true
+    },
+    {
+      "name": "deploy",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "deploy.example"
+      ],
+      "credentials": [
+        {
+          "name": "deploy",
+          "type": "bearer_token",
+          "placeholder": "PH_DEPLOY"
+        }
+      ],
+      "hint": "curl https://deploy.example/ -H \"Authorization: Bearer PH_DEPLOY\"",
+      "hitl": true
+    },
+    {
+      "name": "release",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "release.example"
+      ],
+      "credentials": [
+        {
+          "name": "release",
+          "type": "bearer_token",
+          "placeholder": "PH_RELEASE"
+        }
+      ],
+      "hint": "curl https://release.example/ -H \"Authorization: Bearer PH_RELEASE\"",
+      "hitl": true
+    },
+    {
+      "name": "status",
+      "type": "https",
+      "family": "http",
+      "hosts": [
+        "status.example"
+      ],
+      "credentials": [
+        {
+          "name": "status",
+          "type": "bearer_token",
+          "placeholder": "PH_STATUS"
+        }
+      ],
+      "hint": "curl https://status.example/ -H \"Authorization: Bearer PH_STATUS\""
+    }
+  ],
+  "credentials": [
+    {
+      "name": "admin",
+      "type": "bearer_token",
+      "placeholder": "PH_ADMIN",
+      "endpoints": [
+        "admin"
+      ]
+    },
+    {
+      "name": "deploy",
+      "type": "bearer_token",
+      "placeholder": "PH_DEPLOY",
+      "endpoints": [
+        "deploy"
+      ]
+    },
+    {
+      "name": "release",
+      "type": "bearer_token",
+      "placeholder": "PH_RELEASE",
+      "endpoints": [
+        "release"
+      ]
+    },
+    {
+      "name": "status",
+      "type": "bearer_token",
+      "placeholder": "PH_STATUS",
+      "endpoints": [
+        "status"
+      ]
+    }
+  ],
+  "env_vars": [],
+  "hitl": {
+    "explanation": "Some endpoints have rules that gate a matching request behind human approval (human-in-the-loop). When such a rule matches, the gateway PARKS the request pending a human decision instead of forwarding it upstream — and it may stay parked indefinitely while it waits for a person to approve or deny it. The gateway does NOT call upstream while a request is parked, so no side effect has happened yet. Do NOT treat a slow or hanging request to a gated endpoint as a failure or retry it blindly; the gateway is holding it on purpose.\n\nThe gateway parks the request synchronously: it holds your connection open until a human decides and then answers on that same connection — the real upstream response once the request is approved, or a denial if it is rejected. You do not have to do anything special or re-send anything; just let the request run instead of aborting it.\n\nTo see everything currently waiting on a human for your device, GET https://clawpatrol.internal/pending. It lists each parked action — its method, endpoint, and redacted target — so you can tell what is held without keeping the original connection in view.",
+    "gated_endpoints": [
+      "admin",
+      "deploy",
+      "release"
+    ],
+    "pending_path": "/pending",
+    "async": {
+      "explanation": "Some gated endpoints do not hold your connection forever. Each such endpoint has a synchronous wait window (its sync_wait_timeout, listed per endpoint below): if a human has not decided within that window, the gateway stops holding the connection and answers with HTTP 202 Accepted. A 202 is NOT success and NOT failure — it means \"parked for human approval, continuing asynchronously.\" Do not treat it as either; switch to polling.\n\nThe 202 body is JSON describing the parked operation. The fields you act on:\n- operation_id: the parked operation's id.\n- status_url: the absolute URL to poll for this operation's status (also returned in the Location header). Poll THIS url; do not build your own — the template is /api/hitl/operations/{operation_id}/status.\n- state: the current state (see below).\n- terminal: true once the operation has reached a final state and will not change.\n- poll_operation_status: true while you should keep polling status_url (the operation is parked waiting on a human). Mutually exclusive with retry_original_request.\n- retry_original_request: true once a human has approved and you should RE-SEND the original request to execute it (see approved_waiting_for_retry below). Mutually exclusive with poll_operation_status.\nThe 202 also carries a Retry-After header (suggested 5 seconds) — wait that long between polls.\n\nPoll status_url with GET until the state resolves. The states:\n- sync_waiting / pending_approval: still waiting on a human; keep polling (honoring Retry-After). No upstream call has happened. pending_approval includes an approval_expires_at — the operation stays pollable until then; only after that does it become expired, so keep polling a pending operation rather than giving up early.\n- approved_waiting_for_retry: a human approved it, but the gateway has NOT called upstream yet. To execute it, RE-SEND the exact same original request with the header Clawpatrol-HITL-Operation set to the operation_id, before retry_expires_at. The retry is what performs the upstream call.\n- denied: a human rejected it; do not retry. Stop.\n- expired: the approval window or the post-approval retry window elapsed with no (or no acted-on) decision; do not retry. Stop. expired is distinct from pending_approval — pending means keep polling, expired means it is over.\n\nYou can also GET status_url at any time without a prior 202 to re-check an operation you already know the id of.",
+      "status_path_template": "/api/hitl/operations/{operation_id}/status",
+      "retry_header": "Clawpatrol-HITL-Operation",
+      "poll_interval_seconds": 5,
+      "endpoints": [
+        {
+          "name": "deploy",
+          "sync_wait": "1m30s",
+          "poll_ttl": "8m30s"
+        }
+      ]
+    }
+  }
+}
