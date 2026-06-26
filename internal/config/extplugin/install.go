@@ -43,7 +43,7 @@ func (m *Manager) Install(ctx context.Context, specs []config.PluginSource, name
 	if err := m.lock.load(); err != nil {
 		return nil, err
 	}
-	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	f := newFetcher(m.cacheDirLocked(), m.ghBase, m.prov, m.logger)
 
 	var out []InstalledPlugin
 	matched := map[string]bool{}
@@ -161,7 +161,7 @@ func (m *Manager) LockPlatforms(ctx context.Context, specs []config.PluginSource
 	if err := m.lock.load(); err != nil {
 		return nil, err
 	}
-	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	f := newFetcher(m.cacheDirLocked(), m.ghBase, m.prov, m.logger)
 
 	var out []InstalledPlugin
 	matched := map[string]bool{}
@@ -245,7 +245,7 @@ func (m *Manager) CheckUpdates(ctx context.Context, specs []config.PluginSource)
 		m.logger.Warn("plugin update check: read lockfile", "err", err)
 		return
 	}
-	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	f := newFetcher(m.cacheDirLocked(), m.ghBase, m.prov, m.logger)
 	updates := map[string]string{}
 	for _, sp := range specs {
 		p, err := pluginSourceFor(sp)

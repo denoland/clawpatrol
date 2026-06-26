@@ -155,7 +155,7 @@ func (m *Manager) previewManifest(ctx context.Context, sp config.PluginSource) (
 	if e, ok := m.lock.get(sp.Name); ok {
 		locked = e.Version
 	}
-	f := newFetcher(m.stateDirLocked(), m.ghBase, m.prov, m.logger)
+	f := newFetcher(m.cacheDirLocked(), m.ghBase, m.prov, m.logger)
 	r, _, err := f.gh.resolveVersion(ctx, p, sp.Version)
 	if err != nil {
 		return ManifestPreview{}, err
