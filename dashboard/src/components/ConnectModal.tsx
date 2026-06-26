@@ -9,6 +9,18 @@ import {
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
+type DeviceStart = Extract<OAuthStartResp, { flow: "device" }>;
+type AuthCodeStart = Exclude<OAuthStartResp, { flow: "device" }>;
+
+type ConnectState =
+  | { kind: "scopePicker" }
+  | { kind: "idle" }
+  | { kind: "starting" }
+  | { kind: "startError"; message: string; extraScopes?: string[] }
+  | { kind: "device"; start: DeviceStart; browserOpened: boolean; error?: string }
+  | { kind: "authCode"; start: AuthCodeStart; browserOpened: boolean; error?: string }
+  | { kind: "done" };
+
 export function ConnectModal({
   id,
   oauth,
@@ -20,39 +32,47 @@ export function ConnectModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [start, setStart] = useState<OAuthStartResp | null>(null);
   const [code, setCode] = useState("");
-  const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
   // The picker only appears when the plugin declared optional scopes.
-  // Plugins that don't surface a picker fall straight through to the
-  // OAuth start (started=true on mount).
   const optionalGroups = oauth?.optional_scopes ?? [];
   const baseScopes = oauth?.base_scopes ?? [];
   const showsScopePicker = optionalGroups.length > 0;
-  const [started, setStarted] = useState(!showsScopePicker);
+  const [state, setState] = useState<ConnectState>(() =>
+    showsScopePicker ? { kind: "scopePicker" } : { kind: "idle" },
+  );
   const [extras, setExtras] = useState<Set<string>>(() => new Set());
   const baseSet = new Set(baseScopes);
 
-  useEffect(() => {
-    if (!started) return;
-    const extraList = showsScopePicker ? Array.from(extras) : undefined;
-    oauthStart(id, extraList)
-      .then((r) => {
-        setStart(r);
-        if (r.flow === "device") {
-          window.open(r.verification_uri, "_blank", "noopener,noreferrer");
-        } else {
-          window.open((r as any).auth_url, "_blank", "noopener,noreferrer");
-        }
-      })
-      .catch((e: Error) => setErr(String(e.message ?? e)));
-    // extras intentionally captured at the moment of "continue" — the
-    // checklist is frozen once we kick off the OAuth flow, so don't
-    // rerun this effect on later toggles.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, started]);
+  async function startOAuth(extraScopes?: string[]) {
+    // Open synchronously while still inside the click gesture so popup
+    // blockers treat the OAuth tab as user-initiated. Navigate it after
+    // oauthStart returns; if the start call fails, close the parked tab.
+    const popup = window.open("about:blank", "_blank");
+    if (popup) {
+      popup.opener = null;
+    }
+    setState({ kind: "starting" });
+    try {
+      const start = await oauthStart(id, extraScopes);
+      const url = start.flow === "device" ? start.verification_uri : start.auth_url;
+      if (popup) {
+        popup.location.href = url;
+      }
+      if (start.flow === "device") {
+        setState({ kind: "device", start, browserOpened: popup !== null });
+      } else {
+        setState({ kind: "authCode", start, browserOpened: popup !== null });
+      }
+    } catch (e: any) {
+      try {
+        popup?.close();
+      } catch {
+        /* ignore */
+      }
+      setState({ kind: "startError", message: String(e.message ?? e), extraScopes });
+    }
+  }
 
   // Stable ref to onDone — parent re-renders (App refreshes integrations
   // every 3s) reset the lambda otherwise, killing the polling interval
@@ -60,19 +80,21 @@ export function ConnectModal({
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
+  const authCodeStart = state.kind === "authCode" ? state.start : null;
+
   // Auto-complete path: when the OAuth callback page in another tab
   // POSTs /api/oauth/exchange successfully, it pings the BroadcastChannel
   // so this modal can close itself instead of asking the user to copy
   // the code into the input field below. Lazy `try` so older browsers
   // without BroadcastChannel just fall back to the copy-paste UX.
   useEffect(() => {
-    if (!start || start.flow === "device" || done) return;
+    if (!authCodeStart) return;
     let ch: BroadcastChannel | null = null;
     try {
       ch = new BroadcastChannel("oauth");
       ch.onmessage = (e) => {
-        if (e.data?.type === "connected" && e.data?.state === start.state) {
-          setDone(true);
+        if (e.data?.type === "connected" && e.data?.state === authCodeStart.state) {
+          setState({ kind: "done" });
           setTimeout(() => onDoneRef.current(), 800);
         }
       };
@@ -86,23 +108,25 @@ export function ConnectModal({
         /* no-op */
       }
     };
-  }, [start, done]);
+  }, [authCodeStart]);
+
+  const deviceStart = state.kind === "device" ? state.start : null;
 
   useEffect(() => {
-    if (!start || start.flow !== "device") return;
+    if (!deviceStart) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let intervalSec = start.interval || 5;
+    let intervalSec = deviceStart.interval || 5;
     // RFC 8628: client must respect the `interval` field returned on
     // slow_down. Reschedule via setTimeout instead of fixed interval
     // so each tick uses the latest cadence GitHub asked for.
     const tick = async () => {
       if (cancelled) return;
       try {
-        const r = await oauthDevicePoll(start.state);
+        const r = await oauthDevicePoll(deviceStart.state);
         if (cancelled) return;
         if (r.connected) {
-          setDone(true);
+          setState({ kind: "done" });
           setTimeout(() => onDoneRef.current(), 800);
           return;
         }
@@ -110,7 +134,11 @@ export function ConnectModal({
           intervalSec = r.interval;
         }
         if (r.error && r.error !== "authorization_pending" && r.error !== "slow_down") {
-          setErr(`${r.error}: ${r.detail || ""}`);
+          setState((current) =>
+            current.kind === "device" && current.start.state === deviceStart.state
+              ? { ...current, error: `${r.error}: ${r.detail || ""}` }
+              : current,
+          );
           return;
         }
       } catch {
@@ -123,19 +151,25 @@ export function ConnectModal({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [start]);
+  }, [deviceStart]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!start || start.flow === "device") return;
+    if (state.kind !== "authCode") return;
+    const start = state.start;
     setBusy(true);
-    setErr(null);
+    setState({ kind: "authCode", start, browserOpened: state.browserOpened });
     try {
       await oauthExchange(start.state, code);
-      setDone(true);
+      setState({ kind: "done" });
       setTimeout(onDone, 800);
     } catch (e: any) {
-      setErr(String(e.message ?? e));
+      setState({
+        kind: "authCode",
+        start,
+        browserOpened: state.browserOpened,
+        error: String(e.message ?? e),
+      });
     } finally {
       setBusy(false);
     }
@@ -144,12 +178,12 @@ export function ConnectModal({
   return (
     <Modal title={`Connect ${id}`} onClose={onClose}>
       <div className="p-5">
-        {done ? (
+        {state.kind === "done" ? (
           <div className="py-6 text-center">
             <div className="text-2xl mb-2">✓</div>
             <div className="text-xs text-text">connected</div>
           </div>
-        ) : showsScopePicker && !started ? (
+        ) : state.kind === "scopePicker" ? (
           <div className="space-y-3">
             <div className="text-xs text-text-muted leading-relaxed">
               {baseScopes.length > 0 ? (
@@ -218,29 +252,59 @@ export function ConnectModal({
                 ))}
               </div>
             </details>
-            {err && <div className="text-xs text-rust-700 break-all">{err}</div>}
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={onClose}>
                 cancel
               </Button>
-              <Button onClick={() => setStarted(true)}>
+              <Button onClick={() => startOAuth(Array.from(extras))}>
                 continue ({baseScopes.length + extras.size} scopes)
               </Button>
             </div>
           </div>
-        ) : !start ? (
-          <div className="text-xs text-text-muted">opening browser…</div>
-        ) : start.flow === "device" ? (
+        ) : state.kind === "idle" ? (
           <div className="space-y-3">
             <div className="text-xs text-text-muted leading-relaxed">
-              browser opened to <code className="text-text">{start.verification_uri}</code>. enter
-              this code:
+              Open your browser to complete the OAuth connection.
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={onClose}>
+                cancel
+              </Button>
+              <Button onClick={() => startOAuth()}>connect</Button>
+            </div>
+          </div>
+        ) : state.kind === "starting" ? (
+          <div className="text-xs text-text-muted">opening browser…</div>
+        ) : state.kind === "startError" ? (
+          <div className="space-y-3">
+            <div className="text-xs text-text-muted">Could not open the browser.</div>
+            <div className="text-xs text-rust-700 break-all">{state.message}</div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={onClose}>
+                cancel
+              </Button>
+              <Button onClick={() => startOAuth(state.extraScopes)}>try again</Button>
+            </div>
+          </div>
+        ) : state.kind === "device" ? (
+          <div className="space-y-3">
+            <div className="text-xs text-text-muted leading-relaxed">
+              {state.browserOpened ? "browser opened to " : "Open "}
+              <a
+                href={state.start.verification_uri}
+                target="_blank"
+                rel="noreferrer"
+                className="underline text-text"
+              >
+                {state.start.verification_uri}
+              </a>
+              . enter this code:
             </div>
             <div className="font-mono text-3xl tracking-[.18em] text-text text-center py-3 bg-canvas-muted border border-canvas-300 rounded select-all">
-              {start.user_code}
+              {state.start.user_code}
             </div>
             <div className="text-xs text-text-subtle text-center">waiting for approval…</div>
-            {err && <div className="text-xs text-rust-700 break-all">{err}</div>}
+            {state.error && <div className="text-xs text-rust-700 break-all">{state.error}</div>}
             <div className="flex justify-end">
               <Button variant="outline" onClick={onClose}>
                 cancel
@@ -250,8 +314,24 @@ export function ConnectModal({
         ) : (
           <div className="space-y-3">
             <div id="oauth-code-help" className="text-sm text-text-muted font-sans leading-relaxed">
-              Browser opened. After logging in, this may connect automatically. If it doesn't, paste
-              the redirect URL from the tab opened for this login attempt, or paste the value of the{" "}
+              {state.browserOpened ? (
+                <>Browser opened.</>
+              ) : (
+                <>
+                  Browser popup was blocked. Open{" "}
+                  <a
+                    href={state.start.auth_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline text-text"
+                  >
+                    the OAuth URL
+                  </a>
+                  .
+                </>
+              )}{" "}
+              After logging in, this may connect automatically. If it doesn't, paste the redirect URL
+              from the tab opened for this login attempt, or paste the value of the{" "}
               <code className="text-text">code</code> parameter below. If the redirect lands on a{" "}
               <code className="text-text">localhost</code> page that fails to connect, that's
               expected — copy its URL anyway.
@@ -263,17 +343,19 @@ export function ConnectModal({
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="paste full redirect URL or code here"
                 aria-label="Redirect URL or authorization code"
-                aria-describedby={err ? "oauth-code-help oauth-code-error" : "oauth-code-help"}
+                aria-describedby={state.error
+                  ? "oauth-code-help oauth-code-error"
+                  : "oauth-code-help"}
                 className="w-full text-xs border border-canvas-dark rounded px-2 py-2 focus:outline-none focus:border-text font-mono transition-colors"
                 autoFocus
               />
-              {err && (
+              {state.error && (
                 <div
                   id="oauth-code-error"
                   role="alert"
                   className="text-xs text-rust-700 mt-2 break-all"
                 >
-                  {err}
+                  {state.error}
                 </div>
               )}
               <div className="flex gap-2 mt-8 justify-end">
