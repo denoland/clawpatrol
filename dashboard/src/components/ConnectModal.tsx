@@ -330,8 +330,8 @@ export function ConnectModal({
                   .
                 </>
               )}{" "}
-              After logging in, this may connect automatically. If it doesn't, paste the redirect URL
-              from the tab opened for this login attempt, or paste the value of the{" "}
+              After logging in, this may connect automatically. If it doesn't, paste the redirect
+              URL from the tab opened for this login attempt, or paste the value of the{" "}
               <code className="text-text">code</code> parameter below. If the redirect lands on a{" "}
               <code className="text-text">localhost</code> page that fails to connect, that's
               expected — copy its URL anyway.
@@ -343,9 +343,9 @@ export function ConnectModal({
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="paste full redirect URL or code here"
                 aria-label="Redirect URL or authorization code"
-                aria-describedby={state.error
-                  ? "oauth-code-help oauth-code-error"
-                  : "oauth-code-help"}
+                aria-describedby={
+                  state.error ? "oauth-code-help oauth-code-error" : "oauth-code-help"
+                }
                 className="w-full text-xs border border-canvas-dark rounded px-2 py-2 focus:outline-none focus:border-text font-mono transition-colors"
                 autoFocus
               />
