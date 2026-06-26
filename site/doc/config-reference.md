@@ -142,8 +142,8 @@ Targets one channel. Timeout / require_approvers
 override the global defaults block on a per-approver basis.
 
 Credential references a credential whose body satisfies HITLNotifier
-(slack_tokens today; future Discord / Telegram / SMTP credentials).
-Leave empty for a dashboard-only approver (no channel notification;
+(slack_tokens and signal_cli today; future Discord / Telegram / SMTP
+credentials). Leave empty for a dashboard-only approver (no channel notification;
 operator clicks approve/deny on the dashboard).
 
 | Attribute | Type | Required | Description |
@@ -186,7 +186,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`basic_auth`](#credential-basicauth), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`passthrough`](#credential-passthrough), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`basic_auth`](#credential-basicauth), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`passthrough`](#credential-passthrough), [`postgres_credential`](#credential-postgrescredential), [`signal_cli`](#credential-signalcli), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -395,6 +395,33 @@ the catchall (one allowed per (profile, endpoint)).
 
 ```hcl
 credential "postgres_credential" "example" {}
+```
+
+### `credential "signal_cli" "<name>"`
+
+Notification-only HITL notifier (no HTTP injection). Delivers approval
+prompts to Signal via a [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
+instance; reference it from a `human_approver`'s `credential`, with the
+recipient set as the approver's `channel` (an E.164 number or `group.<id>`).
+Signal has no interactive buttons, so the prompt carries an "Open dashboard"
+link and the operator approves there.
+
+_No configurable HCL attributes._ Paste the connection details into the
+dashboard secret slots:
+
+| Slot | Description |
+|------|-------------|
+| `api_url` | Base URL of the signal-cli-rest-api, e.g. `http://127.0.0.1:8090`. |
+| `number` | The registered Signal sender number, E.164 (`+15551234567`). |
+| `auth` | Optional `user:pass` if the REST API is behind HTTP basic auth. |
+
+```hcl
+credential "signal_cli" "ops" {}
+
+approver "human_approver" "ops" {
+  channel    = "+15551112222" # recipient number or group.<id>
+  credential = signal_cli.ops
+}
 ```
 
 ### `credential "slack_tokens" "<name>"`
