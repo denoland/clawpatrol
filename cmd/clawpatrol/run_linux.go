@@ -324,6 +324,15 @@ func runWholeMachineDirect(cmd []string) {
 			fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
 		}
 	}
+	// Apply the Claude Code OAuth shim against the live process env, now
+	// that the pushdown has injected ANTHROPIC_AUTH_TOKEN above. Without
+	// this, `clawpatrol run claude` on a whole-machine device leaves the
+	// bearer set and never writes the synthesized .credentials.json, so
+	// Claude Code stays in API-key mode and OAuth-only features (e.g.
+	// /remote-control) stay gated — the same bug the sudo/userns paths
+	// already guard against. The command runs as the invoking user here
+	// (no privilege drop), so the process-env shim is sufficient.
+	installClaudeCodeOAuthShim(cmd)
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
 		fail("%s: %v", cmd[0], err)

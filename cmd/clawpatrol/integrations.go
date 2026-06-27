@@ -377,31 +377,81 @@ func applyEnvPushdownVars(vars []pushdownEnvVar) {
 // `.credentials.json` — that login wins once we drop the bearer, so we
 // leave it untouched.
 func installClaudeCodeOAuthShim(cmd []string) {
-	if len(cmd) == 0 || filepath.Base(cmd[0]) != "claude" {
+	res := planClaudeCodeOAuthShim(cmd, os.Getenv, defaultClawpatrolDir(), -1, -1)
+	if res.warn {
+		warnClaudeCodeRemoteControlDisabled()
 		return
 	}
-	bearer := os.Getenv("ANTHROPIC_AUTH_TOKEN")
-	if bearer == "" {
+	if !res.applied {
 		return
+	}
+	// Redirect Claude Code's credential read onto our synthesized file
+	// (only when we own the dir; an operator-set one is already exported).
+	// Unsetting ANTHROPIC_AUTH_TOKEN drops Claude Code out of precedence #2
+	// so the synthesized credentials.json (precedence #6) wins.
+	if res.configDir != "" {
+		_ = os.Setenv("CLAUDE_CONFIG_DIR", res.configDir)
+	}
+	if res.unsetAuthToken {
+		_ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
+	}
+}
+
+// claudeShimResult is the decision + side effects of one shim
+// evaluation. The file write (credentials.json) has already happened
+// when applied is true; the caller is responsible only for reflecting
+// the env changes (configDir / unsetAuthToken) onto whatever env
+// representation it uses — os.Setenv for the live process, or a
+// []string slice for the privileged sudo child.
+type claudeShimResult struct {
+	applied        bool   // shim fired: credentials.json was (re)written
+	warn           bool   // not opted in — caller should print the notice
+	configDir      string // non-empty → set CLAUDE_CONFIG_DIR to this
+	unsetAuthToken bool   // drop ANTHROPIC_AUTH_TOKEN from the child env
+}
+
+// planClaudeCodeOAuthShim is the shared core of the `clawpatrol run
+// claude` OAuth shim. It reads env via get, decides whether the shim
+// applies, and (when it does) writes the synthesized credentials.json —
+// chowning it to chownUID/chownGID when chownUID >= 0, so the privileged
+// sudo path can materialize a file the dropped-to-user child can read.
+// It returns the env mutations for the caller to apply; it deliberately
+// does NOT touch process env, so it works equally for os.Getenv and for
+// a captured []string env.
+//
+// clawDir is the `.clawpatrol` directory to carve the managed config dir
+// out of (the user's, not root's, on the sudo path).
+func planClaudeCodeOAuthShim(cmd []string, get func(string) string, clawDir string, chownUID, chownGID int) claudeShimResult {
+	if len(cmd) == 0 || filepath.Base(cmd[0]) != "claude" {
+		return claudeShimResult{}
+	}
+	bearer := get("ANTHROPIC_AUTH_TOKEN")
+	if bearer == "" {
+		return claudeShimResult{}
 	}
 	// Opt-in only. Writing credentials + repointing CLAUDE_CONFIG_DIR can
 	// shadow the worker's ~/.claude and touch files we don't own, so we
 	// never do it silently — tell the operator how to enable it instead.
-	if os.Getenv("CLAWPATROL_CLAUDE_OAUTH_SHIM") != "1" {
-		warnClaudeCodeRemoteControlDisabled()
-		return
+	if get("CLAWPATROL_CLAUDE_OAUTH_SHIM") != "1" {
+		return claudeShimResult{warn: true}
 	}
 	// Honor an operator-set CLAUDE_CONFIG_DIR so Claude Code keeps its
 	// settings/MCP/project state living there; otherwise carve out a
 	// clawpatrol-managed dir that leaves the worker's ~/.claude untouched.
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	dir := get("CLAUDE_CONFIG_DIR")
 	managed := dir == ""
 	if managed {
-		dir = filepath.Join(defaultClawpatrolDir(), "claude-config")
+		dir = filepath.Join(clawDir, "claude-config")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "[clawpatrol] claude oauth shim: mkdir %s: %v\n", dir, err)
-		return
+		return claudeShimResult{}
+	}
+	if chownUID >= 0 && managed {
+		// We created the managed dir (possibly as root on the sudo path);
+		// hand it to the user who will read it. Best-effort: the file
+		// chown below is what actually matters for the read.
+		_ = os.Chown(dir, chownUID, chownGID)
 	}
 	credPath := filepath.Join(dir, ".credentials.json")
 	// Don't clobber a real /login that already lives in an operator-set
@@ -409,22 +459,23 @@ func installClaudeCodeOAuthShim(cmd []string) {
 	// own. (We always (re)write our own managed dir: it's clawpatrol's.)
 	if !managed {
 		if _, err := os.Stat(credPath); err == nil {
-			_ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
-			return
+			return claudeShimResult{applied: true, unsetAuthToken: true}
 		}
 	}
 	if err := writeClaudeCodeCredentials(credPath, bearer); err != nil {
 		fmt.Fprintf(os.Stderr, "[clawpatrol] claude oauth shim: write credentials: %v\n", err)
-		return
+		return claudeShimResult{}
 	}
-	// Redirect Claude Code's credential read onto our synthesized file
-	// (only when we own the dir; an operator-set one is already exported).
-	// Unsetting ANTHROPIC_AUTH_TOKEN drops Claude Code out of precedence #2
-	// so the synthesized credentials.json (precedence #6) wins.
+	if chownUID >= 0 {
+		// credentials.json is mode 0600 — without this chown the
+		// dropped-to-user `claude` couldn't read its own credentials.
+		_ = os.Chown(credPath, chownUID, chownGID)
+	}
+	res := claudeShimResult{applied: true, unsetAuthToken: true}
 	if managed {
-		_ = os.Setenv("CLAUDE_CONFIG_DIR", dir)
+		res.configDir = dir
 	}
-	_ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
+	return res
 }
 
 // warnClaudeCodeRemoteControlDisabled tells the operator why
