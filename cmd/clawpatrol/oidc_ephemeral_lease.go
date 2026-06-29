@@ -124,9 +124,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}, nil
 }
 
-func activeOIDCEphemeralLeaseForPeer(db *sql.DB, peerIP string, now time.Time) (*oidcEphemeralLease, error) {
+func activeOIDCEphemeralLeaseForPeer(db *sql.DB, peerIP string, now time.Time) (*oidcEphemeralLease, bool, error) {
 	if db == nil || peerIP == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	row := db.QueryRow(`
 SELECT peer_ip, pubkey, replay_key, issuer, subject, enrollment, profile, metadata, created_ns, expires_ns, COALESCE(revoked_ns, 0)
@@ -134,9 +134,12 @@ FROM oidc_ephemeral_leases
 WHERE peer_ip = ? AND revoked_ns IS NULL AND expires_ns > ?`, peerIP, now.UnixNano())
 	lease, err := scanOIDCEphemeralLease(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
-	return lease, err
+	if err != nil {
+		return nil, false, err
+	}
+	return lease, true, nil
 }
 
 func revokeOIDCEphemeralLease(db *sql.DB, peerIP string, now time.Time) error {

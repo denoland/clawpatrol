@@ -12,6 +12,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// OIDCEnrollment configures an OIDC issuer and claim matcher for ephemeral enrollment.
 type OIDCEnrollment struct {
 	Issuer   string         `json:"issuer"`
 	Profile  string         `json:"profile"`
@@ -41,6 +42,7 @@ func init() {
 	})
 }
 
+// NormalizePublicURLForOIDC normalizes the gateway public URL used as the expected OIDC audience.
 func NormalizePublicURLForOIDC(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -162,7 +164,7 @@ func oidcDiag(ctx *BuildCtx, summary, detail string) *hcl.Diagnostic {
 }
 
 func ctyObjectToScalarMap(v cty.Value) (map[string]any, error) {
-	if !v.IsKnown() || v.IsNull() || !(v.Type().IsObjectType() || v.Type().IsMapType()) {
+	if !v.IsKnown() || v.IsNull() || !v.Type().IsObjectType() && !v.Type().IsMapType() {
 		return nil, fmt.Errorf("value must be an object")
 	}
 	out := map[string]any{}

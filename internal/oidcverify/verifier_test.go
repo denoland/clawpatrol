@@ -141,7 +141,7 @@ func testPolicy(issuer, audience string) *config.CompiledPolicy {
 		OIDCAudience:            audience,
 		Profiles:                map[string]*config.CompiledProfile{"ci": profile},
 		OIDCEnrollments:         []*config.CompiledOIDCEnrollment{enr},
-		OIDCEnrollmentsByIssuer: map[string][]*config.CompiledOIDCEnrollment{issuer: []*config.CompiledOIDCEnrollment{enr}},
+		OIDCEnrollmentsByIssuer: map[string][]*config.CompiledOIDCEnrollment{issuer: {enr}},
 	}
 }
 
@@ -163,10 +163,10 @@ func newTestIssuer(t *testing.T) *testIssuer {
 	ts := httptest.NewTLSServer(mux)
 	iss.URL = ts.URL
 	iss.ts = ts
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, map[string]any{"issuer": iss.URL, "jwks_uri": iss.URL + "/keys", "id_token_signing_alg_values_supported": []string{"RS256"}})
 	})
-	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, map[string]any{"keys": []any{rsaJWK(&key.PublicKey, iss.kid)}})
 	})
 	t.Cleanup(ts.Close)

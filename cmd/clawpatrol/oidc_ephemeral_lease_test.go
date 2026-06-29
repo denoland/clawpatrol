@@ -48,19 +48,19 @@ func TestCreateOIDCEphemeralLeaseAndActiveLookup(t *testing.T) {
 		t.Fatalf("lease = %+v", lease)
 	}
 
-	active, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", now.Add(time.Minute))
+	active, ok, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("active: %v", err)
 	}
-	if active == nil || active.PeerIP != "10.55.0.42" || active.Metadata["repository"] != "denoland/clawpatrol" {
+	if !ok || active == nil || active.PeerIP != "10.55.0.42" || active.Metadata["repository"] != "denoland/clawpatrol" {
 		t.Fatalf("active lease = %+v", active)
 	}
 
-	expired, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", expires.Add(time.Nanosecond))
+	expired, ok, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", expires.Add(time.Nanosecond))
 	if err != nil {
 		t.Fatalf("expired lookup: %v", err)
 	}
-	if expired != nil {
+	if ok || expired != nil {
 		t.Fatalf("expected no active lease after expiry, got %+v", expired)
 	}
 }
@@ -79,11 +79,11 @@ func TestRevokeOIDCEphemeralLease(t *testing.T) {
 	if err := revokeOIDCEphemeralLease(db, "10.55.0.42", now.Add(time.Minute)); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	active, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", now.Add(2*time.Minute))
+	active, ok, err := activeOIDCEphemeralLeaseForPeer(db, "10.55.0.42", now.Add(2*time.Minute))
 	if err != nil {
 		t.Fatalf("active: %v", err)
 	}
-	if active != nil {
+	if ok || active != nil {
 		t.Fatalf("expected revoked lease to be inactive, got %+v", active)
 	}
 }
