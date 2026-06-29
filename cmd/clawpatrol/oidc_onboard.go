@@ -107,7 +107,8 @@ func (w *webMux) provisionOIDCOnboard(ctx context.Context, req oidcOnboardReques
 	if err != nil {
 		return nil, err
 	}
-	ip, err := allocateEphemeralIP(w.ts.WGSubnetCIDR)
+	wgOnboarder := &wireguardOnboarder{ts: w.ts}
+	ip, err := wgOnboarder.allocateIP()
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +127,7 @@ func (w *webMux) provisionOIDCOnboard(ctx context.Context, req oidcOnboardReques
 		globalWG.RevokePeerByIP(ip)
 		return nil, err
 	}
-	_, _ = w.g.db.Exec("UPDATE wg_peers SET ephemeral=1 WHERE pubkey=?", req.PubKey)
-	w.g.onboard.setEphemeralProfile(ip, "", profile.Name)
+	w.g.onboard.AssignProfile(ip, profile.Name)
 	if w.g.agents != nil {
 		w.g.agents.Seed(ip)
 	}

@@ -12,7 +12,7 @@ func TestCompileOIDCEnrollmentPolicy(t *testing.T) {
 	gw := loadOIDCEnrollmentConfig(t, `
 enrollment "oidc" "gha" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = {
@@ -71,7 +71,7 @@ func TestCompileOIDCEnrollmentPreservesDeclarationOrder(t *testing.T) {
 	gw := loadOIDCEnrollmentConfig(t, `
 enrollment "oidc" "first" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "15m"
   max_ttl = "1h"
   match = { repository_id = "1" }
@@ -79,7 +79,7 @@ enrollment "oidc" "first" {
 
 enrollment "oidc" "second" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "15m"
   max_ttl = "1h"
   match = { repository_id = "2" }
@@ -101,15 +101,24 @@ enrollment "oidc" "second" {
 func loadOIDCEnrollmentConfig(t *testing.T, enrollment string) *config.Gateway {
 	t.Helper()
 	src := `
-public_url = "https://gateway.example.com/"
-
-credential "bearer_token" "pat" {}
-endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = pat
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gateway.example.com/"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
 }
+
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "pat" {
+  endpoint = https.github
+}
+
 profile "ci" {
-  endpoints = [github]
+  credentials          = [bearer_token.pat]
   allow_ephemeral_oidc = true
 }
 ` + enrollment

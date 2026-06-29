@@ -1,1 +1,1 @@
-error: error_oidc_unsupported_method.hcl:3:12: Unknown enrollment type "saml" — Known enrollment types: [oidc].
+error: error_oidc_unsupported_method.hcl:9:12: Unknown enrollment type "saml" — Known enrollment types: [oidc].

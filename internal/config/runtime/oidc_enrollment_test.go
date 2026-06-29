@@ -13,7 +13,7 @@ func TestMatchOIDCEnrollmentAcceptsGitHubActionsClaims(t *testing.T) {
 	cp := compileOIDCPolicy(t, `
 enrollment "oidc" "gha-main" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = {
@@ -50,7 +50,7 @@ func TestMatchOIDCEnrollmentRejectsWrongIssuerAudienceAndClaims(t *testing.T) {
 	cp := compileOIDCPolicy(t, `
 enrollment "oidc" "gha-main" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = { repository_id = "123456" }
@@ -103,7 +103,7 @@ func TestMatchOIDCEnrollmentRequiresAuthorizedPartyForMultiAudience(t *testing.T
 	cp := compileOIDCPolicy(t, `
 enrollment "oidc" "gha-main" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = { repository_id = "123456" }
@@ -132,7 +132,7 @@ func TestMatchOIDCEnrollmentRejectsAmbiguousRules(t *testing.T) {
 	cp := compileOIDCPolicy(t, `
 enrollment "oidc" "first" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = { repository_id = "123456" }
@@ -140,7 +140,7 @@ enrollment "oidc" "first" {
 
 enrollment "oidc" "second" {
   issuer  = "https://token.actions.githubusercontent.com"
-  profile = ci
+  profile = "ci"
   ttl     = "30m"
   max_ttl = "1h"
   match = { repository_id = "123456" }
@@ -192,15 +192,24 @@ func TestMatchOIDCEnrollmentDoesNotFallbackToAnotherProfile(t *testing.T) {
 func compileOIDCPolicy(t *testing.T, enrollment string) *config.CompiledPolicy {
 	t.Helper()
 	src := `
-public_url = "https://gateway.example.com/"
-
-credential "bearer_token" "pat" {}
-endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = pat
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gateway.example.com/"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
 }
+
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "pat" {
+  endpoint = https.github
+}
+
 profile "ci" {
-  endpoints = [github]
+  credentials          = [bearer_token.pat]
   allow_ephemeral_oidc = true
 }
 ` + enrollment

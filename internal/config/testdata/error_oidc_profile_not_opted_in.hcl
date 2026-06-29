@@ -1,7 +1,13 @@
-public_url = "https://clawpatrol.example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://clawpatrol.example.com"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 profile "ci" {
-  endpoints = []
+  credentials = []
 }
 
 enrollment "oidc" "gha" {

@@ -1,1 +1,2 @@
+error: WireGuard client dial target not configured — set `public_url` on the gateway block, or set `wireguard.endpoint` to a non-wildcard host:port (e.g. "gw.example.com:51820") — onboarded clients need one of these to know where to dial. For single-host loopback deployments set `wireguard.endpoint = "127.0.0.1:51820"`.
 error: Invalid OIDC enrollment public_url — OIDC enrollment uses public_url as its expected audience: public_url is required.

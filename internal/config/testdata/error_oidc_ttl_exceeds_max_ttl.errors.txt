@@ -1,1 +1,1 @@
-error: error_oidc_ttl_exceeds_max_ttl.hcl:8:1: OIDC enrollment ttl exceeds max_ttl — ttl must be less than or equal to max_ttl.
+error: error_oidc_ttl_exceeds_max_ttl.hcl:14:1: OIDC enrollment ttl exceeds max_ttl — ttl must be less than or equal to max_ttl.

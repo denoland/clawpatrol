@@ -1,12 +1,18 @@
 {
-  "ca_dir": "/opt/clawpatrol/ca",
-  "listen": "0.0.0.0:8443",
+  "gateway": {
+    "public_url": "https://clawpatrol.example.com",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "credentials": {
       "github-pat": {
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       }
     },
@@ -15,47 +21,18 @@
         "body": {
           "Hosts": [
             "api.github.com"
-          ],
-          "Credential": "github-pat"
+          ]
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
-      }
-    },
-    "enrollments": {
-      "github-main-ci": {
-        "body": {
-          "issuer": "https://token.actions.githubusercontent.com",
-          "profile": "ci-readonly",
-          "ttl": "1h",
-          "max_ttl": "2h",
-          "match": {
-            "event_name": [
-              "push",
-              "workflow_dispatch"
-            ],
-            "ref": "refs/heads/main",
-            "ref_type": "branch",
-            "repository_id": "987654321",
-            "repository_owner_id": "12345678",
-            "workflow_ref": "example-org/example-repo/.github/workflows/ci.yml@refs/heads/main"
-          },
-          "metadata": {
-            "label": "github-main-ci",
-            "provider": "github_actions"
-          }
-        },
-        "type": "oidc"
       }
     },
     "profiles": {
       "ci-readonly": {
-        "allow_ephemeral_oidc": true,
-        "endpoints": [
-          "github"
+        "credentials": [
+          "github-pat"
         ]
       }
     }
-  },
-  "public_url": "https://clawpatrol.example.com"
+  }
 }

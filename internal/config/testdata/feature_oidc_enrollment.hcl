@@ -1,17 +1,22 @@
-listen     = "0.0.0.0:8443"
-ca_dir     = "/opt/clawpatrol/ca"
-public_url = "https://clawpatrol.example.com/"
-
-credential "bearer_token" "github-pat" {}
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://clawpatrol.example.com/"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = github-pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "github-pat" {
+  endpoint = https.github
 }
 
 profile "ci-readonly" {
-  endpoints             = [github]
-  allow_ephemeral_oidc  = true
+  credentials          = [bearer_token.github-pat]
+  allow_ephemeral_oidc = true
 }
 
 enrollment "oidc" "github-main-ci" {

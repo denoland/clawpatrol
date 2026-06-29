@@ -1,5 +1,12 @@
+gateway {
+  state_dir = "/opt/clawpatrol"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
 profile "ci" {
-  endpoints = []
+  credentials = []
   allow_ephemeral_oidc = true
 }
 
