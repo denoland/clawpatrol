@@ -82,6 +82,7 @@ type CompiledProfile struct {
 	Credentials         []*Entity
 	Endpoints           map[string]*CompiledEndpoint
 	HostIndex           map[string]*CompiledEndpoint
+	HostCandidates      map[string][]*CompiledEndpoint
 	HostPatterns        []HostPattern
 	EndpointCredentials map[string][]*CompiledCredential
 	HITLAsyncGrants     bool
@@ -111,12 +112,24 @@ type HostPattern struct {
 // the placeholder discriminator lives on the profile in v15.
 type CompiledEndpoint struct {
 	Name        string
-	Family      string // "http" | "sql" | "k8s"
+	Family      string // "http" | "sql" | "k8s" | "mcp"
 	Plugin      *Plugin
 	Body        any
 	Hosts       []string
 	Credentials []*Entity       // credentials globally bound to this endpoint
 	Rules       []*CompiledRule // sorted by priority desc
+
+	// PathConstraint, when non-empty, scopes this endpoint to requests
+	// on its host(s) whose URL path matches: exact equality when
+	// PathPrefix is false, or the path plus its path-segment children
+	// when PathPrefix is true. Empty means the endpoint serves the
+	// whole host (the default for https / k8s). Populated from the
+	// endpoint body's optional EndpointPathConstraint() accessor and
+	// consumed by runtime.SelectEndpointForPath so a path-scoped
+	// endpoint (remote_mcp) can share a host with a generic https
+	// endpoint without capturing all of the host's traffic.
+	PathConstraint string
+	PathPrefix     bool
 
 	// Description is the operator-supplied free-text note from the
 	// block's `description = "..."` framework attr, or "" if unset.
@@ -371,6 +384,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			Name:                name,
 			Endpoints:           map[string]*CompiledEndpoint{},
 			HostIndex:           map[string]*CompiledEndpoint{},
+			HostCandidates:      map[string][]*CompiledEndpoint{},
 			EndpointCredentials: map[string][]*CompiledCredential{},
 			HITLAsyncGrants:     pr.HITLAsyncGrants,
 		}
@@ -408,7 +422,9 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 						})
 						continue
 					}
-					profile.HostIndex[strings.ToLower(h)] = ce
+					key := strings.ToLower(h)
+					profile.HostCandidates[key] = append(profile.HostCandidates[key], ce)
+					indexHostEndpoint(profile.HostIndex, key, ce)
 				}
 				profile.EndpointCredentials[epName] = append(
 					profile.EndpointCredentials[epName],
@@ -428,6 +444,9 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			for _, h := range ce.Hosts {
 				if bare, ok := bareHostAlias(ce, h); ok {
 					bare = strings.ToLower(bare)
+					if !containsEndpoint(profile.HostCandidates[bare], ce) {
+						profile.HostCandidates[bare] = append(profile.HostCandidates[bare], ce)
+					}
 					if _, exists := profile.HostIndex[bare]; !exists {
 						profile.HostIndex[bare] = ce
 					}
@@ -537,6 +556,13 @@ func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEnd
 	} else {
 		ce.Hosts = extractHosts(ent.Body)
 	}
+	// Path-scoped endpoints (remote_mcp) expose the URL path their
+	// dispatch is restricted to; host-wide endpoints leave it empty.
+	if pc, ok := ent.Body.(interface {
+		EndpointPathConstraint() (string, bool)
+	}); ok {
+		ce.PathConstraint, ce.PathPrefix = pc.EndpointPathConstraint()
+	}
 	if tn := ent.Framework.Ref("tunnel"); tn != "" {
 		ct, ok := cp.Tunnels[tn]
 		if !ok {
@@ -573,8 +599,42 @@ func hasResolvableHostname(hosts []string) bool {
 	return false
 }
 
+// indexHostEndpoint sets idx[key] to ce, preferring a host-wide
+// endpoint over a path-scoped one. A path-scoped endpoint (remote_mcp)
+// must not clobber a generic https endpoint that serves the whole host
+// — the single-endpoint HostIndex is what SNI-time decisions (is this
+// host MITM'd? mint a cert) and legacy single-endpoint callers read,
+// while per-request path selection walks HostCandidates. Two host-wide
+// endpoints on the same key keep the historical last-wins behavior.
+func indexHostEndpoint(idx map[string]*CompiledEndpoint, key string, ce *CompiledEndpoint) {
+	cur := idx[key]
+	switch {
+	case cur == nil:
+		idx[key] = ce
+	case cur.PathConstraint == "" && ce.PathConstraint == "":
+		idx[key] = ce
+	case cur.PathConstraint != "" && ce.PathConstraint == "":
+		idx[key] = ce
+	default:
+		// cur host-wide & ce path-scoped → keep host-wide;
+		// both path-scoped → keep first.
+	}
+}
+
+// containsEndpoint reports whether eps already holds ce (pointer
+// identity). Used to keep HostCandidates free of duplicate entries when
+// the bare-host alias pass revisits an endpoint.
+func containsEndpoint(eps []*CompiledEndpoint, ce *CompiledEndpoint) bool {
+	for _, e := range eps {
+		if e == ce {
+			return true
+		}
+	}
+	return false
+}
+
 func bareHostAlias(ep *CompiledEndpoint, host string) (string, bool) {
-	if ep == nil || (ep.Family != "http" && ep.Family != "k8s") {
+	if ep == nil || (ep.Family != "http" && ep.Family != "k8s" && ep.Family != "mcp") {
 		return "", false
 	}
 	bare, port, err := net.SplitHostPort(host)
@@ -620,17 +680,30 @@ func sortHostPatterns(patterns []HostPattern) {
 	})
 }
 
-// MatchHostPattern is the matcher used at dispatch time. Returns the
-// first endpoint whose pattern matches hostname (patterns must already
-// be sorted by descending pattern length). Hostname must already be
+// MatchHostPattern is the matcher used by legacy single-endpoint dispatch.
+// Returns the first endpoint whose pattern matches hostname (patterns must
+// already be sorted by descending pattern length). Hostname must already be
 // lowercased; patterns are stored lowercased by Compile.
 func MatchHostPattern(patterns []HostPattern, hostname string) *CompiledEndpoint {
+	matches := MatchHostPatterns(patterns, hostname)
+	if len(matches) == 0 {
+		return nil
+	}
+	return matches[0]
+}
+
+// MatchHostPatterns returns every endpoint whose wildcard pattern matches
+// hostname, preserving the sorted HostPattern order. Path-aware HTTPS
+// dispatch needs the full candidate set so a wildcard remote_mcp endpoint
+// and a wildcard host-wide HTTPS endpoint can share a host.
+func MatchHostPatterns(patterns []HostPattern, hostname string) []*CompiledEndpoint {
+	var matches []*CompiledEndpoint
 	for _, p := range patterns {
-		if hostmatch.MatchWildcard(p.Pattern, hostname) {
-			return p.Endpoint
+		if hostmatch.MatchWildcard(p.Pattern, hostname) && !containsEndpoint(matches, p.Endpoint) {
+			matches = append(matches, p.Endpoint)
 		}
 	}
-	return nil
+	return matches
 }
 
 // extractHosts mirrors the per-type hosts field via interface dispatch.

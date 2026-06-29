@@ -91,6 +91,25 @@ type Request struct {
 	// rejection, not byte-cap truncation, so wire frontends with
 	// no parser leave it false.
 	Unparseable bool
+
+	// ProtocolInvalid is set by a facet's PrepareRequest when the
+	// request is malformed at the protocol level in a way that must
+	// fail the whole action closed — independent of which facet paths
+	// any rule happens to read. The MCP facet sets it for an RPC POST
+	// whose body is not a single well-formed JSON-RPC object (malformed
+	// JSON, a JSON-RPC batch array, or a body truncated at the
+	// inspection buffer).
+	//
+	// This is stronger than Truncated / Unparseable, which only mark
+	// specific CEL paths unknown: a rule keyed on an always-available
+	// facet (a catch-all with no condition, `http.method == "POST"`,
+	// `mcp.kind == "rpc"`) is NOT poisoned by those flags and would
+	// otherwise allow a malformed body through. The dispatcher checks
+	// ProtocolInvalid before evaluating rules and synthesizes a deny,
+	// so no allow rule can bypass it. ProtocolInvalidReason carries a
+	// short, agent-safe cause used as the deny event's reason.
+	ProtocolInvalid       bool
+	ProtocolInvalidReason string
 }
 
 // Result is the three-valued outcome of evaluating a rule's
