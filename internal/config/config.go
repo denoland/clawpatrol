@@ -519,6 +519,7 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
+	Enrollments map[string]*Entity
 
 	Profiles map[string]*Profile
 
@@ -712,10 +713,11 @@ func (noopPluginLoader) LoadPlugins([]PluginSource, string) hcl.Diagnostics { re
 // block-side values; on conflict, profile-inline wins (the operator's
 // most-specific declaration).
 type Profile struct {
-	Name            string                       `json:"name"`
-	Credentials     []string                     `json:"credentials"`
-	Disambiguators  map[string]map[string]string `json:"disambiguators,omitempty"`
-	HITLAsyncGrants bool                         `json:"hitl_async_grants,omitempty"`
+	Name               string                       `json:"name"`
+	Credentials        []string                     `json:"credentials"`
+	Disambiguators     map[string]map[string]string `json:"disambiguators,omitempty"`
+	HITLAsyncGrants    bool                         `json:"hitl_async_grants,omitempty"`
+	AllowEphemeralOIDC bool                         `json:"allow_ephemeral_oidc,omitempty"`
 }
 
 // CredentialDisambiguatorBody is implemented by a credential
@@ -940,6 +942,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
+		Enrollments: make(map[string]*Entity),
 		Profiles:    make(map[string]*Profile),
 	}
 
@@ -973,6 +976,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
+	diags = append(diags, validateOIDCEnrollmentsForGateway(gw)...)
 
 	// Post-decode pass: substitute `<<file:NAME>>` markers in plugin
 	// body fields that opted in via FileIncludable. Runs after Build
@@ -1180,6 +1184,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
+			{Type: "enrollment", LabelNames: []string{"type", "name"}},
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
@@ -1265,7 +1270,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule, KindEnrollment} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -1297,7 +1302,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block}
+			ctx := &BuildCtx{Refs: refs, Symbols: table, Policy: p, Block: sym.Block}
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
@@ -1321,6 +1326,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Endpoints[sym.Name] = ent
 			case KindRule:
 				p.Rules[sym.Name] = ent
+			case KindEnrollment:
+				p.Enrollments[sym.Name] = ent
 			}
 			p.Order = append(p.Order, sym.Name)
 		}
@@ -1649,6 +1656,7 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		Attributes: []hcl.AttributeSchema{
 			{Name: "credentials", Required: true},
 			{Name: "hitl_async_grants"},
+			{Name: "allow_ephemeral_oidc"},
 		},
 	}
 	content, diags := sym.Block.Body.Content(schema)
@@ -1657,6 +1665,13 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		diags = append(diags, hd...)
 		if !hd.HasErrors() && hv.Type() == cty.Bool {
 			pr.HITLAsyncGrants = hv.True()
+		}
+	}
+	if attr, ok := content.Attributes["allow_ephemeral_oidc"]; ok {
+		v, vd := attr.Expr.Value(evalCtx)
+		diags = append(diags, vd...)
+		if !vd.HasErrors() && v.Type() == cty.Bool {
+			pr.AllowEphemeralOIDC = v.True()
 		}
 	}
 	attr, ok := content.Attributes["credentials"]
