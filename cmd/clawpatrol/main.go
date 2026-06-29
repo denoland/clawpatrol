@@ -1659,7 +1659,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 			ep, authority, certHost := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 			if ep != nil && isHTTPSMITMFamily(ep.Family) {
 				log.Printf("sni-fallback: %s → %s", authority, ep.Name)
-				g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
+				g.mitmHTTPSCandidates(c, authority, certHost, g.httpsMITMCandidates(profile, authority, ep))
 				return
 			}
 		}
@@ -1685,12 +1685,15 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 		return
 	}
 	if isHTTPSMITMFamily(ep.Family) {
-		// Every facet whose Transport() is "https-mitm" — https and
-		// k8s today, future plugins tomorrow — terminates TLS here
+		// Every facet whose Transport() is "https-mitm" — https, k8s,
+		// and mcp today, future plugins tomorrow — terminates TLS here
 		// and runs the request loop through mitmHTTPS. The facet's
 		// PrepareRequest hook derives any per-family metadata
-		// (URL → Meta for k8s) before the matcher walks.
-		g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
+		// (URL → Meta for k8s/mcp) before the matcher walks. Pass the
+		// full candidate set so path-aware selection can route the MCP
+		// path to remote_mcp and the rest of the host to a generic
+		// https endpoint.
+		g.mitmHTTPSCandidates(c, authority, certHost, g.httpsMITMCandidates(profile, authority, ep))
 		return
 	}
 	// External plugin endpoints that terminate TLS themselves (e.g. an
@@ -1732,6 +1735,25 @@ func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16
 	return ep != nil && isHTTPSMITMFamily(ep.Family)
 }
 
+// httpsMITMCandidates returns the https-mitm endpoints bound to the
+// authority (host or host:port) for path-aware request selection. Falls
+// back to the single representative endpoint when the candidate index
+// has no entry (wildcard hosts, single-tenant fallbacks), so behavior
+// is unchanged for non-shared hosts.
+func (g *Gateway) httpsMITMCandidates(profile, authority string, rep *config.CompiledEndpoint) []*config.CompiledEndpoint {
+	cands := runtime.HostCandidates(g.Policy(), profile, authority)
+	out := cands[:0:0]
+	for _, ce := range cands {
+		if isHTTPSMITMFamily(ce.Family) {
+			out = append(out, ce)
+		}
+	}
+	if len(out) == 0 && rep != nil {
+		return []*config.CompiledEndpoint{rep}
+	}
+	return out
+}
+
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
 	policy := g.Policy()
 	exact := runtime.HostEndpoint(policy, profile, host)
@@ -1750,6 +1772,79 @@ func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*conf
 	return nil, host, host
 }
 
+func (g *Gateway) forwardUnmatchedHTTPS(tc net.Conn, req *http.Request, host string, ev Event, start time.Time) {
+	req.URL.Scheme = "https"
+	req.URL.Host = host
+	req.Host = host
+	req.RequestURI = ""
+	stripProxyRequestHeaders(req)
+	tr := g.unmatchedHTTPSTransport()
+	defer tr.CloseIdleConnections()
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		log.Printf("passthrough %s %s: %v", host, req.URL.Path, err)
+		_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		ev.Status = strconv.Itoa(http.StatusBadGateway)
+		ev.Action = "error"
+		ev.Reason = err.Error()
+		ev.Ms = time.Since(start).Milliseconds()
+		g.emitEnd(ev)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	stripAltSvc(resp.Header)
+	stripAuthResponseHeaders(resp.Header)
+	stripAuthResponseHeaders(resp.Trailer)
+	writeErr := resp.Write(tc)
+	ev.Status = strconv.Itoa(resp.StatusCode)
+	if writeErr != nil {
+		log.Printf("passthrough write %s %s: %v", host, req.URL.Path, writeErr)
+		ev.Reason = writeErr.Error()
+	}
+	ev.Ms = time.Since(start).Milliseconds()
+	g.emitEnd(ev)
+}
+
+func (g *Gateway) unmatchedHTTPSTransport() *http.Transport {
+	dialer := g.dialer
+	if dialer == nil {
+		dialer = newUpstreamDialer("")
+	}
+	return &http.Transport{
+		Proxy:       nil,
+		DialContext: dialer.DialContext,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			h, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				h = addr
+			}
+			td := tls.Dialer{NetDialer: dialer, Config: &tls.Config{ServerName: h, NextProtos: []string{"http/1.1"}}}
+			return td.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2:   false,
+		IdleConnTimeout:     5 * time.Second,
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 2,
+	}
+}
+
+func stripProxyRequestHeaders(req *http.Request) {
+	req.Header.Del(hitlRetryOperationHeader)
+	if isWSUpgrade(req) {
+		return
+	}
+	for _, h := range []string{
+		"Connection", "Keep-Alive", "Proxy-Authenticate",
+		"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
+		"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
+		"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
+		"X-HITL-Thread-TS",
+		"X-HITL-Channel",
+	} {
+		req.Header.Del(h)
+	}
+}
+
 // isHTTPSMITMFamily reports whether the facet registered for family
 // drives its wire through the HTTPS MITM handler. Replaces what used
 // to be a hardcoded `case "http", "k8s"` so new HTTPS-shaped
@@ -1757,11 +1852,7 @@ func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*conf
 // wants per-family report fields beyond what http_rule offers) drop
 // in without touching the dispatch switch.
 func isHTTPSMITMFamily(family string) bool {
-	if family == "" {
-		return false
-	}
-	f := facet.Lookup(family)
-	return f != nil && f.Transport() == "https-mitm"
+	return facet.IsHTTPSMITMFamily(family)
 }
 
 // handlePostgresConn dispatches an inbound 5432 connection to the
@@ -2290,6 +2381,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 }
 
 func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *config.CompiledEndpoint) {
+	g.mitmHTTPSCandidates(c, host, certHost, []*config.CompiledEndpoint{ep})
+}
+
+// mitmHTTPSCandidates terminates TLS for host and runs the request
+// loop, selecting which endpoint owns each request by its URL path.
+// candidates is the set of endpoints bound to the host (every entry is
+// an https-mitm family); path-aware selection lets a path-scoped
+// remote_mcp endpoint share a host with a generic https endpoint. The
+// per-request endpoint drives transport, facet, credential injection,
+// and reporting — so an unrelated same-host REST request never runs the
+// MCP facet.
+func (g *Gateway) mitmHTTPSCandidates(c net.Conn, host, certHost string, candidates []*config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
 	profile := g.profileFor(agentAddr)
 	agentAddr = g.agentIPFor(c)
@@ -2311,13 +2414,6 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 	}
 	defer func() { _ = tc.Close() }()
 
-	// transport is shared across all requests for this endpoint.
-	// Old path allocated a fresh http.Transport per mitmHTTPS call,
-	// which threw away the idle-conn pool and racked up ~10KB of
-	// internal map allocations per request. Per-endpoint cache lets
-	// repeat requests to the same upstream reuse keep-alives.
-	transport := g.transportFor(ep)
-
 	br := bufio.NewReader(tc)
 	for {
 		_ = tc.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -2332,6 +2428,31 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 
 		start := time.Now()
 		pip := peerIP(c)
+
+		// Path-aware endpoint selection. Now that the request path is
+		// known, pick the endpoint that owns it among the host's
+		// candidates. No match means a path-scoped endpoint (remote_mcp)
+		// holds the host but nothing serves this path and there is no
+		// host-wide fallback — refuse rather than run the wrong facet.
+		ep := runtime.SelectEndpointForPath(candidates, req.URL.Path)
+		if ep == nil {
+			reason := "no endpoint configured for this path; forwarding without policy"
+			log.Printf("mitm %s %s %s: %s", host, req.Method, req.URL.Path, reason)
+			ev := Event{
+				ID: newReqID(), Mode: "mitm", Host: host,
+				Method: req.Method, Path: req.URL.Path, AgentIP: agentAddr,
+				Action: "passthrough", Reason: reason,
+			}
+			g.forwardUnmatchedHTTPS(tc, req, host, ev, start)
+			continue
+		}
+
+		// transport is shared across all requests for this endpoint.
+		// Old path allocated a fresh http.Transport per mitmHTTPS call,
+		// which threw away the idle-conn pool and racked up ~10KB of
+		// internal map allocations per request. Per-endpoint cache lets
+		// repeat requests to the same upstream reuse keep-alives.
+		transport := g.transportFor(ep)
 
 		// Body buffering. Any rule with a `body_json` or
 		// `body_contains` match facet needs the body up-front; we
@@ -2408,7 +2529,17 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		startEv.Action = "in_flight"
 		g.emit(startEv)
 
-		cr := runtime.MatchRequest(ep, mreq)
+		// Protocol-invalid gate. A facet's PrepareRequest can flag a
+		// request as malformed at the protocol level — a malformed,
+		// batched, or truncated MCP RPC POST — in a way that must fail
+		// the whole action closed. Deny it before evaluating rules so
+		// no allow rule (a catch-all, http.method, or mcp.kind allow)
+		// can bypass it. The synthesized deny flows through the same
+		// verdict path below as any policy deny.
+		cr := runtime.ProtocolInvalidDeny(mreq)
+		if cr == nil {
+			cr = runtime.MatchRequest(ep, mreq)
+		}
 		if cr != nil {
 			ev.Rule = cr.Name
 		}
