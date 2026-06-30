@@ -3266,6 +3266,9 @@ func runGateway(args []string) {
 	warnIfStateLooselyPermissioned(stateDir)
 	setDB(db)
 	applyDashboardPasswordFlags(db, *setDashboardPassword, *resetDashboardPassword)
+	if err := seedRBAC(db, cfg.Operators()); err != nil {
+		log.Printf("rbac seed: %v", err)
+	}
 	logDashboardAuthState(db, cfg)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
