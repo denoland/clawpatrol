@@ -40,6 +40,10 @@ type RemoteMCPEndpoint struct {
 	Hosts []string `hcl:"hosts,optional"`
 }
 
+// RemoteMCPURL returns the configured resource URL for generic remote
+// MCP OAuth discovery.
+func (e *RemoteMCPEndpoint) RemoteMCPURL() string { return e.URL }
+
 // EndpointHosts is part of the clawpatrol plugin API. It returns the
 // URL-derived host first, then any explicit additional hosts. Explicit
 // hosts never remove the URL host.

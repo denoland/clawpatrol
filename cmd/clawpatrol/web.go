@@ -48,6 +48,10 @@ type webMux struct {
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
 	routeAuth map[string]authRequirement
+	// httpClient, when set, overrides http.DefaultClient for outbound
+	// remote_mcp_oauth discovery / dynamic client registration. Tests
+	// point it at an httptest TLS server's client; nil in production.
+	httpClient *http.Client
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -1307,7 +1311,16 @@ func lookupOAuthFlow(policy *config.CompiledPolicy, name string) *config.OAuthIn
 	if !ok {
 		return nil
 	}
-	return fp.OAuthFlow()
+	flow := fp.OAuthFlow()
+	// remote_mcp_oauth discovers from the bound remote_mcp endpoint's
+	// URL. Fill it in here (unless the operator set an explicit
+	// resource_url override) so the start handler has a resource to
+	// discover against. OAuthFlow() returns a fresh value per call, so
+	// mutating it is safe.
+	if flow != nil && flow.Flow == "remote_mcp_oauth" && flow.OAuth.ResourceURL == "" {
+		flow.OAuth.ResourceURL = boundRemoteMCPURL(policy, ent)
+	}
+	return flow
 }
 
 // apiConfig serves the entire gateway.hcl for the global settings
