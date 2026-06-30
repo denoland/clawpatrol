@@ -13,6 +13,7 @@ type OAuthConfig struct {
 	DeviceURL    string // used by Flow="device"
 	RegisterURL  string // RFC 7591 dynamic client registration (used by Flow="notion_mcp")
 	RedirectURI  string
+	ResourceURL  string // OAuth Protected Resource URL (used by Flow="remote_mcp_oauth")
 	Scopes       []string
 	RefreshToken string // bootstrap; per-owner tokens override
 }

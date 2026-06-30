@@ -649,7 +649,7 @@ func (g *Gateway) reloadConfigFromFileLocked(path string) error {
 		return err
 	}
 	g.policy.Store(policy)
-	registerOAuthCredentials(g.oauth, policy)
+	registerOAuthCredentials(g.oauth, policy, g.blobs)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
 	if g.tunnels != nil {
 		g.tunnels.SetPolicy(context.Background(), policy)
@@ -3454,7 +3454,7 @@ func runGateway(args []string) {
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
 	g.hitl.pendingMessageUpdater = g.updatePendingHITLMessage
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
-	registerOAuthCredentials(oauthReg, policy)
+	registerOAuthCredentials(oauthReg, policy, blobs)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
 	g.tunnels.SetPolicy(context.Background(), policy)

@@ -1352,6 +1352,26 @@ func validateCredentialBindings(p *Policy) hcl.Diagnostics {
 				Subject:  &ent.Symbol.Block.DefRange,
 			})
 		}
+		if ent.Symbol != nil && ent.Symbol.Type == "remote_mcp_oauth" {
+			if single == "" || len(list) > 0 {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("remote_mcp_oauth credential %q must bind exactly one remote_mcp endpoint", ent.Symbol.Name),
+					Detail:   "Use `endpoint = remote_mcp.<name>`; `endpoints = [...]` and unbound remote_mcp_oauth credentials are not supported because OAuth discovery needs one resource URL.",
+					Subject:  &ent.Symbol.Block.DefRange,
+				})
+				continue
+			}
+			ep := p.Endpoints[single]
+			if ep != nil && ep.Symbol != nil && ep.Symbol.Type != "remote_mcp" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("remote_mcp_oauth credential %q is bound to non-remote_mcp endpoint %q", ent.Symbol.Name, single),
+					Detail:   fmt.Sprintf("remote_mcp_oauth requires endpoint = remote_mcp.<name>; %q has type %q.", single, ep.Symbol.Type),
+					Subject:  &ent.Symbol.Block.DefRange,
+				})
+			}
+		}
 	}
 	return diags
 }

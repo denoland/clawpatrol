@@ -235,7 +235,7 @@ func (s *gatewayBlobStore) Put(kind, name string, data []byte) error {
 // registration, so policy reloads / first-boot don't lose tokens
 // that pre-date this gateway process. Idempotent — safe on every
 // config reload.
-func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy) {
+func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy, blobs runtime.BlobStore) {
 	if reg == nil || policy == nil {
 		return
 	}
@@ -250,9 +250,46 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 		}
 		copied := *flow
 		copied.ID = name
+		if copied.Flow == "remote_mcp_oauth" {
+			enrichRemoteMCPOAuthFlow(&copied, policy, ent, blobs)
+		}
 		reg.Register(name, copied)
 	}
 	if err := reg.LoadFromDB(); err != nil {
 		log.Printf("oauth: rehydrate from db: %v", err)
+	}
+}
+
+// enrichRemoteMCPOAuthFlow populates a remote_mcp_oauth integration with
+// the bound endpoint's resource URL and the auth/token/registration
+// endpoints discovered at the last connect (persisted in gateway_blobs).
+// This is what makes refresh work after a restart: newState builds the
+// refresh source from these URLs, so the token endpoint is the validated
+// one captured at connect time — never re-discovered from a resource
+// server that may since have been tampered with.
+func enrichRemoteMCPOAuthFlow(flow *config.OAuthIntegration, policy *config.CompiledPolicy, ent *config.Entity, blobs runtime.BlobStore) {
+	if flow.OAuth.ResourceURL == "" {
+		flow.OAuth.ResourceURL = boundRemoteMCPURL(policy, ent)
+	}
+	boundResource := flow.OAuth.ResourceURL
+	m, ok := loadRemoteMCPMeta(blobs, flow.ID)
+	if !ok {
+		return
+	}
+	if boundResource == "" || m.Resource == "" || !sameResource(m.Resource, boundResource) {
+		// The credential was rebound or the endpoint URL changed since the
+		// token was issued. Do not rehydrate the old token/endpoints for the
+		// new resource; a fresh Connect is required.
+		return
+	}
+	flow.OAuth.AuthURL = m.AuthorizationEndpoint
+	flow.OAuth.TokenURL = m.TokenEndpoint
+	flow.OAuth.RegisterURL = m.RegistrationEndpoint
+	flow.OAuth.ResourceURL = m.Resource
+	// The per-credential client_id is also restored from the credentials
+	// table at LoadFromDB (it wins); setting it here covers the gap before
+	// that load and keeps the registered integration self-consistent.
+	if m.ClientID != "" {
+		flow.OAuth.ClientID = m.ClientID
 	}
 }
