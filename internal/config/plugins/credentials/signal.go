@@ -36,7 +36,17 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
-// SignalCLI is part of the clawpatrol plugin API.
+// SignalCLI is a notification-only HITL notifier that delivers approval
+// prompts to Signal via a signal-cli-rest-api instance
+// (https://github.com/bbernhard/signal-cli-rest-api). Signal has no
+// interactive buttons, so the prompt is plain text ending in an
+// "Open dashboard" link where the operator approves or denies.
+//
+// It has no HCL attributes; connection details live in the secret store as
+// named slots, filled via the dashboard: api_url (base URL of the
+// signal-cli-rest-api), number (the registered E.164 sender), and auth
+// (optional "user:pass" for HTTP basic auth). The recipient is the
+// human_approver's channel - an E.164 number or a "group.<base64-id>".
 type SignalCLI struct{}
 
 var (

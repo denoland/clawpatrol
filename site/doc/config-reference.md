@@ -143,7 +143,8 @@ override the global defaults block on a per-approver basis.
 
 Credential references a credential whose body satisfies HITLNotifier
 (slack_tokens and signal_cli today; future Discord / Telegram / SMTP
-credentials). Leave empty for a dashboard-only approver (no channel notification;
+credentials).
+Leave empty for a dashboard-only approver (no channel notification;
 operator clicks approve/deny on the dashboard).
 
 | Attribute | Type | Required | Description |
@@ -399,29 +400,22 @@ credential "postgres_credential" "example" {}
 
 ### `credential "signal_cli" "<name>"`
 
-Notification-only HITL notifier (no HTTP injection). Delivers approval
-prompts to Signal via a [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
-instance; reference it from a `human_approver`'s `credential`, with the
-recipient set as the approver's `channel` (an E.164 number or `group.<id>`).
-Signal has no interactive buttons, so the prompt carries an "Open dashboard"
-link and the operator approves there.
+A notification-only HITL notifier that delivers approval
+prompts to Signal via a signal-cli-rest-api instance
+(https://github.com/bbernhard/signal-cli-rest-api). Signal has no
+interactive buttons, so the prompt is plain text ending in an
+"Open dashboard" link where the operator approves or denies.
 
-_No configurable HCL attributes._ Paste the connection details into the
-dashboard secret slots:
+It has no HCL attributes; connection details live in the secret store as
+named slots, filled via the dashboard: api_url (base URL of the
+signal-cli-rest-api), number (the registered E.164 sender), and auth
+(optional "user:pass" for HTTP basic auth). The recipient is the
+human_approver's channel - an E.164 number or a "group.<base64-id>".
 
-| Slot | Description |
-|------|-------------|
-| `api_url` | Base URL of the signal-cli-rest-api, e.g. `http://127.0.0.1:8090`. |
-| `number` | The registered Signal sender number, E.164 (`+15551234567`). |
-| `auth` | Optional `user:pass` if the REST API is behind HTTP basic auth. |
+_No configurable attributes._
 
 ```hcl
-credential "signal_cli" "ops" {}
-
-approver "human_approver" "ops" {
-  channel    = "+15551112222" # recipient number or group.<id>
-  credential = signal_cli.ops
-}
+credential "signal_cli" "example" {}
 ```
 
 ### `credential "slack_tokens" "<name>"`
