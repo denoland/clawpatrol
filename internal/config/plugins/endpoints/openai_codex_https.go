@@ -1,15 +1,20 @@
 package endpoints
 
-// openai_codex_https endpoint: chatgpt.com path for codex-cli's
-// subscription auth flow. Pushes a synthesized Agent Identity JWT
-// down via env (CODEX_ACCESS_TOKEN / CODEX_AGENT_IDENTITY) so codex
-// enters AgentIdentity mode and routes to chatgpt.com on its own.
-// At MITM time we serve the matching JWKS at
-// `/backend-api/wham/agent-identities/jwks` and stub the agent-task
-// registration POST. Codex's Authorization gets overwritten by the
-// bound credential plugin (openai_codex_oauth) before forwarding
-// upstream, so the AgentAssertion never has to validate against
-// OpenAI's real identity service.
+// openai_codex_https endpoint: the chatgpt.com + auth.openai.com path
+// for codex-cli's subscription auth flow. Pushes a synthesized Agent
+// Identity JWT down via env (CODEX_ACCESS_TOKEN / CODEX_AGENT_IDENTITY)
+// so codex enters AgentIdentity mode on its own. At MITM time we serve
+// the matching JWKS at `/backend-api/wham/agent-identities/jwks`
+// (chatgpt.com) and stub the agent-task registration POST. The
+// registration host depends on codex version: <= 0.141 sent it to
+// chatgpt.com/backend-api/wham (redirected via env), while 0.142+
+// hardcodes auth.openai.com/api/accounts — so this endpoint claims
+// auth.openai.com too (see codexAuthAPIHost) and stubs the
+// task-register path on either host. Codex's Authorization gets
+// overwritten by the bound credential plugin (openai_codex_oauth)
+// before forwarding upstream — except on auth.openai.com, where the
+// credential skips injection so codex login / token refresh keep
+// their native auth.
 //
 // Sample HCL:
 //
@@ -34,6 +39,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,15 +57,47 @@ type OpenAICodexHTTPSEndpoint struct {
 	Hosts []string `hcl:"hosts"`
 }
 
-// EndpointHosts is part of the clawpatrol plugin API.
-func (e *OpenAICodexHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+// codexAuthAPIHost is OpenAI's accounts/auth host. codex >= 0.142
+// hardcodes agent task-registration to https://auth.openai.com/api/accounts
+// (the env override clawpatrol used on <= 0.141 was removed upstream), so
+// the gateway must MITM this host to keep stubbing task-register. We claim
+// it unconditionally (see EndpointHosts) and stub only the task-register
+// path (see RespondHTTP); every other auth.openai.com path — codex login,
+// token refresh — is forwarded untouched, and the bound credential's
+// InjectHTTP skips this host so it never clobbers their native auth.
+const codexAuthAPIHost = "auth.openai.com"
+
+// codexSyntheticRuntimeID is the agent_runtime_id baked into the JWT we
+// mint (mintCodexAccessToken). The task-register stub keys on it so we
+// only forge a task_id for OUR synthetic identity — a real OpenAI Agent
+// Identity (e.g. the JWT-mint-failure fallback to ~/.codex/auth.json)
+// registers a different runtime id and is forwarded upstream untouched.
+const codexSyntheticRuntimeID = "clawpatrol-codex"
+
+// EndpointHosts is part of the clawpatrol plugin API. It always includes
+// codexAuthAPIHost so the codex >= 0.142 registration host is MITM'd
+// without an HCL edit on upgrade.
+func (e *OpenAICodexHTTPSEndpoint) EndpointHosts() []string {
+	if slices.Contains(e.Hosts, codexAuthAPIHost) {
+		return e.Hosts
+	}
+	return append(slices.Clone(e.Hosts), codexAuthAPIHost)
+}
 
 // EnvVars pushes down a synthetic CODEX_ACCESS_TOKEN so codex enters
 // AgentIdentity mode (which routes it to chatgpt.com). Also pushes
 // CODEX_AGENT_IDENTITY for codex <= 0.128, which read the same JWT
-// from the older env-var name. The auth-api base URL override keeps
-// the per-task registration POST on a host clawpatrol terminates,
-// instead of leaking to auth.openai.com.
+// from the older env-var name.
+//
+// CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL is load-bearing only for codex
+// <= 0.141: it redirected per-task registration onto a host clawpatrol
+// MITMs (chatgpt.com/backend-api/wham). codex 0.142 REMOVED this
+// override and hardcoded registration to auth.openai.com, so for 0.142+
+// the gateway instead MITMs auth.openai.com directly (see
+// codexAuthAPIHost / RespondHTTP). The var is kept here because it's
+// harmless on 0.142 (ignored) and still required on <= 0.141. We do NOT
+// push the 0.142 replacement CODEX_AUTHAPI_BASE_URL: codex host-restricts
+// it to OpenAI hosts, so it can't be pointed at a clawpatrol host anyway.
 func (e *OpenAICodexHTTPSEndpoint) EnvVars() []config.EnvVar {
 	jwt, err := mintCodexAccessToken()
 	if err != nil {
@@ -109,8 +147,14 @@ func (OpenAICodexHTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, c
 // RespondHTTP intercepts the two paths codex hits during Agent
 // Identity load: the JWKS that validates the JWT we minted, and the
 // agent-task registration POST that returns a task_id. Both are
-// served from clawpatrol-controlled state — neither reaches the real
-// chatgpt.com.
+// served from clawpatrol-controlled state — neither reaches real
+// OpenAI. The JWKS is on chatgpt.com; the registration host moved to
+// auth.openai.com in codex 0.142 (was chatgpt.com/backend-api/wham on
+// <= 0.141), so the register matcher is deliberately host-agnostic and
+// keys on the stable path shape. This is safe because this endpoint
+// only owns chatgpt.com + auth.openai.com (see EndpointHosts); every
+// other auth.openai.com path (codex login, token refresh) falls
+// through to be forwarded untouched.
 func (OpenAICodexHTTPSEndpointRuntime) RespondHTTP(_ context.Context, req *http.Request) (*http.Response, bool, error) {
 	switch {
 	case req.Method == http.MethodGet && req.URL.Path == "/backend-api/wham/agent-identities/jwks":
@@ -119,8 +163,15 @@ func (OpenAICodexHTTPSEndpointRuntime) RespondHTTP(_ context.Context, req *http.
 			return nil, false, err
 		}
 		return jsonResp(req, http.StatusOK, body), true, nil
-	case req.Method == http.MethodPost && strings.HasPrefix(req.URL.Path, "/backend-api/wham/v1/agent/") &&
-		strings.HasSuffix(req.URL.Path, "/task/register"):
+	// Agent task-register for OUR synthetic identity only. The suffix
+	// match covers both the <= 0.141 path
+	// (/backend-api/wham/v1/agent/clawpatrol-codex/task/register) and the
+	// 0.142+ path (/api/accounts/v1/agent/clawpatrol-codex/task/register)
+	// while scoping to codexSyntheticRuntimeID — a real Agent Identity
+	// (different runtime id) is forwarded upstream untouched, and
+	// /v1/agent/register (agent bootstrap) never matches.
+	case req.Method == http.MethodPost &&
+		strings.HasSuffix(req.URL.Path, "/v1/agent/"+codexSyntheticRuntimeID+"/task/register"):
 		return jsonResp(req, http.StatusOK, []byte(`{"task_id":"clawpatrol-task"}`)), true, nil
 	}
 	return nil, false, nil
@@ -306,7 +357,7 @@ func mintCodexAccessToken() (string, error) {
 		"aud":                        "codex-app-server",
 		"iat":                        now,
 		"exp":                        now + int64(10*365*24*60*60),
-		"agent_runtime_id":           "clawpatrol-codex",
+		"agent_runtime_id":           codexSyntheticRuntimeID,
 		"agent_private_key":          k.Ed25519PKCS8B64,
 		"account_id":                 "clawpatrol",
 		"chatgpt_user_id":            "clawpatrol",

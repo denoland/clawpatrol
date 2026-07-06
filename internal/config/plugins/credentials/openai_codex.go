@@ -17,9 +17,26 @@ import (
 // OpenAICodexOAuth is part of the clawpatrol plugin API.
 type OpenAICodexOAuth struct{}
 
+// codexAuthAPIHost is OpenAI's accounts/auth host. The openai_codex_https
+// endpoint MITMs it (to stub codex >= 0.142 agent task-registration) but
+// forwards everything else there — codex login, token refresh, device
+// auth — which carry their own auth. Injecting the ChatGPT bearer on
+// those would clobber it and break login, so InjectHTTP skips this host.
+const codexAuthAPIHost = "auth.openai.com"
+
 // InjectHTTP is part of the clawpatrol plugin API.
 func (a *OpenAICodexOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
+		return nil
+	}
+	// Never inject on auth.openai.com: its task-register POST is already
+	// stubbed by the endpoint before injection runs, and its login /
+	// token-refresh traffic is forwarded and must keep its native auth.
+	// Compare case-insensitively: routing lowercases hosts but the raw
+	// SNI/Host reaching here is not normalized, so a mixed-case host
+	// (e.g. "Auth.OpenAI.com") still routes to this credential.
+	if strings.EqualFold(req.Host, codexAuthAPIHost) ||
+		(req.URL != nil && strings.EqualFold(req.URL.Host, codexAuthAPIHost)) {
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+string(sec.Bytes))
