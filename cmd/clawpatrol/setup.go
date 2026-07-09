@@ -1304,6 +1304,24 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			if err := os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600); err != nil {
 				return false, fmt.Errorf("write auth-key: %w", err)
 			}
+			// Claim against the tailnet IP the daemon will own, so the
+			// gateway mints the per-peer bearer. Without it the daemon
+			// can't authenticate /api/env-pushdown and every wrapped
+			// agent boots with an empty credential set (no GH_TOKEN).
+			//
+			// Best-effort: at this point auth-key + mode markers are
+			// already written and the single-use key is spent, so a
+			// transient claim failure must not abort the join and leave a
+			// half-configured host. Warn and continue — the daemon still
+			// falls back to the poll-delivered placeholder token (written
+			// above) and the operator can re-run `clawpatrol join`. This
+			// mirrors the whole-machine claim below, which also only warns.
+			if err := claimPeerAPIToken(gateway, start.DeviceCode, hn, authKey,
+				tailnetControlURL, stateDir, filepath.Dir(setup.caPath)); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"⚠ peer api-token claim failed: %v\n"+
+						"  env-pushdown may be unavailable until you re-run `clawpatrol join`.\n", err)
+			}
 		}
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
@@ -1384,11 +1402,20 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, nil
 	}
 	var claimResp map[string]string
-	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err == nil {
-		if tok := claimResp["api_token"]; tok != "" {
-			_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
-				[]byte(tok+"\n"), 0o600)
+	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ decode claim response: %v\n", err)
+	} else if tok := claimResp["api_token"]; tok == "" {
+		// Silence here used to surface hours later as the daemon's
+		// "peer api token not persisted" with no hint of the cause.
+		why := claimResp["api_token_error"]
+		if why == "" {
+			why = "gateway returned no api_token"
 		}
+		fmt.Fprintf(os.Stderr, "⚠ %s — env-pushdown (GH_TOKEN, …) will be empty "+
+			"until this is fixed\n", why)
+	} else if err := os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
+		[]byte(tok+"\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ write api-token: %v\n", err)
 	}
 
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.

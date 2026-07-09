@@ -1021,10 +1021,53 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 	// Mint the per-peer bearer the client uses for gated API calls
 	// (env-pushdown, ephemeral tsnet key). In Tailscale mode the peer IP
 	// isn't known at approve time, so we mint it here instead.
+	//
+	// A mint failure used to be dropped on the floor: the claim still
+	// returned 200, just without api_token, and the operator only found
+	// out hours later via the daemon's "peer api token not persisted".
+	// Log it here and hand the reason back so the CLI can name it.
 	if token, err := mintAndPersistPeerAPIToken(w.g.db, host); err == nil {
 		resp["api_token"] = token
+		// The per-process path seeded a tsnet-<hostname> placeholder
+		// (device row + placeholder-bound token) at approve time. The
+		// daemon will now present this claim's real-IP token, so the
+		// placeholder promotion in apiPeerTsnetRegister never fires and
+		// the placeholder would linger as a ghost device + orphaned
+		// token row. Retire it now — only on a successful mint, so a
+		// mint failure still leaves the placeholder token as the
+		// daemon's fallback.
+		w.retirePlaceholderForClaim(dc, host)
+	} else {
+		log.Printf("onboard claim: mint peer api-token for %s: %v", host, err)
+		resp["api_token_error"] = err.Error()
 	}
 	writeJSON(rw, resp)
+}
+
+// retirePlaceholderForClaim drops the tsnet-<hostname> placeholder that
+// apiOnboardApprove seeded for device_code dc, once a claim has bound a
+// real-IP token (realIP). No-op when there was no placeholder (e.g. the
+// whole-machine path, which never seeds one). Mirrors the placeholder
+// teardown in apiPeerTsnetRegister.
+func (w *webMux) retirePlaceholderForClaim(dc, realIP string) {
+	s := w.onboard.byDeviceCode(dc)
+	if s == nil {
+		return
+	}
+	placeholderID := tsnetPlaceholderPrefix + dc
+	if s.hostname != "" {
+		placeholderID = tsnetPlaceholderPrefix + s.hostname
+	}
+	if placeholderID == realIP {
+		return
+	}
+	w.onboard.ForgetIP(placeholderID)
+	if w.g.agents != nil {
+		w.g.agents.Delete(placeholderID)
+	}
+	if w.g.db != nil {
+		_, _ = w.g.db.Exec("DELETE FROM peer_api_tokens WHERE peer_ip = ?", placeholderID)
+	}
 }
 
 // apiPeerTsnetRegister is the daemon's one-shot self-registration on
