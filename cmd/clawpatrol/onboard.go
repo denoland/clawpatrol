@@ -1021,8 +1021,16 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 	// Mint the per-peer bearer the client uses for gated API calls
 	// (env-pushdown, ephemeral tsnet key). In Tailscale mode the peer IP
 	// isn't known at approve time, so we mint it here instead.
+	//
+	// A mint failure used to be dropped on the floor: the claim still
+	// returned 200, just without api_token, and the operator only found
+	// out hours later via the daemon's "peer api token not persisted".
+	// Log it here and hand the reason back so the CLI can name it.
 	if token, err := mintAndPersistPeerAPIToken(w.g.db, host); err == nil {
 		resp["api_token"] = token
+	} else {
+		log.Printf("onboard claim: mint peer api-token for %s: %v", host, err)
+		resp["api_token_error"] = err.Error()
 	}
 	writeJSON(rw, resp)
 }
