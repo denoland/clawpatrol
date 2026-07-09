@@ -95,3 +95,36 @@ func TestOnboardClaimSurfacesMintFailure(t *testing.T) {
 		t.Errorf("claim response = %v, want owner+ip still populated", resp)
 	}
 }
+
+// The per-process tsnet approve path seeds a tsnet-<hostname> placeholder
+// (device row + placeholder-bound token). Once a claim binds the real-IP
+// token the daemon presents that instead, so the placeholder promotion in
+// apiPeerTsnetRegister never fires. A successful claim must therefore
+// retire the placeholder itself, or it lingers as an orphaned token row.
+func TestOnboardClaimRetiresPlaceholder(t *testing.T) {
+	w := newOnboardAuthTestWebMux(t)
+	w.g.agents = NewAgentRegistry()
+	w.g.agents.onboard = w.g.onboard
+	h := w.handler()
+
+	code := startOnboardSession(t, h, "?hostname=dev1")
+	dc := w.onboard.byUserCode(code).deviceCode
+
+	// Stand in for the approve-time placeholder mint (tsnet-<hostname>).
+	placeholderID := tsnetPlaceholderPrefix + "dev1"
+	if _, err := mintAndPersistPeerAPIToken(w.g.db, placeholderID); err != nil {
+		t.Fatalf("seed placeholder token: %v", err)
+	}
+
+	w.retirePlaceholderForClaim(dc, "100.64.0.11")
+
+	var n int
+	if err := w.g.db.QueryRow(
+		"SELECT count(*) FROM peer_api_tokens WHERE peer_ip = ?", placeholderID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count placeholder token rows: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("placeholder token rows for %s = %d, want 0 (claim must retire it)", placeholderID, n)
+	}
+}

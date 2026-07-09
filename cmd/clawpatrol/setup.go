@@ -1308,9 +1308,19 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			// gateway mints the per-peer bearer. Without it the daemon
 			// can't authenticate /api/env-pushdown and every wrapped
 			// agent boots with an empty credential set (no GH_TOKEN).
+			//
+			// Best-effort: at this point auth-key + mode markers are
+			// already written and the single-use key is spent, so a
+			// transient claim failure must not abort the join and leave a
+			// half-configured host. Warn and continue — the daemon still
+			// falls back to the poll-delivered placeholder token (written
+			// above) and the operator can re-run `clawpatrol join`. This
+			// mirrors the whole-machine claim below, which also only warns.
 			if err := claimPeerAPIToken(gateway, start.DeviceCode, hn, authKey,
 				tailnetControlURL, stateDir, filepath.Dir(setup.caPath)); err != nil {
-				return false, fmt.Errorf("claim peer api-token: %w", err)
+				fmt.Fprintf(os.Stderr,
+					"⚠ peer api-token claim failed: %v\n"+
+						"  env-pushdown may be unavailable until you re-run `clawpatrol join`.\n", err)
 			}
 		}
 		items := setupSummaryItems(*setup)
