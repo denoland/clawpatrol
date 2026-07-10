@@ -29,10 +29,10 @@ const actionsDeleteBatch = 5000
 //
 // defaultKeep is the global default (gateway.actions_keep). Each
 // endpoint may override it with its own `retention`. A keep of 0 (from
-// "0" / "off") means keep forever: for the global default it disables
-// the catch-all sweep; for an endpoint it exempts that endpoint's rows
-// from pruning entirely. Per-endpoint overrides run even when the
-// global default is disabled.
+// "0" / "off", or any zero-valued duration like "0s") means keep
+// forever: for the global default it disables the catch-all sweep; for
+// an endpoint it exempts that endpoint's rows from pruning entirely.
+// Per-endpoint overrides run even when the global default is disabled.
 func (g *Gateway) startActionsSweeper(defaultKeep time.Duration) {
 	if g.db == nil {
 		return
@@ -67,15 +67,28 @@ func (g *Gateway) sweepActions(defaultKeep time.Duration) {
 				continue
 			}
 			d, err := time.ParseDuration(raw)
-			if err != nil {
-				// A malformed retention must NOT silently mean "keep
-				// forever" — that's the disk-growth direction this whole
-				// feature exists to prevent. Leave it out of overrides so
-				// the global default still prunes the endpoint, and log
-				// loudly. (actions_keep / session_keep are validated at
-				// config load; per-endpoint retention isn't reachable there
-				// yet, so guard it here.)
-				log.Printf("actions: endpoint %q has an invalid retention %q: %v — applying the default sweep instead", name, raw, err)
+			if err != nil || d < 0 {
+				// A malformed (or negative) retention must NOT silently
+				// mean "keep forever" — that's the disk-growth direction
+				// this whole feature exists to prevent. Leave it out of
+				// overrides so the global default still prunes the
+				// endpoint, and log loudly. Config load rejects these too;
+				// this guard covers policies swapped in through any path
+				// that skipped that validation.
+				if err == nil {
+					log.Printf("actions: endpoint %q has a negative retention %q — applying the default sweep instead", name, raw)
+				} else {
+					log.Printf("actions: endpoint %q has an invalid retention %q: %v — applying the default sweep instead", name, raw, err)
+				}
+				continue
+			}
+			if d == 0 {
+				// Zero-valued durations ("0s", "0h", …) carry the same
+				// intent as the "0" / "off" sentinels: keep forever. They
+				// must NOT fall through to the delete below, where
+				// cutoff = now would wipe the endpoint's entire history —
+				// the exact inverse of what the operator asked for.
+				overrides = append(overrides, name)
 				continue
 			}
 			overrides = append(overrides, name)

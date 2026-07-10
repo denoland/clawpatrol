@@ -1127,18 +1127,29 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 }
 
 // validateRetentionDuration flags a retention setting that is neither
-// empty, the "0" / "off" disable sentinels, nor a valid
-// time.ParseDuration string.
+// empty, the "0" / "off" disable sentinels, nor a valid non-negative
+// time.ParseDuration string. Zero-valued durations ("0s") are allowed
+// and mean the same as "0": disable / keep forever. Negative durations
+// are rejected — downstream they would put the sweep cutoff in the
+// future and delete everything, the inverse of a retention floor.
 func validateRetentionDuration(name, val string) hcl.Diagnostics {
 	v := strings.TrimSpace(val)
 	if v == "" || v == "0" || v == "off" {
 		return nil
 	}
-	if _, err := time.ParseDuration(v); err != nil {
+	d, err := time.ParseDuration(v)
+	if err != nil {
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid " + name,
 			Detail:   fmt.Sprintf("%s = %q: %v. Use a time.ParseDuration string like %q or %q, or %q / %q to disable.", name, val, err, "720h", "30m", "0", "off"),
+		}}
+	}
+	if d < 0 {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid " + name,
+			Detail:   fmt.Sprintf("%s = %q: negative durations are not allowed. Use a positive duration like %q, or %q / %q to disable.", name, val, "720h", "0", "off"),
 		}}
 	}
 	return nil

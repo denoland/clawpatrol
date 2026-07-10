@@ -107,9 +107,11 @@ func TestSweepActionsGlobalDisabledKeepsPerEndpointOverrides(t *testing.T) {
 	}
 }
 
-// A malformed per-endpoint retention (e.g. a missing unit) must fall
-// back to the global default sweep, not silently keep the endpoint's
-// rows forever — that would defeat the whole point on a typo.
+// A malformed per-endpoint retention (e.g. a missing unit) or a
+// negative one must fall back to the global default sweep — not
+// silently keep the endpoint's rows forever (defeats the point on a
+// typo), and not treat the cutoff as being in the future (a negative
+// duration would otherwise delete the endpoint's entire history).
 func TestSweepActionsInvalidRetentionFallsBackToDefault(t *testing.T) {
 	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -119,17 +121,50 @@ func TestSweepActionsInvalidRetentionFallsBackToDefault(t *testing.T) {
 	g := &Gateway{db: db}
 	g.policy.Store(&config.CompiledPolicy{
 		Endpoints: map[string]*config.CompiledEndpoint{
-			"typo": {Name: "typo", Retention: "30"}, // missing unit → invalid
+			"typo": {Name: "typo", Retention: "30"},  // missing unit → invalid
+			"neg":  {Name: "neg", Retention: "-24h"}, // negative → invalid
 		},
 	})
 
 	insertAction(t, g, "typo", 48*time.Hour) // older than the default → must be pruned
 	insertAction(t, g, "typo", time.Hour)    // within the default → kept
+	insertAction(t, g, "neg", 48*time.Hour)  // older than the default → must be pruned
+	insertAction(t, g, "neg", time.Hour)     // within the default → MUST survive a negative retention
 
 	g.sweepActions(24 * time.Hour)
 
 	if got := countActions(t, g, "endpoint = 'typo'"); got != 1 {
 		t.Errorf("typo-retention rows = %d, want 1 (invalid retention must fall back to the default sweep)", got)
+	}
+	if got := countActions(t, g, "endpoint = 'neg'"); got != 1 {
+		t.Errorf("negative-retention rows = %d, want 1 (negative retention must fall back to the default sweep, not wipe the endpoint)", got)
+	}
+}
+
+// A zero-valued duration ("0s", "0h") is the "0" sentinel spelled
+// differently and must mean keep-forever. Before the d == 0 guard it
+// fell through to the delete with cutoff = now, wiping the endpoint's
+// entire history — the exact inverse of what the operator asked for.
+func TestSweepActionsZeroDurationRetentionIsExempt(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	g := &Gateway{db: db}
+	g.policy.Store(&config.CompiledPolicy{
+		Endpoints: map[string]*config.CompiledEndpoint{
+			"zero": {Name: "zero", Retention: "0s"},
+		},
+	})
+
+	insertAction(t, g, "zero", 9000*time.Hour) // far past the default → still kept
+	insertAction(t, g, "zero", time.Minute)
+
+	g.sweepActions(24 * time.Hour)
+
+	if got := countActions(t, g, "endpoint = 'zero'"); got != 2 {
+		t.Errorf("zero-retention rows = %d, want 2 (\"0s\" must mean keep forever, same as \"0\")", got)
 	}
 }
 

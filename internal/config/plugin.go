@@ -186,8 +186,9 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		{Name: "description", Optional: true},
 		// Per-endpoint action-log retention. Overrides the global
 		// gateway.actions_keep default for this endpoint's rows.
-		// time.ParseDuration format ("168h"); "0" / "off" keeps this
-		// endpoint's rows forever.
+		// time.ParseDuration format ("168h"); "0" / "off" (or any
+		// zero-valued duration like "0s") keeps this endpoint's rows
+		// forever. Negative values are rejected at compile.
 		{Name: "retention", Optional: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
