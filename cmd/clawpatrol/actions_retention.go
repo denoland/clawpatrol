@@ -59,10 +59,10 @@ func (g *Gateway) sweepActions(defaultKeep time.Duration) {
 	if pol := g.Policy(); pol != nil {
 		for name, ep := range pol.Endpoints {
 			raw := strings.TrimSpace(ep.Retention)
-			switch {
-			case raw == "":
+			switch raw {
+			case "":
 				continue // no override → falls under the global default below
-			case raw == "0" || raw == "off":
+			case "0", "off":
 				overrides = append(overrides, name) // exempt: keep this endpoint's rows forever
 				continue
 			}
