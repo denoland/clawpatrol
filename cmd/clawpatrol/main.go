@@ -3377,6 +3377,12 @@ func runGateway(args []string) {
 	g.agents.LoadSessions(db)
 	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep(), 10*time.Minute))
 
+	// Actions log: the gateway's largest table (captured req/resp
+	// bodies). A global default retention floor by ts_ns (default 720h /
+	// 30d, "0" / "off" disables the default sweep), plus per-endpoint
+	// `retention` overrides applied in sweepActions.
+	g.startActionsSweeper(parseDurationOr(cfg.ActionsKeep(), 720*time.Hour))
+
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
 	// the SSE event for the dashboard.

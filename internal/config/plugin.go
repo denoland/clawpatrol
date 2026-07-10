@@ -184,6 +184,11 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		// Free-text, human/LLM-readable note describing what this
 		// endpoint is for. Surfaced in the discovery manifest.
 		{Name: "description", Optional: true},
+		// Per-endpoint action-log retention. Overrides the global
+		// gateway.actions_keep default for this endpoint's rows.
+		// time.ParseDuration format ("168h"); "0" / "off" keeps this
+		// endpoint's rows forever.
+		{Name: "retention", Optional: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them
