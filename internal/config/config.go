@@ -182,6 +182,15 @@ type GatewaySettings struct {
 	// time.ParseDuration format.
 	SessionKeep string `hcl:"session_keep,optional"`
 
+	// ActionsKeep is the global default retention floor for the actions
+	// table (captured request/response logs — the gateway's largest
+	// table). Rows whose ts_ns is older than this are deleted by the
+	// background sweeper. Each endpoint may override this with its own
+	// `retention = "..."`. Default 720h (30d), "0" / "off" disables the
+	// default sweep (per-endpoint retention still applies).
+	// time.ParseDuration format.
+	ActionsKeep string `hcl:"actions_keep,optional"`
+
 	// Limits, if present, overrides the two gateway-wide body-size
 	// limits (rules-engine body buffer and persisted action body
 	// storage). nil uses the DefaultBody*Limit constants, which match
@@ -445,6 +454,9 @@ func (g *Gateway) GenAITelemetryIncludeContent() bool {
 
 // SessionKeep returns the raw session-retention string, or empty.
 func (g *Gateway) SessionKeep() string { return g.settings().SessionKeep }
+
+// ActionsKeep returns the raw global actions-retention string, or empty.
+func (g *Gateway) ActionsKeep() string { return g.settings().ActionsKeep }
 
 // Funnel reports whether the `tailscale { }` block enabled Funnel.
 func (g *Gateway) Funnel() bool {

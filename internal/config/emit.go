@@ -202,6 +202,7 @@ func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
 		gw.SetAttributeValue("telemetry", cty.BoolVal(*s.Telemetry))
 	}
 	setStr("session_keep", s.SessionKeep)
+	setStr("actions_keep", s.ActionsKeep)
 
 	if s.Limits != nil {
 		bl := gw.AppendNewBlock("limits", nil).Body()
