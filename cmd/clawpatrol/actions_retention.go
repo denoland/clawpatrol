@@ -58,17 +58,30 @@ func (g *Gateway) sweepActions(defaultKeep time.Duration) {
 
 	if pol := g.Policy(); pol != nil {
 		for name, ep := range pol.Endpoints {
-			if strings.TrimSpace(ep.Retention) == "" {
+			raw := strings.TrimSpace(ep.Retention)
+			switch {
+			case raw == "":
 				continue // no override → falls under the global default below
+			case raw == "0" || raw == "off":
+				overrides = append(overrides, name) // exempt: keep this endpoint's rows forever
+				continue
+			}
+			d, err := time.ParseDuration(raw)
+			if err != nil {
+				// A malformed retention must NOT silently mean "keep
+				// forever" — that's the disk-growth direction this whole
+				// feature exists to prevent. Leave it out of overrides so
+				// the global default still prunes the endpoint, and log
+				// loudly. (actions_keep / session_keep are validated at
+				// config load; per-endpoint retention isn't reachable there
+				// yet, so guard it here.)
+				log.Printf("actions: endpoint %q has an invalid retention %q: %v — applying the default sweep instead", name, raw, err)
+				continue
 			}
 			overrides = append(overrides, name)
-			d := parseDurationOr(ep.Retention, 0)
-			if d <= 0 {
-				continue // "0" / "off" → keep this endpoint's rows forever
-			}
 			cutoff := now.Add(-d).UnixNano()
-			if n, err := deleteActionsBatched(g.db, "endpoint = ? AND ts_ns < ?", []any{name, cutoff}); err != nil {
-				log.Printf("actions: sweep endpoint %q: %v", name, err)
+			if n, derr := deleteActionsBatched(g.db, "endpoint = ? AND ts_ns < ?", []any{name, cutoff}); derr != nil {
+				log.Printf("actions: sweep endpoint %q: %v", name, derr)
 			} else if n > 0 {
 				log.Printf("actions: pruned %d rows for endpoint %q (retention %s)", n, name, d)
 			}

@@ -1115,9 +1115,33 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 		}
 	}
 
+	// Retention floors: reject a malformed duration at load rather than
+	// letting the sweeper silently fall back at runtime. "0" / "off"
+	// (disable) are valid non-duration values.
+	diags = append(diags, validateRetentionDuration("session_keep", gw.Settings.SessionKeep)...)
+	diags = append(diags, validateRetentionDuration("actions_keep", gw.Settings.ActionsKeep)...)
+
 	diags = append(diags, validateLimits(gw.Settings.Limits)...)
 
 	return diags
+}
+
+// validateRetentionDuration flags a retention setting that is neither
+// empty, the "0" / "off" disable sentinels, nor a valid
+// time.ParseDuration string.
+func validateRetentionDuration(name, val string) hcl.Diagnostics {
+	v := strings.TrimSpace(val)
+	if v == "" || v == "0" || v == "off" {
+		return nil
+	}
+	if _, err := time.ParseDuration(v); err != nil {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid " + name,
+			Detail:   fmt.Sprintf("%s = %q: %v. Use a time.ParseDuration string like %q or %q, or %q / %q to disable.", name, val, err, "720h", "30m", "0", "off"),
+		}}
+	}
+	return nil
 }
 
 // isLoopbackOnlyWG reports whether a WireGuard block has its endpoint

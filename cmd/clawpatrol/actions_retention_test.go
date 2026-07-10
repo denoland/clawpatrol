@@ -107,6 +107,32 @@ func TestSweepActionsGlobalDisabledKeepsPerEndpointOverrides(t *testing.T) {
 	}
 }
 
+// A malformed per-endpoint retention (e.g. a missing unit) must fall
+// back to the global default sweep, not silently keep the endpoint's
+// rows forever — that would defeat the whole point on a typo.
+func TestSweepActionsInvalidRetentionFallsBackToDefault(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	g := &Gateway{db: db}
+	g.policy.Store(&config.CompiledPolicy{
+		Endpoints: map[string]*config.CompiledEndpoint{
+			"typo": {Name: "typo", Retention: "30"}, // missing unit → invalid
+		},
+	})
+
+	insertAction(t, g, "typo", 48*time.Hour) // older than the default → must be pruned
+	insertAction(t, g, "typo", time.Hour)    // within the default → kept
+
+	g.sweepActions(24 * time.Hour)
+
+	if got := countActions(t, g, "endpoint = 'typo'"); got != 1 {
+		t.Errorf("typo-retention rows = %d, want 1 (invalid retention must fall back to the default sweep)", got)
+	}
+}
+
 // The batched delete must drain a backlog larger than one batch.
 func TestDeleteActionsBatchedDrainsBacklog(t *testing.T) {
 	g := newActionsRetentionTestGateway(t)
