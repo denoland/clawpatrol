@@ -28,10 +28,9 @@ var runSecurityFindCerts = func(keychain string) ([]byte, error) {
 	return exec.Command("/usr/bin/security", "find-certificate", "-a", "-p", keychain).Output()
 }
 
-// defaultSystemRootsReader returns Apple's curated root store as PEM. selfBundle
-// is unused on darwin (the source is a keychain, never our generated file).
-func defaultSystemRootsReader(selfBundle string) ([]byte, bool) {
-	_ = selfBundle
+// defaultSystemRootsReader returns Apple's curated root store as PEM. The
+// caller (normalizeCertsPEM) validates and dedups; this reader only dumps.
+func defaultSystemRootsReader() ([]byte, bool) {
 	b, err := runSecurityFindCerts(systemRootKeychain)
 	if err != nil || len(b) == 0 {
 		return nil, false

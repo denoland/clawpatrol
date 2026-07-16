@@ -121,12 +121,9 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 // ensureCABundle. NODE_EXTRA_CA_CERTS is additive (Node keeps its
 // built-in roots), so it stays on ca.crt alone.
 //
-// When the operator had their own SSL_CERT_FILE (e.g. a corporate CA), we
-// also emit CLAWPATROL_ORIG_SSL_CERT_FILE preserving it: the SSL_CERT_FILE
-// var below overwrites the operator's value with our bundle path, so without
-// this the Linux system-roots reader would, on the next nested shell or
-// `clawpatrol run`, see only our bundle, skip it as a self-reference, and
-// rebuild from the distro aggregate — silently dropping the corporate root.
+// All of these are clawpatrol-owned (see clawpatrolCAVarNames): the wrapped
+// agent MUST trust the MITM CA, so applyEnvPushdownVars force-sets them even
+// when the operator already had e.g. SSL_CERT_FILE pointing elsewhere.
 //
 // Exposed within the package so the Linux daemon-routed path
 // (`clawpatrol run` → daemon control socket) can combine these
@@ -143,15 +140,30 @@ func caPathPushdownVars(caPath string) []pushdownEnvVar {
 		"PIP_CERT",
 		"AWS_CA_BUNDLE",
 	}
-	out := make([]pushdownEnvVar, 0, len(replaceStyle)+2)
+	out := make([]pushdownEnvVar, 0, len(replaceStyle)+1)
 	for _, k := range replaceStyle {
 		out = append(out, pushdownEnvVar{Name: k, Value: bundlePath})
 	}
 	out = append(out, pushdownEnvVar{Name: "NODE_EXTRA_CA_CERTS", Value: caPath})
-	if orig := sslCertFileOrig(bundlePath); orig != "" && !samePath(orig, bundlePath) {
-		out = append(out, pushdownEnvVar{Name: "CLAWPATROL_ORIG_SSL_CERT_FILE", Value: orig})
-	}
 	return out
+}
+
+// clawpatrolCAVarNames are the CA-bundle env vars clawpatrol owns. They are
+// replace-style (SSL_CERT_FILE et al. name the ONE file a client trusts, not
+// an addition to it), so the only way the wrapped agent can trust the MITM CA
+// is for us to point them at our combined bundle — even if the operator had
+// already set them. applyEnvPushdownVars therefore force-sets exactly these,
+// while leaving every other pushdown var (gateway tokens, etc.) under the
+// operator's control. Full opt-out is CLAWPATROL_NO_ENV=1.
+var clawpatrolCAVarNames = map[string]bool{
+	"SSL_CERT_FILE":       true,
+	"REQUESTS_CA_BUNDLE":  true,
+	"CURL_CA_BUNDLE":      true,
+	"GIT_SSL_CAINFO":      true,
+	"DENO_CERT":           true,
+	"PIP_CERT":            true,
+	"AWS_CA_BUNDLE":       true,
+	"NODE_EXTRA_CA_CERTS": true,
 }
 
 // gatewayDialOverride lets callers (e.g. clawpatrol run in tsnet mode)
@@ -329,17 +341,21 @@ func runEnv(args []string) {
 	}
 }
 
-// applyEnvPushdownVars sets env vars from an already-fetched list,
-// honoring CLAWPATROL_NO_ENV and never clobbering values the operator
-// set deliberately. Used by `clawpatrol run` which now receives the
-// vars from the daemon over its control socket instead of dialing the
-// gateway directly.
+// applyEnvPushdownVars sets env vars from an already-fetched list, honoring
+// CLAWPATROL_NO_ENV. Used by `clawpatrol run`, which receives the vars from the
+// daemon over its control socket instead of dialing the gateway directly.
+//
+// The clawpatrol-owned CA vars (clawpatrolCAVarNames) are force-set even when
+// the operator already had them: they are replace-style, so an operator's
+// pre-existing SSL_CERT_FILE would otherwise leave the wrapped agent trusting
+// only that file and NOT the MITM CA, breaking every defined endpoint. Every
+// other pushdown var (gateway tokens, etc.) keeps the operator's value if set.
 func applyEnvPushdownVars(vars []pushdownEnvVar) {
 	if os.Getenv("CLAWPATROL_NO_ENV") == "1" {
 		return
 	}
 	for _, ev := range vars {
-		if os.Getenv(ev.Name) != "" {
+		if !clawpatrolCAVarNames[ev.Name] && os.Getenv(ev.Name) != "" {
 			continue
 		}
 		_ = os.Setenv(ev.Name, ev.Value)

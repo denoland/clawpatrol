@@ -26,7 +26,7 @@ func TestDarwinSystemRootsReader(t *testing.T) {
 		dumped = append(dumped, keychain)
 		return []byte("PEM(" + keychain + ")\n"), nil
 	}
-	got, ok := defaultSystemRootsReader("")
+	got, ok := defaultSystemRootsReader()
 	if !ok || !bytes.Equal(got, []byte("PEM(/curated/roots.keychain)\n")) {
 		t.Fatalf("got %q ok=%v", got, ok)
 	}
@@ -36,13 +36,13 @@ func TestDarwinSystemRootsReader(t *testing.T) {
 
 	// security failure → (nil, false), so ensureCABundle falls back safely.
 	runSecurityFindCerts = func(string) ([]byte, error) { return nil, fmt.Errorf("boom") }
-	if _, ok := defaultSystemRootsReader(""); ok {
+	if _, ok := defaultSystemRootsReader(); ok {
 		t.Error("expected (nil,false) when security fails")
 	}
 
 	// Empty output → (nil, false).
 	runSecurityFindCerts = func(string) ([]byte, error) { return nil, nil }
-	if _, ok := defaultSystemRootsReader(""); ok {
+	if _, ok := defaultSystemRootsReader(); ok {
 		t.Error("expected (nil,false) on empty security output")
 	}
 }

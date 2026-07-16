@@ -3,8 +3,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/pem"
 	"os"
 	"path/filepath"
 )
@@ -31,67 +29,38 @@ var systemRootCertDirs = []string{
 	"/system/etc/security/cacerts",
 }
 
-// defaultSystemRootsReader reproduces crypto/x509 root_unix.go discovery so the
-// generated bundle matches the trust set Go (and thus the system default) would
-// assemble:
+// defaultSystemRootsReader returns the machine distro trust store as PEM: the
+// first existing aggregate file plus every certificate under the standard
+// certificate directories. This is the MACHINE's trust set — it deliberately
+// ignores the invoking process's SSL_CERT_FILE/SSL_CERT_DIR so the generated
+// bundle is a deterministic function of machine state (see systemRootsReader).
 //
-//   - SSL_CERT_FILE, when set, REPLACES the aggregate file list — Go never
-//     falls back to the distro aggregate once the override is set, so neither
-//     do we (tracking "override configured" separately from "bytes loaded"
-//     avoids a fail-open widening to the default roots). Our own generated
-//     bundle is resolved back to the operator's original source via
-//     sslCertFileOrig so a corporate CA survives repeated `clawpatrol env`.
-//   - the certificate directories (SSL_CERT_DIR, else the defaults) are ALWAYS
-//     scanned after the file loop, exactly as root_unix.go does — roots
-//     installed only under /etc/ssl/certs must not be dropped.
-//
-// Every source is parsed into CERTIFICATE blocks and re-encoded (deduped by
-// DER) before concatenation, so a source file missing a trailing newline can't
-// abut the next block and silently corrupt the bundle.
-//
-// selfBundle is the ca-bundle.crt path, excluded from every file source to
-// avoid folding the bundle back into itself.
-func defaultSystemRootsReader(selfBundle string) ([]byte, bool) {
-	seen := map[[32]byte]bool{}
-	var ders [][]byte
-	add := func(data []byte) {
-		rest := data
-		for {
-			var blk *pem.Block
-			blk, rest = pem.Decode(rest)
-			if blk == nil {
-				break
-			}
-			if blk.Type != "CERTIFICATE" {
-				continue
-			}
-			h := sha256.Sum256(blk.Bytes)
-			if seen[h] {
-				continue
-			}
-			seen[h] = true
-			ders = append(ders, blk.Bytes)
+// Sources are concatenated raw (newline-separated per file); ensureCABundle's
+// normalizeCertsPEM does the parsing, validation, and dedup, so this reader
+// stays a thin file gatherer.
+func defaultSystemRootsReader() ([]byte, bool) {
+	var buf []byte
+	appendPEM := func(b []byte) {
+		if len(b) == 0 {
+			return
+		}
+		buf = append(buf, b...)
+		if b[len(b)-1] != '\n' {
+			buf = append(buf, '\n')
 		}
 	}
 
-	// Aggregate file: SSL_CERT_FILE override replaces the candidate list.
-	files := systemRootCertFiles
-	if override := sslCertFileOrig(selfBundle); override != "" {
-		files = []string{override}
-	}
-	for _, f := range files {
-		if b, err := os.ReadFile(f); err == nil {
-			add(b)
+	// Aggregate file: first candidate that exists.
+	for _, f := range systemRootCertFiles {
+		if b, err := os.ReadFile(f); err == nil && len(b) > 0 {
+			appendPEM(b)
 			break
 		}
 	}
 
-	// Certificate directories: always scanned, SSL_CERT_DIR overrides defaults.
-	dirs := systemRootCertDirs
-	if d := os.Getenv("SSL_CERT_DIR"); d != "" {
-		dirs = filepath.SplitList(d)
-	}
-	for _, dir := range dirs {
+	// Certificate directories: always scanned (matches root_unix.go), so roots
+	// installed only under /etc/ssl/certs are not dropped.
+	for _, dir := range systemRootCertDirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -100,22 +69,14 @@ func defaultSystemRootsReader(selfBundle string) ([]byte, bool) {
 			if e.IsDir() {
 				continue
 			}
-			p := filepath.Join(dir, e.Name())
-			if samePath(p, selfBundle) {
-				continue
-			}
-			if b, err := os.ReadFile(p); err == nil {
-				add(b)
+			if b, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
+				appendPEM(b)
 			}
 		}
 	}
 
-	if len(ders) == 0 {
+	if len(buf) == 0 {
 		return nil, false
 	}
-	var out []byte
-	for _, der := range ders {
-		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
-	}
-	return out, true
+	return buf, true
 }

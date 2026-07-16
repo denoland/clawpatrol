@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 )
@@ -13,58 +16,93 @@ import (
 const caBundleMaxAttempts = 4
 
 // systemRootsReader is the seam tests swap to inject fake system roots. It
-// receives the path of the bundle we are about to (re)generate so a reader
-// that honors SSL_CERT_FILE can skip it — otherwise, once `clawpatrol env`
-// persists SSL_CERT_FILE=…/ca-bundle.crt into the shell rc, the reader would
-// fold the bundle back into itself on every shell. It defaults to the
-// platform reader in system_roots_{linux,darwin,other}.go.
+// defaults to the platform reader in system_roots_{linux,darwin,other}.go.
+//
+// The source is the MACHINE's trust store (the distro root bundle on Linux,
+// Apple's curated roots on macOS) — deliberately NOT the invoking process's
+// SSL_CERT_FILE/SSL_CERT_DIR. Deriving the bundle from per-process env would
+// make a single shared pathname (ca-bundle.crt) mean different things in
+// different shells/cron/sudo contexts and let one context atomically replace
+// another's trust set. A machine-wide source keeps the bundle content a
+// deterministic function of machine state, so every writer produces identical
+// bytes.
 var systemRootsReader = defaultSystemRootsReader
 
-// readSystemRootsPEM returns the platform's trusted root certificates as
-// PEM bytes, and whether any were found. selfBundle is the path of the
-// combined bundle, excluded from any file-based source to avoid a feedback
-// loop.
-func readSystemRootsPEM(selfBundle string) ([]byte, bool) { return systemRootsReader(selfBundle) }
+// readSystemRootsPEM returns the machine's trusted root certificates as PEM
+// bytes, and whether any were found.
+func readSystemRootsPEM() ([]byte, bool) { return systemRootsReader() }
 
 // buildBundlePEM concatenates the system roots and the clawpatrol MITM CA
-// into one PEM bundle, guaranteeing a newline between the two blocks so
-// they never abut (a missing separator would corrupt the first cert after
-// the join).
+// with a guaranteed newline between them, then hands the result to
+// normalizeCertsPEM so the seam and every source file are re-encoded cleanly.
 func buildBundlePEM(systemPEM, caPEM []byte) []byte {
-	out := make([]byte, 0, len(systemPEM)+len(caPEM)+1)
-	out = append(out, systemPEM...)
+	joined := make([]byte, 0, len(systemPEM)+len(caPEM)+1)
+	joined = append(joined, systemPEM...)
 	if len(systemPEM) > 0 && systemPEM[len(systemPEM)-1] != '\n' {
-		out = append(out, '\n')
+		joined = append(joined, '\n')
 	}
-	out = append(out, caPEM...)
+	joined = append(joined, caPEM...)
+	return normalizeCertsPEM(joined)
+}
+
+// normalizeCertsPEM parses every PEM block, keeps only well-formed
+// CERTIFICATE blocks (no PEM headers, DER that x509.ParseCertificate
+// accepts), dedups by DER, and re-encodes each from cert.Raw. This mirrors
+// what CertPool.AppendCertsFromPEM / OpenSSL accept: a single malformed or
+// header-bearing block can otherwise make an OpenSSL-family consumer reject
+// the entire CA file with ASN.1 errors, so we must drop it rather than
+// pass it through. Re-encoding also guarantees clean separators, so a source
+// file lacking a trailing newline can't abut the next block.
+func normalizeCertsPEM(pemBytes []byte) []byte {
+	seen := map[[32]byte]bool{}
+	var out []byte
+	rest := pemBytes
+	for {
+		blk, r := pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		rest = r
+		if blk.Type != "CERTIFICATE" || len(blk.Headers) != 0 {
+			continue
+		}
+		cert, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(cert.Raw)
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
+	}
 	return out
 }
 
-// ensureCABundle writes <dir>/ca-bundle.crt = system roots + the MITM CA
-// found at caPath, and returns that bundle's path. The replace-style CA
-// env vars point at it so a wrapped agent trusts BOTH the gateway's MITM
-// certs (defined endpoints) and real public certs (passthrough hosts) —
-// the fix for issue #764.
+// ensureCABundle writes <dir>/ca-bundle.crt = machine system roots + the MITM
+// CA found at caPath, and returns that bundle's path. The replace-style CA env
+// vars point at it so a wrapped agent trusts BOTH the gateway's MITM certs
+// (defined endpoints) and real public certs (passthrough hosts) — the fix for
+// issue #764.
 //
-// Freshness is content-based: the desired bundle is rebuilt from the
-// current system roots + ca.crt every call and written only when it
-// differs from what's on disk. Unlike an mtime check this tracks system-
-// root additions/removals (e.g. an emergency distrust) and CA rotation,
-// and has no equal-mtime boundary. The cost is reading the roots each call;
-// `clawpatrol env` runs per shell, but the platform readers are cheap
-// (a file read on Linux, a ~40ms `security` dump on macOS) and no write
-// happens when nothing changed.
+// Freshness is content-based: the desired bundle is rebuilt from the current
+// system roots + ca.crt every call and written only when it differs from
+// what's on disk. Unlike an mtime check this tracks system-root
+// additions/removals (e.g. an emergency distrust) and CA rotation, and has no
+// equal-mtime boundary. Because the roots come from the machine store rather
+// than per-process env, every caller (shell, cron, sudo helper) computes the
+// same bytes, so no context can silently replace another's trust set.
 //
 // A join can rewrite ca.crt concurrently. Because ca.crt is read before the
-// bundle is written, a naive single pass could persist a bundle embedding
-// the *old* CA after the new ca.crt landed. We defend by re-reading ca.crt
-// after the write and rebuilding if it changed; content-based freshness also
-// means a later call self-heals rather than pinning the stale CA forever.
+// bundle is written, a naive single pass could persist a bundle embedding the
+// *old* CA after the new ca.crt landed. We defend by re-reading ca.crt after
+// the write and rebuilding if it changed.
 //
-// Fail-safe: returns caPath unchanged when the CA file is missing or no
-// system roots can be read (e.g. an unsupported platform, or `security`
-// unavailable on macOS). Behavior is then no worse than today's
-// MITM-CA-only pushdown.
+// Fail-safe: returns caPath unchanged when the CA file is missing, no system
+// roots can be read (e.g. an unsupported platform, or `security` unavailable
+// on macOS), or ca.crt never settles across the retry budget. Behavior is then
+// no worse than today's MITM-CA-only pushdown.
 func ensureCABundle(caPath string) string {
 	bundlePath := filepath.Join(filepath.Dir(caPath), "ca-bundle.crt")
 	for attempt := 0; attempt < caBundleMaxAttempts; attempt++ {
@@ -72,11 +110,14 @@ func ensureCABundle(caPath string) string {
 		if err != nil {
 			return caPath
 		}
-		sysPEM, ok := readSystemRootsPEM(bundlePath)
+		sysPEM, ok := readSystemRootsPEM()
 		if !ok || len(sysPEM) == 0 {
 			return caPath
 		}
 		want := buildBundlePEM(sysPEM, caPEM)
+		if len(want) == 0 {
+			return caPath
+		}
 		if existing, err := os.ReadFile(bundlePath); err != nil || !bytes.Equal(existing, want) {
 			if err := atomicWriteFile(bundlePath, want, 0o644); err != nil {
 				return caPath
@@ -98,48 +139,6 @@ func ensureCABundle(caPath string) string {
 	// than hand out a bundle we couldn't prove current. Fail-safe: the wrapped
 	// agent still trusts the current MITM CA, only losing passthrough roots.
 	return caPath
-}
-
-// samePath reports whether a and b resolve to the same file, following
-// symlinks and comparing by identity (inode) when both exist, and falling
-// back to a lexical absolute-path compare when they don't. Used to keep the
-// generated ca-bundle.crt from being folded back into itself even when it is
-// reached through a symlink alias.
-func samePath(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	ra, err := filepath.EvalSymlinks(a)
-	if err != nil {
-		ra, _ = filepath.Abs(a)
-	}
-	rb, err := filepath.EvalSymlinks(b)
-	if err != nil {
-		rb, _ = filepath.Abs(b)
-	}
-	if ra == rb {
-		return true
-	}
-	if fa, err := os.Stat(a); err == nil {
-		if fb, err := os.Stat(b); err == nil {
-			return os.SameFile(fa, fb)
-		}
-	}
-	return false
-}
-
-// sslCertFileOrig returns the operator's true SSL_CERT_FILE source. Once
-// `clawpatrol env` has run, SSL_CERT_FILE points at our own bundle; the
-// pre-pushdown value is stashed in CLAWPATROL_ORIG_SSL_CERT_FILE so a
-// corporate CA file survives repeated passes (see caPathPushdownVars).
-// Returns "" when the operator set no SSL_CERT_FILE. bundlePath is the
-// generated bundle to detect the self-reference.
-func sslCertFileOrig(bundlePath string) string {
-	v := os.Getenv("SSL_CERT_FILE")
-	if v != "" && samePath(v, bundlePath) {
-		return os.Getenv("CLAWPATROL_ORIG_SSL_CERT_FILE")
-	}
-	return v
 }
 
 // atomicWriteFile writes data to path via a temp file + rename so a

@@ -133,7 +133,7 @@ func TestEnsureCABundleVerifiesBothChains(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	bundlePath := ensureCABundle(caPath)
@@ -171,7 +171,7 @@ func TestEnsureCABundleFallbackNoSystemRoots(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return nil, false }
+	systemRootsReader = func() ([]byte, bool) { return nil, false }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	if got := ensureCABundle(caPath); got != caPath {
@@ -188,7 +188,7 @@ func TestEnsureCABundleMissingCA(t *testing.T) {
 
 	prev := systemRootsReader
 	sysPEM, _, _ := mintCA(t, "sysroot", 1)
-	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	if got := ensureCABundle(caPath); got != caPath {
@@ -214,7 +214,7 @@ func TestEnsureCABundleContentRefresh(t *testing.T) {
 
 	roots := sysPEM
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return roots, true }
+	systemRootsReader = func() ([]byte, bool) { return roots, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	bundlePath := ensureCABundle(caPath)
@@ -274,7 +274,7 @@ func TestEnsureCABundleRotationRace(t *testing.T) {
 
 	raced := false
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) {
+	systemRootsReader = func() ([]byte, bool) {
 		if !raced {
 			raced = true
 			// Simulate join landing a new ca.crt after ensureCABundle already
@@ -317,7 +317,7 @@ func TestCaPathPushdownVarsBundleForReplaceStyle(t *testing.T) {
 	bundlePath := filepath.Join(dir, "ca-bundle.crt")
 
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	got := map[string]string{}
@@ -338,6 +338,11 @@ func TestCaPathPushdownVarsBundleForReplaceStyle(t *testing.T) {
 // when system roots can't be read: every var stays on ca.crt (today's
 // behavior — MITM'd hosts keep working, only passthrough stays broken).
 func TestCaPathPushdownVarsFallbackAllAtCA(t *testing.T) {
+	// Isolate ambient SSL_CERT_* so the result never depends on the running
+	// shell's trust env (gap-b). With the machine-store reader pinned off,
+	// every var must fall back to ca.crt.
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("SSL_CERT_DIR", "")
 	mitmPEM, _, _ := mintCA(t, "mitm", 1)
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
@@ -346,7 +351,7 @@ func TestCaPathPushdownVarsFallbackAllAtCA(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return nil, false }
+	systemRootsReader = func() ([]byte, bool) { return nil, false }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	for _, ev := range caPathPushdownVars(caPath) {
@@ -356,36 +361,65 @@ func TestCaPathPushdownVarsFallbackAllAtCA(t *testing.T) {
 	}
 }
 
-// TestCaPathPushdownVarsPreservesOrigSSLCertFile: when the operator already had
-// an SSL_CERT_FILE, caPathPushdownVars must stash it in
-// CLAWPATROL_ORIG_SSL_CERT_FILE before overwriting SSL_CERT_FILE with the
-// bundle, so a corporate CA survives across nested shells (L2).
-func TestCaPathPushdownVarsPreservesOrigSSLCertFile(t *testing.T) {
-	mitmPEM, _, _ := mintCA(t, "mitm", 1)
-	sysPEM, _, _ := mintCA(t, "sysroot", 2)
-	dir := t.TempDir()
-	caPath := filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(caPath, mitmPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	bundlePath := filepath.Join(dir, "ca-bundle.crt")
-	corp := filepath.Join(dir, "corp-roots.pem")
+// TestApplyEnvPushdownVarsForceSetsCAVars (#2): a wrapped agent MUST trust the
+// combined bundle even when the operator already had SSL_CERT_FILE (or another
+// replace-style CA var) set — otherwise the child trusts only the operator's
+// file and no MITM'd endpoint works. Non-CA pushdown vars keep the operator's
+// value, and CLAWPATROL_NO_ENV=1 opts out entirely.
+func TestApplyEnvPushdownVarsForceSetsCAVars(t *testing.T) {
+	t.Setenv("SSL_CERT_FILE", "/operator/corp-roots.pem") // pre-existing operator value
+	t.Setenv("FOO_TOKEN", "operator-value")               // non-CA, must be preserved
+	t.Setenv("CLAWPATROL_NO_ENV", "")
 
-	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
-	t.Cleanup(func() { systemRootsReader = prev })
-	t.Setenv("SSL_CERT_FILE", corp)
-	t.Setenv("CLAWPATROL_ORIG_SSL_CERT_FILE", "")
+	applyEnvPushdownVars([]pushdownEnvVar{
+		{Name: "SSL_CERT_FILE", Value: "/clawpatrol/ca-bundle.crt"},
+		{Name: "FOO_TOKEN", Value: "clawpatrol-value"},
+	})
 
-	got := map[string]string{}
-	for _, ev := range caPathPushdownVars(caPath) {
-		got[ev.Name] = ev.Value
+	if got := os.Getenv("SSL_CERT_FILE"); got != "/clawpatrol/ca-bundle.crt" {
+		t.Errorf("SSL_CERT_FILE = %q, want the forced bundle path", got)
 	}
-	if got["SSL_CERT_FILE"] != bundlePath {
-		t.Errorf("SSL_CERT_FILE = %q, want bundle %q", got["SSL_CERT_FILE"], bundlePath)
+	if got := os.Getenv("FOO_TOKEN"); got != "operator-value" {
+		t.Errorf("FOO_TOKEN = %q, want the operator value preserved", got)
 	}
-	if got["CLAWPATROL_ORIG_SSL_CERT_FILE"] != corp {
-		t.Errorf("CLAWPATROL_ORIG_SSL_CERT_FILE = %q, want %q", got["CLAWPATROL_ORIG_SSL_CERT_FILE"], corp)
+
+	// CLAWPATROL_NO_ENV=1 disables the whole pushdown, CA vars included.
+	t.Setenv("SSL_CERT_FILE", "/operator/corp-roots.pem")
+	t.Setenv("CLAWPATROL_NO_ENV", "1")
+	applyEnvPushdownVars([]pushdownEnvVar{{Name: "SSL_CERT_FILE", Value: "/clawpatrol/ca-bundle.crt"}})
+	if got := os.Getenv("SSL_CERT_FILE"); got != "/operator/corp-roots.pem" {
+		t.Errorf("CLAWPATROL_NO_ENV should leave SSL_CERT_FILE untouched, got %q", got)
+	}
+}
+
+// TestNormalizeCertsPEM (#5): a malformed or header-bearing CERTIFICATE block
+// must be dropped, not re-emitted — OpenSSL rejects an entire CA file that
+// contains one bad block. Valid certs are deduped and re-encoded cleanly.
+func TestNormalizeCertsPEM(t *testing.T) {
+	good1, _, _ := mintCA(t, "good1", 1)
+	good2, _, _ := mintCA(t, "good2", 2)
+
+	var in []byte
+	in = append(in, good1...)
+	// A CERTIFICATE block with non-DER garbage bytes.
+	in = append(in, []byte("-----BEGIN CERTIFICATE-----\nbm90LWEtY2VydA==\n-----END CERTIFICATE-----\n")...)
+	// A block carrying PEM headers (AppendCertsFromPEM/OpenSSL reject these).
+	in = append(in, []byte("-----BEGIN CERTIFICATE-----\nProc-Type: 4,ENCRYPTED\n\nZm9v\n-----END CERTIFICATE-----\n")...)
+	in = append(in, good2...)
+	in = append(in, good1...) // duplicate
+
+	out := normalizeCertsPEM(in)
+
+	if n := countPEMCerts(out); n != 2 {
+		t.Fatalf("normalized cert count = %d, want 2 (dedup + drop malformed)", n)
+	}
+	if !bytes.Contains(out, good1) || !bytes.Contains(out, good2) {
+		t.Error("both valid certs must survive")
+	}
+	// Every surviving block must parse — proves no garbage leaked through.
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(out) {
+		t.Error("AppendCertsFromPEM rejected the normalized bundle")
 	}
 }
 
@@ -410,7 +444,7 @@ func TestEnsureCABundleNonConvergingFailsafe(t *testing.T) {
 	}
 	i := 0
 	prev := systemRootsReader
-	systemRootsReader = func(string) ([]byte, bool) {
+	systemRootsReader = func() ([]byte, bool) {
 		_ = os.WriteFile(caPath, rotations[i%len(rotations)], 0o644)
 		i++
 		return sysPEM, true

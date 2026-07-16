@@ -327,8 +327,24 @@ func buildPrivilegedEnv(envFile, caPath string, pushVars []pushdownEnvVar) []str
 	if noEnv {
 		return env
 	}
+	// The clawpatrol-owned CA vars are force-set: the child MUST trust the
+	// combined bundle / MITM CA even if the captured user env already named
+	// SSL_CERT_FILE etc. Drop any captured value for those names first, then
+	// re-add ours below. Non-CA pushdown vars keep the user's captured value.
+	filtered := env[:0]
+	for _, kv := range env {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			name = kv[:i]
+		}
+		if clawpatrolCAVarNames[name] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	env = filtered
 	for _, ev := range append(caPathPushdownVars(caPath), pushVars...) {
-		if have[ev.Name] {
+		if !clawpatrolCAVarNames[ev.Name] && have[ev.Name] {
 			continue
 		}
 		env = append(env, ev.Name+"="+ev.Value)
