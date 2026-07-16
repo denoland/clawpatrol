@@ -381,19 +381,16 @@ func runRunChild() {
 		}
 	}
 
-	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
-		_ = bindResolv(childResolvConf())
-		if body, changed := childNsswitch(); changed {
-			// Warn rather than abort: we can't know whether this command
-			// actually needs DNS. It may only talk to raw IPs, or not
-			// resolve anything at all, in which case a failed nsswitch
-			// rewrite breaks nothing. Failing hard here would block runs
-			// that would have worked fine; the warning is enough for the
-			// case where a lookup later fails for no obvious reason.
-			if err := bindNsswitch(body); err != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — DNS lookups may fail\n", err)
-			}
-		}
+	// Fail closed: a leaked lookup makes tunnel-backed endpoints
+	// silently unreachable (#765), which is far harder to debug than
+	// an up-front abort. The env var opts out of the whole lockdown
+	// for runs that don't need DNS (or need host DNS).
+	plan, err := computeDNSLockdown(gatherDNSLockdownInputs())
+	if err == nil {
+		err = applyDNSLockdown(plan)
+	}
+	if err != nil {
+		fail("dns sandbox setup: %v\n  set CLAWPATROL_RUN_KEEP_RESOLV=1 to skip DNS sandboxing (tunnel-backed endpoints will then be unreachable)", err)
 	}
 
 	// The agent runs as the same uid as the parent and can therefore
@@ -893,10 +890,10 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 // In tsnet mode we point at the gateway's tailnet IP: the gateway
 // runs serveTsnetDNSUDP on <tailnet-gateway-ip>:53, which both
 // allocates VIPs for intercepted hostnames AND relays anything else
-// upstream. Public resolvers don't work because the gateway has no
-// UDP fallback handler for exit-routed traffic — DNS packets aimed
-// at 1.1.1.1 / 8.8.8.8 get dropped at the gateway, so every name
-// lookup inside `clawpatrol run` would time out.
+// upstream. (The tsnet gateway's GetUDPHandlerForFlow catch-all also
+// answers UDP/53 aimed at any resolver IP, so a public nameserver
+// would work too — but the gateway IP is the explicit, contractual
+// target.)
 //
 // In WG mode the gateway's WG netstack intercepts DNS in-flight, so
 // any public-looking nameserver works; fall back to 1.1.1.1 / 8.8.8.8
@@ -908,57 +905,14 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 // whose nsswitch.conf puts `resolve` (systemd-resolved) ahead of `dns`
 // — Fedora's default — getaddrinfo answers from the host resolver
 // before ever consulting resolv.conf, so this alone is not enough.
-// childNsswitch handles that case.
+// The other lockdown layers (see run_dns_lockdown_linux.go) handle
+// that case.
 func childResolvConf() string {
 	caDir := defaultClawpatrolDir()
 	if gwIP := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip"))); gwIP != "" {
 		return "nameserver " + gwIP + "\n"
 	}
 	return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
-}
-
-// bindResolv writes body to a temp file and bind-mounts it over
-// /etc/resolv.conf in the calling mount namespace.
-//
-// The temp file is made world-readable (0644) before the mount. In the
-// sudo path bindResolv runs as root (before the drop to the invoking
-// user), so a 0600 file ends up root-owned and the unprivileged command
-// can't read the resolv.conf bind-mounted over /etc/resolv.conf — every
-// name lookup then fails with "could not resolve host" while raw-IP
-// traffic still works. A resolv.conf holds only nameserver lines,
-// nothing sensitive.
-func bindResolv(body string) error {
-	return bindOverEtc("/etc/resolv.conf", "clawpatrol-resolv-*", body)
-}
-
-// childNsswitch returns a sanitized /etc/nsswitch.conf body and whether
-// it differs from the host's. The sandbox bind-mounts a private
-// /etc/resolv.conf pointing at the gateway, but resolv.conf only governs
-// the glibc `dns` NSS module. Distros that list a host-resolver module
-// ahead of `dns` in the `hosts:` line — Fedora ships
-// `files myhostname mdns4_minimal [NOTFOUND=return] resolve
-// [!UNAVAIL=return] dns` — answer getaddrinfo from systemd-resolved (or
-// mDNS) first. That resolver runs on the host, is oblivious to the
-// sandbox's resolv.conf, and returns NXDOMAIN for gateway-only names
-// like clawpatrol.internal; the `[!UNAVAIL=return]` action then stops
-// the lookup before `dns` is ever tried, so the override is bypassed
-// and `curl https://clawpatrol.internal` fails to resolve while `dig`
-// (which reads resolv.conf directly) succeeds.
-//
-// See rewriteHostsLine for what the sanitization removes. A missing
-// nsswitch.conf is normal (musl/Alpine has no NSS; getaddrinfo reads
-// resolv.conf directly), so it is not worth a warning; any other read
-// error is, since it likely leaves the resolved short-circuit in place
-// and would otherwise turn into a silent resolution failure.
-func childNsswitch() (body string, changed bool) {
-	raw, err := os.ReadFile("/etc/nsswitch.conf")
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "[clawpatrol] cannot read /etc/nsswitch.conf: %v — DNS lookups may fail\n", err)
-		}
-		return "", false
-	}
-	return rewriteHostsLine(string(raw))
 }
 
 // splitHostsTokens splits an nsswitch source list into tokens, treating
@@ -1058,12 +1012,6 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 		return strings.Join(lines, "\n"), true
 	}
 	return "", false
-}
-
-// bindNsswitch bind-mounts body over /etc/nsswitch.conf in the calling
-// mount namespace. Same 0644/teardown semantics as bindResolv.
-func bindNsswitch(body string) error {
-	return bindOverEtc("/etc/nsswitch.conf", "clawpatrol-nsswitch-*", body)
 }
 
 // bindOverEtc writes body to a temp file (named via pattern) and
