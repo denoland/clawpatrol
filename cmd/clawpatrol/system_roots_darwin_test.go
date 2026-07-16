@@ -11,41 +11,38 @@ import (
 // Note: the macOS CI job only runs -run 'Sandbox|Dial|Nosy|Plugin|
 // ExternalCredential', so this test runs locally, not in CI.
 func TestDarwinSystemRootsReader(t *testing.T) {
-	prevKC := securityKeychains
+	prevKC := systemRootKeychain
 	prevRun := runSecurityFindCerts
 	t.Cleanup(func() {
-		securityKeychains = prevKC
+		systemRootKeychain = prevKC
 		runSecurityFindCerts = prevRun
 	})
 
-	securityKeychains = []string{"/kc/a", "/kc/b"}
+	// Only the curated SystemRoot keychain is dumped — never System.keychain,
+	// whose certs aren't trust-evaluated.
+	var dumped []string
+	systemRootKeychain = "/curated/roots.keychain"
 	runSecurityFindCerts = func(keychain string) ([]byte, error) {
-		return []byte(fmt.Sprintf("PEM(%s)\n", keychain)), nil
+		dumped = append(dumped, keychain)
+		return []byte("PEM(" + keychain + ")\n"), nil
 	}
-	got, ok := defaultSystemRootsReader()
-	if !ok {
-		t.Fatal("expected ok")
+	got, ok := defaultSystemRootsReader("")
+	if !ok || !bytes.Equal(got, []byte("PEM(/curated/roots.keychain)\n")) {
+		t.Fatalf("got %q ok=%v", got, ok)
 	}
-	want := []byte("PEM(/kc/a)\nPEM(/kc/b)\n")
-	if !bytes.Equal(got, want) {
-		t.Errorf("got %q, want %q", got, want)
+	if len(dumped) != 1 || dumped[0] != "/curated/roots.keychain" {
+		t.Errorf("expected exactly the SystemRoot keychain dumped, got %v", dumped)
 	}
 
-	// A keychain that errors is skipped; the other still contributes.
-	runSecurityFindCerts = func(keychain string) ([]byte, error) {
-		if keychain == "/kc/a" {
-			return nil, fmt.Errorf("boom")
-		}
-		return []byte("PEM(b)\n"), nil
-	}
-	got, ok = defaultSystemRootsReader()
-	if !ok || !bytes.Equal(got, []byte("PEM(b)\n")) {
-		t.Errorf("partial failure: got %q ok=%v", got, ok)
-	}
-
-	// All keychains fail → (nil, false).
+	// security failure → (nil, false), so ensureCABundle falls back safely.
 	runSecurityFindCerts = func(string) ([]byte, error) { return nil, fmt.Errorf("boom") }
-	if _, ok := defaultSystemRootsReader(); ok {
-		t.Error("expected (nil,false) when every keychain fails")
+	if _, ok := defaultSystemRootsReader(""); ok {
+		t.Error("expected (nil,false) when security fails")
+	}
+
+	// Empty output → (nil, false).
+	runSecurityFindCerts = func(string) ([]byte, error) { return nil, nil }
+	if _, ok := defaultSystemRootsReader(""); ok {
+		t.Error("expected (nil,false) on empty security output")
 	}
 }

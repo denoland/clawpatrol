@@ -133,7 +133,7 @@ func TestEnsureCABundleVerifiesBothChains(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	bundlePath := ensureCABundle(caPath)
@@ -171,7 +171,7 @@ func TestEnsureCABundleFallbackNoSystemRoots(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func() ([]byte, bool) { return nil, false }
+	systemRootsReader = func(string) ([]byte, bool) { return nil, false }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	if got := ensureCABundle(caPath); got != caPath {
@@ -188,7 +188,7 @@ func TestEnsureCABundleMissingCA(t *testing.T) {
 
 	prev := systemRootsReader
 	sysPEM, _, _ := mintCA(t, "sysroot", 1)
-	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	if got := ensureCABundle(caPath); got != caPath {
@@ -199,7 +199,11 @@ func TestEnsureCABundleMissingCA(t *testing.T) {
 	}
 }
 
-func TestEnsureCABundleStaleRebuild(t *testing.T) {
+// TestEnsureCABundleContentRefresh proves freshness is content-based, not
+// mtime-based: a second call with unchanged inputs does not rewrite the file,
+// but a system-root change (addition/removal) or a CA rotation is picked up
+// even when mtimes wouldn't reveal it.
+func TestEnsureCABundleContentRefresh(t *testing.T) {
 	mitmPEM, _, _ := mintCA(t, "mitm", 1)
 	sysPEM, _, _ := mintCA(t, "sysroot", 2)
 	dir := t.TempDir()
@@ -208,8 +212,9 @@ func TestEnsureCABundleStaleRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	roots := sysPEM
 	prev := systemRootsReader
-	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func(string) ([]byte, bool) { return roots, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	bundlePath := ensureCABundle(caPath)
@@ -218,31 +223,78 @@ func TestEnsureCABundleStaleRebuild(t *testing.T) {
 		t.Fatalf("first build: %v", err)
 	}
 
-	// Idempotent: a second call returns the same path and valid contents.
+	// Unchanged inputs → no rewrite (mtime stays put).
+	info1, _ := os.Stat(bundlePath)
 	if got := ensureCABundle(caPath); got != bundlePath {
 		t.Fatalf("second call returned %q, want %q", got, bundlePath)
 	}
+	info2, _ := os.Stat(bundlePath)
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Error("bundle rewritten despite identical content")
+	}
 
-	// Rotate the CA and make it newer than the bundle → forces a rebuild
-	// with the new CA content.
-	rotatedPEM, _, _ := mintCA(t, "mitm-rotated", 3)
+	// System roots change (a root removed / added) with NO ca.crt mtime bump:
+	// content-based freshness must still refresh the bundle.
+	newRootPEM, _, _ := mintCA(t, "sysroot-2", 3)
+	roots = newRootPEM
+	ensureCABundle(caPath)
+	afterRoots, _ := os.ReadFile(bundlePath)
+	if bytes.Equal(first, afterRoots) {
+		t.Error("bundle not refreshed after system roots changed")
+	}
+	if !bytes.Contains(afterRoots, newRootPEM) {
+		t.Error("refreshed bundle missing the new system root")
+	}
+
+	// CA rotation is likewise picked up by content.
+	rotatedPEM, _, _ := mintCA(t, "mitm-rotated", 4)
 	if err := os.WriteFile(caPath, rotatedPEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	future := time.Now().Add(time.Hour)
-	if err := os.Chtimes(caPath, future, future); err != nil {
+	ensureCABundle(caPath)
+	rebuilt, _ := os.ReadFile(bundlePath)
+	if !bytes.Contains(rebuilt, rotatedPEM) {
+		t.Error("bundle missing rotated CA")
+	}
+}
+
+// TestEnsureCABundleRotationRace reproduces the join-vs-run race: ca.crt is
+// rewritten (rotated) while ensureCABundle is mid-build. The final bundle must
+// contain the NEW CA, never pin the old one. The injected reader rotates ca.crt
+// on its first call, standing in for a concurrent `clawpatrol join`.
+func TestEnsureCABundleRotationRace(t *testing.T) {
+	oldPEM, _, _ := mintCA(t, "mitm-old", 1)
+	newPEM, _, _ := mintCA(t, "mitm-new", 2)
+	sysPEM, _, _ := mintCA(t, "sysroot", 3)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, oldPEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ensureCABundle(caPath)
-	rebuilt, err := os.ReadFile(bundlePath)
+
+	raced := false
+	prev := systemRootsReader
+	systemRootsReader = func(string) ([]byte, bool) {
+		if !raced {
+			raced = true
+			// Simulate join landing a new ca.crt after ensureCABundle already
+			// read the old one this iteration.
+			_ = os.WriteFile(caPath, newPEM, 0o644)
+		}
+		return sysPEM, true
+	}
+	t.Cleanup(func() { systemRootsReader = prev })
+
+	bundlePath := ensureCABundle(caPath)
+	bundle, err := os.ReadFile(bundlePath)
 	if err != nil {
-		t.Fatalf("rebuild read: %v", err)
+		t.Fatalf("bundle: %v", err)
 	}
-	if bytes.Equal(first, rebuilt) {
-		t.Error("bundle not rebuilt after ca.crt changed")
+	if !bytes.Contains(bundle, newPEM) {
+		t.Error("bundle did not converge on the rotated (new) CA")
 	}
-	if !bytes.Contains(rebuilt, rotatedPEM) {
-		t.Error("rebuilt bundle missing rotated CA")
+	if bytes.Contains(bundle, oldPEM) {
+		t.Error("bundle still pins the old CA after rotation")
 	}
 }
 
@@ -265,7 +317,7 @@ func TestCaPathPushdownVarsBundleForReplaceStyle(t *testing.T) {
 	bundlePath := filepath.Join(dir, "ca-bundle.crt")
 
 	prev := systemRootsReader
-	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	got := map[string]string{}
@@ -294,7 +346,7 @@ func TestCaPathPushdownVarsFallbackAllAtCA(t *testing.T) {
 	}
 
 	prev := systemRootsReader
-	systemRootsReader = func() ([]byte, bool) { return nil, false }
+	systemRootsReader = func(string) ([]byte, bool) { return nil, false }
 	t.Cleanup(func() { systemRootsReader = prev })
 
 	for _, ev := range caPathPushdownVars(caPath) {

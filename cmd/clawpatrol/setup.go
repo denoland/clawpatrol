@@ -442,7 +442,7 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
 	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
+	if err := atomicWriteFile(dst, b, 0o644); err != nil {
 		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return fp, nil
@@ -676,7 +676,7 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
+	if err := atomicWriteFile(dst, b, 0o644); err != nil {
 		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return nil
@@ -1247,7 +1247,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// Write CA delivered in the poll response (gateway's /ca.crt is
 		// intentionally not public in tsnet mode). Then install trust.
 		if caPEM != "" {
-			if werr := os.WriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
+			if werr := atomicWriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
 				if fp, ferr := caFingerprintFromPEM([]byte(caPEM)); ferr == nil {
 					setup.caFingerprint = fp
 				}
