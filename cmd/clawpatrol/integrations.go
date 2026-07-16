@@ -121,6 +121,13 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 // ensureCABundle. NODE_EXTRA_CA_CERTS is additive (Node keeps its
 // built-in roots), so it stays on ca.crt alone.
 //
+// When the operator had their own SSL_CERT_FILE (e.g. a corporate CA), we
+// also emit CLAWPATROL_ORIG_SSL_CERT_FILE preserving it: the SSL_CERT_FILE
+// var below overwrites the operator's value with our bundle path, so without
+// this the Linux system-roots reader would, on the next nested shell or
+// `clawpatrol run`, see only our bundle, skip it as a self-reference, and
+// rebuild from the distro aggregate — silently dropping the corporate root.
+//
 // Exposed within the package so the Linux daemon-routed path
 // (`clawpatrol run` → daemon control socket) can combine these
 // with the gateway-fetched vars the daemon ships back, instead
@@ -136,11 +143,14 @@ func caPathPushdownVars(caPath string) []pushdownEnvVar {
 		"PIP_CERT",
 		"AWS_CA_BUNDLE",
 	}
-	out := make([]pushdownEnvVar, 0, len(replaceStyle)+1)
+	out := make([]pushdownEnvVar, 0, len(replaceStyle)+2)
 	for _, k := range replaceStyle {
 		out = append(out, pushdownEnvVar{Name: k, Value: bundlePath})
 	}
 	out = append(out, pushdownEnvVar{Name: "NODE_EXTRA_CA_CERTS", Value: caPath})
+	if orig := sslCertFileOrig(bundlePath); orig != "" && !samePath(orig, bundlePath) {
+		out = append(out, pushdownEnvVar{Name: "CLAWPATROL_ORIG_SSL_CERT_FILE", Value: orig})
+	}
 	return out
 }
 

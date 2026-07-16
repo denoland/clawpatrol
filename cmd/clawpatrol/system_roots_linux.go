@@ -3,7 +3,8 @@
 package main
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 )
@@ -23,99 +24,98 @@ var systemRootCertFiles = []string{
 }
 
 // systemRootCertDirs mirrors root_unix.go's certDirectories — the hashed
-// per-certificate directories used by distros that ship no aggregate file.
+// per-certificate directories always scanned after the aggregate file.
 var systemRootCertDirs = []string{
 	"/etc/ssl/certs",
 	"/etc/pki/tls/certs",
 	"/system/etc/security/cacerts",
 }
 
-var pemCertMarker = []byte("-----BEGIN CERTIFICATE-----")
-
-// defaultSystemRootsReader reproduces crypto/x509 root_unix.go's discovery so
-// the bundle matches what Go (and thus the system's default trust) would use,
-// closing the enterprise/custom-CA gap in the earlier file-only version:
+// defaultSystemRootsReader reproduces crypto/x509 root_unix.go discovery so the
+// generated bundle matches the trust set Go (and thus the system default) would
+// assemble:
 //
-//   - SSL_CERT_FILE overrides everything (Go honors it first) — but never our
-//     own generated bundle, which SSL_CERT_FILE is set to after `clawpatrol
-//     env`; folding it back in would grow the bundle on every shell.
-//   - Otherwise the first existing aggregate file (systemRootCertFiles).
-//   - SSL_CERT_DIR (or, when neither an aggregate file nor SSL_CERT_DIR is
-//     present, the default cert directories) supplies directory-only distros
-//     and enterprise roots dropped into /etc/ssl/certs.
+//   - SSL_CERT_FILE, when set, REPLACES the aggregate file list — Go never
+//     falls back to the distro aggregate once the override is set, so neither
+//     do we (tracking "override configured" separately from "bytes loaded"
+//     avoids a fail-open widening to the default roots). Our own generated
+//     bundle is resolved back to the operator's original source via
+//     sslCertFileOrig so a corporate CA survives repeated `clawpatrol env`.
+//   - the certificate directories (SSL_CERT_DIR, else the defaults) are ALWAYS
+//     scanned after the file loop, exactly as root_unix.go does — roots
+//     installed only under /etc/ssl/certs must not be dropped.
 //
-// selfBundle is the ca-bundle.crt path to exclude from any file source.
+// Every source is parsed into CERTIFICATE blocks and re-encoded (deduped by
+// DER) before concatenation, so a source file missing a trailing newline can't
+// abut the next block and silently corrupt the bundle.
+//
+// selfBundle is the ca-bundle.crt path, excluded from every file source to
+// avoid folding the bundle back into itself.
 func defaultSystemRootsReader(selfBundle string) ([]byte, bool) {
-	var buf []byte
-
-	if f := os.Getenv("SSL_CERT_FILE"); f != "" && !samePath(f, selfBundle) {
-		if b, err := os.ReadFile(f); err == nil {
-			buf = append(buf, b...)
+	seen := map[[32]byte]bool{}
+	var ders [][]byte
+	add := func(data []byte) {
+		rest := data
+		for {
+			var blk *pem.Block
+			blk, rest = pem.Decode(rest)
+			if blk == nil {
+				break
+			}
+			if blk.Type != "CERTIFICATE" {
+				continue
+			}
+			h := sha256.Sum256(blk.Bytes)
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			ders = append(ders, blk.Bytes)
 		}
 	}
-	if len(buf) == 0 {
-		for _, f := range systemRootCertFiles {
-			if b, err := os.ReadFile(f); err == nil && len(b) > 0 {
-				buf = append(buf, b...)
-				break
+
+	// Aggregate file: SSL_CERT_FILE override replaces the candidate list.
+	files := systemRootCertFiles
+	if override := sslCertFileOrig(selfBundle); override != "" {
+		files = []string{override}
+	}
+	for _, f := range files {
+		if b, err := os.ReadFile(f); err == nil {
+			add(b)
+			break
+		}
+	}
+
+	// Certificate directories: always scanned, SSL_CERT_DIR overrides defaults.
+	dirs := systemRootCertDirs
+	if d := os.Getenv("SSL_CERT_DIR"); d != "" {
+		dirs = filepath.SplitList(d)
+	}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			if samePath(p, selfBundle) {
+				continue
+			}
+			if b, err := os.ReadFile(p); err == nil {
+				add(b)
 			}
 		}
 	}
 
-	// Read the cert directories when the admin points us at one explicitly,
-	// or when no aggregate file was found (directory-only distros).
-	if dir := os.Getenv("SSL_CERT_DIR"); dir != "" {
-		for _, d := range filepath.SplitList(dir) {
-			buf = appendDirCerts(buf, d, selfBundle)
-		}
-	} else if len(buf) == 0 {
-		for _, d := range systemRootCertDirs {
-			buf = appendDirCerts(buf, d, selfBundle)
-		}
-	}
-
-	if len(buf) == 0 {
+	if len(ders) == 0 {
 		return nil, false
 	}
-	return buf, true
-}
-
-// appendDirCerts appends every PEM certificate file found directly in dir.
-func appendDirCerts(buf []byte, dir, selfBundle string) []byte {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return buf
+	var out []byte
+	for _, der := range ders {
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		p := filepath.Join(dir, e.Name())
-		if samePath(p, selfBundle) {
-			continue
-		}
-		b, err := os.ReadFile(p)
-		if err != nil || !bytes.Contains(b, pemCertMarker) {
-			continue
-		}
-		buf = append(buf, b...)
-	}
-	return buf
-}
-
-// samePath compares two paths by their absolute form so SSL_CERT_FILE=./x
-// and the absolute selfBundle still match.
-func samePath(a, b string) bool {
-	if b == "" {
-		return false
-	}
-	aa, err := filepath.Abs(a)
-	if err != nil {
-		aa = a
-	}
-	ba, err := filepath.Abs(b)
-	if err != nil {
-		ba = b
-	}
-	return aa == ba
+	return out, true
 }

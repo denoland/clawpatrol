@@ -355,3 +355,69 @@ func TestCaPathPushdownVarsFallbackAllAtCA(t *testing.T) {
 		}
 	}
 }
+
+// TestCaPathPushdownVarsPreservesOrigSSLCertFile: when the operator already had
+// an SSL_CERT_FILE, caPathPushdownVars must stash it in
+// CLAWPATROL_ORIG_SSL_CERT_FILE before overwriting SSL_CERT_FILE with the
+// bundle, so a corporate CA survives across nested shells (L2).
+func TestCaPathPushdownVarsPreservesOrigSSLCertFile(t *testing.T) {
+	mitmPEM, _, _ := mintCA(t, "mitm", 1)
+	sysPEM, _, _ := mintCA(t, "sysroot", 2)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, mitmPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundlePath := filepath.Join(dir, "ca-bundle.crt")
+	corp := filepath.Join(dir, "corp-roots.pem")
+
+	prev := systemRootsReader
+	systemRootsReader = func(string) ([]byte, bool) { return sysPEM, true }
+	t.Cleanup(func() { systemRootsReader = prev })
+	t.Setenv("SSL_CERT_FILE", corp)
+	t.Setenv("CLAWPATROL_ORIG_SSL_CERT_FILE", "")
+
+	got := map[string]string{}
+	for _, ev := range caPathPushdownVars(caPath) {
+		got[ev.Name] = ev.Value
+	}
+	if got["SSL_CERT_FILE"] != bundlePath {
+		t.Errorf("SSL_CERT_FILE = %q, want bundle %q", got["SSL_CERT_FILE"], bundlePath)
+	}
+	if got["CLAWPATROL_ORIG_SSL_CERT_FILE"] != corp {
+		t.Errorf("CLAWPATROL_ORIG_SSL_CERT_FILE = %q, want %q", got["CLAWPATROL_ORIG_SSL_CERT_FILE"], corp)
+	}
+}
+
+// TestEnsureCABundleNonConvergingFailsafe (R1): if ca.crt never settles across
+// the retry budget, ensureCABundle must return caPath (fail-safe), not a bundle
+// it couldn't prove current. The injected reader rewrites ca.crt on every call.
+func TestEnsureCABundleNonConvergingFailsafe(t *testing.T) {
+	sysPEM, _, _ := mintCA(t, "sysroot", 1)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, []byte("v0-placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-mint distinct CA payloads so each reader call can rotate ca.crt to a
+	// value different from the one ensureCABundle just read (Math.random is
+	// unavailable; vary by counter).
+	var rotations [][]byte
+	for i := 0; i < 10; i++ {
+		p, _, _ := mintCA(t, "rot", int64(100+i))
+		rotations = append(rotations, p)
+	}
+	i := 0
+	prev := systemRootsReader
+	systemRootsReader = func(string) ([]byte, bool) {
+		_ = os.WriteFile(caPath, rotations[i%len(rotations)], 0o644)
+		i++
+		return sysPEM, true
+	}
+	t.Cleanup(func() { systemRootsReader = prev })
+
+	if got := ensureCABundle(caPath); got != caPath {
+		t.Errorf("non-converging ca.crt: got %q, want caPath fail-safe %q", got, caPath)
+	}
+}

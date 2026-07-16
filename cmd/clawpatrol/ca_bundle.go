@@ -93,7 +93,53 @@ func ensureCABundle(caPath string) string {
 			return bundlePath
 		}
 	}
-	return bundlePath
+	// ca.crt never settled across the retry budget (a pathological writer):
+	// the bundle on disk may embed a stale CA, so fall back to caPath rather
+	// than hand out a bundle we couldn't prove current. Fail-safe: the wrapped
+	// agent still trusts the current MITM CA, only losing passthrough roots.
+	return caPath
+}
+
+// samePath reports whether a and b resolve to the same file, following
+// symlinks and comparing by identity (inode) when both exist, and falling
+// back to a lexical absolute-path compare when they don't. Used to keep the
+// generated ca-bundle.crt from being folded back into itself even when it is
+// reached through a symlink alias.
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		ra, _ = filepath.Abs(a)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		rb, _ = filepath.Abs(b)
+	}
+	if ra == rb {
+		return true
+	}
+	if fa, err := os.Stat(a); err == nil {
+		if fb, err := os.Stat(b); err == nil {
+			return os.SameFile(fa, fb)
+		}
+	}
+	return false
+}
+
+// sslCertFileOrig returns the operator's true SSL_CERT_FILE source. Once
+// `clawpatrol env` has run, SSL_CERT_FILE points at our own bundle; the
+// pre-pushdown value is stashed in CLAWPATROL_ORIG_SSL_CERT_FILE so a
+// corporate CA file survives repeated passes (see caPathPushdownVars).
+// Returns "" when the operator set no SSL_CERT_FILE. bundlePath is the
+// generated bundle to detect the self-reference.
+func sslCertFileOrig(bundlePath string) string {
+	v := os.Getenv("SSL_CERT_FILE")
+	if v != "" && samePath(v, bundlePath) {
+		return os.Getenv("CLAWPATROL_ORIG_SSL_CERT_FILE")
+	}
+	return v
 }
 
 // atomicWriteFile writes data to path via a temp file + rename so a
