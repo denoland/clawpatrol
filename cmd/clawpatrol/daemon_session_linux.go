@@ -259,33 +259,52 @@ func ipv4Checksum(b []byte) uint16 {
 	return ^uint16(sum)
 }
 
+// transportDialTimeout bounds the upstream transport.Dial while the
+// child's SYN is left pending. Well below typical client connect
+// timeouts, so a slow transport surfaces as our RST rather than the
+// client giving up first.
+const transportDialTimeout = 15 * time.Second
+
 // enableTransportTCPForwarder installs a promiscuous TCP forwarder on
 // s. Every connection dials the original destination via
 // transport.Dial. In tsnet mode the transport routes through the
 // exit-node-pinned tsnet.Server (the gateway sees original dst via
 // RegisterFallbackTCPHandler). In WG mode the transport's gVisor
 // stack dials the WG netstack directly.
+//
+// The upstream dial happens BEFORE the child-side handshake is
+// completed: CreateEndpoint sends the SYN-ACK, so accepting first
+// would make the child's connect() succeed unconditionally and turn
+// every unreachable destination into connect-then-hang. Tunnel-backed
+// endpoints depend on connect() failing fast — getaddrinfo iterates
+// A/AAAA answers (and Happy Eyeballs races them) only when the
+// previous attempt is refused, never when it hangs (#765). While the
+// dial is in flight the SYN stays pending; the forwarder dedupes
+// retransmitted SYNs for the same 4-tuple until Complete is called.
 func enableTransportTCPForwarder(s *stack.Stack, transport daemonTransport) {
 	fwd := tcp.NewForwarder(s, 1<<20, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
 		dstAddr := net.JoinHostPort(id.LocalAddress.String(),
 			fmt.Sprintf("%d", id.LocalPort))
 
-		var wq waiter.Queue
-		ep, err := req.CreateEndpoint(&wq)
-		if err != nil {
-			req.Complete(true)
-			return
-		}
-		req.Complete(false)
-		local := gonet.NewTCPConn(&wq, ep)
 		go func() {
-			defer func() { _ = local.Close() }()
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), transportDialTimeout)
+			defer cancel()
 			remote, err := transport.Dial(ctx, "tcp", dstAddr)
 			if err != nil {
+				req.Complete(true) // RST — refuse, don't accept-and-hang
 				return
 			}
+			var wq waiter.Queue
+			ep, terr := req.CreateEndpoint(&wq)
+			if terr != nil {
+				req.Complete(true)
+				_ = remote.Close()
+				return
+			}
+			req.Complete(false)
+			local := gonet.NewTCPConn(&wq, ep)
+			defer func() { _ = local.Close() }()
 			defer func() { _ = remote.Close() }()
 			tsnetBiRelay(local, remote)
 		}()
