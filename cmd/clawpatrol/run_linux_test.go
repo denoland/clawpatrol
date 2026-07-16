@@ -153,6 +153,24 @@ func TestRewriteHostsLine(t *testing.T) {
 	}
 }
 
+func TestChildNetnsSteps(t *testing.T) {
+	got := childNetnsSteps("100.64.0.7")
+	want := []netnsStep{
+		{args: []string{"ip", "link", "set", "lo", "up"}},
+		{args: []string{"ip", "link", "set", tunIfName, "mtu", "65535", "up"}},
+		{args: []string{"ip", "addr", "add", "100.64.0.7/32", "dev", tunIfName}},
+		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
+		// v6 so fd78:: DNS-VIP answers are routable (#765). Optional:
+		// on a host booted with ipv6.disable=1 these fail, and the v4
+		// VIP path must keep working rather than abort the run.
+		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", "default", "dev", tunIfName}, optional: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("childNetnsSteps:\n got %v\nwant %v", got, want)
+	}
+}
+
 func TestSplitWGAddresses(t *testing.T) {
 	cases := []struct {
 		name string

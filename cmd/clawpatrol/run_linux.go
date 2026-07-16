@@ -81,6 +81,14 @@ const (
 	// max IPv4 packet size — the daemon's transport handles real
 	// path-MTU + fragmentation behind us.
 	runTunMTU = 65535
+	// runTunAddr6 is the fixed IPv6 ULA the child binds to its TUN so
+	// fd78:: DNS-VIP answers are routable (#765). Any ULA outside the
+	// gateway's VIP range (fd78::/64) and Tailscale's fd7a:115c:a1e0::/48
+	// works: the daemon's per-session gVisor stack runs promiscuous +
+	// spoofing and never validates the child's source address, and the
+	// TCP forwarder dials upstream with the transport's own identity.
+	// No per-session allocation needed — the netns is private.
+	runTunAddr6 = "fd63:6c61:7770::2"
 )
 
 // runRun is `clawpatrol run`. Re-execs self in new user+net+mnt
@@ -367,17 +375,16 @@ func runRunChild() {
 		fail("%s not set", runTunAddrEnv)
 	}
 
-	steps := [][]string{
-		{"ip", "link", "set", "lo", "up"},
-		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", runTunMTU), "up"},
-		{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName},
-		{"ip", "route", "add", "default", "dev", tunIfName},
-	}
-	for _, a := range steps {
-		c := exec.Command(a[0], a[1:]...)
+	for _, step := range childNetnsSteps(tunAddr) {
+		c := exec.Command(step.args[0], step.args[1:]...)
 		c.Stderr = os.Stderr
 		if err := c.Run(); err != nil {
-			fail("%s: %v", strings.Join(a, " "), err)
+			if step.optional {
+				fmt.Fprintf(os.Stderr, "[clawpatrol] %s: %v — continuing without IPv6 in the sandbox\n",
+					strings.Join(step.args, " "), err)
+				continue
+			}
+			fail("%s: %v", strings.Join(step.args, " "), err)
 		}
 	}
 
@@ -882,6 +889,39 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 		return fds[:n], nil
 	}
 	return nil, fmt.Errorf("no SCM_RIGHTS fd")
+}
+
+// netnsStep is one `ip` invocation of the child-netns bring-up.
+// Optional steps warn instead of aborting when they fail.
+type netnsStep struct {
+	args     []string
+	optional bool
+}
+
+// childNetnsSteps is the `ip` command sequence that brings up the
+// child's netns: loopback, the TUN at max MTU, the transport-assigned
+// v4 /32 with a v4 default route, and the fixed runTunAddr6 ULA with
+// a v6 default route. Without the v6 pair an fd78:: DNS-VIP answer is
+// "network unreachable" inside the netns, and AAAA-first clients
+// would skip tunnel-backed endpoints entirely; the daemon's stack is
+// already v6-capable for TCP. nodad because nothing else lives on the
+// TUN and duplicate-address detection would stall the address for a
+// second. (v6 UDP is not forwarded by the TUN bridge — DNS rides the
+// v4 nameserver — so v6 here serves the TCP data path.)
+//
+// The v6 steps are optional: a host booted with ipv6.disable=1 can't
+// add them, and the v4 VIP path must keep working there — a failed
+// v6 bring-up degrades AAAA attempts to instant network-unreachable,
+// which clients fall back from.
+func childNetnsSteps(tunAddr string) []netnsStep {
+	return []netnsStep{
+		{args: []string{"ip", "link", "set", "lo", "up"}},
+		{args: []string{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", runTunMTU), "up"}},
+		{args: []string{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName}},
+		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
+		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", "default", "dev", tunIfName}, optional: true},
+	}
 }
 
 // childResolvConf builds the body of /etc/resolv.conf the child sees
