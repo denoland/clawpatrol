@@ -1,6 +1,7 @@
 package extplugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/klauspost/compress/snappy"
 	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -186,26 +188,121 @@ func (c *ghClient) attestations(ctx context.Context, owner, repo, digest string)
 	}
 	var payload struct {
 		Attestations []struct {
-			Bundle json.RawMessage `json:"bundle"`
+			Bundle    json.RawMessage `json:"bundle"`
+			BundleURL string          `json:"bundle_url"`
 		} `json:"attestations"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("github: decode attestations: %w", err)
 	}
+	// Entries are independent: one attestation that fails to fetch or
+	// decode must not discard a sibling that loads — verify() only needs
+	// one valid attestation. Per-entry errors are collected and surface
+	// as a hard error only when nothing loaded at all, so an attestation
+	// that exists but is unretrievable still fails closed rather than
+	// degrading to the errNoAttestation soft miss.
 	var out []*bundle.Bundle
+	var errs []error
 	for _, a := range payload.Attestations {
-		if len(a.Bundle) == 0 {
-			continue
+		raw := []byte(a.Bundle)
+		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			if a.BundleURL == "" {
+				continue // degenerate entry: nothing inline and nothing by reference
+			}
+			fetched, err := c.bundleFromURL(ctx, a.BundleURL)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			raw = fetched
 		}
 		var pb protobundle.Bundle
-		if err := protojson.Unmarshal(a.Bundle, &pb); err != nil {
-			return nil, fmt.Errorf("github: decode attestation bundle: %w", err)
+		if err := protojson.Unmarshal(raw, &pb); err != nil {
+			errs = append(errs, fmt.Errorf("github: decode attestation bundle: %w", err))
+			continue
 		}
 		b, err := bundle.NewBundle(&pb)
 		if err != nil {
-			return nil, fmt.Errorf("github: load attestation bundle: %w", err)
+			errs = append(errs, fmt.Errorf("github: load attestation bundle: %w", err))
+			continue
 		}
 		out = append(out, b)
 	}
+	if len(out) == 0 && len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	return out, nil
+}
+
+// maxBundleBytes caps a by-reference attestation bundle, both as
+// downloaded and after decompression (the same cap as the attestations
+// response body above).
+const maxBundleBytes = 16 << 20
+
+// snappyFramedMagic is the stream-identifier chunk that opens the
+// snappy framing format.
+var snappyFramedMagic = []byte("\xff\x06\x00\x00sNaPpY")
+
+// bundleFromURL fetches a by-reference attestation bundle. The API's
+// bundle_url is a time-limited pre-signed URL on GitHub's blob storage,
+// not api.github.com, so no auth headers are attached: forwarding the
+// GitHub token to a third-party host would leak it. A failure here is
+// never a soft miss — the attestation exists, and treating an
+// unreachable bundle as absent would let whoever can disrupt the blob
+// path downgrade verification to checksum-only under provenance="warn".
+// The caller skips the failed entry if a sibling attestation loads, and
+// fails closed otherwise.
+func (c *ghClient) bundleFromURL(ctx context.Context, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("github: fetch attestation bundle: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github: fetch attestation bundle: %w", err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBundleBytes))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("github: fetch attestation bundle: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github: fetch attestation bundle: HTTP %d", resp.StatusCode)
+	}
+	return decodeBundlePayload(body)
+}
+
+// decodeBundlePayload returns bundle JSON from a bundle_url response
+// body: a snappy framed stream, raw JSON, or a snappy block (what
+// GitHub serves today, Content-Type application/x-snappy). Sniffing '{'
+// for raw JSON is safe: a snappy block starting with 0x7b would declare
+// a decoded length of exactly 123 bytes (a one-byte varint), far below
+// any real bundle.
+func decodeBundlePayload(data []byte) ([]byte, error) {
+	switch {
+	case bytes.HasPrefix(data, snappyFramedMagic):
+		out, err := io.ReadAll(io.LimitReader(snappy.NewReader(bytes.NewReader(data)), maxBundleBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("github: decompress attestation bundle: %w", err)
+		}
+		if len(out) > maxBundleBytes {
+			return nil, fmt.Errorf("github: attestation bundle too large (> %d bytes decompressed)", maxBundleBytes)
+		}
+		return out, nil
+	case len(data) > 0 && data[0] == '{':
+		return data, nil
+	default:
+		n, err := snappy.DecodedLen(data)
+		if err != nil {
+			return nil, fmt.Errorf("github: decompress attestation bundle: %w", err)
+		}
+		if n > maxBundleBytes {
+			return nil, fmt.Errorf("github: attestation bundle too large (> %d bytes decompressed)", maxBundleBytes)
+		}
+		out, err := snappy.Decode(nil, data)
+		if err != nil {
+			return nil, fmt.Errorf("github: decompress attestation bundle: %w", err)
+		}
+		return out, nil
+	}
 }
