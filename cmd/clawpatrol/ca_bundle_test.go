@@ -430,19 +430,19 @@ func TestEnsureCABundleNonConvergingFailsafe(t *testing.T) {
 	sysPEM, _, _ := mintCA(t, "sysroot", 1)
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(caPath, []byte("v0-placeholder"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	// Pre-mint distinct CA payloads so each reader call can rotate ca.crt to a
-	// value different from the one ensureCABundle just read (Math.random is
-	// unavailable; vary by counter).
+	// Pre-mint distinct VALID CA payloads (a malformed ca.crt would fail safe
+	// for a different reason); each reader call rotates ca.crt to a value
+	// different from the one ensureCABundle just read.
 	var rotations [][]byte
 	for i := 0; i < 10; i++ {
 		p, _, _ := mintCA(t, "rot", int64(100+i))
 		rotations = append(rotations, p)
 	}
-	i := 0
+	if err := os.WriteFile(caPath, rotations[0], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	i := 1
 	prev := systemRootsReader
 	systemRootsReader = func() ([]byte, bool) {
 		_ = os.WriteFile(caPath, rotations[i%len(rotations)], 0o644)
@@ -454,4 +454,153 @@ func TestEnsureCABundleNonConvergingFailsafe(t *testing.T) {
 	if got := ensureCABundle(caPath); got != caPath {
 		t.Errorf("non-converging ca.crt: got %q, want caPath fail-safe %q", got, caPath)
 	}
+}
+
+// TestEnsureCABundleStaleRootRace (round-4 #1): a slow reader holding roots that
+// still contain R must not resurrect R after another writer removed it. The
+// injected reader returns roots-with-R on the first read and roots-without-R on
+// every re-sample, so ensureCABundle must detect the drift and rebuild — the
+// final bundle must NOT contain R.
+func TestEnsureCABundleStaleRootRace(t *testing.T) {
+	rootR, _, _ := mintCA(t, "root-R-removed", 1)
+	rootKeep, _, _ := mintCA(t, "root-kept", 2)
+	mitmPEM, _, _ := mintCA(t, "mitm", 3)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, mitmPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withR := append(append([]byte{}, rootKeep...), rootR...)
+	withoutR := rootKeep
+
+	calls := 0
+	prev := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) {
+		defer func() { calls++ }()
+		if calls == 0 {
+			return withR, true // initial build sees R
+		}
+		return withoutR, true // R has been removed by the time we re-sample
+	}
+	t.Cleanup(func() { systemRootsReader = prev })
+
+	bundlePath := ensureCABundle(caPath)
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	if bytes.Contains(bundle, rootR) {
+		t.Error("removed root R was resurrected into the bundle (stale-snapshot race)")
+	}
+	if !bytes.Contains(bundle, rootKeep) || !bytes.Contains(bundle, mitmPEM) {
+		t.Error("bundle must still contain the kept root and the MITM CA")
+	}
+}
+
+// TestEnsureCABundleMalformedMITMCA (round-4 #3): a malformed/empty ca.crt must
+// NOT yield a system-roots-only bundle returned as success — every defined
+// endpoint would fail TLS. ensureCABundle must fail safe (return caPath).
+func TestEnsureCABundleMalformedMITMCA(t *testing.T) {
+	sysPEM, _, _ := mintCA(t, "sysroot", 1)
+	prev := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	t.Cleanup(func() { systemRootsReader = prev })
+
+	for _, tc := range []struct {
+		name string
+		ca   []byte
+	}{
+		{"garbage", []byte("not a certificate at all")},
+		{"empty", []byte{}},
+		{"header-bearing", []byte("-----BEGIN CERTIFICATE-----\nProc-Type: 4,ENCRYPTED\n\nZm9v\n-----END CERTIFICATE-----\n")},
+		{"invalid-der", []byte("-----BEGIN CERTIFICATE-----\nbm90LWEtY2VydA==\n-----END CERTIFICATE-----\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			caPath := filepath.Join(dir, "ca.crt")
+			if err := os.WriteFile(caPath, tc.ca, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := ensureCABundle(caPath); got != caPath {
+				t.Errorf("malformed MITM CA: got %q, want caPath fail-safe", got)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "ca-bundle.crt")); err == nil {
+				t.Error("no bundle should be published when the MITM CA is unusable")
+			}
+		})
+	}
+}
+
+// TestDropClawpatrolCAVars (round-4 #2): a gateway/plugin-supplied CA var must
+// be stripped so it can't override the locally forced bundle path; non-CA vars
+// pass through.
+func TestDropClawpatrolCAVars(t *testing.T) {
+	in := []pushdownEnvVar{
+		{Name: "SSL_CERT_FILE", Value: "/evil/roots.pem"},
+		{Name: "NODE_EXTRA_CA_CERTS", Value: "/evil/extra.pem"},
+		{Name: "CODEX_ACCESS_TOKEN", Value: "keep-me"},
+	}
+	out := dropClawpatrolCAVars(in)
+	if len(out) != 1 || out[0].Name != "CODEX_ACCESS_TOKEN" {
+		t.Fatalf("dropClawpatrolCAVars = %#v, want only CODEX_ACCESS_TOKEN", out)
+	}
+}
+
+// TestEnvPushdownVarsFiltersGatewayCAVars (round-4 #2): a gateway that returns
+// SSL_CERT_FILE must not win over the local bundle. Covers both the daemon and
+// direct-gateway branches.
+func TestEnvPushdownVarsFiltersGatewayCAVars(t *testing.T) {
+	t.Setenv("SSL_CERT_FILE", "")
+	mitmPEM, _, _ := mintCA(t, "mitm", 1)
+	sysPEM, _, _ := mintCA(t, "sysroot", 2)
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, mitmPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundlePath := filepath.Join(dir, "ca-bundle.crt")
+
+	prevRoots := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	prevGW := envPushdownGatewayFetcher
+	prevDaemon := envPushdownDaemonFetcher
+	t.Cleanup(func() {
+		systemRootsReader = prevRoots
+		envPushdownGatewayFetcher = prevGW
+		envPushdownDaemonFetcher = prevDaemon
+	})
+
+	evilVars := []pushdownEnvVar{
+		{Name: "SSL_CERT_FILE", Value: "/evil/roots.pem"},
+		{Name: "CODEX_ACCESS_TOKEN", Value: "from-server"},
+	}
+
+	check := func(t *testing.T) {
+		got, err := envPushdownVars(caPath)
+		if err != nil {
+			t.Fatalf("envPushdownVars: %v", err)
+		}
+		m := map[string]string{}
+		for _, ev := range got {
+			// last-wins, mirroring the consumer
+			m[ev.Name] = ev.Value
+		}
+		if m["SSL_CERT_FILE"] != bundlePath {
+			t.Errorf("SSL_CERT_FILE = %q, want local bundle %q (gateway value must be filtered)", m["SSL_CERT_FILE"], bundlePath)
+		}
+		if m["CODEX_ACCESS_TOKEN"] != "from-server" {
+			t.Errorf("non-CA gateway var dropped: %q", m["CODEX_ACCESS_TOKEN"])
+		}
+	}
+
+	t.Run("daemon-branch", func(t *testing.T) {
+		envPushdownDaemonFetcher = func() ([]pushdownEnvVar, error) { return evilVars, nil }
+		check(t)
+	})
+	t.Run("gateway-branch", func(t *testing.T) {
+		envPushdownDaemonFetcher = nil
+		envPushdownGatewayFetcher = func(string) ([]pushdownEnvVar, error) { return evilVars, nil }
+		check(t)
+	})
 }

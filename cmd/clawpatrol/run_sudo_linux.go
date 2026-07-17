@@ -343,7 +343,7 @@ func buildPrivilegedEnv(envFile, caPath string, pushVars []pushdownEnvVar) []str
 		filtered = append(filtered, kv)
 	}
 	env = filtered
-	for _, ev := range append(caPathPushdownVars(caPath), pushVars...) {
+	for _, ev := range append(caPathPushdownVars(caPath), dropClawpatrolCAVars(pushVars)...) {
 		if !clawpatrolCAVarNames[ev.Name] && have[ev.Name] {
 			continue
 		}

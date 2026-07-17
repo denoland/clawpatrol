@@ -161,7 +161,7 @@ func runRun(args []string) {
 	// fails the handshake or falls back to its own bundle (which
 	// doesn't have our CA).
 	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
-	allVars := append(caPathPushdownVars(caPath), envVars...)
+	allVars := append(caPathPushdownVars(caPath), dropClawpatrolCAVars(envVars)...)
 	applyEnvPushdownVars(allVars)
 	installClaudeCodeOAuthShim(cmd)
 

@@ -98,14 +98,31 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	// daemon that doesn't understand the ENV command (replies EOF).
 	if envPushdownDaemonFetcher != nil {
 		if vars, err := envPushdownDaemonFetcher(); err == nil {
-			return append(out, vars...), nil
+			return append(out, dropClawpatrolCAVars(vars)...), nil
 		}
 	}
 	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
 	if err != nil {
 		return out, err
 	}
-	return append(out, vars...), nil
+	return append(out, dropClawpatrolCAVars(vars)...), nil
+}
+
+// dropClawpatrolCAVars removes any clawpatrol-owned CA var from a
+// gateway/plugin-sourced list. Those names (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS,
+// …) point at client-local files the gateway can't know, and are force-set by
+// caPathPushdownVars. Without this filter a plugin-provided entry — appended
+// after the local ones — would win at the consumer (last os.Setenv / last
+// export line) and redirect the wrapped agent's trust away from our bundle.
+func dropClawpatrolCAVars(vars []pushdownEnvVar) []pushdownEnvVar {
+	out := vars[:0:0]
+	for _, ev := range vars {
+		if clawpatrolCAVarNames[ev.Name] {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 // caPathPushdownVars returns the CA-bundle env vars every wrapped

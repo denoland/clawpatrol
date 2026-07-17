@@ -80,6 +80,41 @@ func normalizeCertsPEM(pemBytes []byte) []byte {
 	return out
 }
 
+// certFingerprints returns the DER SHA-256 fingerprints of every CERTIFICATE
+// block in pemBytes (expects normalized input).
+func certFingerprints(pemBytes []byte) map[[32]byte]bool {
+	set := map[[32]byte]bool{}
+	rest := pemBytes
+	for {
+		blk, r := pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		rest = r
+		if blk.Type == "CERTIFICATE" {
+			set[sha256.Sum256(blk.Bytes)] = true
+		}
+	}
+	return set
+}
+
+// containsAllCerts reports whether every certificate in certs (which must be
+// non-empty) appears in bundle. Used to prove the mandatory MITM CA survived
+// into the final bundle rather than being silently dropped as malformed.
+func containsAllCerts(bundle, certs []byte) bool {
+	have := certFingerprints(bundle)
+	want := certFingerprints(certs)
+	if len(want) == 0 {
+		return false
+	}
+	for fp := range want {
+		if !have[fp] {
+			return false
+		}
+	}
+	return true
+}
+
 // ensureCABundle writes <dir>/ca-bundle.crt = machine system roots + the MITM
 // CA found at caPath, and returns that bundle's path. The replace-style CA env
 // vars point at it so a wrapped agent trusts BOTH the gateway's MITM certs
@@ -94,15 +129,20 @@ func normalizeCertsPEM(pemBytes []byte) []byte {
 // than per-process env, every caller (shell, cron, sudo helper) computes the
 // same bytes, so no context can silently replace another's trust set.
 //
-// A join can rewrite ca.crt concurrently. Because ca.crt is read before the
-// bundle is written, a naive single pass could persist a bundle embedding the
-// *old* CA after the new ca.crt landed. We defend by re-reading ca.crt after
-// the write and rebuilding if it changed.
+// A join can rewrite ca.crt, and the machine trust store can change, while we
+// build. After publishing we re-sample BOTH inputs and rebuild if either
+// drifted from the snapshot we used — otherwise a slow reader holding an old
+// snapshot could rename its stale bundle last and resurrect a just-removed
+// root.
 //
-// Fail-safe: returns caPath unchanged when the CA file is missing, no system
-// roots can be read (e.g. an unsupported platform, or `security` unavailable
-// on macOS), or ca.crt never settles across the retry budget. Behavior is then
-// no worse than today's MITM-CA-only pushdown.
+// The MITM CA is mandatory. We validate ca.crt on its own and require at least
+// one acceptable certificate that survives into the final bundle: a malformed
+// ca.crt (empty, garbage, invalid DER, header-bearing — reachable via the
+// tsnet fetchCA path) must not yield a system-roots-only bundle that passes
+// passthrough TLS while every defined endpoint fails.
+//
+// Fail-safe: returns caPath unchanged when the CA file is missing/malformed, no
+// system roots can be read, or the inputs never settle across the retry budget.
 func ensureCABundle(caPath string) string {
 	bundlePath := filepath.Join(filepath.Dir(caPath), "ca-bundle.crt")
 	for attempt := 0; attempt < caBundleMaxAttempts; attempt++ {
@@ -110,34 +150,39 @@ func ensureCABundle(caPath string) string {
 		if err != nil {
 			return caPath
 		}
+		caCerts := normalizeCertsPEM(caPEM)
+		if len(caCerts) == 0 {
+			// The mandatory MITM CA holds no acceptable certificate — fail safe
+			// rather than publish a passthrough-only bundle.
+			return caPath
+		}
 		sysPEM, ok := readSystemRootsPEM()
 		if !ok || len(sysPEM) == 0 {
 			return caPath
 		}
 		want := buildBundlePEM(sysPEM, caPEM)
-		if len(want) == 0 {
+		if !containsAllCerts(want, caCerts) {
 			return caPath
 		}
-		if existing, err := os.ReadFile(bundlePath); err != nil || !bytes.Equal(existing, want) {
-			if err := atomicWriteFile(bundlePath, want, 0o644); err != nil {
-				return caPath
-			}
+		if existing, rerr := os.ReadFile(bundlePath); rerr == nil && bytes.Equal(existing, want) {
+			return bundlePath // already current; nothing published, no race
 		}
-		// If ca.crt changed while we built the bundle, our snapshot may embed
-		// the old CA — loop and rebuild from the new one. Converges as soon
-		// as ca.crt is stable across a read/verify pair.
-		after, err := os.ReadFile(caPath)
-		if err != nil {
+		if err := atomicWriteFile(bundlePath, want, 0o644); err != nil {
 			return caPath
 		}
-		if bytes.Equal(after, caPEM) {
+		// Re-sample both inputs. If neither drifted, our published bundle is
+		// consistent with current machine state; otherwise loop and rebuild so
+		// a concurrent writer's newer content isn't clobbered by our stale one.
+		afterCA, errCA := os.ReadFile(caPath)
+		afterSys, okSys := readSystemRootsPEM()
+		if errCA == nil && okSys && bytes.Equal(afterCA, caPEM) && bytes.Equal(afterSys, sysPEM) {
 			return bundlePath
 		}
 	}
-	// ca.crt never settled across the retry budget (a pathological writer):
-	// the bundle on disk may embed a stale CA, so fall back to caPath rather
-	// than hand out a bundle we couldn't prove current. Fail-safe: the wrapped
-	// agent still trusts the current MITM CA, only losing passthrough roots.
+	// Inputs never settled across the retry budget (a pathological writer): the
+	// bundle on disk may be stale, so fall back to caPath rather than hand out a
+	// bundle we couldn't prove current. Fail-safe: the wrapped agent still
+	// trusts the current MITM CA, only losing passthrough roots.
 	return caPath
 }
 

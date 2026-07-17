@@ -676,6 +676,11 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
+	// Validate before persisting (parity with fetchCAHTTP): a malformed ca.crt
+	// on disk would make every wrapped agent fail TLS to defined endpoints.
+	if _, err := caFingerprintFromPEM(b); err != nil {
+		return fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
+	}
 	if err := atomicWriteFile(dst, b, 0o644); err != nil {
 		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
