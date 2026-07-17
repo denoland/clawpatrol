@@ -4,6 +4,7 @@ package main
 
 import (
 	"io/fs"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -129,6 +130,49 @@ func TestComputeDNSLockdown(t *testing.T) {
 		}
 		if len(plan.Overrides) != 0 || len(plan.Masks) != 0 {
 			t.Errorf("keep-resolv plan not empty: %+v", plan)
+		}
+	})
+
+	t.Run("nscd socket is masked", func(t *testing.T) {
+		// nscd answers getaddrinfo BEFORE the NSS chain runs, so the
+		// planner must mask its socket even when nsswitch needs no
+		// rewrite at all (#765).
+		in := base
+		in.NscdSocketsPresent = []string{"/run/nscd/socket", "/var/run/nscd/socket"}
+		plan, err := computeDNSLockdown(in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(plan.Masks, in.NscdSocketsPresent) {
+			t.Errorf("Masks = %v, want %v", plan.Masks, in.NscdSocketsPresent)
+		}
+	})
+
+	t.Run("nscd and varlink sockets masked together", func(t *testing.T) {
+		in := base
+		in.NsswitchRaw = "hosts: files resolve [!UNAVAIL=return] dns\n"
+		in.VarlinkSocketExists = true
+		in.NscdSocketsPresent = []string{"/var/run/nscd/socket"}
+		plan, err := computeDNSLockdown(in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"/run/systemd/resolve/io.systemd.Resolve", "/var/run/nscd/socket"}
+		if !reflect.DeepEqual(plan.Masks, want) {
+			t.Errorf("Masks = %v, want %v", plan.Masks, want)
+		}
+	})
+
+	t.Run("keep-resolv skips nscd masking too", func(t *testing.T) {
+		in := base
+		in.KeepResolv = true
+		in.NscdSocketsPresent = []string{"/run/nscd/socket"}
+		plan, err := computeDNSLockdown(in)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(plan.Masks) != 0 {
+			t.Errorf("keep-resolv Masks = %v, want none", plan.Masks)
 		}
 	})
 

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
@@ -32,7 +34,7 @@ type fakeTransport struct {
 	dial   func(network, addr string) (net.Conn, error)
 }
 
-func (f *fakeTransport) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+func (f *fakeTransport) Dial(_ context.Context, network, addr string) (net.Conn, error) {
 	f.mu.Lock()
 	f.dialed = append(f.dialed, network+"|"+addr)
 	f.mu.Unlock()
@@ -94,89 +96,135 @@ func newForwarderHarness(t *testing.T, transport daemonTransport) *stack.Stack {
 		t.Fatalf("client stack: %v", err)
 	}
 	t.Cleanup(cli.Close)
+	// v6 source for fd78:: dials — mirrors the child netns, which
+	// binds runTunAddr6 to its TUN. (Production's daemon-side stack
+	// gets no v6 address, exactly like srv above: promiscuous +
+	// spoofing handle inbound v6 there.)
+	pa6 := tcpip.ProtocolAddress{
+		Protocol:          ipv6.ProtocolNumber,
+		AddressWithPrefix: tcpip.AddrFromSlice(netip.MustParseAddr(runTunAddr6).AsSlice()).WithPrefix(),
+	}
+	if e := cli.AddProtocolAddress(1, pa6, stack.AddressProperties{}); e != nil {
+		t.Fatalf("client v6 address: %v", e)
+	}
 
 	go pump(ctx, srvEp, cliEp)
 	go pump(ctx, cliEp, srvEp)
 	return cli
 }
 
-func dialThroughHarness(t *testing.T, cli *stack.Stack) (net.Conn, error) {
+// forwarderDsts covers both address families the forwarder must
+// serve: the v4 VIP range and the fd78:: v6 VIP range (#765).
+var forwarderDsts = []struct {
+	name string
+	addr netip.Addr
+}{
+	{name: "ipv4", addr: netip.MustParseAddr("10.78.1.2")},
+	{name: "ipv6 fd78 vip", addr: netip.MustParseAddr("fd78::1234")},
+}
+
+func dialThroughHarness(t *testing.T, cli *stack.Stack, dst netip.Addr) (net.Conn, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	proto := ipv4.ProtocolNumber
+	if dst.Is6() {
+		proto = ipv6.ProtocolNumber
+	}
 	return gonet.DialContextTCP(ctx, cli, tcpip.FullAddress{
 		NIC:  1,
-		Addr: tcpip.AddrFromSlice(netip.MustParseAddr("10.78.1.2").AsSlice()),
+		Addr: tcpip.AddrFromSlice(dst.AsSlice()),
 		Port: 5432,
-	}, ipv4.ProtocolNumber)
+	}, proto)
 }
 
 // A transport dial failure must surface to the child as a refused
 // connect (RST), not as an accepted connection that then hangs —
 // getaddrinfo/Happy-Eyeballs address fallback depends on connect()
-// failing (#765).
+// failing (#765). Asserting on the error text and the elapsed time
+// distinguishes a fast RST from a stranded SYN that only dies with
+// the dial context's 10s deadline.
 func TestRunStackTCPForwarderDialFailureRefusesConnect(t *testing.T) {
-	ft := &fakeTransport{dial: func(network, addr string) (net.Conn, error) {
-		return nil, context.DeadlineExceeded
-	}}
-	cli := newForwarderHarness(t, ft)
+	for _, dst := range forwarderDsts {
+		t.Run(dst.name, func(t *testing.T) {
+			ft := &fakeTransport{dial: func(string, string) (net.Conn, error) {
+				return nil, context.DeadlineExceeded
+			}}
+			cli := newForwarderHarness(t, ft)
 
-	c, err := dialThroughHarness(t, cli)
-	if err == nil {
-		_ = c.Close()
-		t.Fatalf("connect succeeded despite transport dial failure; want refused")
+			start := time.Now()
+			c, err := dialThroughHarness(t, cli, dst.addr)
+			elapsed := time.Since(start)
+			if err == nil {
+				_ = c.Close()
+				t.Fatalf("connect succeeded despite transport dial failure; want refused")
+			}
+			if !strings.Contains(err.Error(), "refused") {
+				t.Fatalf("connect error = %v; want connection refused", err)
+			}
+			if elapsed > 5*time.Second {
+				t.Fatalf("refusal took %v; want well under the 10s dial deadline", elapsed)
+			}
+			if got := ft.dialedAddrs(); len(got) != 1 {
+				t.Fatalf("transport dials = %v, want exactly one attempt", got)
+			}
+		})
 	}
 }
 
 func TestRunStackTCPForwarderRelays(t *testing.T) {
-	var (
-		mu   sync.Mutex
-		peer net.Conn
-	)
-	ft := &fakeTransport{dial: func(network, addr string) (net.Conn, error) {
-		a, b := net.Pipe()
-		mu.Lock()
-		peer = b
-		mu.Unlock()
-		return a, nil
-	}}
-	cli := newForwarderHarness(t, ft)
+	for _, dst := range forwarderDsts {
+		t.Run(dst.name, func(t *testing.T) {
+			var (
+				mu   sync.Mutex
+				peer net.Conn
+			)
+			ft := &fakeTransport{dial: func(string, string) (net.Conn, error) {
+				a, b := net.Pipe()
+				mu.Lock()
+				peer = b
+				mu.Unlock()
+				return a, nil
+			}}
+			cli := newForwarderHarness(t, ft)
 
-	c, err := dialThroughHarness(t, cli)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = c.Close() }()
+			c, err := dialThroughHarness(t, cli, dst.addr)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer func() { _ = c.Close() }()
 
-	mu.Lock()
-	up := peer
-	mu.Unlock()
-	if up == nil {
-		t.Fatalf("transport.Dial never called")
-	}
-	defer func() { _ = up.Close() }()
+			mu.Lock()
+			up := peer
+			mu.Unlock()
+			if up == nil {
+				t.Fatalf("transport.Dial never called")
+			}
+			defer func() { _ = up.Close() }()
 
-	deadline := time.Now().Add(10 * time.Second)
-	_ = c.SetDeadline(deadline)
-	_ = up.SetDeadline(deadline)
+			deadline := time.Now().Add(10 * time.Second)
+			_ = c.SetDeadline(deadline)
+			_ = up.SetDeadline(deadline)
 
-	if _, err := c.Write([]byte("hello")); err != nil {
-		t.Fatalf("client write: %v", err)
-	}
-	buf := make([]byte, 5)
-	if _, err := readFull(up, buf); err != nil || string(buf) != "hello" {
-		t.Fatalf("upstream read = %q, %v", buf, err)
-	}
-	if _, err := up.Write([]byte("world")); err != nil {
-		t.Fatalf("upstream write: %v", err)
-	}
-	if _, err := readFull(c, buf); err != nil || string(buf) != "world" {
-		t.Fatalf("client read = %q, %v", buf, err)
-	}
+			if _, err := c.Write([]byte("hello")); err != nil {
+				t.Fatalf("client write: %v", err)
+			}
+			buf := make([]byte, 5)
+			if _, err := readFull(up, buf); err != nil || string(buf) != "hello" {
+				t.Fatalf("upstream read = %q, %v", buf, err)
+			}
+			if _, err := up.Write([]byte("world")); err != nil {
+				t.Fatalf("upstream write: %v", err)
+			}
+			if _, err := readFull(c, buf); err != nil || string(buf) != "world" {
+				t.Fatalf("client read = %q, %v", buf, err)
+			}
 
-	want := "tcp|10.78.1.2:5432"
-	if got := ft.dialedAddrs(); len(got) != 1 || got[0] != want {
-		t.Fatalf("dialed = %v, want [%s]", got, want)
+			want := "tcp|" + net.JoinHostPort(dst.addr.String(), "5432")
+			if got := ft.dialedAddrs(); len(got) != 1 || got[0] != want {
+				t.Fatalf("dialed = %v, want [%s]", got, want)
+			}
+		})
 	}
 }
 

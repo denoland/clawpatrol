@@ -12,11 +12,17 @@ package main
 // gateway's relay-verbatim branch. The child's DNS therefore must
 // always be answered by the gateway's dnsvip allocator (#765).
 //
-// glibc can leak a lookup past the bind-mounted resolv.conf in three
+// glibc can leak a lookup past the bind-mounted resolv.conf in four
 // ways, each closed by one layer here:
 //
 //   - the `dns` module reading the host resolv.conf
 //     → bind-mount a gateway-pointing resolv.conf (fatal on failure);
+//   - nscd: getaddrinfo tries __nscd_getai over /var/run/nscd/socket
+//     BEFORE traversing the `hosts:` NSS chain at all, so a host
+//     nscd/unscd with hosts caching enabled can hand back a cached
+//     raw address (or NXDOMAIN) no matter what the other layers say
+//     → mask the socket with an empty regular file, same mechanism
+//       as the varlink socket below;
 //   - the `resolve` / `mdns*` modules answering ahead of `dns` —
 //     nss-resolve talks to host systemd-resolved over the varlink
 //     socket /run/systemd/resolve/io.systemd.Resolve, which the mnt
@@ -77,18 +83,30 @@ type dnsLockdown struct {
 // dnsLockdownInputs is everything computeDNSLockdown needs from the
 // environment, gathered up front so the planner stays pure.
 type dnsLockdownInputs struct {
-	KeepResolv          bool   // CLAWPATROL_RUN_KEEP_RESOLV=1
-	ResolvBody          string // childResolvConf()
-	NsswitchRaw         string // /etc/nsswitch.conf contents ("" on error)
-	NsswitchErr         error  // nil | fs.ErrNotExist (musl) | other (fatal)
-	HostsExists         bool   // /etc/hosts present
-	Hostname            string // os.Hostname(), "" if unknown
-	VarlinkSocketExists bool   // resolvedVarlinkSocket present
+	KeepResolv          bool     // CLAWPATROL_RUN_KEEP_RESOLV=1
+	ResolvBody          string   // childResolvConf()
+	NsswitchRaw         string   // /etc/nsswitch.conf contents ("" on error)
+	NsswitchErr         error    // nil | fs.ErrNotExist (musl) | other (fatal)
+	HostsExists         bool     // /etc/hosts present
+	Hostname            string   // os.Hostname(), "" if unknown
+	VarlinkSocketExists bool     // resolvedVarlinkSocket present
+	NscdSocketsPresent  []string // subset of nscdSocketPaths that exist
 }
 
 // resolvedVarlinkSocket is where nss-resolve reaches the host's
 // systemd-resolved.
 const resolvedVarlinkSocket = "/run/systemd/resolve/io.systemd.Resolve"
+
+// nscdSocketPaths are the locations of the name service cache
+// daemon's socket. glibc's compiled-in _PATH_NSCDSOCKET is the
+// /var/run one; on modern distros /var/run is a symlink to /run, so
+// both spellings usually name the same inode — masking both just
+// stacks a second identical bind-mount, which is harmless, and
+// covers the odd host where they differ.
+var nscdSocketPaths = []string{
+	"/run/nscd/socket",
+	"/var/run/nscd/socket",
+}
 
 // minimalHostsFile is the synthetic /etc/hosts the child sees: just
 // loopback plus the machine's own name (Debian's 127.0.1.1
@@ -141,6 +159,9 @@ func computeDNSLockdown(in dnsLockdownInputs) (dnsLockdown, error) {
 	if in.VarlinkSocketExists {
 		plan.Masks = append(plan.Masks, resolvedVarlinkSocket)
 	}
+	// nscd is consulted before the NSS chain even runs, so no
+	// nsswitch rewrite can help — the socket itself must go dark.
+	plan.Masks = append(plan.Masks, in.NscdSocketsPresent...)
 	return plan, nil
 }
 
@@ -151,6 +172,12 @@ func gatherDNSLockdownInputs() dnsLockdownInputs {
 	hostname, _ := os.Hostname()
 	_, hostsErr := os.Stat("/etc/hosts")
 	_, sockErr := os.Stat(resolvedVarlinkSocket)
+	var nscd []string
+	for _, p := range nscdSocketPaths {
+		if _, err := os.Stat(p); err == nil {
+			nscd = append(nscd, p)
+		}
+	}
 	return dnsLockdownInputs{
 		KeepResolv:          os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") == "1",
 		ResolvBody:          childResolvConf(),
@@ -159,6 +186,7 @@ func gatherDNSLockdownInputs() dnsLockdownInputs {
 		HostsExists:         hostsErr == nil,
 		Hostname:            hostname,
 		VarlinkSocketExists: sockErr == nil,
+		NscdSocketsPresent:  nscd,
 	}
 }
 
