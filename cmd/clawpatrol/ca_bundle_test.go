@@ -604,3 +604,55 @@ func TestEnvPushdownVarsFiltersGatewayCAVars(t *testing.T) {
 		check(t)
 	})
 }
+
+func leafPEM(t *testing.T, cert *x509.Certificate) []byte {
+	t.Helper()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+}
+
+// TestMITMCACertStrictValidation (round-5 #2): only a real CA cert is accepted
+// as the mandatory MITM CA. A valid but non-CA leaf can't sign the gateway's
+// minted endpoint certs, so it must be rejected — caFingerprintFromPEM accepted
+// it.
+func TestMITMCACertStrictValidation(t *testing.T) {
+	caPEM, caCert, caKey := mintCA(t, "real-ca", 1)
+	leaf := mintLeaf(t, "endpoint.example", caCert, caKey) // IsCA=false
+
+	if err := validateMITMCAPEM(caPEM); err != nil {
+		t.Errorf("a real CA must be accepted: %v", err)
+	}
+	if err := validateMITMCAPEM(leafPEM(t, leaf)); err == nil {
+		t.Error("a non-CA leaf must be rejected as the MITM CA")
+	}
+	// Header-bearing and garbage are rejected too.
+	if err := validateMITMCAPEM([]byte("-----BEGIN CERTIFICATE-----\nProc-Type: 4,ENCRYPTED\n\nZm9v\n-----END CERTIFICATE-----\n")); err == nil {
+		t.Error("header-bearing block must be rejected")
+	}
+	if err := validateMITMCAPEM([]byte("garbage")); err == nil {
+		t.Error("garbage must be rejected")
+	}
+}
+
+// TestEnsureCABundleRejectsLeafCA (round-5 #2): a leaf written to ca.crt must
+// fail safe — no bundle that can't validate endpoint certs is published.
+func TestEnsureCABundleRejectsLeafCA(t *testing.T) {
+	sysPEM, _, _ := mintCA(t, "sysroot", 1)
+	_, caCert, caKey := mintCA(t, "real-ca", 2)
+	leaf := mintLeaf(t, "endpoint.example", caCert, caKey)
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, leafPEM(t, leaf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) { return sysPEM, true }
+	t.Cleanup(func() { systemRootsReader = prev })
+
+	if got := ensureCABundle(caPath); got != caPath {
+		t.Errorf("leaf ca.crt: got %q, want caPath fail-safe", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca-bundle.crt")); err == nil {
+		t.Error("no bundle should be published for a non-CA ca.crt")
+	}
+}

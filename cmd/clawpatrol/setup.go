@@ -442,6 +442,9 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
 	}
+	if err := validateMITMCAPEM(b); err != nil {
+		return "", fmt.Errorf("fetch ca from %s: %w", url, err)
+	}
 	if err := atomicWriteFile(dst, b, 0o644); err != nil {
 		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
@@ -676,10 +679,11 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	// Validate before persisting (parity with fetchCAHTTP): a malformed ca.crt
-	// on disk would make every wrapped agent fail TLS to defined endpoints.
-	if _, err := caFingerprintFromPEM(b); err != nil {
-		return fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
+	// Validate before persisting (parity with fetchCAHTTP): a ca.crt that isn't
+	// a usable MITM CA on disk would make every wrapped agent fail TLS to
+	// defined endpoints.
+	if err := validateMITMCAPEM(b); err != nil {
+		return fmt.Errorf("fetch ca from %s: %w", url, err)
 	}
 	if err := atomicWriteFile(dst, b, 0o644); err != nil {
 		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
@@ -1251,8 +1255,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		clawDir := filepath.Dir(setup.caPath)
 		// Write CA delivered in the poll response (gateway's /ca.crt is
 		// intentionally not public in tsnet mode). Then install trust.
+		// Validate BEFORE persisting/trusting: an unusable CA (leaf, header-
+		// bearing, malformed) must not land on disk or into the trust store —
+		// the old path wrote first and ignored the fingerprint error.
 		if caPEM != "" {
-			if werr := atomicWriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
+			if verr := validateMITMCAPEM([]byte(caPEM)); verr != nil {
+				fmt.Fprintf(os.Stderr, "clawpatrol: gateway CA rejected: %v\n", verr)
+			} else if werr := atomicWriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
 				if fp, ferr := caFingerprintFromPEM([]byte(caPEM)); ferr == nil {
 					setup.caFingerprint = fp
 				}

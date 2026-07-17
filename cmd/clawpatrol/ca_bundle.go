@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 )
@@ -80,6 +81,64 @@ func normalizeCertsPEM(pemBytes []byte) []byte {
 	return out
 }
 
+// isMITMCACertBlock reports whether blk is a usable MITM CA certificate: a
+// header-free CERTIFICATE whose DER parses and which is an actual CA able to
+// sign the gateway's minted endpoint certs (IsCA + valid basic constraints +
+// certSign key usage). A leaf (IsCA=false) can't sign endpoint certs, so it
+// must never be accepted as the mandatory MITM CA — the earlier
+// caFingerprintFromPEM check accepted one.
+func isMITMCACertBlock(blk *pem.Block) (*x509.Certificate, bool) {
+	if blk.Type != "CERTIFICATE" || len(blk.Headers) != 0 {
+		return nil, false
+	}
+	c, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return nil, false
+	}
+	if !c.IsCA || !c.BasicConstraintsValid || c.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, false
+	}
+	return c, true
+}
+
+// mitmCACertsPEM returns the subset of pemBytes that are usable MITM CA certs,
+// deduped and re-encoded (empty if none). This is the single strict acceptance
+// rule for the mandatory CA, shared by ensureCABundle and every CA write path.
+func mitmCACertsPEM(pemBytes []byte) []byte {
+	seen := map[[32]byte]bool{}
+	var out []byte
+	rest := pemBytes
+	for {
+		blk, r := pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		rest = r
+		c, ok := isMITMCACertBlock(blk)
+		if !ok {
+			continue
+		}
+		h := sha256.Sum256(c.Raw)
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})...)
+	}
+	return out
+}
+
+// validateMITMCAPEM errors unless pemBytes holds at least one usable MITM CA
+// certificate. Called before persisting a fetched/pushed ca.crt so a leaf,
+// header-bearing, or malformed cert never lands on disk and later breaks TLS to
+// every defined endpoint.
+func validateMITMCAPEM(pemBytes []byte) error {
+	if len(mitmCACertsPEM(pemBytes)) == 0 {
+		return errors.New("no usable MITM CA certificate (need a header-free CA cert with certSign key usage)")
+	}
+	return nil
+}
+
 // certFingerprints returns the DER SHA-256 fingerprints of every CERTIFICATE
 // block in pemBytes (expects normalized input).
 func certFingerprints(pemBytes []byte) map[[32]byte]bool {
@@ -150,10 +209,11 @@ func ensureCABundle(caPath string) string {
 		if err != nil {
 			return caPath
 		}
-		caCerts := normalizeCertsPEM(caPEM)
+		caCerts := mitmCACertsPEM(caPEM)
 		if len(caCerts) == 0 {
-			// The mandatory MITM CA holds no acceptable certificate — fail safe
-			// rather than publish a passthrough-only bundle.
+			// The mandatory MITM CA holds no usable CA certificate (empty,
+			// garbage, header-bearing, or a non-CA leaf) — fail safe rather than
+			// publish a bundle that can't validate gateway-minted endpoint certs.
 			return caPath
 		}
 		sysPEM, ok := readSystemRootsPEM()
