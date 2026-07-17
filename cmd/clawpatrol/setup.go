@@ -1556,13 +1556,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 	}
 
-	// Fetch CA from the gateway's tailnet IP now that we're on the tailnet.
-	// The public /ca.crt path returns 404 for Tailscale-mode gateways; the
-	// tailnet fetch is the secure path. Skip if CA was already fetched (WG
-	// gateways expose it publicly).
-	// Look up the gateway peer on the tailnet to:
-	//   a) save the tailnet-direct URL (bypasses Funnel for peer API calls)
-	//   b) fetch CA if not yet on disk (Tailscale-mode gateways 404 /ca.crt publicly)
+	// Look up the gateway peer on the tailnet to persist the tailnet-direct URL
+	// (bypasses Funnel for peer API calls) and the peer IP. The CA is NOT
+	// fetched here — it's consumed from the approval poll response and persisted
+	// by commitApprovedCA below.
 	if tailnetGWHost != "" {
 		if st2, serr := tailscaleStatus(tscli); serr == nil {
 			// tailnetGWHost may be an FQDN like "clawpatrol-1.tail9a48e.ts.net";
