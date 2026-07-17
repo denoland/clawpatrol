@@ -32,7 +32,7 @@ type fakeTransport struct {
 	dial   func(network, addr string) (net.Conn, error)
 }
 
-func (f *fakeTransport) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+func (f *fakeTransport) Dial(_ context.Context, network, addr string) (net.Conn, error) {
 	f.mu.Lock()
 	f.dialed = append(f.dialed, network+"|"+addr)
 	f.mu.Unlock()
@@ -116,7 +116,7 @@ func dialThroughHarness(t *testing.T, cli *stack.Stack) (net.Conn, error) {
 // getaddrinfo/Happy-Eyeballs address fallback depends on connect()
 // failing (#765).
 func TestRunStackTCPForwarderDialFailureRefusesConnect(t *testing.T) {
-	ft := &fakeTransport{dial: func(network, addr string) (net.Conn, error) {
+	ft := &fakeTransport{dial: func(_, _ string) (net.Conn, error) {
 		return nil, context.DeadlineExceeded
 	}}
 	cli := newForwarderHarness(t, ft)
@@ -133,7 +133,7 @@ func TestRunStackTCPForwarderRelays(t *testing.T) {
 		mu   sync.Mutex
 		peer net.Conn
 	)
-	ft := &fakeTransport{dial: func(network, addr string) (net.Conn, error) {
+	ft := &fakeTransport{dial: func(_, _ string) (net.Conn, error) {
 		a, b := net.Pipe()
 		mu.Lock()
 		peer = b
