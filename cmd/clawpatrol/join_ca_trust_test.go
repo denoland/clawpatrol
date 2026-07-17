@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -148,4 +152,65 @@ func TestCommitApprovedCARejectsEmpty(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "ca.crt")); err == nil {
 		t.Error("no ca.crt should be written for an empty commit")
 	}
+}
+
+// TestInstallTrustBytesSurfacesPrepFailure (round-9 #3): a snapshot-prep failure
+// (here: the temp can't be created because the dir doesn't exist) must return an
+// error, not be silently swallowed.
+func TestInstallTrustBytesSurfacesPrepFailure(t *testing.T) {
+	ca, _, _ := mintCA(t, "ca", 1)
+	s := &joinSetup{caPath: filepath.Join(t.TempDir(), "no-such-subdir", "ca.crt")}
+	if err := s.installTrustBytes(ca, false); err == nil {
+		t.Error("snapshot prep failure must surface an error, not be swallowed")
+	}
+}
+
+// TestClaimTailnetPeerBestEffort (round-9 blocking): every claim failure — empty
+// tailnet IP, non-200, transport error — must return (never abort), so the
+// caller reaches the mandatory CA commit. A success writes the api-token.
+func TestClaimTailnetPeerBestEffort(t *testing.T) {
+	tokenPath := func(dir string) string { return filepath.Join(dir, "api-token") }
+
+	t.Run("empty-ip", func(t *testing.T) {
+		dir := t.TempDir()
+		claimTailnetPeer(&http.Client{}, "http://gw.invalid", "dc", "host", "", dir)
+		if _, err := os.Stat(tokenPath(dir)); err == nil {
+			t.Error("no api-token expected for an empty tailnet IP")
+		}
+	})
+
+	t.Run("non-200", func(t *testing.T) {
+		dir := t.TempDir()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		claimTailnetPeer(srv.Client(), srv.URL, "dc", "host", "100.64.0.1", dir)
+		if _, err := os.Stat(tokenPath(dir)); err == nil {
+			t.Error("no api-token expected on a non-200 claim")
+		}
+	})
+
+	t.Run("transport-error", func(t *testing.T) {
+		dir := t.TempDir()
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		srv.Close() // closed → connection refused
+		claimTailnetPeer(srv.Client(), srv.URL, "dc", "host", "100.64.0.1", dir)
+		if _, err := os.Stat(tokenPath(dir)); err == nil {
+			t.Error("no api-token expected on a transport error")
+		}
+	})
+
+	t.Run("success-writes-token", func(t *testing.T) {
+		dir := t.TempDir()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]string{"api_token": "tok-123"})
+		}))
+		defer srv.Close()
+		claimTailnetPeer(srv.Client(), srv.URL, "dc", "host", "100.64.0.1", dir)
+		got, err := os.ReadFile(tokenPath(dir))
+		if err != nil || strings.TrimSpace(string(got)) != "tok-123" {
+			t.Errorf("api-token = %q err=%v, want tok-123", got, err)
+		}
+	})
 }
