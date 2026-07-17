@@ -265,6 +265,31 @@ func TestAttestationsBundleURL(t *testing.T) {
 		}
 	})
 
+	t.Run("valid_inline_then_unreachable_url", func(t *testing.T) {
+		// A loadable bundle must survive a sibling entry whose blob is
+		// temporarily unavailable: verify() applies its one-valid-
+		// attestation-is-enough policy, so dropping everything over one
+		// unreachable entry is an availability failure that buys no
+		// authenticity.
+		apiJSON := `{"attestations":[{"bundle":` + minimalBundleJSON + `},{"bundle":null,"bundle_url":"%s"}]}`
+		c, _, _ := bundleURLServers(t, http.StatusForbidden, []byte("gone"), apiJSON)
+		bundles, err := c.attestations(ctx, "o", "r", "sha256:abc")
+		if err != nil || len(bundles) != 1 {
+			t.Fatalf("bundles=%d err=%v, want the valid inline bundle despite the unreachable sibling", len(bundles), err)
+		}
+	})
+
+	t.Run("unreachable_url_then_valid_inline", func(t *testing.T) {
+		// Same as above with the entry order flipped: the failing
+		// entry comes first and must not short-circuit the loop.
+		apiJSON := `{"attestations":[{"bundle":null,"bundle_url":"%s"},{"bundle":` + minimalBundleJSON + `}]}`
+		c, _, _ := bundleURLServers(t, http.StatusForbidden, []byte("gone"), apiJSON)
+		bundles, err := c.attestations(ctx, "o", "r", "sha256:abc")
+		if err != nil || len(bundles) != 1 {
+			t.Fatalf("bundles=%d err=%v, want the valid inline bundle despite the unreachable sibling", len(bundles), err)
+		}
+	})
+
 	t.Run("mixed_inline_and_by_reference", func(t *testing.T) {
 		apiJSON := `{"attestations":[{"bundle":null,"bundle_url":"%s"},{"bundle":` + minimalBundleJSON + `}]}`
 		body := snappy.Encode(nil, []byte(minimalBundleJSON))
