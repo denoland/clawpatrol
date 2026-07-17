@@ -374,7 +374,12 @@ func isWholeMachineJoin() bool {
 	return err == nil
 }
 
-func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
+// deferCA (Tailscale mode) tells finishJoinSetup NOT to install any CA now: the
+// approved CA is committed and trusted at the END of the join via
+// commitApprovedCA, after fatal platform setup. Installing here would either
+// trust a prior join's stale ca.crt (rejoin) or commit a CA that a later fatal
+// step would strand.
+func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
 	if wholeMachine && s.caPath != "" {
 		// Record the mode so `clawpatrol run` can short-circuit to a
 		// direct exec instead of trying to spawn the per-host daemon.
@@ -387,10 +392,16 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 	if s.caPath == "" {
 		return
 	}
+	if deferCA {
+		// Tailscale: CA committed + trusted at the end of the join.
+		if wholeMachine {
+			installShellRC() //nolint:errcheck
+		}
+		return
+	}
 	if _, err := os.Stat(s.caPath); err != nil {
-		// CA not fetched yet (Tailscale mode defers the fetch to the
-		// tailnet path inside onboardViaDeviceFlow). Skip trust install
-		// here; it lands once the CA arrives.
+		// CA not fetched yet. Skip trust install here; it lands once the CA
+		// arrives.
 		if wholeMachine {
 			installShellRC() //nolint:errcheck
 		}
@@ -676,16 +687,38 @@ var installCATrustFn = installCATrust
 
 // behind a live step ("* Installing CA in system trust" → "✓ CA
 // installed in system trust" / "! CA not trusted yet — …") and records
-// the outcome on s. Idempotent PER CA IDENTITY: keyed on the on-disk CA's
-// fingerprint, not a bare boolean, so a rejoin that replaced ca.crt with a
-// different CA re-installs it instead of leaving system trust on the old CA
-// (which the boolean guard did — it treated any prior install as done).
+// the outcome on s.
+//
+// It reads the on-disk CA once into an immutable snapshot and, if the operator
+// confirmed a fingerprint at approval time, refuses to install anything that
+// doesn't match it — so a concurrent/same-UID process swapping ca.crt between
+// approval and install can't get a different CA trusted.
 func (s *joinSetup) installTrust(skipTrust bool) {
-	fp := ""
-	if b, err := os.ReadFile(s.caPath); err == nil {
-		fp, _ = caFingerprintFromPEM(b)
+	pemBytes, err := os.ReadFile(s.caPath)
+	if err != nil {
+		return
 	}
-	if fp != "" && fp == s.installedCAFP {
+	if s.caFingerprint != "" {
+		if fp, ferr := caFingerprintFromPEM(pemBytes); ferr != nil || fp != s.caFingerprint {
+			s.caHint = manualTrustHint(s.caPath)
+			fmt.Println("! CA on disk does not match the approved fingerprint — not installing")
+			return
+		}
+	}
+	s.installTrustBytes(pemBytes, skipTrust)
+}
+
+// installTrustBytes installs an in-memory CA snapshot into system trust, keyed
+// on its fingerprint (not a bare boolean — a rejoin that swapped in a different
+// CA re-installs instead of being treated as done). The bytes are written to a
+// private temp file and installed from THERE, never re-opening the
+// user-controlled ca.crt path, closing the validate→reopen TOCTOU.
+func (s *joinSetup) installTrustBytes(pemBytes []byte, skipTrust bool) {
+	fp, err := caFingerprintFromPEM(pemBytes)
+	if err != nil {
+		return
+	}
+	if fp == s.installedCAFP {
 		s.caInstalled = true
 		return
 	}
@@ -694,13 +727,29 @@ func (s *joinSetup) installTrust(skipTrust bool) {
 		fmt.Println("! CA fetched but not trusted (--no-trust) — install manually: " + s.caHint)
 		return
 	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.caPath), ".ca-install-*.crt")
+	if err != nil {
+		s.caHint = manualTrustHint(s.caPath)
+		return
+	}
+	snap := tmp.Name()
+	defer func() { _ = os.Remove(snap) }()
+	if _, err := tmp.Write(pemBytes); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	// 0644 so the privileged installer (sudo cp / security) can read it.
+	_ = tmp.Chmod(0o644)
+	if err := tmp.Close(); err != nil {
+		return
+	}
 	// Erase-on-done only when sudo won't prompt — an interactive
 	// password prompt prints inside the step and breaks the cursor
 	// math. sudo -n returns non-zero (without prompting) when a
 	// password would be needed, and errors when sudo is absent.
 	erasable := exec.Command("sudo", "-n", "true").Run() == nil
 	finish := beginStep("Installing CA in system trust", nil, erasable)
-	if err := installCATrustFn(s.caPath); err != nil {
+	if err := installCATrustFn(snap); err != nil {
 		s.caHint = manualTrustHint(s.caPath)
 		finish("! CA not trusted yet — install manually: " + s.caHint)
 	} else {
@@ -708,6 +757,25 @@ func (s *joinSetup) installTrust(skipTrust bool) {
 		s.installedCAFP = fp
 		finish("✓ CA installed in system trust")
 	}
+}
+
+// commitApprovedCA atomically writes the approved canonical CA and installs it
+// into system trust from that same immutable snapshot. Called at the END of a
+// Tailscale join — after every fatal platform-setup step has succeeded — so a
+// later failure never leaves a rejoin with the new CA trusted while routing or
+// credentials still belong to the old gateway.
+func (s *joinSetup) commitApprovedCA(canonicalCA []byte, skipTrust bool) error {
+	if len(canonicalCA) == 0 {
+		return fmt.Errorf("internal: no approved CA to commit")
+	}
+	if err := atomicWriteFile(s.caPath, canonicalCA, 0o644); err != nil {
+		return fmt.Errorf("write ca.crt: %w", err)
+	}
+	if fp, err := caFingerprintFromPEM(canonicalCA); err == nil {
+		s.caFingerprint = fp
+	}
+	s.installTrustBytes(canonicalCA, skipTrust)
+	return nil
 }
 
 func installCATrust(caPath string) error {
@@ -1138,33 +1206,27 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		finishApprove("✓ approved")
 	}
 	// The tailscale device-flow join consumes the poll-delivered CA (the
-	// gateway's /ca.crt isn't public in tsnet mode). Validate it as the
-	// mandatory single canonical CA and PERSIST it now — before finishJoinSetup,
-	// trust installation, token/state publication, or success output — for every
-	// tailscale platform/mode. Writing it up front (a) aborts the join on a
-	// missing/invalid CA or a write failure instead of reporting success, (b)
-	// replaces any stale ca.crt from a prior join so finishJoinSetup installs
-	// THIS CA rather than the old one, and (c) removes the Linux whole-machine
-	// path's reliance on a best-effort refetch that skipped a rejoin's new CA.
-	if !strings.HasPrefix(loginServer, "wireguard://") {
+	// gateway's /ca.crt isn't public in tsnet mode). Validate it now as the
+	// mandatory single canonical CA — a missing/invalid CA aborts the join
+	// before any state is written — but do NOT persist or install it yet:
+	// commitApprovedCA writes+trusts it at the END of the join, after every
+	// fatal platform-setup step, so a later failure can't strand a rejoin with
+	// the new CA trusted while routing/credentials still belong to the old
+	// gateway. tsnetJoin marks the tailscale paths.
+	tsnetJoin := !strings.HasPrefix(loginServer, "wireguard://")
+	var canonicalCA []byte
+	if tsnetJoin {
 		cc, verr := canonicalMITMCAPEM([]byte(caPEM))
 		if verr != nil {
 			return false, fmt.Errorf("gateway CA rejected: %w", verr)
 		}
-		if werr := atomicWriteFile(setup.caPath, cc, 0o644); werr != nil {
-			return false, fmt.Errorf("write ca.crt: %w", werr)
-		}
-		if fp, ferr := caFingerprintFromPEM(cc); ferr == nil {
-			setup.caFingerprint = fp
-		}
+		canonicalCA = cc
 	}
 	// Approval click ⇒ operator visually confirmed the CA
 	// fingerprint on the dashboard matched what the CLI
-	// printed. Only now is it safe to push the fetched CA
-	// into the system trust store. Doing this earlier would
-	// have meant trusting a CA the operator hadn't vouched
-	// for, which is exactly the on-path attack we're closing.
-	finishJoinSetup(setup, skipTrust, wholeMachine)
+	// printed. finishJoinSetup installs the WireGuard-mode prefetched CA here;
+	// tailscale mode defers install to commitApprovedCA (deferCA=tsnetJoin).
+	finishJoinSetup(setup, skipTrust, wholeMachine, tsnetJoin)
 	// Persist the per-peer bearer the gateway minted alongside the
 	// wg conf. Lives next to ca.crt — same dir the env-pushdown
 	// fetcher reads. Best-effort; missing file means env-pushdown
@@ -1335,6 +1397,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 						"  env-pushdown may be unavailable until you re-run `clawpatrol join`.\n", err)
 			}
 		}
+		// All fatal platform setup succeeded — now commit + trust the approved
+		// CA. A rejoin that fails earlier leaves the old CA/trust intact.
+		if err := setup.commitApprovedCA(canonicalCA, skipTrust); err != nil {
+			return false, err
+		}
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
 		printChecklist(items)
@@ -1471,9 +1538,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
 				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway-ip"),
 					[]byte(peer.TailscaleIPs[0]+"\n"), 0o600)
-				// The poll-delivered CA was already validated, written, and
-				// trusted up front; no best-effort refetch (which used to skip a
-				// rejoin's new CA whenever a stale ca.crt existed).
+				// The poll-delivered CA is committed + trusted at the end of the
+				// join (commitApprovedCA below); no best-effort refetch (which
+				// used to skip a rejoin's new CA whenever a stale ca.crt existed).
 			}
 		}
 	}
@@ -1483,6 +1550,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 	}
 
+	// All fatal platform setup succeeded — now commit + trust the approved CA.
+	if err := setup.commitApprovedCA(canonicalCA, skipTrust); err != nil {
+		return false, err
+	}
 	items := setupSummaryItems(*setup)
 	items = append(items, "✓ joined gateway")
 	printChecklist(items)
