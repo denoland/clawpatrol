@@ -13,8 +13,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -108,13 +110,35 @@ func TestHelperDNSLockdownApply(t *testing.T) {
 	}
 	_ = secret.Close()
 
+	// Stand-in for the nscd socket: a LIVE unix socket with an
+	// accepting listener, the shape glibc's __nscd_getai talks to.
+	// The canonical /run/nscd/socket path can't be created by an
+	// unprivileged, uid-mapped test, so the mechanism is exercised at
+	// a temp path; the planner tests pin the canonical paths.
+	sockDir, err := os.MkdirTemp("", "clawpatrol-nscd-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "socket")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	if c, err := net.Dial("unix", sockPath); err != nil {
+		t.Fatalf("pre-mask dial should reach the live socket: %v", err)
+	} else {
+		_ = c.Close()
+	}
+
 	const resolv = "nameserver 100.100.100.100\n"
 	plan := dnsLockdown{
 		Overrides: []etcOverride{
 			{Target: "/etc/resolv.conf", Pattern: "clawpatrol-resolv-*", Body: resolv},
 			{Target: "/etc/hosts", Pattern: "clawpatrol-hosts-*", Body: minimalHostsFile("nstest")},
 		},
-		Masks: []string{secret.Name()},
+		Masks: []string{secret.Name(), sockPath},
 	}
 	if err := applyDNSLockdown(plan); err != nil {
 		t.Fatalf("applyDNSLockdown: %v", err)
@@ -128,6 +152,16 @@ func TestHelperDNSLockdownApply(t *testing.T) {
 	}
 	if got, err := os.ReadFile(secret.Name()); err != nil || len(got) != 0 {
 		t.Fatalf("masked file = %q, %v; want empty", got, err)
+	}
+	// The masked socket must be unreachable even though the listener
+	// is still accepting on the inode: connect(2) now hits a regular
+	// file, exactly what an in-namespace nscd client would see.
+	if c, err := net.Dial("unix", sockPath); err == nil {
+		_ = c.Close()
+		t.Fatalf("dial on masked socket succeeded; want failure")
+	}
+	if got, err := os.ReadFile(sockPath); err != nil || len(got) != 0 {
+		t.Fatalf("masked socket read = %q, %v; want empty regular file", got, err)
 	}
 	fmt.Println("LOCKDOWN-OK")
 }

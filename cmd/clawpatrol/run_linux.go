@@ -59,6 +59,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/denoland/clawpatrol/cmd/clawpatrol/dnsvip"
 )
 
 const (
@@ -901,18 +903,28 @@ type netnsStep struct {
 // childNetnsSteps is the `ip` command sequence that brings up the
 // child's netns: loopback, the TUN at max MTU, the transport-assigned
 // v4 /32 with a v4 default route, and the fixed runTunAddr6 ULA with
-// a v6 default route. Without the v6 pair an fd78:: DNS-VIP answer is
-// "network unreachable" inside the netns, and AAAA-first clients
-// would skip tunnel-backed endpoints entirely; the daemon's stack is
-// already v6-capable for TCP. nodad because nothing else lives on the
-// TUN and duplicate-address detection would stall the address for a
-// second. (v6 UDP is not forwarded by the TUN bridge — DNS rides the
-// v4 nameserver — so v6 here serves the TCP data path.)
+// a v6 route covering ONLY the gateway's DNS-VIP range
+// (dnsvip.DefaultCIDR6, fd78::/64). Without the v6 pair an fd78::
+// DNS-VIP answer is "network unreachable" inside the netns, and
+// AAAA-first clients would skip tunnel-backed endpoints entirely; the
+// daemon's stack is already v6-capable for TCP. nodad because nothing
+// else lives on the TUN and duplicate-address detection would stall
+// the address for a second.
+//
+// Deliberately NOT a v6 default route: the TUN bridge forwards TCP
+// (v4+v6) and v4 UDP only, so a default route would advertise
+// reachability for every AAAA destination while IPv6 UDP (QUIC/HTTP3)
+// entering the TUN is silently dropped — a stall instead of the
+// instant network-unreachable that lets clients fall back to IPv4.
+// Scoping the route to the VIP prefix keeps fd78:: endpoints
+// reachable (they are TCP by construction — DNS rides the v4
+// nameserver) and leaves every other v6 destination, TCP and UDP
+// alike, failing fast to the v4 path.
 //
 // The v6 steps are optional: a host booted with ipv6.disable=1 can't
 // add them, and the v4 VIP path must keep working there — a failed
-// v6 bring-up degrades AAAA attempts to instant network-unreachable,
-// which clients fall back from.
+// v6 bring-up degrades fd78:: attempts to instant
+// network-unreachable, which clients fall back from.
 func childNetnsSteps(tunAddr string) []netnsStep {
 	return []netnsStep{
 		{args: []string{"ip", "link", "set", "lo", "up"}},
@@ -920,7 +932,7 @@ func childNetnsSteps(tunAddr string) []netnsStep {
 		{args: []string{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName}},
 		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
 		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
-		{args: []string{"ip", "-6", "route", "add", "default", "dev", tunIfName}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", dnsvip.DefaultCIDR6.String(), "dev", tunIfName}, optional: true},
 	}
 }
 
@@ -991,20 +1003,35 @@ func splitHostsTokens(s string) []string {
 	return toks
 }
 
-// rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf body,
-// removing only the NSS modules that bypass the bind-mounted resolv.conf
-// — systemd-resolved (`resolve`) and Avahi mDNS (`mdns*`) — along with
-// the bracketed action items that trail them, and ensuring `dns` is
-// present so getaddrinfo consults resolv.conf. Every other source
-// (`files`, `myhostname`, `sss`, `ldap`, `nis`, …) is preserved in its
-// original position, so a host that resolves internal names through
-// sssd/LDAP keeps doing so inside the sandbox.
+// rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf
+// body down to the namespace-local allowlist `files` + `dns`
+// (original order preserved, `dns` appended when absent), dropping
+// every other source along with the bracketed action items that
+// trail them.
+//
+// This is an allowlist, not a blocklist, because the lockdown must
+// fail closed: any source backed by a host-side daemon, cache, or
+// directory (`resolve`, `mdns*`, `sss`, `ldap`, `nis`, `mymachines`,
+// `winbind`, …) can answer for a tunneled hostname with its raw
+// upstream IP without ever consulting the bind-mounted resolv.conf —
+// and for tunnel-backed endpoints a raw IP is a silent black hole
+// (#765). Only two sources are known to stay inside the namespace:
+//
+//   - `files` reads /etc/hosts, which the lockdown replaces with the
+//     minimal synthetic body (self-lookups keep working through it,
+//     which is also why `myhostname` isn't needed);
+//   - `dns` reads the bind-mounted, gateway-pointing resolv.conf.
+//
+// Hosts that resolve internal names through sssd/LDAP/NIS lose that
+// inside the sandbox; CLAWPATROL_RUN_KEEP_RESOLV=1 remains the escape
+// hatch for runs that need host NSS behavior (and can live with
+// tunnel-backed endpoints being unreachable).
 //
 // It returns the full rewritten body and whether anything changed;
-// changed is false when raw has no hosts: line or the line already
-// routes through dns without an interfering module (e.g. Ubuntu's
-// `files dns`), so unaffected distros keep their nsswitch untouched
-// rather than rebinding an identical copy.
+// changed is false when raw has no hosts: line or the line is
+// already allowlist-only (e.g. Ubuntu's `files dns`), so unaffected
+// distros keep their nsswitch untouched rather than rebinding an
+// identical copy.
 func rewriteHostsLine(raw string) (body string, changed bool) {
 	if raw == "" {
 		return "", false
@@ -1031,9 +1058,10 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 				}
 				continue
 			}
-			// resolve (systemd-resolved) and mdns* (Avahi) answer ahead
-			// of dns and can't reach the gateway through the tunnel.
-			if tok == "resolve" || strings.HasPrefix(tok, "mdns") {
+			// Anything outside the allowlist may answer from host state
+			// (resolved's varlink socket, sssd/LDAP, NIS, mDNS, …) and
+			// bypass the gateway-pointing resolv.conf entirely.
+			if tok != "files" && tok != "dns" {
 				dropAction = true
 				continue
 			}

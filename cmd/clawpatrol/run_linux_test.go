@@ -19,7 +19,7 @@ func TestRewriteHostsLine(t *testing.T) {
 			name:        "fedora resolve short-circuit",
 			in:          "passwd: files\nhosts:      files myhostname mdns4_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] dns\ngroup: files\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   "hosts:      files dns",
 		},
 		{
 			name:        "already files dns - no change",
@@ -27,9 +27,12 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: false,
 		},
 		{
-			name:        "already sanitized form - no change",
+			// myhostname is off the allowlist: self-lookups are served by
+			// the synthetic /etc/hosts through `files` instead.
+			name:        "drops myhostname",
 			in:          "hosts:      files myhostname dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   "hosts:      files dns",
 		},
 		{
 			name:        "no hosts line",
@@ -54,16 +57,19 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantHosts:   "hosts:      dns",
 		},
 		{
-			// Regression: a resolv.conf-respecting module like sssd must
-			// not be dropped — only resolve/mdns short-circuiters are.
-			name:        "preserves sssd module - no change",
+			// sssd answers via the host's sssd daemon (e.g. an LDAP
+			// resolver) without consulting the bind-mounted resolv.conf —
+			// off the allowlist, must be dropped (#765).
+			name:        "drops sssd module",
 			in:          "hosts: files sss dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   "hosts:      files dns",
 		},
 		{
-			name:        "preserves ldap module - no change",
+			name:        "drops ldap and myhostname modules",
 			in:          "hosts: files myhostname ldap dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   "hosts:      files dns",
 		},
 		{
 			// dns-first is unusual but intentional; must not be reordered.
@@ -72,24 +78,24 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: false,
 		},
 		{
-			name:        "removes resolve but keeps sss in place",
+			name:        "removes resolve and sss together",
 			in:          "hosts: files sss resolve [!UNAVAIL=return] dns\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files sss dns",
+			wantHosts:   "hosts:      files dns",
 		},
 		{
-			name:        "removes mdns keeps myhostname and dns",
+			name:        "removes mdns and myhostname keeps dns",
 			in:          "hosts: files mdns4_minimal [NOTFOUND=return] myhostname dns\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   "hosts:      files dns",
 		},
 		{
-			// No dns and no bypassing module: dns is appended so the
-			// gateway resolv.conf is still consulted.
+			// No dns present: dns is appended so the gateway resolv.conf
+			// is still consulted.
 			name:        "appends dns when absent",
-			in:          "hosts: files myhostname\n",
+			in:          "hosts: files\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   "hosts:      files dns",
 		},
 		{
 			// Multi-status action bracket contains a space; it must be
@@ -160,11 +166,15 @@ func TestChildNetnsSteps(t *testing.T) {
 		{args: []string{"ip", "link", "set", tunIfName, "mtu", "65535", "up"}},
 		{args: []string{"ip", "addr", "add", "100.64.0.7/32", "dev", tunIfName}},
 		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
-		// v6 so fd78:: DNS-VIP answers are routable (#765). Optional:
-		// on a host booted with ipv6.disable=1 these fail, and the v4
-		// VIP path must keep working rather than abort the run.
+		// v6 so fd78:: DNS-VIP answers are routable (#765). The route is
+		// scoped to the VIP prefix — NOT default — because the TUN
+		// bridge drops IPv6 UDP silently; a default route would stall
+		// QUIC/HTTP3 on public AAAA destinations instead of letting them
+		// fall back to IPv4. Optional: on a host booted with
+		// ipv6.disable=1 these fail, and the v4 VIP path must keep
+		// working rather than abort the run.
 		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
-		{args: []string{"ip", "-6", "route", "add", "default", "dev", tunIfName}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", "fd78::/64", "dev", tunIfName}, optional: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("childNetnsSteps:\n got %v\nwant %v", got, want)
