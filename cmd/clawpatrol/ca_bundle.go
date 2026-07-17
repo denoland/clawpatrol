@@ -129,14 +129,41 @@ func mitmCACertsPEM(pemBytes []byte) []byte {
 }
 
 // validateMITMCAPEM errors unless pemBytes holds at least one usable MITM CA
-// certificate. Called before persisting a fetched/pushed ca.crt so a leaf,
-// header-bearing, or malformed cert never lands on disk and later breaks TLS to
-// every defined endpoint.
+// certificate. Used by ensureCABundle to guard the on-disk ca.crt (which the
+// fetch/join paths already wrote canonically via canonicalMITMCAPEM).
 func validateMITMCAPEM(pemBytes []byte) error {
 	if len(mitmCACertsPEM(pemBytes)) == 0 {
 		return errors.New("no usable MITM CA certificate (need a header-free CA cert with certSign key usage)")
 	}
 	return nil
+}
+
+// canonicalMITMCAPEM verifies pemBytes contains EXACTLY ONE usable MITM CA
+// certificate and nothing else (no leading junk, no second block, no trailing
+// non-whitespace), then returns that certificate re-encoded canonically.
+//
+// The fetch/join paths persist and fingerprint THIS canonical form rather than
+// the raw payload. Otherwise a response of `legitimate-CA || attacker-CA` would
+// display the legitimate first-cert fingerprint the operator confirms
+// out-of-band, yet install/bundle the appended attacker CA too — a TOFU bypass.
+// clawpatrol's gateway serves a single self-signed CA, so requiring exactly one
+// certificate is the correct contract.
+func canonicalMITMCAPEM(pemBytes []byte) ([]byte, error) {
+	if !bytes.HasPrefix(bytes.TrimLeft(pemBytes, " \t\r\n"), []byte("-----BEGIN CERTIFICATE-----")) {
+		return nil, errors.New("expected a leading PEM CERTIFICATE block")
+	}
+	blk, rest := pem.Decode(pemBytes)
+	if blk == nil {
+		return nil, errors.New("no PEM certificate block")
+	}
+	c, ok := isMITMCACertBlock(blk)
+	if !ok {
+		return nil, errors.New("no usable MITM CA certificate (need a header-free CA cert with certSign key usage)")
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, errors.New("ca.crt must contain exactly one certificate")
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}), nil
 }
 
 // certFingerprints returns the DER SHA-256 fingerprints of every CERTIFICATE

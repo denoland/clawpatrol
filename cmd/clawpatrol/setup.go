@@ -438,14 +438,18 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	fp, err := caFingerprintFromPEM(b)
+	// Require exactly one usable CA and persist/fingerprint that canonical
+	// certificate — not the raw payload — so an appended attacker CA can't ride
+	// in behind the legitimate first-cert fingerprint the operator confirms.
+	canonical, err := canonicalMITMCAPEM(b)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
-	}
-	if err := validateMITMCAPEM(b); err != nil {
 		return "", fmt.Errorf("fetch ca from %s: %w", url, err)
 	}
-	if err := atomicWriteFile(dst, b, 0o644); err != nil {
+	fp, err := caFingerprintFromPEM(canonical)
+	if err != nil {
+		return "", fmt.Errorf("fetch ca: fingerprint from %s: %w", url, err)
+	}
+	if err := atomicWriteFile(dst, canonical, 0o644); err != nil {
 		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return fp, nil
@@ -679,13 +683,13 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	// Validate before persisting (parity with fetchCAHTTP): a ca.crt that isn't
-	// a usable MITM CA on disk would make every wrapped agent fail TLS to
-	// defined endpoints.
-	if err := validateMITMCAPEM(b); err != nil {
+	// Persist the single canonical CA (parity with fetchCAHTTP): reject a leaf,
+	// a multi-cert payload, or trailing junk before it lands on disk.
+	canonical, err := canonicalMITMCAPEM(b)
+	if err != nil {
 		return fmt.Errorf("fetch ca from %s: %w", url, err)
 	}
-	if err := atomicWriteFile(dst, b, 0o644); err != nil {
+	if err := atomicWriteFile(dst, canonical, 0o644); err != nil {
 		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return nil
@@ -1147,6 +1151,19 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if finishApprove != nil {
 		finishApprove("✓ approved")
 	}
+	// The tailscale device-flow join consumes the poll-delivered CA (the
+	// gateway's /ca.crt isn't public in tsnet mode). Validate it as the
+	// mandatory single canonical CA BEFORE persisting ANY join state, so a
+	// missing/invalid CA aborts the join instead of reporting success while
+	// leaving fresh credentials paired with an absent or stale ca.crt.
+	var canonicalCA []byte
+	if !strings.HasPrefix(loginServer, "wireguard://") {
+		cc, verr := canonicalMITMCAPEM([]byte(caPEM))
+		if verr != nil {
+			return false, fmt.Errorf("gateway CA rejected: %w", verr)
+		}
+		canonicalCA = cc
+	}
 	// Approval click ⇒ operator visually confirmed the CA
 	// fingerprint on the dashboard matched what the CLI
 	// printed. Only now is it safe to push the fetched CA
@@ -1253,21 +1270,17 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// hosts that want all traffic routed through the gateway.
 	if !wholeMachine || runtime.GOOS == "darwin" {
 		clawDir := filepath.Dir(setup.caPath)
-		// Write CA delivered in the poll response (gateway's /ca.crt is
-		// intentionally not public in tsnet mode). Then install trust.
-		// Validate BEFORE persisting/trusting: an unusable CA (leaf, header-
-		// bearing, malformed) must not land on disk or into the trust store —
-		// the old path wrote first and ignored the fingerprint error.
-		if caPEM != "" {
-			if verr := validateMITMCAPEM([]byte(caPEM)); verr != nil {
-				fmt.Fprintf(os.Stderr, "clawpatrol: gateway CA rejected: %v\n", verr)
-			} else if werr := atomicWriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
-				if fp, ferr := caFingerprintFromPEM([]byte(caPEM)); ferr == nil {
-					setup.caFingerprint = fp
-				}
-				setup.installTrust(skipTrust)
-			}
+		// Persist the canonical CA validated above (gateway's /ca.crt is
+		// intentionally not public in tsnet mode), then install trust. A write
+		// failure aborts the join rather than reporting success with no usable
+		// ca.crt on disk.
+		if werr := atomicWriteFile(setup.caPath, canonicalCA, 0o644); werr != nil {
+			return false, fmt.Errorf("write ca.crt: %w", werr)
 		}
+		if fp, ferr := caFingerprintFromPEM(canonicalCA); ferr == nil {
+			setup.caFingerprint = fp
+		}
+		setup.installTrust(skipTrust)
 		if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
 			return false, fmt.Errorf("write mode: %w", err)
 		}

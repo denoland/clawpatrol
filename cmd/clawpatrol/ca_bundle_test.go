@@ -633,6 +633,40 @@ func TestMITMCACertStrictValidation(t *testing.T) {
 	}
 }
 
+// TestCanonicalMITMCAPEM (round-6 #1): exactly one usable CA is accepted and
+// returned canonically; an appended second CA, a leaf, and leading/trailing
+// junk are all rejected so the fingerprinted cert == the persisted cert.
+func TestCanonicalMITMCAPEM(t *testing.T) {
+	ca1, _, _ := mintCA(t, "legit", 1)
+	ca2, _, _ := mintCA(t, "attacker", 2)
+	_, issuer, issuerKey := mintCA(t, "issuer", 3)
+	leaf := leafPEM(t, mintLeaf(t, "endpoint", issuer, issuerKey))
+
+	canon, err := canonicalMITMCAPEM(ca1)
+	if err != nil {
+		t.Fatalf("single CA rejected: %v", err)
+	}
+	if countPEMCerts(canon) != 1 || !bytes.Equal(canon, ca1) {
+		t.Error("canonical form must be the single re-encoded certificate")
+	}
+
+	appended := append(append([]byte{}, ca1...), ca2...)
+	if _, err := canonicalMITMCAPEM(appended); err == nil {
+		t.Error("appended second CA must be rejected (TOFU bypass)")
+	}
+	if _, err := canonicalMITMCAPEM(leaf); err == nil {
+		t.Error("a non-CA leaf must be rejected")
+	}
+	trailing := append(append([]byte{}, ca1...), []byte("trailing-garbage")...)
+	if _, err := canonicalMITMCAPEM(trailing); err == nil {
+		t.Error("trailing non-whitespace must be rejected")
+	}
+	leading := append([]byte("leading-junk\n"), ca1...)
+	if _, err := canonicalMITMCAPEM(leading); err == nil {
+		t.Error("leading junk before the certificate must be rejected")
+	}
+}
+
 // TestEnsureCABundleRejectsLeafCA (round-5 #2): a leaf written to ca.crt must
 // fail safe — no bundle that can't validate endpoint certs is published.
 func TestEnsureCABundleRejectsLeafCA(t *testing.T) {
