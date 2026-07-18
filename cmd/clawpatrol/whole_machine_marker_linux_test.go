@@ -212,7 +212,7 @@ func TestWholeMachineMarkerLocalGatewayRejectionPreservesPreviousCommit(t *testi
 	}
 }
 
-func TestWholeMachineMarkerRejectedJoinHelper(t *testing.T) {
+func TestWholeMachineMarkerRejectedJoinHelper(_ *testing.T) {
 	switch os.Getenv("CLAWPATROL_REJECTED_JOIN_HELPER") {
 	case "invalid":
 		runJoin(nil)
