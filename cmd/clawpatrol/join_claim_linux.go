@@ -22,6 +22,7 @@ package main
 // registerTsnetPeer call.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,10 +38,10 @@ import (
 // claimPeerAPIToken stands up the daemon's tsnet node, claims the
 // device against its tailnet IP, and writes <caDir>/api-token.
 //
-// The claim POST goes over the gateway's public URL rather than the
-// tailnet: /api/onboard/claim is on the Funnel allowlist, and at this
-// point exit-node routing isn't configured yet.
-func claimPeerAPIToken(gateway, deviceCode, hostname, authKey, controlURL, stateDir, caDir string) error {
+// When onboarding used a tailnet bootstrap, the claim POST reuses its
+// client so tailnet-only gateway URLs remain reachable. Otherwise it uses
+// the default secure HTTP transport for a public gateway URL.
+func claimPeerAPIToken(gateway, deviceCode, hostname, authKey, controlURL, stateDir, caDir string, cli *http.Client) error {
 	tsnetDir := filepath.Join(stateDir, "tsnet")
 	if err := os.MkdirAll(tsnetDir, 0o700); err != nil {
 		return fmt.Errorf("tsnet state dir: %w", err)
@@ -73,9 +74,21 @@ func claimPeerAPIToken(gateway, deviceCode, hostname, authKey, controlURL, state
 	if hn != "" {
 		claimURL += "&hostname=" + neturl.QueryEscape(hn)
 	}
+	return claimPeerAPITokenAtURL(claimURL, tsIP.String(), caDir, cli)
+}
 
-	cli := &http.Client{Timeout: 20 * time.Second}
-	resp, err := cli.Post(claimURL, "application/json", nil)
+func claimPeerAPITokenAtURL(claimURL, tsIP, caDir string, cli *http.Client) error {
+	if cli == nil {
+		cli = &http.Client{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, claimURL, nil)
+	if err != nil {
+		return fmt.Errorf("build claim request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cli.Do(req)
 	if err != nil {
 		return fmt.Errorf("claim %s: %w", tsIP, err)
 	}
