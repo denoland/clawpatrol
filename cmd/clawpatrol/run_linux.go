@@ -405,7 +405,11 @@ func runRunChild() {
 	// silently unreachable (#765), which is far harder to debug than
 	// an up-front abort. The env var opts out of the whole lockdown
 	// for runs that don't need DNS (or need host DNS).
-	plan, err := computeDNSLockdown(gatherDNSLockdownInputs())
+	var plan dnsLockdown
+	in, err := gatherDNSLockdownInputs()
+	if err == nil {
+		plan, err = computeDNSLockdown(in)
+	}
 	if err == nil {
 		err = applyDNSLockdown(plan)
 	}
@@ -1014,24 +1018,63 @@ func splitHostsTokens(s string) []string {
 	return toks
 }
 
-// rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf
-// body down to the namespace-local allowlist `files` + `dns`
-// (original order preserved, `dns` appended when absent), dropping
-// every other source along with the bracketed action items that
-// trail them.
+// cutHostsDefinition reports whether line defines the `hosts`
+// database under glibc's nsswitch.conf grammar and returns the
+// services portion. The grammar (nss/nss_database.c, process_line)
+// is looser than a literal "hosts:" prefix: leading whitespace is
+// skipped, the database name ends at the first whitespace OR colon,
+// and the separator is any run of whitespace and colons — so
+// "hosts : sss dns", "hosts:sss dns", and the colon-less
+// "hosts sss dns" all define the database. A bare "hosts" with
+// nothing after the name is a glibc syntax error (skipped there), so
+// it is not treated as a definition here either. Anything narrower
+// than glibc's parser is a lockdown bypass: a definition we fail to
+// recognize is one glibc still honors.
+func cutHostsDefinition(line string) (services string, ok bool) {
+	s := strings.TrimLeft(line, " \t")
+	i := 0
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != ':' {
+		i++
+	}
+	if s[:i] != "hosts" || i == len(s) {
+		return "", false
+	}
+	j := i
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == ':') {
+		j++
+	}
+	return s[j:], true
+}
+
+// rewriteHostsLines canonicalizes every `hosts` database definition
+// in an nsswitch.conf body to exactly `hosts: files dns`, leaving a
+// definition untouched only when it is already safe: every source on
+// the allowlist (`files`, `dns`), `dns` present, and NO bracketed
+// action modifiers.
 //
-// This is an allowlist, not a blocklist, because the lockdown must
-// fail closed: any source backed by a host-side daemon, cache, or
-// directory (`resolve`, `mdns*`, `sss`, `ldap`, `nis`, `mymachines`,
-// `winbind`, …) can answer for a tunneled hostname with its raw
-// upstream IP without ever consulting the bind-mounted resolv.conf —
-// and for tunnel-backed endpoints a raw IP is a silent black hole
-// (#765). Only two sources are known to stay inside the namespace:
+// Why every definition: glibc assigns each parsed `hosts` line to the
+// same slot, so the LAST definition wins — sanitizing only the first
+// would let `hosts: files dns\nhosts: sss dns` through untouched.
+// Rewriting all of them is deterministic regardless of which one
+// glibc picks.
 //
-//   - `files` reads /etc/hosts, which the lockdown replaces with the
-//     minimal synthetic body (self-lookups keep working through it,
-//     which is also why `myhostname` isn't needed);
-//   - `dns` reads the bind-mounted, gateway-pointing resolv.conf.
+// Why an allowlist: the lockdown must fail closed — any source backed
+// by a host-side daemon, cache, or directory (`resolve`, `mdns*`,
+// `sss`, `ldap`, `nis`, `mymachines`, `winbind`, …) can answer for a
+// tunneled hostname with its raw upstream IP without ever consulting
+// the bind-mounted resolv.conf, and for tunnel-backed endpoints a raw
+// IP is a silent black hole (#765). Only `files` (reads the synthetic
+// /etc/hosts, which also covers self-lookups so `myhostname` isn't
+// needed) and `dns` (reads the bind-mounted, gateway-pointing
+// resolv.conf) stay inside the namespace.
+//
+// Why no action modifiers survive: a host-provided modifier on an
+// allowlisted source can still suppress gateway DNS — with
+// `hosts: files [NOTFOUND=return] dns`, any name absent from the
+// synthetic hosts file short-circuits to NOTFOUND and `dns` never
+// runs. The default actions (NOTFOUND=continue etc.) are exactly what
+// the files→dns chain needs, so modifiers are dropped wholesale
+// rather than audited.
 //
 // Hosts that resolve internal names through sssd/LDAP/NIS lose that
 // inside the sandbox; CLAWPATROL_RUN_KEEP_RESOLV=1 remains the escape
@@ -1039,17 +1082,18 @@ func splitHostsTokens(s string) []string {
 // tunnel-backed endpoints being unreachable).
 //
 // It returns the full rewritten body and whether anything changed;
-// changed is false when raw has no hosts: line or the line is
-// already allowlist-only (e.g. Ubuntu's `files dns`), so unaffected
-// distros keep their nsswitch untouched rather than rebinding an
-// identical copy.
-func rewriteHostsLine(raw string) (body string, changed bool) {
+// changed is false when raw has no hosts definition at all (glibc's
+// compiled-in default for hosts is `files dns`) or every definition
+// is already safe, so unaffected distros (e.g. Ubuntu's `files dns`)
+// keep their nsswitch untouched rather than rebinding an identical
+// copy.
+func rewriteHostsLines(raw string) (body string, changed bool) {
 	if raw == "" {
 		return "", false
 	}
 	lines := strings.Split(raw, "\n")
 	for i, line := range lines {
-		rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "hosts:")
+		rest, ok := cutHostsDefinition(line)
 		if !ok {
 			continue
 		}
@@ -1057,51 +1101,36 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 		if c := strings.IndexByte(rest, '#'); c >= 0 {
 			rest = rest[:c]
 		}
-		orig := splitHostsTokens(rest)
-		var kept []string
-		dropAction := false // drop bracketed actions trailing a removed module
-		for _, tok := range orig {
-			if strings.HasPrefix(tok, "[") {
-				// Action modifier ([!UNAVAIL=return] etc.) applies to the
-				// preceding source; keep it only if that source survived.
-				if !dropAction {
-					kept = append(kept, tok)
-				}
-				continue
-			}
-			// Anything outside the allowlist may answer from host state
-			// (resolved's varlink socket, sssd/LDAP, NIS, mDNS, …) and
-			// bypass the gateway-pointing resolv.conf entirely.
+		toks := splitHostsTokens(rest)
+		safe := slices.Contains(toks, "dns")
+		for _, tok := range toks {
 			if tok != "files" && tok != "dns" {
-				dropAction = true
-				continue
+				safe = false
+				break
 			}
-			dropAction = false
-			kept = append(kept, tok)
 		}
-		if !slices.Contains(kept, "dns") {
-			kept = append(kept, "dns")
+		if safe {
+			continue
 		}
-		// No-op when no bypassing module was present (token sequence
-		// unchanged), so unaffected distros' nsswitch is left untouched.
-		if slices.Equal(orig, kept) {
-			return "", false
-		}
-		lines[i] = "hosts:      " + strings.Join(kept, " ")
-		return strings.Join(lines, "\n"), true
+		lines[i] = "hosts:      files dns"
+		changed = true
 	}
-	return "", false
+	if !changed {
+		return "", false
+	}
+	return strings.Join(lines, "\n"), true
 }
 
 // bindOverEtc writes body to a temp file (named via pattern) and
-// bind-mounts it over target in the calling mount namespace. The temp
-// file is unlinked on every path — including success: once the
-// bind-mount is in place it holds a reference to the inode, so removing
-// the source directory entry leaves target intact (the mount points at
-// the inode, not the path) while ensuring we don't strand a temp file
-// per `clawpatrol run`. The kernel reclaims the inode when the mount
-// goes away on namespace exit. The file is made world-readable (0644)
-// so an unprivileged wrapped command can read it on the sudo path.
+// bind-mounts it read-only over target in the calling mount
+// namespace. The temp file is unlinked on every path — including
+// success: once the bind-mount is in place it holds a reference to
+// the inode, so removing the source directory entry leaves target
+// intact (the mount points at the inode, not the path) while ensuring
+// we don't strand a temp file per `clawpatrol run`. The kernel
+// reclaims the inode when the mount goes away on namespace exit. The
+// file is made world-readable (0644) so an unprivileged wrapped
+// command can read it on the sudo path.
 func bindOverEtc(target, pattern, body string) error {
 	tmp, err := os.CreateTemp("", pattern)
 	if err != nil {
@@ -1128,5 +1157,47 @@ func bindOverEtc(target, pattern, body string) error {
 	// Mount holds the inode; drop the now-redundant /tmp path so it
 	// doesn't accumulate across runs.
 	_ = os.Remove(tmp.Name())
+	// Fail closed if the read-only flip fails: a writable lockdown
+	// file is a lockdown the wrapped command can undo.
+	return remountReadOnly(target)
+}
+
+// remountReadOnly flips the (bind) mount at target to read-only. A
+// plain MS_BIND mount stays writable to the inode's owner, and on the
+// unprivileged-userns path the temp inode bindOverEtc creates is
+// owned by the very uid the wrapped command runs as — clearing
+// ambient capabilities does not remove owner write permission, so
+// without this remount the agent could simply overwrite
+// /etc/resolv.conf after setup and reopen the resolver leak.
+//
+// The statfs dance re-asserts the mount's existing nosuid/nodev/…
+// flags on the remount: the temp inode usually lives on a
+// nosuid,nodev /tmp, those per-mount flags carry over to the bind,
+// and in a user namespace a remount that would drop such inherited
+// flags is rejected with EPERM — so they must be repeated explicitly.
+func remountReadOnly(target string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(target, &st); err != nil {
+		return fmt.Errorf("statfs %s: %w", target, err)
+	}
+	flags := uintptr(unix.MS_REMOUNT | unix.MS_BIND | unix.MS_RDONLY)
+	for _, m := range []struct {
+		st int64
+		ms uintptr
+	}{
+		{unix.ST_NOSUID, unix.MS_NOSUID},
+		{unix.ST_NODEV, unix.MS_NODEV},
+		{unix.ST_NOEXEC, unix.MS_NOEXEC},
+		{unix.ST_NOATIME, unix.MS_NOATIME},
+		{unix.ST_NODIRATIME, unix.MS_NODIRATIME},
+		{unix.ST_RELATIME, unix.MS_RELATIME},
+	} {
+		if int64(st.Flags)&m.st != 0 {
+			flags |= m.ms
+		}
+	}
+	if err := unix.Mount("", target, "", flags, ""); err != nil {
+		return fmt.Errorf("remount read-only %s: %w", target, err)
+	}
 	return nil
 }

@@ -21,8 +21,11 @@ package main
 //     BEFORE traversing the `hosts:` NSS chain at all, so a host
 //     nscd/unscd with hosts caching enabled can hand back a cached
 //     raw address (or NXDOMAIN) no matter what the other layers say
-//     → mask the socket with an empty regular file, same mechanism
-//       as the varlink socket below;
+//     → hide the whole nscd runtime directory behind an empty
+//       read-only tmpfs (not just the socket file: the directory
+//       mask also swallows a socket re-created mid-run by a
+//       restarting daemon, and unlike /run/systemd/resolve nothing
+//       else references paths inside it);
 //   - the `resolve` / `mdns*` modules answering ahead of `dns` —
 //     nss-resolve talks to host systemd-resolved over the varlink
 //     socket /run/systemd/resolve/io.systemd.Resolve, which the mnt
@@ -48,13 +51,28 @@ package main
 // every layer above, restoring host DNS behavior (and with it the
 // unreachability of tunnel-backed endpoints).
 //
+// Every lockdown mount is remounted read-only (bindOverEtc →
+// remountReadOnly; the tmpfs dir masks are born read-only): the
+// wrapped command runs as the same uid that owns the bind-mount
+// source inodes, so a writable mount would let it overwrite
+// /etc/resolv.conf after setup and undo the whole lockdown. It also
+// cannot unmount them — its ambient caps are cleared before exec,
+// and mounts inherited into any namespace it creates for itself are
+// kernel-locked (MNT_LOCK).
+//
 // Residual, accepted: nss-resolve's D-Bus fallback rides
 // /run/dbus/system_bus_socket, which stays reachable (masking the
 // system bus would break far too much) — it only matters if the
 // now-fatal nsswitch rewrite was somehow bypassed. Likewise a
 // varlink socket created *after* the namespace is set up (resolved
 // restarting mid-run) is not masked; the sanitized nsswitch never
-// consults it.
+// consults it. And if NO nscd runtime directory exists at setup
+// (nscd installed but stopped), a daemon started mid-run creates
+// /run/nscd in the shared /run and the child will see it — there is
+// no path to mount over up front, and the unprivileged child cannot
+// create one in the host-owned /run. The directory mask closes the
+// mid-run window only for the common case where nscd is already
+// running (its directory exists) at setup.
 //
 // The planner (computeDNSLockdown) is pure so the per-distro matrix is
 // unit-testable; applyDNSLockdown performs the mounts.
@@ -64,6 +82,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 // etcOverride is one file bind-mounted over its target in the child's
@@ -77,7 +97,8 @@ type etcOverride struct {
 // dnsLockdown is the mount plan for the child namespace.
 type dnsLockdown struct {
 	Overrides []etcOverride
-	Masks     []string // paths hidden behind an empty regular file
+	Masks     []string // paths hidden behind an empty read-only regular file
+	DirMasks  []string // directories hidden behind an empty read-only tmpfs
 }
 
 // dnsLockdownInputs is everything computeDNSLockdown needs from the
@@ -90,22 +111,23 @@ type dnsLockdownInputs struct {
 	HostsExists         bool     // /etc/hosts present
 	Hostname            string   // os.Hostname(), "" if unknown
 	VarlinkSocketExists bool     // resolvedVarlinkSocket present
-	NscdSocketsPresent  []string // subset of nscdSocketPaths that exist
+	NscdDirsPresent     []string // subset of nscdDirPaths that exist
 }
 
 // resolvedVarlinkSocket is where nss-resolve reaches the host's
 // systemd-resolved.
 const resolvedVarlinkSocket = "/run/systemd/resolve/io.systemd.Resolve"
 
-// nscdSocketPaths are the locations of the name service cache
-// daemon's socket. glibc's compiled-in _PATH_NSCDSOCKET is the
-// /var/run one; on modern distros /var/run is a symlink to /run, so
-// both spellings usually name the same inode — masking both just
-// stacks a second identical bind-mount, which is harmless, and
-// covers the odd host where they differ.
-var nscdSocketPaths = []string{
-	"/run/nscd/socket",
-	"/var/run/nscd/socket",
+// nscdDirPaths are the locations of the name service cache daemon's
+// runtime directory (its socket lives directly inside). glibc's
+// compiled-in _PATH_NSCDSOCKET is under the /var/run spelling; on
+// modern distros /var/run is a symlink to /run, so both usually name
+// the same directory — masking both just stacks a second identical
+// mount, which is harmless, and covers the odd host where they
+// differ.
+var nscdDirPaths = []string{
+	"/run/nscd",
+	"/var/run/nscd",
 }
 
 // minimalHostsFile is the synthetic /etc/hosts the child sees: just
@@ -142,7 +164,7 @@ func computeDNSLockdown(in dnsLockdownInputs) (dnsLockdown, error) {
 		if !errors.Is(in.NsswitchErr, fs.ErrNotExist) {
 			return dnsLockdown{}, fmt.Errorf("read /etc/nsswitch.conf: %w", in.NsswitchErr)
 		}
-	} else if body, changed := rewriteHostsLine(in.NsswitchRaw); changed {
+	} else if body, changed := rewriteHostsLines(in.NsswitchRaw); changed {
 		plan.Overrides = append(plan.Overrides, etcOverride{
 			Target:  "/etc/nsswitch.conf",
 			Pattern: "clawpatrol-nsswitch-*",
@@ -160,34 +182,75 @@ func computeDNSLockdown(in dnsLockdownInputs) (dnsLockdown, error) {
 		plan.Masks = append(plan.Masks, resolvedVarlinkSocket)
 	}
 	// nscd is consulted before the NSS chain even runs, so no
-	// nsswitch rewrite can help — the socket itself must go dark.
-	plan.Masks = append(plan.Masks, in.NscdSocketsPresent...)
+	// nsswitch rewrite can help — its runtime directory must go dark
+	// wholesale, so that even a socket re-created mid-run by a
+	// restarting daemon stays invisible.
+	plan.DirMasks = append(plan.DirMasks, in.NscdDirsPresent...)
 	return plan, nil
+}
+
+// classifyStatErr maps a stat result to presence for lockdown
+// discovery. Only a definite "does not exist" (ENOENT, or ENOTDIR on
+// a missing parent) counts as absent; any other failure — EPERM from
+// a hardened /run, EIO, … — is returned as fatal, because "couldn't
+// check" is indistinguishable from "leak path present" and silently
+// skipping a mask would fail open (#765).
+func classifyStatErr(path string, err error) (present bool, fatal error) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, unix.ENOTDIR):
+		return false, nil
+	default:
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+}
+
+// statPresence is classifyStatErr over a live os.Stat.
+func statPresence(path string) (bool, error) {
+	_, err := os.Stat(path)
+	return classifyStatErr(path, err)
 }
 
 // gatherDNSLockdownInputs collects the planner's inputs from the
 // child's view of the filesystem (pre-mount, so it sees host state).
-func gatherDNSLockdownInputs() dnsLockdownInputs {
+// Discovery is fail-closed: an unexpected stat failure aborts rather
+// than silently dropping a mask from the plan.
+func gatherDNSLockdownInputs() (dnsLockdownInputs, error) {
+	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") == "1" {
+		// The escape hatch must win even on hosts where discovery
+		// itself fails (an unreadable /run, …) — skip every probe.
+		return dnsLockdownInputs{KeepResolv: true}, nil
+	}
 	raw, err := os.ReadFile("/etc/nsswitch.conf")
 	hostname, _ := os.Hostname()
-	_, hostsErr := os.Stat("/etc/hosts")
-	_, sockErr := os.Stat(resolvedVarlinkSocket)
-	var nscd []string
-	for _, p := range nscdSocketPaths {
-		if _, err := os.Stat(p); err == nil {
-			nscd = append(nscd, p)
+	hostsExists, herr := statPresence("/etc/hosts")
+	if herr != nil {
+		return dnsLockdownInputs{}, herr
+	}
+	varlinkExists, verr := statPresence(resolvedVarlinkSocket)
+	if verr != nil {
+		return dnsLockdownInputs{}, verr
+	}
+	var nscdDirs []string
+	for _, p := range nscdDirPaths {
+		present, perr := statPresence(p)
+		if perr != nil {
+			return dnsLockdownInputs{}, perr
+		}
+		if present {
+			nscdDirs = append(nscdDirs, p)
 		}
 	}
 	return dnsLockdownInputs{
-		KeepResolv:          os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") == "1",
 		ResolvBody:          childResolvConf(),
 		NsswitchRaw:         string(raw),
 		NsswitchErr:         err,
-		HostsExists:         hostsErr == nil,
+		HostsExists:         hostsExists,
 		Hostname:            hostname,
-		VarlinkSocketExists: sockErr == nil,
-		NscdSocketsPresent:  nscd,
-	}
+		VarlinkSocketExists: varlinkExists,
+		NscdDirsPresent:     nscdDirs,
+	}, nil
 }
 
 // applyDNSLockdown performs the plan's mounts in the calling mount
@@ -208,6 +271,25 @@ func applyDNSLockdown(plan dnsLockdown) error {
 		if err := bindOverEtc(m, "clawpatrol-mask-*", ""); err != nil {
 			return err
 		}
+	}
+	for _, d := range plan.DirMasks {
+		if err := maskDirReadOnly(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// maskDirReadOnly hides dir behind a fresh, empty, read-only tmpfs.
+// Everything under the host path becomes invisible to the child —
+// including entries created on the host AFTER the mount (a daemon
+// re-creating its socket lands in the host directory, not in the
+// tmpfs shadowing it). Read-only from birth so the wrapped command
+// (same uid) can't populate the shadow either.
+func maskDirReadOnly(dir string) error {
+	flags := uintptr(unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
+	if err := unix.Mount("none", dir, "tmpfs", flags, "size=4k,mode=0555"); err != nil {
+		return fmt.Errorf("mask directory %s: %w", dir, err)
 	}
 	return nil
 }

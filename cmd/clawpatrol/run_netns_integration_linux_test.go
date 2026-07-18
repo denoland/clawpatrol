@@ -110,12 +110,12 @@ func TestHelperDNSLockdownApply(t *testing.T) {
 	}
 	_ = secret.Close()
 
-	// Stand-in for the nscd socket: a LIVE unix socket with an
-	// accepting listener, the shape glibc's __nscd_getai talks to.
-	// The canonical /run/nscd/socket path can't be created by an
-	// unprivileged, uid-mapped test, so the mechanism is exercised at
-	// a temp path; the planner tests pin the canonical paths.
-	sockDir, err := os.MkdirTemp("", "clawpatrol-nscd-*")
+	// Stand-in for the varlink socket: a LIVE unix socket with an
+	// accepting listener, masked as a single file. The canonical
+	// paths can't be created by an unprivileged, uid-mapped test, so
+	// the mechanisms are exercised at temp paths; the planner tests
+	// pin the canonical paths.
+	sockDir, err := os.MkdirTemp("", "clawpatrol-varlink-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
@@ -132,13 +132,28 @@ func TestHelperDNSLockdownApply(t *testing.T) {
 		_ = c.Close()
 	}
 
+	// Stand-in for the nscd runtime dir: another live socket, this
+	// time hidden by masking its whole parent directory.
+	nscdDir, err := os.MkdirTemp("", "clawpatrol-nscd-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(nscdDir) }()
+	nscdSock := filepath.Join(nscdDir, "socket")
+	nscdLn, err := net.Listen("unix", nscdSock)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() { _ = nscdLn.Close() }()
+
 	const resolv = "nameserver 100.100.100.100\n"
 	plan := dnsLockdown{
 		Overrides: []etcOverride{
 			{Target: "/etc/resolv.conf", Pattern: "clawpatrol-resolv-*", Body: resolv},
 			{Target: "/etc/hosts", Pattern: "clawpatrol-hosts-*", Body: minimalHostsFile("nstest")},
 		},
-		Masks: []string{secret.Name(), sockPath},
+		Masks:    []string{secret.Name(), sockPath},
+		DirMasks: []string{nscdDir},
 	}
 	if err := applyDNSLockdown(plan); err != nil {
 		t.Fatalf("applyDNSLockdown: %v", err)
@@ -155,13 +170,42 @@ func TestHelperDNSLockdownApply(t *testing.T) {
 	}
 	// The masked socket must be unreachable even though the listener
 	// is still accepting on the inode: connect(2) now hits a regular
-	// file, exactly what an in-namespace nscd client would see.
+	// file, exactly what an in-namespace client would see.
 	if c, err := net.Dial("unix", sockPath); err == nil {
 		_ = c.Close()
 		t.Fatalf("dial on masked socket succeeded; want failure")
 	}
 	if got, err := os.ReadFile(sockPath); err != nil || len(got) != 0 {
 		t.Fatalf("masked socket read = %q, %v; want empty regular file", got, err)
+	}
+
+	// The dir-masked socket must be gone entirely, and the shadowing
+	// tmpfs must be empty and unwritable — a same-uid process can
+	// neither see the real socket nor plant a fake one.
+	if c, err := net.Dial("unix", nscdSock); err == nil {
+		_ = c.Close()
+		t.Fatalf("dial on dir-masked socket succeeded; want failure")
+	}
+	if _, err := os.Stat(nscdSock); err == nil {
+		t.Fatalf("dir-masked socket still visible; want ENOENT")
+	}
+	if entries, err := os.ReadDir(nscdDir); err != nil || len(entries) != 0 {
+		t.Fatalf("dir mask = %v entries, %v; want empty dir", entries, err)
+	}
+	if err := os.WriteFile(filepath.Join(nscdDir, "socket"), nil, 0o644); err == nil {
+		t.Fatalf("write into dir mask succeeded; want read-only failure")
+	}
+
+	// The wrapped command runs as this same uid, so every lockdown
+	// mount must reject writes and chmod — otherwise the agent could
+	// undo the lockdown after setup (finding: writable bind mounts).
+	for _, target := range []string{"/etc/resolv.conf", "/etc/hosts", secret.Name(), sockPath} {
+		if err := os.WriteFile(target, []byte("nameserver 9.9.9.9\n"), 0o644); err == nil {
+			t.Fatalf("write to %s succeeded; want read-only failure", target)
+		}
+		if err := os.Chmod(target, 0o666); err == nil {
+			t.Fatalf("chmod on %s succeeded; want read-only failure", target)
+		}
 	}
 	fmt.Println("LOCKDOWN-OK")
 }
