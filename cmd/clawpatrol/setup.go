@@ -121,6 +121,9 @@ func runJoin(args []string) {
 				reason)
 		}
 	}
+	if err := beginJoinSetup(); err != nil {
+		fail("join: %v", err)
+	}
 	// Fetch CA BEFORE the VPN goes up. Once `wg-quick up` flips
 	// the default route through the gateway, reaching the
 	// gateway's public URL goes via the tunnel — which can't
@@ -211,7 +214,7 @@ func runJoin(args []string) {
 		if gwHostFile != "" {
 			exitNode = gwHostFile
 		}
-		if err := applyWholeMachineExitNode(exitNode); err != nil {
+		if err := completeWholeMachineTailscaleRouting(exitNode, applyWholeMachineExitNode); err != nil {
 			fail("%v", err)
 		}
 		// Closing message printed here (not in onboardViaDeviceFlow) so
@@ -367,10 +370,52 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 // the gateway, so there's no per-process daemon/sandbox to attach to.
 const wholeMachineMarkerName = "whole-machine"
 
+func wholeMachineMarkerPath() string {
+	return filepath.Join(defaultClawpatrolDir(), wholeMachineMarkerName)
+}
+
+func clearWholeMachineMarker() error {
+	err := os.Remove(wholeMachineMarkerPath())
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("remove whole-machine marker: %w", err)
+}
+
+// beginJoinSetup invalidates any previous whole-machine commit before an
+// admitted join mutates local or network state. fail calls os.Exit, so this
+// transition must be synchronous rather than deferred.
+func beginJoinSetup() error {
+	return clearWholeMachineMarker()
+}
+
+func completeWholeMachineRouting(configure func() error) error {
+	if err := configure(); err != nil {
+		return err
+	}
+	return commitWholeMachineMarker()
+}
+
+func completeWholeMachineTailscaleRouting(exitNode string, apply func(string) error) error {
+	return completeWholeMachineRouting(func() error {
+		return apply(exitNode)
+	})
+}
+
+func commitWholeMachineMarker() error {
+	if err := os.MkdirAll(defaultClawpatrolDir(), 0o700); err != nil {
+		return fmt.Errorf("create clawpatrol dir for whole-machine marker: %w", err)
+	}
+	if err := atomicWriteFile(wholeMachineMarkerPath(), []byte("1\n"), 0o600); err != nil {
+		return fmt.Errorf("commit whole-machine marker: %w", err)
+	}
+	return nil
+}
+
 // isWholeMachineJoin reports whether this device was joined with
-// --whole-machine (the marker is written by finishJoinSetup).
+// --whole-machine.
 func isWholeMachineJoin() bool {
-	_, err := os.Stat(filepath.Join(defaultClawpatrolDir(), wholeMachineMarkerName))
+	_, err := os.Stat(wholeMachineMarkerPath())
 	return err == nil
 }
 
@@ -380,15 +425,6 @@ func isWholeMachineJoin() bool {
 // trust a prior join's stale ca.crt (rejoin) or commit a CA that a later fatal
 // step would strand.
 func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
-	if wholeMachine && s.caPath != "" {
-		// Record the mode so `clawpatrol run` can short-circuit to a
-		// direct exec instead of trying to spawn the per-host daemon.
-		// Written next to the rest of the join state (mode, gateway,
-		// …). `clawpatrol run` reads defaultClawpatrolDir(), the same
-		// dir the daemon assumes — so, like the other state files, the
-		// marker is only found when join used the default --ca-dir.
-		_ = os.WriteFile(filepath.Join(filepath.Dir(s.caPath), wholeMachineMarkerName), []byte("1\n"), 0o600)
-	}
 	if s.caPath == "" {
 		return
 	}
@@ -1368,7 +1404,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		} else if runtime.GOOS == "darwin" {
 			printWholeMachineDone("system extension")
 		} else {
-			if err := wgQuickUp(iface, authKey); err != nil {
+			if err := completeWholeMachineRouting(func() error {
+				return wgQuickUp(iface, authKey)
+			}); err != nil {
 				return true, fmt.Errorf("wg-quick up: %w", err)
 			}
 			printWholeMachineDone(iface)
