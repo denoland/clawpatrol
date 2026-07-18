@@ -121,6 +121,12 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 		envPushdownGatewayFetcher = prev
 		envPushdownDaemonFetcher = prevDaemon
 	})
+	// Pin system roots to "none" so the replace-style vars stay on ca.crt
+	// (no ca-bundle.crt is generated) — this test is about the server-driven
+	// vars, not the combined-bundle behavior (covered in ca_bundle_test.go).
+	prevRoots := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) { return nil, false }
+	t.Cleanup(func() { systemRootsReader = prevRoots })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -174,6 +180,11 @@ func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
 		envPushdownGatewayFetcher = prev
 		envPushdownDaemonFetcher = prevDaemon
 	})
+	// Pin system roots to "none" so SSL_CERT_FILE stays on ca.crt — this
+	// test checks the gateway-error fallback, not the combined bundle.
+	prevRoots := systemRootsReader
+	systemRootsReader = func() ([]byte, bool) { return nil, false }
+	t.Cleanup(func() { systemRootsReader = prevRoots })
 
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")

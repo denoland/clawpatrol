@@ -161,7 +161,7 @@ func runRun(args []string) {
 	// fails the handshake or falls back to its own bundle (which
 	// doesn't have our CA).
 	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
-	allVars := append(caPathPushdownVars(caPath), envVars...)
+	allVars := append(caPathPushdownVars(caPath), dropClawpatrolCAVars(envVars)...)
 	applyEnvPushdownVars(allVars)
 	installClaudeCodeOAuthShim(cmd)
 
@@ -317,12 +317,7 @@ func runRun(args []string) {
 // per-host daemon, which whole-machine mode doesn't run.
 func runWholeMachineDirect(cmd []string) {
 	if os.Getenv("CLAWPATROL_NO_ENV") != "1" {
-		caDir := defaultClawpatrolDir()
-		if vars, err := envPushdownGatewayFetcher(caDir); err == nil {
-			applyEnvPushdownVars(vars)
-		} else {
-			fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
-		}
+		applyEnvPushdownVars(wholeMachineEnvVars(defaultClawpatrolDir()))
 	}
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
@@ -332,6 +327,22 @@ func runWholeMachineDirect(cmd []string) {
 	if err := syscall.Exec(bin, cmd, os.Environ()); err != nil {
 		fail("exec %s: %v", bin, err)
 	}
+}
+
+// wholeMachineEnvVars builds the pushdown env for the whole-machine direct
+// path. Unlike the namespaced paths there is no daemon to ship CA vars, so this
+// path must inject the local combined-bundle CA vars itself (caPathPushdownVars)
+// — otherwise the wrapped agent never trusts the MITM CA. The gateway's vars
+// are appended with their clawpatrol-owned CA names stripped, so a plugin can't
+// override the local bundle (same guard as run/sudo/env).
+func wholeMachineEnvVars(caDir string) []pushdownEnvVar {
+	out := caPathPushdownVars(filepath.Join(caDir, "ca.crt"))
+	if vars, err := envPushdownGatewayFetcher(caDir); err == nil {
+		out = append(out, dropClawpatrolCAVars(vars)...)
+	} else {
+		fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
+	}
+	return out
 }
 
 // runRunChild executes inside the unshared user+net+mnt namespaces.
