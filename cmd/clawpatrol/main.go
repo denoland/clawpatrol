@@ -349,6 +349,11 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 	return d
 }
 
+type gatewayDialer interface {
+	Dial(network, address string) (net.Conn, error)
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
 type Gateway struct {
 	// cfg is the live operational *config.Gateway. Stored as an
 	// atomic pointer because dashboard handlers and the reload loop
@@ -361,7 +366,7 @@ type Gateway struct {
 	db       *sql.DB
 	policy   atomic.Pointer[config.CompiledPolicy]
 	certs    *CertCache
-	dialer   *net.Dialer
+	dialer   gatewayDialer
 	sink     *Sink
 	// blobs is the gateway-side plugin blob store (sqlite-backed).
 	// Used by endpoint plugins that need per-endpoint persistent
@@ -421,7 +426,9 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 		return v.(*http.Transport)
 	}
 	tr := &http.Transport{
-		DialContext: g.dialer.DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return g.dialer.DialContext(ctx, network, addr)
+		},
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			h, _, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -1678,9 +1685,10 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	profile := g.profileFor(pip)
 	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
-		// Host isn't bound to this profile's endpoint set. Apply the
-		// `defaults.unknown_host` policy: passthrough today (matches
-		// the v14 default). A "deny" mode would close the conn.
+		if policy := g.Policy(); policy != nil && policy.UnknownHost == "deny" {
+			log.Printf("sni: %s: unknown host denied", host)
+			return
+		}
 		g.splice(c, host)
 		return
 	}
