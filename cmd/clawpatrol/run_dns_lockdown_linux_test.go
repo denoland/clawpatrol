@@ -3,10 +3,13 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestMinimalHostsFile(t *testing.T) {
@@ -133,46 +136,52 @@ func TestComputeDNSLockdown(t *testing.T) {
 		}
 	})
 
-	t.Run("nscd socket is masked", func(t *testing.T) {
+	t.Run("nscd runtime dir is dir-masked", func(t *testing.T) {
 		// nscd answers getaddrinfo BEFORE the NSS chain runs, so the
-		// planner must mask its socket even when nsswitch needs no
-		// rewrite at all (#765).
+		// planner must hide its runtime directory even when nsswitch
+		// needs no rewrite at all (#765). The whole directory — not the
+		// socket file — so a socket re-created mid-run stays invisible.
 		in := base
-		in.NscdSocketsPresent = []string{"/run/nscd/socket", "/var/run/nscd/socket"}
+		in.NscdDirsPresent = []string{"/run/nscd", "/var/run/nscd"}
 		plan, err := computeDNSLockdown(in)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !reflect.DeepEqual(plan.Masks, in.NscdSocketsPresent) {
-			t.Errorf("Masks = %v, want %v", plan.Masks, in.NscdSocketsPresent)
+		if !reflect.DeepEqual(plan.DirMasks, in.NscdDirsPresent) {
+			t.Errorf("DirMasks = %v, want %v", plan.DirMasks, in.NscdDirsPresent)
+		}
+		if len(plan.Masks) != 0 {
+			t.Errorf("Masks = %v, want none", plan.Masks)
 		}
 	})
 
-	t.Run("nscd and varlink sockets masked together", func(t *testing.T) {
+	t.Run("nscd dir and varlink socket masked together", func(t *testing.T) {
 		in := base
 		in.NsswitchRaw = "hosts: files resolve [!UNAVAIL=return] dns\n"
 		in.VarlinkSocketExists = true
-		in.NscdSocketsPresent = []string{"/var/run/nscd/socket"}
+		in.NscdDirsPresent = []string{"/var/run/nscd"}
 		plan, err := computeDNSLockdown(in)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := []string{"/run/systemd/resolve/io.systemd.Resolve", "/var/run/nscd/socket"}
-		if !reflect.DeepEqual(plan.Masks, want) {
+		if want := []string{"/run/systemd/resolve/io.systemd.Resolve"}; !reflect.DeepEqual(plan.Masks, want) {
 			t.Errorf("Masks = %v, want %v", plan.Masks, want)
+		}
+		if want := []string{"/var/run/nscd"}; !reflect.DeepEqual(plan.DirMasks, want) {
+			t.Errorf("DirMasks = %v, want %v", plan.DirMasks, want)
 		}
 	})
 
 	t.Run("keep-resolv skips nscd masking too", func(t *testing.T) {
 		in := base
 		in.KeepResolv = true
-		in.NscdSocketsPresent = []string{"/run/nscd/socket"}
+		in.NscdDirsPresent = []string{"/run/nscd"}
 		plan, err := computeDNSLockdown(in)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(plan.Masks) != 0 {
-			t.Errorf("keep-resolv Masks = %v, want none", plan.Masks)
+		if len(plan.Masks) != 0 || len(plan.DirMasks) != 0 {
+			t.Errorf("keep-resolv masks = %v / %v, want none", plan.Masks, plan.DirMasks)
 		}
 	})
 
@@ -187,4 +196,40 @@ func TestComputeDNSLockdown(t *testing.T) {
 			t.Errorf("unexpected hosts override: %+v", o)
 		}
 	})
+}
+
+// Discovery must fail closed: only a definite "not there" counts as
+// absent — a permission or I/O failure silently skipping a mask would
+// reopen the leak the mask exists to close (#765).
+func TestClassifyStatErr(t *testing.T) {
+	if present, err := classifyStatErr("/x", nil); !present || err != nil {
+		t.Errorf("nil err: present=%v err=%v, want true/nil", present, err)
+	}
+	if present, err := classifyStatErr("/x", fs.ErrNotExist); present || err != nil {
+		t.Errorf("ENOENT: present=%v err=%v, want false/nil", present, err)
+	}
+	// Stat through a missing parent ("/run/nscd/socket" where /run/nscd
+	// is a file) reports ENOTDIR — also a definite absence.
+	if present, err := classifyStatErr("/x", unix.ENOTDIR); present || err != nil {
+		t.Errorf("ENOTDIR: present=%v err=%v, want false/nil", present, err)
+	}
+	if present, err := classifyStatErr("/x", fs.ErrPermission); present || err == nil {
+		t.Errorf("EPERM: present=%v err=%v, want false/error", present, err)
+	}
+	if _, err := classifyStatErr("/x", errors.New("io weirdness")); err == nil {
+		t.Errorf("unknown stat failure must be fatal, got nil error")
+	}
+}
+
+func TestGatherDNSLockdownInputsKeepResolv(t *testing.T) {
+	// The escape hatch must short-circuit discovery entirely, so it
+	// still works on hosts where the probes themselves would fail.
+	t.Setenv("CLAWPATROL_RUN_KEEP_RESOLV", "1")
+	in, err := gatherDNSLockdownInputs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !in.KeepResolv {
+		t.Fatalf("KeepResolv = false, want true")
+	}
 }
