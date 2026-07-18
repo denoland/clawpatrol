@@ -132,8 +132,8 @@ func runJoin(args []string) {
 	// expose /ca.crt on its public Funnel path — the CA is only
 	// reachable over the tailnet (security: no TOFU over plain
 	// internet). A 404 here means we're talking to a Tailscale-mode
-	// gateway; onboardViaDeviceFlow fetches the CA from the peer's
-	// tailnet IP after joining.
+	// gateway; onboardViaDeviceFlow consumes the CA delivered inline in
+	// the approval poll response (see commitApprovedCA).
 	//
 	// Tailnet-bootstrap (--login or auto-fallback): when the gateway
 	// has no public Funnel at all, or this machine simply can't reach
@@ -294,6 +294,7 @@ func applyWholeMachineExitNode(gwName string) error {
 // "⚠ shell rc…" lines around the device-flow output.
 type joinSetup struct {
 	caInstalled   bool   // installed into system trust
+	installedCAFP string // fingerprint of the CA installed into system trust
 	caPath        string // on-disk path to the fetched cert
 	caHint        string // manual-trust hint when caInstalled == false
 	caFingerprint string // SHA-256 of the fetched cert (operator-readable)
@@ -373,7 +374,12 @@ func isWholeMachineJoin() bool {
 	return err == nil
 }
 
-func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
+// deferCA (Tailscale mode) tells finishJoinSetup NOT to install any CA now: the
+// approved CA is committed and trusted at the END of the join via
+// commitApprovedCA, after fatal platform setup. Installing here would either
+// trust a prior join's stale ca.crt (rejoin) or commit a CA that a later fatal
+// step would strand.
+func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
 	if wholeMachine && s.caPath != "" {
 		// Record the mode so `clawpatrol run` can short-circuit to a
 		// direct exec instead of trying to spawn the per-host daemon.
@@ -386,10 +392,16 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 	if s.caPath == "" {
 		return
 	}
+	if deferCA {
+		// Tailscale: CA committed + trusted at the end of the join.
+		if wholeMachine {
+			installShellRC() //nolint:errcheck
+		}
+		return
+	}
 	if _, err := os.Stat(s.caPath); err != nil {
-		// CA not fetched yet (Tailscale mode defers the fetch to the
-		// tailnet path inside onboardViaDeviceFlow). Skip trust install
-		// here; it lands once the CA arrives.
+		// CA not fetched yet. Skip trust install here; it lands once the CA
+		// arrives.
 		if wholeMachine {
 			installShellRC() //nolint:errcheck
 		}
@@ -438,11 +450,18 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	fp, err := caFingerprintFromPEM(b)
+	// Require exactly one usable CA and persist/fingerprint that canonical
+	// certificate — not the raw payload — so an appended attacker CA can't ride
+	// in behind the legitimate first-cert fingerprint the operator confirms.
+	canonical, err := canonicalMITMCAPEM(b)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
+		return "", fmt.Errorf("fetch ca from %s: %w", url, err)
 	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
+	fp, err := caFingerprintFromPEM(canonical)
+	if err != nil {
+		return "", fmt.Errorf("fetch ca: fingerprint from %s: %w", url, err)
+	}
+	if err := atomicWriteFile(dst, canonical, 0o644); err != nil {
 		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return fp, nil
@@ -661,40 +680,125 @@ func findPeerByName(s *tsStatus, name string) *tsPeer {
 	return nil
 }
 
-func fetchCA(ip, dst string) error {
-	url := fmt.Sprintf("http://%s:8080/ca.crt", ip)
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Get(url)
+// claimTailnetPeer registers the whole-machine tailnet IP with the gateway and
+// persists the minted per-peer api-token. It is entirely best-effort: every
+// failure only warns and returns — it must never abort the join, so the
+// mandatory CA commit and state finalization downstream always run. A missing
+// api-token only means env-pushdown (GH_TOKEN, …) is empty until the operator
+// re-runs `clawpatrol join`.
+func claimTailnetPeer(cli *http.Client, gateway, deviceCode, hn, tailIP, caDir string) {
+	if tailIP == "" {
+		fmt.Fprintln(os.Stderr, "⚠ couldn't read tailnet IP — onboard claim skipped")
+		return
+	}
+	claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&ip=%s",
+		gateway, deviceCode, neturl.QueryEscape(tailIP))
+	if hn != "" {
+		claimURL += "&hostname=" + neturl.QueryEscape(hn)
+	}
+	cr, err := cli.Post(claimURL, "application/json", nil)
 	if err != nil {
-		return fmt.Errorf("fetch ca: get %s: %w", url, err)
+		fmt.Fprintf(os.Stderr, "⚠ onboard claim failed: %v\n", err)
+		return
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
+	defer func() { _ = cr.Body.Close() }()
+	if cr.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(cr.Body, 400))
+		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
+		return
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
-	if err != nil {
-		return fmt.Errorf("fetch ca: read %s: %w", url, err)
+	var claimResp map[string]string
+	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ decode claim response: %v\n", err)
+		return
 	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
-		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
+	tok := claimResp["api_token"]
+	if tok == "" {
+		// Silence here used to surface hours later as the daemon's
+		// "peer api token not persisted" with no hint of the cause.
+		why := claimResp["api_token_error"]
+		if why == "" {
+			why = "gateway returned no api_token"
+		}
+		fmt.Fprintf(os.Stderr, "⚠ %s — env-pushdown (GH_TOKEN, …) will be empty "+
+			"until this is fixed\n", why)
+		return
 	}
-	return nil
+	if err := os.WriteFile(filepath.Join(caDir, "api-token"), []byte(tok+"\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ write api-token: %v\n", err)
+	}
 }
 
-// installTrust installs the fetched CA into the system trust store
+// installCATrustFn is the trust-store installer, a package var so tests can
+// substitute a fake without shelling out to sudo/security.
+var installCATrustFn = installCATrust
+
 // behind a live step ("* Installing CA in system trust" → "✓ CA
 // installed in system trust" / "! CA not trusted yet — …") and records
-// the outcome on s. Idempotent: a no-op once s.caInstalled is set (the
-// WireGuard path installs early, before the mode-specific branch).
+// the outcome on s.
+//
+// It reads the on-disk CA once into an immutable snapshot and, if the operator
+// confirmed a fingerprint at approval time, refuses to install anything that
+// doesn't match it — so a concurrent/same-UID process swapping ca.crt between
+// approval and install can't get a different CA trusted.
 func (s *joinSetup) installTrust(skipTrust bool) {
-	if s.caInstalled {
+	pemBytes, err := os.ReadFile(s.caPath)
+	if err != nil {
 		return
+	}
+	if s.caFingerprint != "" {
+		if fp, ferr := caFingerprintFromPEM(pemBytes); ferr != nil || fp != s.caFingerprint {
+			s.caHint = manualTrustHint(s.caPath)
+			fmt.Println("! CA on disk does not match the approved fingerprint — not installing")
+			return
+		}
+	}
+	// Trust install is best-effort — installTrustBytes surfaces its own manual
+	// hint on failure, so the discarded error is intentional.
+	_ = s.installTrustBytes(pemBytes, skipTrust)
+}
+
+// installTrustBytes installs an in-memory CA snapshot into system trust, keyed
+// on its fingerprint (not a bare boolean — a rejoin that swapped in a different
+// CA re-installs instead of being treated as done). The bytes are written to a
+// private temp file and installed from THERE, never re-opening the
+// user-controlled ca.crt path, closing the validate→reopen TOCTOU.
+func (s *joinSetup) installTrustBytes(pemBytes []byte, skipTrust bool) error {
+	fp, err := caFingerprintFromPEM(pemBytes)
+	if err != nil {
+		s.warnCATrustFailed()
+		return fmt.Errorf("fingerprint CA: %w", err)
+	}
+	if fp == s.installedCAFP {
+		s.caInstalled = true
+		return nil
 	}
 	if skipTrust {
 		s.caHint = manualTrustHint(s.caPath)
 		fmt.Println("! CA fetched but not trusted (--no-trust) — install manually: " + s.caHint)
-		return
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.caPath), ".ca-install-*.crt")
+	if err != nil {
+		s.warnCATrustFailed()
+		return fmt.Errorf("create CA snapshot: %w", err)
+	}
+	snap := tmp.Name()
+	defer func() { _ = os.Remove(snap) }()
+	if _, err := tmp.Write(pemBytes); err != nil {
+		_ = tmp.Close()
+		s.warnCATrustFailed()
+		return fmt.Errorf("write CA snapshot: %w", err)
+	}
+	// 0644 so the privileged installer (sudo cp / security) can read it.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		s.warnCATrustFailed()
+		return fmt.Errorf("chmod CA snapshot: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		s.warnCATrustFailed()
+		return fmt.Errorf("close CA snapshot: %w", err)
 	}
 	// Erase-on-done only when sudo won't prompt — an interactive
 	// password prompt prints inside the step and breaks the cursor
@@ -702,13 +806,47 @@ func (s *joinSetup) installTrust(skipTrust bool) {
 	// password would be needed, and errors when sudo is absent.
 	erasable := exec.Command("sudo", "-n", "true").Run() == nil
 	finish := beginStep("Installing CA in system trust", nil, erasable)
-	if err := installCATrust(s.caPath); err != nil {
+	if err := installCATrustFn(snap); err != nil {
 		s.caHint = manualTrustHint(s.caPath)
 		finish("! CA not trusted yet — install manually: " + s.caHint)
-	} else {
-		s.caInstalled = true
-		finish("✓ CA installed in system trust")
+		return fmt.Errorf("install CA trust: %w", err)
 	}
+	s.caInstalled = true
+	s.installedCAFP = fp
+	finish("✓ CA installed in system trust")
+	return nil
+}
+
+// warnCATrustFailed records a manual-trust hint and prints it, so a failure to
+// even attempt trust installation (snapshot prep) is never silent.
+func (s *joinSetup) warnCATrustFailed() {
+	s.caHint = manualTrustHint(s.caPath)
+	fmt.Fprintln(os.Stderr, "! CA not trusted (install prep failed) — install manually: "+s.caHint)
+}
+
+// commitApprovedCA atomically writes the approved canonical CA and installs it
+// into system trust from that same immutable snapshot. Called at the END of
+// onboardViaDeviceFlow's Tailscale paths — after every fatal step INSIDE
+// onboarding has succeeded — so an onboarding failure never leaves a rejoin
+// with the new CA trusted while routing/credentials still belong to the old
+// gateway. (Linux whole-machine also runs `applyWholeMachineExitNode` in
+// runJoin afterward; that routing step is separately recoverable by re-running
+// `clawpatrol join`, which re-commits the CA idempotently.)
+//
+// The ca.crt write is transactional (a failure aborts the join); trust
+// installation is best-effort and surfaces a manual-install hint on failure.
+func (s *joinSetup) commitApprovedCA(canonicalCA []byte, skipTrust bool) error {
+	if len(canonicalCA) == 0 {
+		return fmt.Errorf("internal: no approved CA to commit")
+	}
+	if err := atomicWriteFile(s.caPath, canonicalCA, 0o644); err != nil {
+		return fmt.Errorf("write ca.crt: %w", err)
+	}
+	if fp, err := caFingerprintFromPEM(canonicalCA); err == nil {
+		s.caFingerprint = fp
+	}
+	_ = s.installTrustBytes(canonicalCA, skipTrust)
+	return nil
 }
 
 func installCATrust(caPath string) error {
@@ -1138,13 +1276,28 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if finishApprove != nil {
 		finishApprove("✓ approved")
 	}
+	// The tailscale device-flow join consumes the poll-delivered CA (the
+	// gateway's /ca.crt isn't public in tsnet mode). Validate it now as the
+	// mandatory single canonical CA — a missing/invalid CA aborts the join
+	// before any state is written — but do NOT persist or install it yet:
+	// commitApprovedCA writes+trusts it at the END of the join, after every
+	// fatal platform-setup step, so a later failure can't strand a rejoin with
+	// the new CA trusted while routing/credentials still belong to the old
+	// gateway. tsnetJoin marks the tailscale paths.
+	tsnetJoin := !strings.HasPrefix(loginServer, "wireguard://")
+	var canonicalCA []byte
+	if tsnetJoin {
+		cc, verr := canonicalMITMCAPEM([]byte(caPEM))
+		if verr != nil {
+			return false, fmt.Errorf("gateway CA rejected: %w", verr)
+		}
+		canonicalCA = cc
+	}
 	// Approval click ⇒ operator visually confirmed the CA
 	// fingerprint on the dashboard matched what the CLI
-	// printed. Only now is it safe to push the fetched CA
-	// into the system trust store. Doing this earlier would
-	// have meant trusting a CA the operator hadn't vouched
-	// for, which is exactly the on-path attack we're closing.
-	finishJoinSetup(setup, skipTrust, wholeMachine)
+	// printed. finishJoinSetup installs the WireGuard-mode prefetched CA here;
+	// tailscale mode defers install to commitApprovedCA (deferCA=tsnetJoin).
+	finishJoinSetup(setup, skipTrust, wholeMachine, tsnetJoin)
 	// Persist the per-peer bearer the gateway minted alongside the
 	// wg conf. Lives next to ca.crt — same dir the env-pushdown
 	// fetcher reads. Best-effort; missing file means env-pushdown
@@ -1244,16 +1397,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// hosts that want all traffic routed through the gateway.
 	if !wholeMachine || runtime.GOOS == "darwin" {
 		clawDir := filepath.Dir(setup.caPath)
-		// Write CA delivered in the poll response (gateway's /ca.crt is
-		// intentionally not public in tsnet mode). Then install trust.
-		if caPEM != "" {
-			if werr := os.WriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
-				if fp, ferr := caFingerprintFromPEM([]byte(caPEM)); ferr == nil {
-					setup.caFingerprint = fp
-				}
-				setup.installTrust(skipTrust)
-			}
-		}
+		// The approved CA is validated up front and committed + trusted at the
+		// end of this path via commitApprovedCA (after fatal setup) — nothing to
+		// do here for the CA.
 		if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
 			return false, fmt.Errorf("write mode: %w", err)
 		}
@@ -1323,6 +1469,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 						"  env-pushdown may be unavailable until you re-run `clawpatrol join`.\n", err)
 			}
 		}
+		// All fatal platform setup succeeded — now commit + trust the approved
+		// CA. A rejoin that fails earlier leaves the old CA/trust intact.
+		if err := setup.commitApprovedCA(canonicalCA, skipTrust); err != nil {
+			return false, err
+		}
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
 		printChecklist(items)
@@ -1379,44 +1530,14 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 
 	// 5. claim — tell gateway "this tailnet IP belongs to <approver>".
+	// Best-effort: every claim failure only warns (env-pushdown falls back and
+	// the operator can re-run join) and must NOT abort — the mandatory CA
+	// commit and the mode/state finalization below still have to run, or a
+	// warning-only failure would report success with the old/absent CA still
+	// in place after `tailscale up --reset` already switched identity.
 	myIP, _ := exec.Command(tscli, "ip", "-4").Output()
 	tailIP := strings.TrimSpace(strings.SplitN(string(myIP), "\n", 2)[0])
-	if tailIP == "" {
-		fmt.Fprintln(os.Stderr, "⚠ couldn't read tailnet IP — onboard claim skipped")
-		return false, nil
-	}
-	claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&ip=%s",
-		gateway, start.DeviceCode, tailIP)
-	if hn != "" {
-		claimURL += "&hostname=" + neturl.QueryEscape(hn)
-	}
-	cr, err := cli.Post(claimURL, "application/json", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ onboard claim failed: %v\n", err)
-		return false, nil
-	}
-	defer func() { _ = cr.Body.Close() }()
-	if cr.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(cr.Body, 400))
-		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
-		return false, nil
-	}
-	var claimResp map[string]string
-	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ decode claim response: %v\n", err)
-	} else if tok := claimResp["api_token"]; tok == "" {
-		// Silence here used to surface hours later as the daemon's
-		// "peer api token not persisted" with no hint of the cause.
-		why := claimResp["api_token_error"]
-		if why == "" {
-			why = "gateway returned no api_token"
-		}
-		fmt.Fprintf(os.Stderr, "⚠ %s — env-pushdown (GH_TOKEN, …) will be empty "+
-			"until this is fixed\n", why)
-	} else if err := os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
-		[]byte(tok+"\n"), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ write api-token: %v\n", err)
-	}
+	claimTailnetPeer(cli, gateway, start.DeviceCode, hn, tailIP, filepath.Dir(setup.caPath))
 
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
@@ -1435,13 +1556,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 	}
 
-	// Fetch CA from the gateway's tailnet IP now that we're on the tailnet.
-	// The public /ca.crt path returns 404 for Tailscale-mode gateways; the
-	// tailnet fetch is the secure path. Skip if CA was already fetched (WG
-	// gateways expose it publicly).
-	// Look up the gateway peer on the tailnet to:
-	//   a) save the tailnet-direct URL (bypasses Funnel for peer API calls)
-	//   b) fetch CA if not yet on disk (Tailscale-mode gateways 404 /ca.crt publicly)
+	// Look up the gateway peer on the tailnet to persist the tailnet-direct URL
+	// (bypasses Funnel for peer API calls) and the peer IP. The CA is NOT
+	// fetched here — it's consumed from the approval poll response and persisted
+	// by commitApprovedCA below.
 	if tailnetGWHost != "" {
 		if st2, serr := tailscaleStatus(tscli); serr == nil {
 			// tailnetGWHost may be an FQDN like "clawpatrol-1.tail9a48e.ts.net";
@@ -1459,11 +1577,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
 				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway-ip"),
 					[]byte(peer.TailscaleIPs[0]+"\n"), 0o600)
-				if _, serr := os.Stat(setup.caPath); serr != nil {
-					if ferr := fetchCA(peer.TailscaleIPs[0], setup.caPath); ferr == nil {
-						setup.installTrust(skipTrust)
-					}
-				}
+				// The poll-delivered CA is committed + trusted at the end of the
+				// join (commitApprovedCA below); no best-effort refetch (which
+				// used to skip a rejoin's new CA whenever a stale ca.crt existed).
 			}
 		}
 	}
@@ -1473,6 +1589,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 	}
 
+	// All fatal platform setup succeeded — now commit + trust the approved CA.
+	if err := setup.commitApprovedCA(canonicalCA, skipTrust); err != nil {
+		return false, err
+	}
 	items := setupSummaryItems(*setup)
 	items = append(items, "✓ joined gateway")
 	printChecklist(items)
