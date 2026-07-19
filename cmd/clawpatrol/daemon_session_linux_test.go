@@ -513,6 +513,71 @@ func assertIPv6UDPResponse(t *testing.T, raw []byte, src, dst netip.Addr, srcPor
 	}
 }
 
+type deadlineObservedConn struct {
+	net.Conn
+	mu                  sync.Mutex
+	readDeadline        time.Time
+	readWithoutDeadline bool
+	readStarted         chan struct{}
+	readOnce            sync.Once
+}
+
+func (c *deadlineObservedConn) SetReadDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.readDeadline = deadline
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(deadline)
+}
+
+func (c *deadlineObservedConn) Read(buf []byte) (int, error) {
+	c.mu.Lock()
+	if c.readDeadline.IsZero() {
+		c.readWithoutDeadline = true
+	}
+	c.mu.Unlock()
+	c.readOnce.Do(func() { close(c.readStarted) })
+	return c.Conn.Read(buf)
+}
+
+func (c *deadlineObservedConn) readState() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readDeadline, c.readWithoutDeadline
+}
+
+func TestRelayUDPDatagramsBoundsUpstreamRead(t *testing.T) {
+	localRelay, localPeer := net.Pipe()
+	remoteRelay, remotePeer := net.Pipe()
+	defer func() { _ = localPeer.Close() }()
+	defer func() { _ = remotePeer.Close() }()
+
+	observed := &deadlineObservedConn{Conn: remoteRelay, readStarted: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	released := make(chan struct{})
+	const idleTimeout = 250 * time.Millisecond
+	startedAt := time.Now()
+	go relayUDPDatagrams(ctx, localRelay, observed, idleTimeout, func() { close(released) })
+
+	select {
+	case <-observed.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("upstream UDP Read did not start")
+	}
+	deadline, readWithoutDeadline := observed.readState()
+	if readWithoutDeadline || deadline.IsZero() {
+		t.Fatal("upstream UDP Read started without an idle-bounded deadline")
+	}
+	if deadline.Before(startedAt) || deadline.After(startedAt.Add(idleTimeout+100*time.Millisecond)) {
+		t.Fatalf("upstream read deadline = %v, want within one idle timeout of %v", deadline, startedAt)
+	}
+	cancel()
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not stop after cancellation")
+	}
+}
+
 type closeNotifyConn struct {
 	net.Conn
 	closed chan struct{}

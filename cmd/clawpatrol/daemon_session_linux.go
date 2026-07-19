@@ -250,23 +250,43 @@ func relayUDPDatagrams(ctx context.Context, local, remote net.Conn, idleTimeout 
 	done := make(chan struct{}, 1)
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	copyDatagrams := func(dst, src net.Conn) {
+	signalDone := func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+	copyDatagrams := func(dst, src net.Conn, boundRead bool) {
 		buf := getRunUDPRelayBuffer()
 		defer putRunUDPRelayBuffer(buf)
 		for {
+			if boundRead {
+				now := time.Now()
+				remaining := udpIdleRemaining(lastActivity.Load(), now, idleTimeout)
+				if remaining <= 0 {
+					signalDone()
+					return
+				}
+				if err := src.SetReadDeadline(now.Add(remaining)); err != nil {
+					signalDone()
+					return
+				}
+			}
 			n, err := src.Read(buf)
 			if err != nil {
-				select {
-				case done <- struct{}{}:
-				default:
+				if boundRead {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() &&
+						udpIdleRemaining(lastActivity.Load(), time.Now(), idleTimeout) > 0 {
+						// Activity in the opposite direction raced this deadline.
+						// Recalculate from the shared timestamp and keep reading.
+						continue
+					}
 				}
+				signalDone()
 				return
 			}
 			if _, err := dst.Write(buf[:n]); err != nil {
-				select {
-				case done <- struct{}{}:
-				default:
-				}
+				signalDone()
 				return
 			}
 			lastActivity.Store(time.Now().UnixNano())
@@ -276,8 +296,8 @@ func relayUDPDatagrams(ctx context.Context, local, remote net.Conn, idleTimeout 
 			}
 		}
 	}
-	go copyDatagrams(remote, local)
-	go copyDatagrams(local, remote)
+	go copyDatagrams(remote, local, false)
+	go copyDatagrams(local, remote, true)
 	timer := time.NewTimer(idleTimeout)
 	defer timer.Stop()
 	defer closeBoth()
