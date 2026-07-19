@@ -26,6 +26,7 @@ import (
 type tsnetTransport struct {
 	s           *tsnet.Server
 	localAddr   netip.Addr
+	gatewayAddr netip.Addr
 	bootWarning string
 }
 
@@ -33,9 +34,10 @@ func (t *tsnetTransport) Dial(ctx context.Context, network, addr string) (net.Co
 	return t.s.Dial(ctx, network, addr)
 }
 
-func (t *tsnetTransport) LocalAddr() netip.Addr { return t.localAddr }
-func (t *tsnetTransport) BootWarning() string   { return t.bootWarning }
-func (t *tsnetTransport) Close() error          { return t.s.Close() }
+func (t *tsnetTransport) LocalAddr() netip.Addr         { return t.localAddr }
+func (t *tsnetTransport) udpDNSGatewayAddr() netip.Addr { return t.gatewayAddr }
+func (t *tsnetTransport) BootWarning() string           { return t.bootWarning }
+func (t *tsnetTransport) Close() error                  { return t.s.Close() }
 
 // startTsnetTransport reads persisted join state (auth-key, control-url,
 // gateway-ip), starts a tsnet.Server, waits for it to come up, points
@@ -126,7 +128,7 @@ func startTsnetTransport() (daemonTransport, error) {
 	// daemon restart.
 	daemonRegisterTsnetPeer(s, tsIP)
 
-	return &tsnetTransport{s: s, localAddr: tsIP, bootWarning: bootWarning}, nil
+	return &tsnetTransport{s: s, localAddr: tsIP, gatewayAddr: gwIP, bootWarning: bootWarning}, nil
 }
 
 // daemonRegisterTsnetPeer POSTs this daemon's tsnet IP to the

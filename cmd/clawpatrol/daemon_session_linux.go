@@ -193,6 +193,17 @@ func newRunUDPProtocolHandler(s *stack.Stack, handler udp.ForwarderHandler) func
 	}
 }
 
+type udpDNSGateway interface {
+	udpDNSGatewayAddr() netip.Addr
+}
+
+func udpDialAddr(transport daemonTransport, dstIP string, dstPort uint16) string {
+	if gateway, ok := transport.(udpDNSGateway); ok && dstPort == 53 {
+		dstIP = gateway.udpDNSGatewayAddr().String()
+	}
+	return net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort)))
+}
+
 func newTransportUDPProtocolHandler(ctx context.Context, s *stack.Stack, transport daemonTransport, idleTimeout time.Duration, slots chan struct{}) func(stack.TransportEndpointID, *stack.PacketBuffer) bool {
 	return newRunUDPProtocolHandler(s, func(req *udp.ForwarderRequest) bool {
 		select {
@@ -214,7 +225,7 @@ func newTransportUDPProtocolHandler(ctx context.Context, s *stack.Stack, transpo
 			return true
 		}
 		local := gonet.NewUDPConn(&wq, ep)
-		dstAddr := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
+		dstAddr := udpDialAddr(transport, id.LocalAddress.String(), id.LocalPort)
 		go func() {
 			dialCtx, cancel := context.WithTimeout(ctx, transportDialTimeout)
 			defer cancel()

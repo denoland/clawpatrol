@@ -149,6 +149,23 @@ func TestRunUDPProtocolHandlerFlowLimitRejectionDoesNotClonePacket(t *testing.T)
 	}
 }
 
+func TestUDPDialAddrRewritesTSnetDNS(t *testing.T) {
+	tsnet := &tsnetTransport{gatewayAddr: netip.MustParseAddr("100.64.0.1")}
+	if got, want := udpDialAddr(tsnet, "8.8.8.8", 53), "100.64.0.1:53"; got != want {
+		t.Fatalf("udpDialAddr(tsnet DNS) = %q, want %q", got, want)
+	}
+	if got, want := udpDialAddr(tsnet, "8.8.8.8", 443), "8.8.8.8:443"; got != want {
+		t.Fatalf("udpDialAddr(tsnet non-DNS) = %q, want %q", got, want)
+	}
+	plain := &fakeTransport{}
+	if got, want := udpDialAddr(plain, "8.8.8.8", 53), "8.8.8.8:53"; got != want {
+		t.Fatalf("udpDialAddr(non-tsnet DNS) = %q, want %q", got, want)
+	}
+	if got, want := udpDialAddr(plain, "2001:db8::53", 53), "[2001:db8::53]:53"; got != want {
+		t.Fatalf("udpDialAddr(non-tsnet IPv6 DNS) = %q, want %q", got, want)
+	}
+}
+
 // pump copies outbound packets from src's channel endpoint into dst's
 // inbound path until ctx is done.
 func pump(ctx context.Context, src, dst *channel.Endpoint) {
