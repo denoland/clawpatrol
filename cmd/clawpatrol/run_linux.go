@@ -926,15 +926,12 @@ type netnsStep struct {
 // else lives on the TUN and duplicate-address detection would stall
 // the address for a second.
 //
-// Deliberately NOT a v6 default route: the TUN bridge forwards TCP
-// (v4+v6) and v4 UDP only, so a default route would advertise
-// reachability for every AAAA destination while IPv6 UDP (QUIC/HTTP3)
-// entering the TUN is silently dropped — a stall instead of the
-// instant network-unreachable that lets clients fall back to IPv4.
-// Scoping the route to the VIP prefix keeps fd78:: endpoints
-// reachable (they are TCP by construction — DNS rides the v4
-// nameserver) and leaves every other v6 destination, TCP and UDP
-// alike, failing fast to the v4 path.
+// Deliberately NOT a v6 default route: IPv6 UDP is forwarded, but
+// daemonTransport's connected net.Conn does not provide structured
+// ICMPv6/Packet Too Big/PMTU error translation. A ::/0 route would
+// therefore over-advertise reliable global IPv6/QUIC reachability.
+// Scoping the route to the fd78::/64 VIP prefix preserves the intended
+// tunnel-backed endpoint reachability without changing that contract.
 //
 // The v6 steps are optional: a host booted with ipv6.disable=1 can't
 // add them, and the v4 VIP path must keep working there — a failed
