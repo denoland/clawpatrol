@@ -1681,6 +1681,12 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 		// Host isn't bound to this profile's endpoint set. Apply the
 		// `defaults.unknown_host` policy: passthrough today (matches
 		// the v14 default). A "deny" mode would close the conn.
+		if cfg := g.cfg.Load(); cfg != nil && cfg.Defaults != nil && cfg.Defaults.UnknownHost == "deny" {
+			// deny: close client connection and return without dialing upstream
+			_ = c.Close()
+			return
+		}
+		// passthrough (default)
 		g.splice(c, host)
 		return
 	}
