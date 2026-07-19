@@ -147,9 +147,8 @@ func runJoin(args []string) {
 	// returns, so the human credentials never persist on disk — the
 	// agent's permanent identity is the gateway-minted tagged key.
 	//
-	// Trust install + shell-rc updates are deferred to
-	// finishJoinSetup, which runs only after the operator's
-	// dashboard approval click.
+	// The fetched CA remains staged in memory until onboarding's fatal setup
+	// succeeds. Shell-rc setup also waits for dashboard approval.
 	ctx := context.Background()
 	var bootstrap *tailnetBootstrap
 	defer func() {
@@ -298,7 +297,8 @@ func applyWholeMachineExitNode(gwName string) error {
 type joinSetup struct {
 	caInstalled   bool   // installed into system trust
 	installedCAFP string // fingerprint of the CA installed into system trust
-	caPath        string // on-disk path to the fetched cert
+	caPath        string // active on-disk CA destination
+	candidateCA   []byte // staged canonical CA awaiting approved join completion
 	caHint        string // manual-trust hint when caInstalled == false
 	caFingerprint string // SHA-256 of the fetched cert (operator-readable)
 	shellRC       bool   // shell rc updated with `eval "$(clawpatrol env)"`
@@ -311,11 +311,10 @@ func isCaNotExposed(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "status 404")
 }
 
-// preJoinFetchCA downloads the gateway's CA into caDir and computes
-// its SHA-256 fingerprint, but stops short of installing it into
-// the system trust store. Trust install + shell-rc updates land in
-// finishJoinSetup, which runs only once the operator has approved
-// the device on the dashboard.
+// preJoinFetchCA downloads and canonicalizes the gateway's CA into an
+// in-memory candidate and computes its SHA-256 fingerprint. caPath remains the
+// active destination and is not created or replaced until onboarding commits
+// the approved candidate after fatal setup succeeds.
 //
 // Splitting the flow this way puts the visual-fingerprint compare
 // in the loop: an on-path attacker who served a substitute CA over
@@ -344,19 +343,18 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
 		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	s.caPath = filepath.Join(caDir, "ca.crt")
-	fp, err := fetchCAHTTP(gateway, s.caPath, cli)
+	canonicalCA, fp, err := fetchCAHTTP(gateway, cli)
 	if err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
+	s.candidateCA = append([]byte(nil), canonicalCA...)
 	s.caFingerprint = fp
 	return s, nil
 }
 
-// finishJoinSetup runs the trust-install + shell-rc steps that
-// were held back from preJoinFetchCA. The caller invokes this
-// only after the operator's dashboard approval has confirmed the
-// CA fingerprint matches — so the CA we install can't be one
-// substituted by an on-path attacker at fetch time.
+// finishJoinSetup runs post-approval shell setup and retains the legacy eager
+// trust path for callers that do not defer CA activation. Device onboarding
+// defers both WireGuard and Tailscale CA activation to commitApprovedCA.
 //
 // installShellRC fires only in --whole-machine mode. In
 // per-process mode every agent picks up CA + push-down vars
@@ -419,8 +417,8 @@ func isWholeMachineJoin() bool {
 	return err == nil
 }
 
-// deferCA (Tailscale mode) tells finishJoinSetup NOT to install any CA now: the
-// approved CA is committed and trusted at the END of the join via
+// deferCA tells finishJoinSetup NOT to install any CA now: the approved CA is
+// committed and trusted at the END of the join via
 // commitApprovedCA, after fatal platform setup. Installing here would either
 // trust a prior join's stale ca.crt (rejoin) or commit a CA that a later fatal
 // step would strand.
@@ -429,7 +427,7 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
 		return
 	}
 	if deferCA {
-		// Tailscale: CA committed + trusted at the end of the join.
+		// CA committed + trusted at the end of the join.
 		if wholeMachine {
 			installShellRC() //nolint:errcheck
 		}
@@ -451,12 +449,12 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
 	}
 }
 
-// fetchCAHTTP downloads the CA from gateway, writes it to dst,
-// and returns the SHA-256 fingerprint of the cert it received.
+// fetchCAHTTP downloads the CA from gateway and returns the canonical
+// certificate and its SHA-256 fingerprint without making it active.
 // The fingerprint flows back to the CLI's stdout so the operator
 // can compare it against what the dashboard shows during the
 // approval step.
-func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
+func fetchCAHTTP(gateway string, cli *http.Client) ([]byte, string, error) {
 	url := strings.TrimRight(gateway, "/") + "/ca.crt"
 	c := cli
 	if c == nil {
@@ -473,34 +471,31 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	}
 	resp, err := c.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca: get %s: %w", url, err)
+		return nil, "", fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
+		return nil, "", fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
 	}
 	// 256 KiB cap. A PEM-encoded CA cert is <4 KiB; the cap stops a
 	// hostile gateway from streaming gigabytes into a TOFU client
 	// before the fingerprint check rejects it.
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
-		return "", fmt.Errorf("fetch ca: read %s: %w", url, err)
+		return nil, "", fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	// Require exactly one usable CA and persist/fingerprint that canonical
+	// Require exactly one usable CA and return/fingerprint that canonical
 	// certificate — not the raw payload — so an appended attacker CA can't ride
 	// in behind the legitimate first-cert fingerprint the operator confirms.
 	canonical, err := canonicalMITMCAPEM(b)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca from %s: %w", url, err)
+		return nil, "", fmt.Errorf("fetch ca from %s: %w", url, err)
 	}
 	fp, err := caFingerprintFromPEM(canonical)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca: fingerprint from %s: %w", url, err)
+		return nil, "", fmt.Errorf("fetch ca: fingerprint from %s: %w", url, err)
 	}
-	if err := atomicWriteFile(dst, canonical, 0o644); err != nil {
-		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
-	}
-	return fp, nil
+	return canonical, fp, nil
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -862,8 +857,8 @@ func (s *joinSetup) warnCATrustFailed() {
 
 // commitApprovedCA atomically writes the approved canonical CA and installs it
 // into system trust from that same immutable snapshot. Called at the END of
-// onboardViaDeviceFlow's Tailscale paths — after every fatal step INSIDE
-// onboarding has succeeded — so an onboarding failure never leaves a rejoin
+// onboardViaDeviceFlow's WireGuard and Tailscale paths — after every fatal step
+// inside onboarding has succeeded — so an onboarding failure never leaves a rejoin
 // with the new CA trusted while routing/credentials still belong to the old
 // gateway. (Linux whole-machine also runs `applyWholeMachineExitNode` in
 // runJoin afterward; that routing step is separately recoverable by re-running
@@ -1076,12 +1071,10 @@ func wgAddressFromConf(conf string) string {
 // non-empty, overrides os.Hostname() for the device name registered
 // with the gateway.
 //
-// setup carries the CA fetched by preJoinFetchCA. Once approval
-// lands, finishJoinSetup installs that CA into the system trust
-// store — the approval click is the operator's confirmation that
-// the fingerprint the dashboard showed matched what the CLI
-// printed, so the CA we install can't be one a MITM substituted
-// during the unauthenticated /ca.crt fetch.
+// setup carries the CA staged by preJoinFetchCA. The approval click is the
+// operator's confirmation that the fingerprint the dashboard showed matched
+// what the CLI printed. The exact staged snapshot becomes active and trusted
+// only after the selected control plane's fatal setup succeeds.
 //
 // httpCli is the HTTP client to use for /api/onboard/{start,poll,claim};
 // pass nil for the default TOFU-permissive client. The tailnet
@@ -1328,12 +1321,17 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			return false, fmt.Errorf("gateway CA rejected: %w", verr)
 		}
 		canonicalCA = cc
+	} else {
+		if setup == nil || len(setup.candidateCA) == 0 {
+			return false, fmt.Errorf("internal: no staged WireGuard CA")
+		}
+		canonicalCA = append([]byte(nil), setup.candidateCA...)
 	}
 	// Approval click ⇒ operator visually confirmed the CA
 	// fingerprint on the dashboard matched what the CLI
-	// printed. finishJoinSetup installs the WireGuard-mode prefetched CA here;
-	// tailscale mode defers install to commitApprovedCA (deferCA=tsnetJoin).
-	finishJoinSetup(setup, skipTrust, wholeMachine, tsnetJoin)
+	// printed. Both control planes defer the CA write and trust install to
+	// commitApprovedCA after their fatal setup has succeeded.
+	finishJoinSetup(setup, skipTrust, wholeMachine, true)
 	// Persist the per-peer bearer the gateway minted alongside the
 	// wg conf. Lives next to ca.crt — same dir the env-pushdown
 	// fetcher reads. Best-effort; missing file means env-pushdown
@@ -1395,6 +1393,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if runtime.GOOS == "darwin" {
 			macErr = macHelperInstall(wholeMachine)
 		}
+		if wholeMachine && runtime.GOOS != "darwin" {
+			if err := completeWholeMachineRouting(func() error {
+				return wgQuickUpFn(iface, authKey)
+			}); err != nil {
+				return true, fmt.Errorf("wg-quick up: %w", err)
+			}
+		}
+		if err := setup.commitApprovedCA(canonicalCA, skipTrust); err != nil {
+			return true, err
+		}
 		items := setupSummaryItems(*setup)
 		items = append(items, "✓ joined gateway")
 		printChecklist(items)
@@ -1404,11 +1412,6 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		} else if runtime.GOOS == "darwin" {
 			printWholeMachineDone("system extension")
 		} else {
-			if err := completeWholeMachineRouting(func() error {
-				return wgQuickUp(iface, authKey)
-			}); err != nil {
-				return true, fmt.Errorf("wg-quick up: %w", err)
-			}
 			printWholeMachineDone(iface)
 		}
 		if persistErr != nil {
@@ -1785,6 +1788,8 @@ func writeUserWGConf(conf string) error {
 // wgQuickUp writes the supplied wireguard config to
 // /etc/wireguard/<iface>.conf and brings the interface up via
 // `wg-quick up`. Installs `wireguard-tools` if missing on linux.
+var wgQuickUpFn = wgQuickUp
+
 func wgQuickUp(iface, conf string) error {
 	if _, err := exec.LookPath("wg-quick"); err != nil {
 		if runtime.GOOS == "linux" {

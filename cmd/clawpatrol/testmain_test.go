@@ -13,5 +13,10 @@ import (
 // has at the top of main().
 func TestMain(m *testing.M) {
 	sandbox.Stage1()
-	os.Exit(m.Run())
+	startWireGuardCAStageServer()
+	code := m.Run()
+	if sharedWireGuardCAStageServer != nil {
+		sharedWireGuardCAStageServer.server.Close()
+	}
+	os.Exit(code)
 }
