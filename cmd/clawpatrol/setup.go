@@ -99,14 +99,21 @@ func runJoin(args []string) {
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
+	ephemeralOIDC := fs.Bool("ephemeral", false, "join unattended using OIDC ephemeral enrollment")
+	oidcTokenFile := fs.String("oidc-token-file", "", "file containing an OIDC ID token for --ephemeral")
+	oidcTTL := fs.Duration("oidc-ttl", 0, "requested OIDC ephemeral lease TTL (capped by gateway policy/token expiry)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
 	loginFlag := fs.Bool("login", false, "interactively log in to the gateway's tailnet first (use when the gateway has no public URL). The temporary tailnet credentials are discarded once the gateway-minted device identity lands.")
 	_ = fs.Parse(reorderJoinArgsForFlagParse(args))
 	rest := fs.Args()
 	if len(rest) != 1 || rest[0] == "" {
-		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
+		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] [--ephemeral --oidc-token-file PATH] <gateway-url>")
 	}
+	if *ephemeralOIDC && *oidcTokenFile == "" {
+		fail("--ephemeral requires --oidc-token-file")
+	}
+	_ = oidcTTL
 	gatewayURL, err := validateGatewayURL(rest[0])
 	if err != nil {
 		fail("%v", err)
