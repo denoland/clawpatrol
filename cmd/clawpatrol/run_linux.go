@@ -105,11 +105,13 @@ func runRun(args []string) {
 	warnIfOnGatewayHost()
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	var envOpts runEnvFlags
+	envOpts.bind(fs)
 	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay (mirrors TCP listeners inside the netns back to the host AND forwards wrapped-cmd connections to 127.0.0.1 out to host loopback services)")
 	_ = fs.Parse(args)
 	cmd := fs.Args()
 	if len(cmd) == 0 {
-		fail("usage: clawpatrol run [--no-auto-expose] -- <cmd> [args...]")
+		fail("usage: clawpatrol run [--no-auto-expose] [--inherit-env] [--env NAME] -- <cmd> [args...]")
 	}
 
 	// Whole-machine join: the host already routes all traffic through
@@ -117,7 +119,7 @@ func runRun(args []string) {
 	// credential env and exec the command directly (this also works as
 	// root, unlike the unprivileged-userns path below).
 	if isWholeMachineJoin() {
-		runWholeMachineDirect(cmd)
+		runWholeMachineDirect(cmd, envOpts)
 		return
 	}
 
@@ -126,7 +128,7 @@ func runRun(args []string) {
 	// keeps real uids and `sudo` works inside it. Opt out with
 	// CLAWPATROL_NO_SUDO.
 	if sudoSetupAvailable() {
-		runViaSudo(cmd)
+		runViaSudo(cmd, envOpts)
 		return
 	}
 
@@ -194,7 +196,7 @@ func runRun(args []string) {
 		fail("self path: %v", err)
 	}
 	child := exec.Command(self, append([]string{"run"}, cmd...)...)
-	child.Env = append(os.Environ(), runChildEnv+"=1")
+	child.Env = append(sanitizedChildEnv(os.Environ(), envOpts), runChildEnv+"=1")
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	child.ExtraFiles = []*os.File{cSock, tunUpR}
 	child.SysProcAttr = &syscall.SysProcAttr{
@@ -325,7 +327,7 @@ func runRun(args []string) {
 // the credential env and exec the command. Env is fetched straight
 // from the gateway — the daemon fetcher would try to spawn the
 // per-host daemon, which whole-machine mode doesn't run.
-func runWholeMachineDirect(cmd []string) {
+func runWholeMachineDirect(cmd []string, envOpts runEnvFlags) {
 	if os.Getenv("CLAWPATROL_NO_ENV") != "1" {
 		applyEnvPushdownVars(wholeMachineEnvVars(defaultClawpatrolDir()))
 	}
@@ -334,7 +336,7 @@ func runWholeMachineDirect(cmd []string) {
 		fail("%s: %v", cmd[0], err)
 	}
 	fmt.Fprintln(os.Stderr, "[clawpatrol] whole-machine join — traffic already routes through the gateway; running directly (no sandbox)")
-	if err := syscall.Exec(bin, cmd, os.Environ()); err != nil {
+	if err := syscall.Exec(bin, cmd, sanitizedChildEnv(os.Environ(), envOpts)); err != nil {
 		fail("exec %s: %v", bin, err)
 	}
 }

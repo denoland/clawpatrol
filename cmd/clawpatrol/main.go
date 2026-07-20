@@ -3170,7 +3170,9 @@ usage:
                   --login                interactive tailnet login for gateways
                                          with no public URL (creds discarded
                                          once join completes)
-  clawpatrol run -- <cmd> [args...]      route one process tree through gateway
+  clawpatrol run [env flags] -- <cmd>    route one process tree through gateway
+                  --env NAME             inherit one variable (repeatable)
+                  --inherit-env          inherit all variables (may expose credentials)
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
