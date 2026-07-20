@@ -18,6 +18,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -80,9 +81,14 @@ func sessionIPC(msg string) error {
 
 func runRun(args []string) {
 	warnIfOnGatewayHost()
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	var envOpts runEnvFlags
+	envOpts.bind(fs)
+	_ = fs.Parse(args)
+	args = fs.Args()
 
 	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
-		runRunTsnet(args)
+		runRunTsnet(args, envOpts)
 		return
 	}
 
@@ -110,7 +116,7 @@ func runRun(args []string) {
 	all := append([]string{"run", "--"}, args...)
 	c := exec.Command(macHelperPath, all...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	c.Env = os.Environ()
+	c.Env = sanitizedChildEnv(os.Environ(), envOpts)
 	if err := c.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
