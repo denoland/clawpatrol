@@ -55,6 +55,187 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 	return config.MatchHostPattern(prof.HostPatterns, host)
 }
 
+// HostCandidates returns every endpoint bound to host in the profile,
+// in declaration order. Unlike HostEndpoint (which collapses a host to
+// a single endpoint), this preserves the full set so the HTTPS handler
+// can pick the right one per request once the path is known — a
+// path-scoped remote_mcp endpoint and a host-wide https endpoint can
+// share a host. Falls back to the single wildcard match when no exact
+// candidates exist, and appends a wildcard host-wide fallback after exact
+// candidates when one also matches. That lets a path-scoped exact endpoint
+// (remote_mcp on api.example.com/_/mcp) coexist with a wildcard generic HTTPS
+// endpoint (*.example.com) for the rest of the same host without capturing
+// unrelated traffic.
+func HostCandidates(policy *config.CompiledPolicy, profile, host string) []*config.CompiledEndpoint {
+	if policy == nil {
+		return nil
+	}
+	host = strings.ToLower(host)
+	if prof, ok := policy.Profiles[profile]; ok {
+		return hostCandidatesInProfile(prof, host)
+	}
+	// Single-tenant fallback: scan every profile, exact before wildcard,
+	// but keep each profile's wildcard fallback behind its exact candidates.
+	for _, p := range policy.Profiles {
+		if eps := hostCandidatesInProfile(p, host); hasExactHostCandidate(p, host) && len(eps) > 0 {
+			return eps
+		}
+	}
+	for _, p := range policy.Profiles {
+		if eps := hostCandidatesInProfile(p, host); len(eps) > 0 {
+			return eps
+		}
+	}
+	return nil
+}
+
+func hostCandidatesInProfile(prof *config.CompiledProfile, host string) []*config.CompiledEndpoint {
+	exact := orderCandidateGroup(prof.HostCandidates[host], true)
+	wildcards := orderCandidateGroup(config.MatchHostPatterns(prof.HostPatterns, host), false)
+	if len(exact) == 0 {
+		return wildcards
+	}
+	// Exact host declarations preserve legacy exact-over-wildcard
+	// precedence. When an exact host-wide endpoint exists, it owns the
+	// whole host and wildcard candidates must not capture any path. When
+	// the exact candidates are only path-scoped, wildcard path-scoped or
+	// host-wide candidates may still serve paths the exact candidates do
+	// not cover.
+	if hasHostWideEndpoint(exact) {
+		return exact
+	}
+	out := append([]*config.CompiledEndpoint{}, exact...)
+	for _, ep := range wildcards {
+		if !containsEndpointRuntime(out, ep) {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
+func orderCandidateGroup(eps []*config.CompiledEndpoint, exact bool) []*config.CompiledEndpoint {
+	if len(eps) == 0 {
+		return nil
+	}
+	pathScoped := make([]*config.CompiledEndpoint, 0, len(eps))
+	hostWide := make([]*config.CompiledEndpoint, 0, len(eps))
+	for _, ep := range eps {
+		if ep == nil {
+			continue
+		}
+		if ep.PathConstraint == "" {
+			hostWide = append(hostWide, ep)
+		} else {
+			pathScoped = append(pathScoped, ep)
+		}
+	}
+	sort.SliceStable(pathScoped, func(i, j int) bool {
+		return len(pathScoped[i].PathConstraint) > len(pathScoped[j].PathConstraint)
+	})
+	if exact && len(hostWide) > 1 {
+		last := hostWide[len(hostWide)-1]
+		copy(hostWide[1:], hostWide[:len(hostWide)-1])
+		hostWide[0] = last
+	}
+	out := make([]*config.CompiledEndpoint, 0, len(pathScoped)+len(hostWide))
+	out = append(out, pathScoped...)
+	out = append(out, hostWide...)
+	return out
+}
+
+func hasHostWideEndpoint(eps []*config.CompiledEndpoint) bool {
+	for _, ep := range eps {
+		if ep != nil && ep.PathConstraint == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEndpointRuntime(eps []*config.CompiledEndpoint, ce *config.CompiledEndpoint) bool {
+	for _, ep := range eps {
+		if ep == ce {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactHostCandidate(prof *config.CompiledProfile, host string) bool {
+	return len(prof.HostCandidates[host]) > 0
+}
+
+// SelectEndpointForPath picks the endpoint among candidates that serves
+// the given request path. Path-scoped endpoints (a non-empty
+// PathConstraint) win over a host-wide endpoint, and the most-specific
+// (longest) path constraint wins among them; a host-wide endpoint
+// (empty PathConstraint) is the fallback when no path-scoped candidate
+// matches. Returns nil when no candidate matches and there is no
+// host-wide fallback — the caller then applies its unknown-path
+// default rather than running the wrong facet against the request.
+func SelectEndpointForPath(candidates []*config.CompiledEndpoint, path string) *config.CompiledEndpoint {
+	var hostWide *config.CompiledEndpoint
+	for _, ce := range candidates {
+		if ce == nil {
+			continue
+		}
+		if ce.PathConstraint == "" {
+			if hostWide == nil {
+				hostWide = ce
+			}
+			continue
+		}
+		if PathMatchesConstraint(path, ce.PathConstraint, ce.PathPrefix) {
+			return ce
+		}
+	}
+	return hostWide
+}
+
+// PathMatchesConstraint reports whether request path is served by an
+// endpoint whose compiled path constraint is (constraint, prefix). An
+// empty constraint matches every path (host-wide). When prefix is
+// true, the path must equal the constraint (with or without its
+// trailing slash) or fall under it at a path-segment boundary; when
+// false, the match is exact, so `/mcp2` does not match `/mcp`.
+func PathMatchesConstraint(path, constraint string, prefix bool) bool {
+	if constraint == "" {
+		return true
+	}
+	if prefix {
+		base := strings.TrimSuffix(constraint, "/")
+		return path == base || strings.HasPrefix(path, base+"/")
+	}
+	return path == constraint
+}
+
+// ProtocolInvalidDeny returns a synthesized fail-closed deny rule when
+// a facet's PrepareRequest flagged req as ProtocolInvalid, or nil when
+// the request is protocol-valid. The gateway consults it after facet
+// preparation and instead of MatchRequest when it fires, so a
+// protocol-invalid action (e.g. a malformed, batched, or truncated MCP
+// RPC POST) is denied before any allow rule — a catch-all,
+// `http.method == "POST"`, or `mcp.kind == "rpc"` allow — can match.
+//
+// This is the security boundary the per-path req.Truncated /
+// req.Unparseable poisoning cannot provide on its own: those only mark
+// body-derived facet paths unknown, so a rule keyed on an
+// always-available facet would still allow the malformed body through.
+// The synthesized rule carries the facet's agent-safe reason and no
+// rule identity, mirroring the truncation fail-closed deny.
+func ProtocolInvalidDeny(req *match.Request) *config.CompiledRule {
+	if req == nil || !req.ProtocolInvalid {
+		return nil
+	}
+	reason := req.ProtocolInvalidReason
+	if reason == "" {
+		reason = "request is protocol-invalid; failing closed"
+	}
+	return &config.CompiledRule{
+		Outcome: config.Outcome{Verdict: "deny", Reason: reason},
+	}
+}
+
 // MatchRequest walks an endpoint's priority-sorted rule list and
 // returns the first rule whose matcher accepts req. Disabled rules
 // are skipped. nil is returned when no rule fires — the caller then
