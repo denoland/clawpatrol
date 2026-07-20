@@ -1504,7 +1504,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			// above) and the operator can re-run `clawpatrol join`. This
 			// mirrors the whole-machine claim below, which also only warns.
 			if err := claimPeerAPIToken(gateway, start.DeviceCode, hn, authKey,
-				tailnetControlURL, stateDir, filepath.Dir(setup.caPath)); err != nil {
+				tailnetControlURL, stateDir, filepath.Dir(setup.caPath), httpCli); err != nil {
 				fmt.Fprintf(os.Stderr,
 					"⚠ peer api-token claim failed: %v\n"+
 						"  env-pushdown may be unavailable until you re-run `clawpatrol join`.\n", err)

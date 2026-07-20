@@ -10,6 +10,9 @@ concurrency:
 
 jobs:
   preview:
+    # Fork PRs run without secrets, so DEMO_DEPLOY_TOKEN is empty and the
+    # fixtures checkout / gh-pages publish cannot work. Skip the job for them.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
