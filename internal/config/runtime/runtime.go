@@ -372,6 +372,27 @@ type PostgresStartup struct {
 	Password string
 }
 
+// CredentialVerifier is the optional interface a credential plugin
+// implements when it can synchronously confirm that the operator-
+// supplied secret material is live — Slack's auth.test, Discord's
+// users/@me, Postgres's SELECT 1, etc. The dashboard's connect-form
+// save handler invokes Verify immediately after persisting slot
+// bytes so the credential's reported status reflects the verified
+// state instead of mere slot presence.
+//
+// Verify returns nil on success. A non-nil error describes the
+// failure in operator-readable terms (e.g. "invalid_auth"); the
+// gateway persists the message and surfaces it inline on the
+// connect form.
+//
+// Credentials without a cheap synchronous primitive (generic
+// bearer tokens, mTLS bundles without a probe target) leave this
+// unimplemented; the gateway then falls back to slot-presence for
+// the live status badge.
+type CredentialVerifier interface {
+	VerifyCredential(ctx context.Context, sec Secret) error
+}
+
 // HITLNotifier is the optional interface a credential plugin
 // implements when it can deliver a HITL approval prompt to a human
 // (Slack chat.postMessage, Discord webhook, Telegram sendMessage,
