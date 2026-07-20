@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -275,7 +276,8 @@ func relayUDPDatagrams(ctx context.Context, local, remote net.Conn, idleTimeout 
 			n, err := src.Read(buf)
 			if err != nil {
 				if boundRead {
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() &&
+					var netErr net.Error
+					if errors.As(err, &netErr) && netErr.Timeout() &&
 						udpIdleRemaining(lastActivity.Load(), time.Now(), idleTimeout) > 0 {
 						// Activity in the opposite direction raced this deadline.
 						// Recalculate from the shared timestamp and keep reading.
