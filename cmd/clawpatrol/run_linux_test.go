@@ -8,18 +8,19 @@ import (
 	"testing"
 )
 
-func TestRewriteHostsLine(t *testing.T) {
+func TestRewriteHostsLines(t *testing.T) {
+	const canonical = "hosts:      files dns"
 	cases := []struct {
 		name        string
 		in          string
 		wantChanged bool
-		wantHosts   string // expected hosts: line when changed
+		wantHosts   []string // ALL hosts-definition lines when changed
 	}{
 		{
 			name:        "fedora resolve short-circuit",
 			in:          "passwd: files\nhosts:      files myhostname mdns4_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] dns\ngroup: files\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   []string{canonical},
 		},
 		{
 			name:        "already files dns - no change",
@@ -27,9 +28,12 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: false,
 		},
 		{
-			name:        "already sanitized form - no change",
+			// myhostname is off the allowlist: self-lookups are served by
+			// the synthetic /etc/hosts through `files` instead.
+			name:        "drops myhostname",
 			in:          "hosts:      files myhostname dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   []string{canonical},
 		},
 		{
 			name:        "no hosts line",
@@ -45,25 +49,28 @@ func TestRewriteHostsLine(t *testing.T) {
 			name:        "trailing comment stripped",
 			in:          "hosts: files resolve [!UNAVAIL=return] dns # managed\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files dns",
+			wantHosts:   []string{canonical},
 		},
 		{
-			name:        "only dns appended when no keepable sources",
+			name:        "canonicalized when no keepable sources",
 			in:          "hosts: resolve [!UNAVAIL=return]\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      dns",
+			wantHosts:   []string{canonical},
 		},
 		{
-			// Regression: a resolv.conf-respecting module like sssd must
-			// not be dropped — only resolve/mdns short-circuiters are.
-			name:        "preserves sssd module - no change",
+			// sssd answers via the host's sssd daemon (e.g. an LDAP
+			// resolver) without consulting the bind-mounted resolv.conf —
+			// off the allowlist, must be dropped (#765).
+			name:        "drops sssd module",
 			in:          "hosts: files sss dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   []string{canonical},
 		},
 		{
-			name:        "preserves ldap module - no change",
+			name:        "drops ldap and myhostname modules",
 			in:          "hosts: files myhostname ldap dns\n",
-			wantChanged: false,
+			wantChanged: true,
+			wantHosts:   []string{canonical},
 		},
 		{
 			// dns-first is unusual but intentional; must not be reordered.
@@ -72,24 +79,24 @@ func TestRewriteHostsLine(t *testing.T) {
 			wantChanged: false,
 		},
 		{
-			name:        "removes resolve but keeps sss in place",
+			name:        "removes resolve and sss together",
 			in:          "hosts: files sss resolve [!UNAVAIL=return] dns\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files sss dns",
+			wantHosts:   []string{canonical},
 		},
 		{
-			name:        "removes mdns keeps myhostname and dns",
+			name:        "removes mdns and myhostname keeps dns",
 			in:          "hosts: files mdns4_minimal [NOTFOUND=return] myhostname dns\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   []string{canonical},
 		},
 		{
-			// No dns and no bypassing module: dns is appended so the
-			// gateway resolv.conf is still consulted.
-			name:        "appends dns when absent",
-			in:          "hosts: files myhostname\n",
+			// No dns present: canonicalized so the gateway resolv.conf is
+			// still consulted.
+			name:        "adds dns when absent",
+			in:          "hosts: files\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files myhostname dns",
+			wantHosts:   []string{canonical},
 		},
 		{
 			// Multi-status action bracket contains a space; it must be
@@ -97,42 +104,98 @@ func TestRewriteHostsLine(t *testing.T) {
 			name:        "multi-status bracket on removed module",
 			in:          "hosts: files resolve [NOTFOUND=return UNAVAIL=return] dns\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files dns",
+			wantHosts:   []string{canonical},
 		},
 		{
-			// Spaces inside the brackets, no bypassing module → no-op,
-			// preserved verbatim (also exercises the kept-bracket path).
-			name:        "spaced bracket on kept source - no change",
+			// A host-provided action modifier on an allowlisted source can
+			// suppress gateway DNS — [NOTFOUND=return] after files makes
+			// every name absent from the synthetic /etc/hosts short-circuit
+			// before `dns` runs. Modifiers never survive, even "safe"
+			// looking ones.
+			name:        "action modifier on kept source dropped",
+			in:          "hosts: files [NOTFOUND=return] dns\n",
+			wantChanged: true,
+			wantHosts:   []string{canonical},
+		},
+		{
+			name:        "spaced bracket on kept source dropped",
 			in:          "hosts: files [SUCCESS=return  NOTFOUND=continue] dns\n",
+			wantChanged: true,
+			wantHosts:   []string{canonical},
+		},
+		{
+			name:        "brackets after surviving and removed sources all dropped",
+			in:          "hosts: files [SUCCESS=return] resolve [!UNAVAIL=return] dns\n",
+			wantChanged: true,
+			wantHosts:   []string{canonical},
+		},
+		{
+			// glibc assigns every parsed hosts line to the same slot, so
+			// the LAST definition wins — a safe first line must not stop
+			// the rewrite from sanitizing a later unsafe one.
+			name:        "duplicate definitions - later unsafe line sanitized",
+			in:          "hosts: files dns\nhosts: sss dns\n",
+			wantChanged: true,
+			wantHosts:   []string{"hosts: files dns", canonical},
+		},
+		{
+			// glibc's grammar: whitespace is allowed around the colon.
+			name:        "space before colon recognized",
+			in:          "hosts : sss dns\n",
+			wantChanged: true,
+			wantHosts:   []string{canonical},
+		},
+		{
+			// glibc's grammar: the colon is optional.
+			name:        "colon-less definition recognized",
+			in:          "hosts sss dns\n",
+			wantChanged: true,
+			wantHosts:   []string{canonical},
+		},
+		{
+			name:        "colon-less definition already safe - no change",
+			in:          "hosts files dns\n",
 			wantChanged: false,
 		},
 		{
-			// A bracket trailing a surviving source must be kept in place
-			// while the resolve module ahead of it is removed.
-			name:        "keeps bracket after surviving source, drops resolve",
-			in:          "hosts: files [SUCCESS=return] resolve [!UNAVAIL=return] dns\n",
+			// A bare "hosts" with nothing after the name is a glibc syntax
+			// error (the line is skipped there), so it is not a definition.
+			name:        "bare hosts word is not a definition",
+			in:          "hosts\npasswd: files\n",
+			wantChanged: false,
+		},
+		{
+			// "hosts:" with empty services defines an empty database in
+			// glibc (all lookups NOTFOUND); canonicalize so DNS works.
+			name:        "empty services canonicalized",
+			in:          "hosts:\n",
 			wantChanged: true,
-			wantHosts:   "hosts:      files [SUCCESS=return] dns",
+			wantHosts:   []string{canonical},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body, changed := rewriteHostsLine(tc.in)
+			body, changed := rewriteHostsLines(tc.in)
 			if changed != tc.wantChanged {
 				t.Fatalf("changed = %v, want %v (body=%q)", changed, tc.wantChanged, body)
 			}
 			if !changed {
 				return
 			}
-			var got string
-			for _, l := range strings.Split(body, "\n") {
-				if strings.HasPrefix(strings.TrimLeft(l, " \t"), "hosts:") {
-					got = l
-					break
+			// Validate the COMPLETE set of hosts definitions, not just the
+			// first — glibc honors the last one, so a missed duplicate is
+			// a lockdown bypass.
+			hostsLines := func(s string) []string {
+				var out []string
+				for _, l := range strings.Split(s, "\n") {
+					if _, ok := cutHostsDefinition(l); ok {
+						out = append(out, l)
+					}
 				}
+				return out
 			}
-			if got != tc.wantHosts {
-				t.Fatalf("hosts line = %q, want %q", got, tc.wantHosts)
+			if got := hostsLines(body); !reflect.DeepEqual(got, tc.wantHosts) {
+				t.Fatalf("hosts lines = %q, want %q", got, tc.wantHosts)
 			}
 			// Non-hosts lines must be preserved verbatim and in order —
 			// compare the full sequence, not mere substring membership,
@@ -140,7 +203,7 @@ func TestRewriteHostsLine(t *testing.T) {
 			nonHosts := func(s string) []string {
 				var out []string
 				for _, l := range strings.Split(s, "\n") {
-					if !strings.HasPrefix(strings.TrimLeft(l, " \t"), "hosts:") {
+					if _, ok := cutHostsDefinition(l); !ok {
 						out = append(out, l)
 					}
 				}
@@ -150,6 +213,28 @@ func TestRewriteHostsLine(t *testing.T) {
 				t.Fatalf("non-hosts lines changed: %q -> %q", before, after)
 			}
 		})
+	}
+}
+
+func TestChildNetnsSteps(t *testing.T) {
+	got := childNetnsSteps("100.64.0.7")
+	want := []netnsStep{
+		{args: []string{"ip", "link", "set", "lo", "up"}},
+		{args: []string{"ip", "link", "set", tunIfName, "mtu", "65535", "up"}},
+		{args: []string{"ip", "addr", "add", "100.64.0.7/32", "dev", tunIfName}},
+		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
+		// v6 so fd78:: DNS-VIP answers are routable (#765). The route is
+		// scoped to the VIP prefix — NOT default — because the TUN
+		// bridge drops IPv6 UDP silently; a default route would stall
+		// QUIC/HTTP3 on public AAAA destinations instead of letting them
+		// fall back to IPv4. Optional: on a host booted with
+		// ipv6.disable=1 these fail, and the v4 VIP path must keep
+		// working rather than abort the run.
+		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", "fd78::/64", "dev", tunIfName}, optional: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("childNetnsSteps:\n got %v\nwant %v", got, want)
 	}
 }
 

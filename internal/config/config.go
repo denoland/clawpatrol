@@ -182,6 +182,15 @@ type GatewaySettings struct {
 	// time.ParseDuration format.
 	SessionKeep string `hcl:"session_keep,optional"`
 
+	// ActionsKeep is the global default retention floor for the actions
+	// table (captured request/response logs — the gateway's largest
+	// table). Rows whose ts_ns is older than this are deleted by the
+	// background sweeper. Each endpoint may override this with its own
+	// `retention = "..."`. Default 720h (30d), "0" / "off" disables the
+	// default sweep (per-endpoint retention still applies).
+	// time.ParseDuration format.
+	ActionsKeep string `hcl:"actions_keep,optional"`
+
 	// Limits, if present, overrides the two gateway-wide body-size
 	// limits (rules-engine body buffer and persisted action body
 	// storage). nil uses the DefaultBody*Limit constants, which match
@@ -445,6 +454,9 @@ func (g *Gateway) GenAITelemetryIncludeContent() bool {
 
 // SessionKeep returns the raw session-retention string, or empty.
 func (g *Gateway) SessionKeep() string { return g.settings().SessionKeep }
+
+// ActionsKeep returns the raw global actions-retention string, or empty.
+func (g *Gateway) ActionsKeep() string { return g.settings().ActionsKeep }
 
 // Funnel reports whether the `tailscale { }` block enabled Funnel.
 func (g *Gateway) Funnel() bool {
@@ -1103,9 +1115,44 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 		}
 	}
 
+	// Retention floors: reject a malformed duration at load rather than
+	// letting the sweeper silently fall back at runtime. "0" / "off"
+	// (disable) are valid non-duration values.
+	diags = append(diags, validateRetentionDuration("session_keep", gw.Settings.SessionKeep)...)
+	diags = append(diags, validateRetentionDuration("actions_keep", gw.Settings.ActionsKeep)...)
+
 	diags = append(diags, validateLimits(gw.Settings.Limits)...)
 
 	return diags
+}
+
+// validateRetentionDuration flags a retention setting that is neither
+// empty, the "0" / "off" disable sentinels, nor a valid non-negative
+// time.ParseDuration string. Zero-valued durations ("0s") are allowed
+// and mean the same as "0": disable / keep forever. Negative durations
+// are rejected — downstream they would put the sweep cutoff in the
+// future and delete everything, the inverse of a retention floor.
+func validateRetentionDuration(name, val string) hcl.Diagnostics {
+	v := strings.TrimSpace(val)
+	if v == "" || v == "0" || v == "off" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid " + name,
+			Detail:   fmt.Sprintf("%s = %q: %v. Use a time.ParseDuration string like %q or %q, or %q / %q to disable.", name, val, err, "720h", "30m", "0", "off"),
+		}}
+	}
+	if d < 0 {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid " + name,
+			Detail:   fmt.Sprintf("%s = %q: negative durations are not allowed. Use a positive duration like %q, or %q / %q to disable.", name, val, "720h", "0", "off"),
+		}}
+	}
+	return nil
 }
 
 // isLoopbackOnlyWG reports whether a WireGuard block has its endpoint

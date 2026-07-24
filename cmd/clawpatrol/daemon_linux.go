@@ -566,8 +566,11 @@ func (d *daemon) handle(c net.Conn) {
 		return
 	}
 	defer gvStack.Close()
-	startTunBridge(tunFile, gvEp, d.transport)
+	sessionCtx, cancelSession := context.WithCancel(context.Background())
+	defer cancelSession()
+	startTunBridge(tunFile, gvEp)
 	enableTransportTCPForwarder(gvStack, d.transport)
+	enableTransportUDPForwarder(sessionCtx, gvStack, d.transport, runUDPIdleTimeout)
 
 	// 4. Tell the client the bridge is up.
 	if _, err := io.WriteString(c, "ATTACHED\n"); err != nil {

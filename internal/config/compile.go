@@ -123,6 +123,13 @@ type CompiledEndpoint struct {
 	// Surfaced in the discovery manifest to orient agents.
 	Description string
 
+	// Retention is the raw `retention = "..."` framework attr, or "" if
+	// unset. When set it overrides gateway.actions_keep for this
+	// endpoint's rows in the action-log sweeper. time.ParseDuration
+	// format; "0" / "off" (or any zero-valued duration like "0s") keeps
+	// this endpoint's rows forever. Validated at compile.
+	Retention string
+
 	// InspectsTruncatable is true when any rule on this endpoint reads a
 	// facet whose bytes a wire frontend buffers under a cap (for ssh:
 	// ssh.stdin; the http/sql bodies are buffered by their own frontends
@@ -526,6 +533,13 @@ func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEnd
 		Plugin:      ent.Plugin,
 		Body:        ent.Body,
 		Description: ent.Framework.Str("description"),
+		Retention:   ent.Framework.Str("retention"),
+	}
+	// Reject a malformed retention at compile rather than letting the
+	// action-log sweeper fall back at runtime — same policy as the
+	// gateway-level actions_keep / session_keep validation.
+	if diags := validateRetentionDuration("retention", ce.Retention); diags.HasErrors() {
+		return nil, fmt.Errorf("endpoint %q: %s", name, diags[0].Detail)
 	}
 	// Hosts live on the plugin's typed body. We cross-cut via a small
 	// interface so the compile pass doesn't have to know every

@@ -59,6 +59,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/denoland/clawpatrol/cmd/clawpatrol/dnsvip"
 )
 
 const (
@@ -81,6 +83,14 @@ const (
 	// max IPv4 packet size — the daemon's transport handles real
 	// path-MTU + fragmentation behind us.
 	runTunMTU = 65535
+	// runTunAddr6 is the fixed IPv6 ULA the child binds to its TUN so
+	// fd78:: DNS-VIP answers are routable (#765). Any ULA outside the
+	// gateway's VIP range (fd78::/64) and Tailscale's fd7a:115c:a1e0::/48
+	// works: the daemon's per-session gVisor stack runs promiscuous +
+	// spoofing and never validates the child's source address, and the
+	// TCP forwarder dials upstream with the transport's own identity.
+	// No per-session allocation needed — the netns is private.
+	runTunAddr6 = "fd63:6c61:7770::2"
 )
 
 // runRun is `clawpatrol run`. Re-execs self in new user+net+mnt
@@ -161,7 +171,7 @@ func runRun(args []string) {
 	// fails the handshake or falls back to its own bundle (which
 	// doesn't have our CA).
 	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
-	allVars := append(caPathPushdownVars(caPath), envVars...)
+	allVars := append(caPathPushdownVars(caPath), dropClawpatrolCAVars(envVars)...)
 	applyEnvPushdownVars(allVars)
 	installClaudeCodeOAuthShim(cmd)
 
@@ -317,12 +327,7 @@ func runRun(args []string) {
 // per-host daemon, which whole-machine mode doesn't run.
 func runWholeMachineDirect(cmd []string) {
 	if os.Getenv("CLAWPATROL_NO_ENV") != "1" {
-		caDir := defaultClawpatrolDir()
-		if vars, err := envPushdownGatewayFetcher(caDir); err == nil {
-			applyEnvPushdownVars(vars)
-		} else {
-			fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
-		}
+		applyEnvPushdownVars(wholeMachineEnvVars(defaultClawpatrolDir()))
 	}
 	bin, err := exec.LookPath(cmd[0])
 	if err != nil {
@@ -332,6 +337,22 @@ func runWholeMachineDirect(cmd []string) {
 	if err := syscall.Exec(bin, cmd, os.Environ()); err != nil {
 		fail("exec %s: %v", bin, err)
 	}
+}
+
+// wholeMachineEnvVars builds the pushdown env for the whole-machine direct
+// path. Unlike the namespaced paths there is no daemon to ship CA vars, so this
+// path must inject the local combined-bundle CA vars itself (caPathPushdownVars)
+// — otherwise the wrapped agent never trusts the MITM CA. The gateway's vars
+// are appended with their clawpatrol-owned CA names stripped, so a plugin can't
+// override the local bundle (same guard as run/sudo/env).
+func wholeMachineEnvVars(caDir string) []pushdownEnvVar {
+	out := caPathPushdownVars(filepath.Join(caDir, "ca.crt"))
+	if vars, err := envPushdownGatewayFetcher(caDir); err == nil {
+		out = append(out, dropClawpatrolCAVars(vars)...)
+	} else {
+		fmt.Fprintf(os.Stderr, "[clawpatrol] env pushdown: %v (continuing without injected credentials)\n", err)
+	}
+	return out
 }
 
 // runRunChild executes inside the unshared user+net+mnt namespaces.
@@ -367,33 +388,33 @@ func runRunChild() {
 		fail("%s not set", runTunAddrEnv)
 	}
 
-	steps := [][]string{
-		{"ip", "link", "set", "lo", "up"},
-		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", runTunMTU), "up"},
-		{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName},
-		{"ip", "route", "add", "default", "dev", tunIfName},
-	}
-	for _, a := range steps {
-		c := exec.Command(a[0], a[1:]...)
+	for _, step := range childNetnsSteps(tunAddr) {
+		c := exec.Command(step.args[0], step.args[1:]...)
 		c.Stderr = os.Stderr
 		if err := c.Run(); err != nil {
-			fail("%s: %v", strings.Join(a, " "), err)
+			if step.optional {
+				fmt.Fprintf(os.Stderr, "[clawpatrol] %s: %v — continuing without IPv6 in the sandbox\n",
+					strings.Join(step.args, " "), err)
+				continue
+			}
+			fail("%s: %v", strings.Join(step.args, " "), err)
 		}
 	}
 
-	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
-		_ = bindResolv(childResolvConf())
-		if body, changed := childNsswitch(); changed {
-			// Warn rather than abort: we can't know whether this command
-			// actually needs DNS. It may only talk to raw IPs, or not
-			// resolve anything at all, in which case a failed nsswitch
-			// rewrite breaks nothing. Failing hard here would block runs
-			// that would have worked fine; the warning is enough for the
-			// case where a lookup later fails for no obvious reason.
-			if err := bindNsswitch(body); err != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol] nsswitch sanitization failed: %v — DNS lookups may fail\n", err)
-			}
-		}
+	// Fail closed: a leaked lookup makes tunnel-backed endpoints
+	// silently unreachable (#765), which is far harder to debug than
+	// an up-front abort. The env var opts out of the whole lockdown
+	// for runs that don't need DNS (or need host DNS).
+	var plan dnsLockdown
+	in, err := gatherDNSLockdownInputs()
+	if err == nil {
+		plan, err = computeDNSLockdown(in)
+	}
+	if err == nil {
+		err = applyDNSLockdown(plan)
+	}
+	if err != nil {
+		fail("dns sandbox setup: %v\n  set CLAWPATROL_RUN_KEEP_RESOLV=1 to skip DNS sandboxing (tunnel-backed endpoints will then be unreachable)", err)
 	}
 
 	// The agent runs as the same uid as the parent and can therefore
@@ -887,16 +908,56 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 	return nil, fmt.Errorf("no SCM_RIGHTS fd")
 }
 
+// netnsStep is one `ip` invocation of the child-netns bring-up.
+// Optional steps warn instead of aborting when they fail.
+type netnsStep struct {
+	args     []string
+	optional bool
+}
+
+// childNetnsSteps is the `ip` command sequence that brings up the
+// child's netns: loopback, the TUN at max MTU, the transport-assigned
+// v4 /32 with a v4 default route, and the fixed runTunAddr6 ULA with
+// a v6 route covering ONLY the gateway's DNS-VIP range
+// (dnsvip.DefaultCIDR6, fd78::/64). Without the v6 pair an fd78::
+// DNS-VIP answer is "network unreachable" inside the netns, and
+// AAAA-first clients would skip tunnel-backed endpoints entirely; the
+// daemon's stack is already v6-capable for TCP. nodad because nothing
+// else lives on the TUN and duplicate-address detection would stall
+// the address for a second.
+//
+// Deliberately NOT a v6 default route: IPv6 UDP is forwarded, but
+// daemonTransport's connected net.Conn does not provide structured
+// ICMPv6/Packet Too Big/PMTU error translation. A ::/0 route would
+// therefore over-advertise reliable global IPv6/QUIC reachability.
+// Scoping the route to the fd78::/64 VIP prefix preserves the intended
+// tunnel-backed endpoint reachability without changing that contract.
+//
+// The v6 steps are optional: a host booted with ipv6.disable=1 can't
+// add them, and the v4 VIP path must keep working there — a failed
+// v6 bring-up degrades fd78:: attempts to instant
+// network-unreachable, which clients fall back from.
+func childNetnsSteps(tunAddr string) []netnsStep {
+	return []netnsStep{
+		{args: []string{"ip", "link", "set", "lo", "up"}},
+		{args: []string{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", runTunMTU), "up"}},
+		{args: []string{"ip", "addr", "add", tunAddr + "/32", "dev", tunIfName}},
+		{args: []string{"ip", "route", "add", "default", "dev", tunIfName}},
+		{args: []string{"ip", "-6", "addr", "add", runTunAddr6 + "/128", "dev", tunIfName, "nodad"}, optional: true},
+		{args: []string{"ip", "-6", "route", "add", dnsvip.DefaultCIDR6.String(), "dev", tunIfName}, optional: true},
+	}
+}
+
 // childResolvConf builds the body of /etc/resolv.conf the child sees
 // inside its mnt namespace.
 //
 // In tsnet mode we point at the gateway's tailnet IP: the gateway
 // runs serveTsnetDNSUDP on <tailnet-gateway-ip>:53, which both
 // allocates VIPs for intercepted hostnames AND relays anything else
-// upstream. Public resolvers don't work because the gateway has no
-// UDP fallback handler for exit-routed traffic — DNS packets aimed
-// at 1.1.1.1 / 8.8.8.8 get dropped at the gateway, so every name
-// lookup inside `clawpatrol run` would time out.
+// upstream. (The tsnet gateway's GetUDPHandlerForFlow catch-all also
+// answers UDP/53 aimed at any resolver IP, so a public nameserver
+// would work too — but the gateway IP is the explicit, contractual
+// target.)
 //
 // In WG mode the gateway's WG netstack intercepts DNS in-flight, so
 // any public-looking nameserver works; fall back to 1.1.1.1 / 8.8.8.8
@@ -908,57 +969,14 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 // whose nsswitch.conf puts `resolve` (systemd-resolved) ahead of `dns`
 // — Fedora's default — getaddrinfo answers from the host resolver
 // before ever consulting resolv.conf, so this alone is not enough.
-// childNsswitch handles that case.
+// The other lockdown layers (see run_dns_lockdown_linux.go) handle
+// that case.
 func childResolvConf() string {
 	caDir := defaultClawpatrolDir()
 	if gwIP := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip"))); gwIP != "" {
 		return "nameserver " + gwIP + "\n"
 	}
 	return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
-}
-
-// bindResolv writes body to a temp file and bind-mounts it over
-// /etc/resolv.conf in the calling mount namespace.
-//
-// The temp file is made world-readable (0644) before the mount. In the
-// sudo path bindResolv runs as root (before the drop to the invoking
-// user), so a 0600 file ends up root-owned and the unprivileged command
-// can't read the resolv.conf bind-mounted over /etc/resolv.conf — every
-// name lookup then fails with "could not resolve host" while raw-IP
-// traffic still works. A resolv.conf holds only nameserver lines,
-// nothing sensitive.
-func bindResolv(body string) error {
-	return bindOverEtc("/etc/resolv.conf", "clawpatrol-resolv-*", body)
-}
-
-// childNsswitch returns a sanitized /etc/nsswitch.conf body and whether
-// it differs from the host's. The sandbox bind-mounts a private
-// /etc/resolv.conf pointing at the gateway, but resolv.conf only governs
-// the glibc `dns` NSS module. Distros that list a host-resolver module
-// ahead of `dns` in the `hosts:` line — Fedora ships
-// `files myhostname mdns4_minimal [NOTFOUND=return] resolve
-// [!UNAVAIL=return] dns` — answer getaddrinfo from systemd-resolved (or
-// mDNS) first. That resolver runs on the host, is oblivious to the
-// sandbox's resolv.conf, and returns NXDOMAIN for gateway-only names
-// like clawpatrol.internal; the `[!UNAVAIL=return]` action then stops
-// the lookup before `dns` is ever tried, so the override is bypassed
-// and `curl https://clawpatrol.internal` fails to resolve while `dig`
-// (which reads resolv.conf directly) succeeds.
-//
-// See rewriteHostsLine for what the sanitization removes. A missing
-// nsswitch.conf is normal (musl/Alpine has no NSS; getaddrinfo reads
-// resolv.conf directly), so it is not worth a warning; any other read
-// error is, since it likely leaves the resolved short-circuit in place
-// and would otherwise turn into a silent resolution failure.
-func childNsswitch() (body string, changed bool) {
-	raw, err := os.ReadFile("/etc/nsswitch.conf")
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "[clawpatrol] cannot read /etc/nsswitch.conf: %v — DNS lookups may fail\n", err)
-		}
-		return "", false
-	}
-	return rewriteHostsLine(string(raw))
 }
 
 // splitHostsTokens splits an nsswitch source list into tokens, treating
@@ -997,27 +1015,82 @@ func splitHostsTokens(s string) []string {
 	return toks
 }
 
-// rewriteHostsLine sanitizes the `hosts:` line of an nsswitch.conf body,
-// removing only the NSS modules that bypass the bind-mounted resolv.conf
-// — systemd-resolved (`resolve`) and Avahi mDNS (`mdns*`) — along with
-// the bracketed action items that trail them, and ensuring `dns` is
-// present so getaddrinfo consults resolv.conf. Every other source
-// (`files`, `myhostname`, `sss`, `ldap`, `nis`, …) is preserved in its
-// original position, so a host that resolves internal names through
-// sssd/LDAP keeps doing so inside the sandbox.
+// cutHostsDefinition reports whether line defines the `hosts`
+// database under glibc's nsswitch.conf grammar and returns the
+// services portion. The grammar (nss/nss_database.c, process_line)
+// is looser than a literal "hosts:" prefix: leading whitespace is
+// skipped, the database name ends at the first whitespace OR colon,
+// and the separator is any run of whitespace and colons — so
+// "hosts : sss dns", "hosts:sss dns", and the colon-less
+// "hosts sss dns" all define the database. A bare "hosts" with
+// nothing after the name is a glibc syntax error (skipped there), so
+// it is not treated as a definition here either. Anything narrower
+// than glibc's parser is a lockdown bypass: a definition we fail to
+// recognize is one glibc still honors.
+func cutHostsDefinition(line string) (services string, ok bool) {
+	s := strings.TrimLeft(line, " \t")
+	i := 0
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != ':' {
+		i++
+	}
+	if s[:i] != "hosts" || i == len(s) {
+		return "", false
+	}
+	j := i
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == ':') {
+		j++
+	}
+	return s[j:], true
+}
+
+// rewriteHostsLines canonicalizes every `hosts` database definition
+// in an nsswitch.conf body to exactly `hosts: files dns`, leaving a
+// definition untouched only when it is already safe: every source on
+// the allowlist (`files`, `dns`), `dns` present, and NO bracketed
+// action modifiers.
+//
+// Why every definition: glibc assigns each parsed `hosts` line to the
+// same slot, so the LAST definition wins — sanitizing only the first
+// would let `hosts: files dns\nhosts: sss dns` through untouched.
+// Rewriting all of them is deterministic regardless of which one
+// glibc picks.
+//
+// Why an allowlist: the lockdown must fail closed — any source backed
+// by a host-side daemon, cache, or directory (`resolve`, `mdns*`,
+// `sss`, `ldap`, `nis`, `mymachines`, `winbind`, …) can answer for a
+// tunneled hostname with its raw upstream IP without ever consulting
+// the bind-mounted resolv.conf, and for tunnel-backed endpoints a raw
+// IP is a silent black hole (#765). Only `files` (reads the synthetic
+// /etc/hosts, which also covers self-lookups so `myhostname` isn't
+// needed) and `dns` (reads the bind-mounted, gateway-pointing
+// resolv.conf) stay inside the namespace.
+//
+// Why no action modifiers survive: a host-provided modifier on an
+// allowlisted source can still suppress gateway DNS — with
+// `hosts: files [NOTFOUND=return] dns`, any name absent from the
+// synthetic hosts file short-circuits to NOTFOUND and `dns` never
+// runs. The default actions (NOTFOUND=continue etc.) are exactly what
+// the files→dns chain needs, so modifiers are dropped wholesale
+// rather than audited.
+//
+// Hosts that resolve internal names through sssd/LDAP/NIS lose that
+// inside the sandbox; CLAWPATROL_RUN_KEEP_RESOLV=1 remains the escape
+// hatch for runs that need host NSS behavior (and can live with
+// tunnel-backed endpoints being unreachable).
 //
 // It returns the full rewritten body and whether anything changed;
-// changed is false when raw has no hosts: line or the line already
-// routes through dns without an interfering module (e.g. Ubuntu's
-// `files dns`), so unaffected distros keep their nsswitch untouched
-// rather than rebinding an identical copy.
-func rewriteHostsLine(raw string) (body string, changed bool) {
+// changed is false when raw has no hosts definition at all (glibc's
+// compiled-in default for hosts is `files dns`) or every definition
+// is already safe, so unaffected distros (e.g. Ubuntu's `files dns`)
+// keep their nsswitch untouched rather than rebinding an identical
+// copy.
+func rewriteHostsLines(raw string) (body string, changed bool) {
 	if raw == "" {
 		return "", false
 	}
 	lines := strings.Split(raw, "\n")
 	for i, line := range lines {
-		rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "hosts:")
+		rest, ok := cutHostsDefinition(line)
 		if !ok {
 			continue
 		}
@@ -1025,56 +1098,36 @@ func rewriteHostsLine(raw string) (body string, changed bool) {
 		if c := strings.IndexByte(rest, '#'); c >= 0 {
 			rest = rest[:c]
 		}
-		orig := splitHostsTokens(rest)
-		var kept []string
-		dropAction := false // drop bracketed actions trailing a removed module
-		for _, tok := range orig {
-			if strings.HasPrefix(tok, "[") {
-				// Action modifier ([!UNAVAIL=return] etc.) applies to the
-				// preceding source; keep it only if that source survived.
-				if !dropAction {
-					kept = append(kept, tok)
-				}
-				continue
+		toks := splitHostsTokens(rest)
+		safe := slices.Contains(toks, "dns")
+		for _, tok := range toks {
+			if tok != "files" && tok != "dns" {
+				safe = false
+				break
 			}
-			// resolve (systemd-resolved) and mdns* (Avahi) answer ahead
-			// of dns and can't reach the gateway through the tunnel.
-			if tok == "resolve" || strings.HasPrefix(tok, "mdns") {
-				dropAction = true
-				continue
-			}
-			dropAction = false
-			kept = append(kept, tok)
 		}
-		if !slices.Contains(kept, "dns") {
-			kept = append(kept, "dns")
+		if safe {
+			continue
 		}
-		// No-op when no bypassing module was present (token sequence
-		// unchanged), so unaffected distros' nsswitch is left untouched.
-		if slices.Equal(orig, kept) {
-			return "", false
-		}
-		lines[i] = "hosts:      " + strings.Join(kept, " ")
-		return strings.Join(lines, "\n"), true
+		lines[i] = "hosts:      files dns"
+		changed = true
 	}
-	return "", false
-}
-
-// bindNsswitch bind-mounts body over /etc/nsswitch.conf in the calling
-// mount namespace. Same 0644/teardown semantics as bindResolv.
-func bindNsswitch(body string) error {
-	return bindOverEtc("/etc/nsswitch.conf", "clawpatrol-nsswitch-*", body)
+	if !changed {
+		return "", false
+	}
+	return strings.Join(lines, "\n"), true
 }
 
 // bindOverEtc writes body to a temp file (named via pattern) and
-// bind-mounts it over target in the calling mount namespace. The temp
-// file is unlinked on every path — including success: once the
-// bind-mount is in place it holds a reference to the inode, so removing
-// the source directory entry leaves target intact (the mount points at
-// the inode, not the path) while ensuring we don't strand a temp file
-// per `clawpatrol run`. The kernel reclaims the inode when the mount
-// goes away on namespace exit. The file is made world-readable (0644)
-// so an unprivileged wrapped command can read it on the sudo path.
+// bind-mounts it read-only over target in the calling mount
+// namespace. The temp file is unlinked on every path — including
+// success: once the bind-mount is in place it holds a reference to
+// the inode, so removing the source directory entry leaves target
+// intact (the mount points at the inode, not the path) while ensuring
+// we don't strand a temp file per `clawpatrol run`. The kernel
+// reclaims the inode when the mount goes away on namespace exit. The
+// file is made world-readable (0644) so an unprivileged wrapped
+// command can read it on the sudo path.
 func bindOverEtc(target, pattern, body string) error {
 	tmp, err := os.CreateTemp("", pattern)
 	if err != nil {
@@ -1101,5 +1154,47 @@ func bindOverEtc(target, pattern, body string) error {
 	// Mount holds the inode; drop the now-redundant /tmp path so it
 	// doesn't accumulate across runs.
 	_ = os.Remove(tmp.Name())
+	// Fail closed if the read-only flip fails: a writable lockdown
+	// file is a lockdown the wrapped command can undo.
+	return remountReadOnly(target)
+}
+
+// remountReadOnly flips the (bind) mount at target to read-only. A
+// plain MS_BIND mount stays writable to the inode's owner, and on the
+// unprivileged-userns path the temp inode bindOverEtc creates is
+// owned by the very uid the wrapped command runs as — clearing
+// ambient capabilities does not remove owner write permission, so
+// without this remount the agent could simply overwrite
+// /etc/resolv.conf after setup and reopen the resolver leak.
+//
+// The statfs dance re-asserts the mount's existing nosuid/nodev/…
+// flags on the remount: the temp inode usually lives on a
+// nosuid,nodev /tmp, those per-mount flags carry over to the bind,
+// and in a user namespace a remount that would drop such inherited
+// flags is rejected with EPERM — so they must be repeated explicitly.
+func remountReadOnly(target string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(target, &st); err != nil {
+		return fmt.Errorf("statfs %s: %w", target, err)
+	}
+	flags := uintptr(unix.MS_REMOUNT | unix.MS_BIND | unix.MS_RDONLY)
+	for _, m := range []struct {
+		st int64
+		ms uintptr
+	}{
+		{unix.ST_NOSUID, unix.MS_NOSUID},
+		{unix.ST_NODEV, unix.MS_NODEV},
+		{unix.ST_NOEXEC, unix.MS_NOEXEC},
+		{unix.ST_NOATIME, unix.MS_NOATIME},
+		{unix.ST_NODIRATIME, unix.MS_NODIRATIME},
+		{unix.ST_RELATIME, unix.MS_RELATIME},
+	} {
+		if int64(st.Flags)&m.st != 0 {
+			flags |= m.ms
+		}
+	}
+	if err := unix.Mount("", target, "", flags, ""); err != nil {
+		return fmt.Errorf("remount read-only %s: %w", target, err)
+	}
 	return nil
 }

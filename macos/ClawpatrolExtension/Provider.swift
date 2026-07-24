@@ -878,20 +878,75 @@ private func parentPid(of pid: pid_t) -> pid_t? {
 // r.98382363 race, then pump datagrams between the flow and a real
 // host UDP socket. Caller's UDP socket sees normal traffic; QUIC,
 // mDNS, DNS, NTP, etc. all work unchanged.
+//
+// Flow lifetime: UDP is connectionless, and macOS frequently never
+// signals flow teardown when the originating socket closes — the
+// readDatagrams error path alone therefore leaks one host socket per
+// one-shot exchange (DNS, STUN, NTP), exhausting the ephemeral port
+// range (~16k) after hours of normal traffic. A shared sweeper ages
+// out flows idle longer than idleTimeout; 90s exceeds typical NAT
+// UDP mapping lifetimes, so anything that survives NATs (QUIC,
+// WebRTC) keepalives well within it and is never swept.
 final class BypassUDP {
     private static var live = Set<BypassUDP>()
     private static let liveLock = NSLock()
+    private static let idleTimeout: TimeInterval = 90
+    private static let sweepInterval: TimeInterval = 30
+    private static var sweeper: DispatchSourceTimer?
 
     private let flow: NEAppProxyUDPFlow
     private var sock: Int32 = -1
     private var recvSource: DispatchSourceRead?
     private let recvQueue = DispatchQueue(label: "bypass.udp.recv", qos: .userInitiated)
+    private var lastActivity = Date()   // guarded by BypassUDP.liveLock
+    private var closed = false          // guarded by BypassUDP.liveLock
 
     init(flow: NEAppProxyUDPFlow) { self.flow = flow }
+
+    private func touch() {
+        BypassUDP.liveLock.lock()
+        lastActivity = Date()
+        BypassUDP.liveLock.unlock()
+    }
+
+    // Caller must hold liveLock.
+    private static func ensureSweeper() {
+        guard sweeper == nil else { return }
+        let t = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(label: "bypass.udp.sweep", qos: .utility))
+        t.schedule(deadline: .now() + sweepInterval, repeating: sweepInterval)
+        t.setEventHandler { BypassUDP.sweep() }
+        t.resume()
+        sweeper = t
+    }
+
+    private static func sweep() {
+        let cutoff = Date().addingTimeInterval(-idleTimeout)
+        // Decide + claim (mark closed, drop from live) under the lock, so a
+        // flow that sees traffic — touch() also takes liveLock — is either
+        // still fresh here and skipped, or reactivated only after we've
+        // already claimed it. Then tear the claimed flows down outside the
+        // lock. Without the claim-under-lock, a flow could be picked as
+        // stale, get a datagram, and still be closed a moment later.
+        liveLock.lock()
+        let total = live.count
+        var stale: [BypassUDP] = []
+        for f in live where !f.closed && f.lastActivity < cutoff {
+            f.closed = true
+            stale.append(f)
+        }
+        for f in stale { live.remove(f) }
+        liveLock.unlock()
+        guard !stale.isEmpty else { return }
+        os_log("bypass: closing %d idle UDP flows (%d live)",
+               log: log, type: .info, stale.count, total)
+        for f in stale { f.teardown() }
+    }
 
     func start() {
         BypassUDP.liveLock.lock()
         BypassUDP.live.insert(self)
+        BypassUDP.ensureSweeper()
         BypassUDP.liveLock.unlock()
         // AF_INET6 dual-stack so v4-mapped addresses route correctly.
         sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
@@ -905,12 +960,16 @@ final class BypassUDP {
         var fl = fcntl(sock, F_GETFL, 0); fl |= O_NONBLOCK; _ = fcntl(sock, F_SETFL, fl)
         _ = fcntl(sock, F_SETFD, FD_CLOEXEC)
 
-        let src = DispatchSource.makeReadSource(fileDescriptor: sock, queue: recvQueue)
+        // Capture the fd by value so the cancel handler closes it
+        // deterministically. The sweeper batch-closes flows and drops them
+        // from `live`, so `self` may already be deallocated by the time the
+        // cancel handler runs on recvQueue — a [weak self] handler would
+        // then skip close() and leak the very ephemeral port this sweep
+        // exists to reclaim. There is no deinit that closes the fd.
+        let fd = sock
+        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: recvQueue)
         src.setEventHandler { [weak self] in self?.recvOne() }
-        src.setCancelHandler { [weak self] in
-            guard let s = self, s.sock >= 0 else { return }
-            close(s.sock); s.sock = -1
-        }
+        src.setCancelHandler { close(fd) }
         src.resume()
         recvSource = src
         readFromFlow()
@@ -922,6 +981,7 @@ final class BypassUDP {
             if err != nil || data == nil || data!.isEmpty {
                 self.closeAll(); return
             }
+            self.touch()
             for (d, ep) in zip(data!, endpoints ?? []) {
                 guard let host = ep as? NWHostEndpoint else { continue }
                 self.sendOne(d, to: host)
@@ -961,19 +1021,36 @@ final class BypassUDP {
             }
         }
         if n <= 0 { return }
+        touch()
         guard let src = sockaddrToHostEndpoint(&ss) else { return }
         let chunk = Data(bytes: buf, count: n)
         flow.writeDatagrams([chunk], sentBy: [src]) { _ in }
     }
 
+    // Claim this flow (mark closed + drop from live) under the lock, then
+    // tear it down. Idempotent: the first caller — the readDatagrams
+    // error/EOF path — wins; a racing sweeper claim no-ops. The sweeper
+    // claims its flows inline under the lock (see sweep()) and calls
+    // teardown() directly.
     private func closeAll() {
+        BypassUDP.liveLock.lock()
+        if closed {
+            BypassUDP.liveLock.unlock()
+            return
+        }
+        closed = true
+        BypassUDP.live.remove(self)
+        BypassUDP.liveLock.unlock()
+        teardown()
+    }
+
+    // Release the host socket + flow. Runs exactly once per flow, guarded
+    // by the `closed` claim in closeAll() / sweep().
+    private func teardown() {
         recvSource?.cancel()
         recvSource = nil
         flow.closeReadWithError(nil)
         flow.closeWriteWithError(nil)
-        BypassUDP.liveLock.lock()
-        BypassUDP.live.remove(self)
-        BypassUDP.liveLock.unlock()
     }
 }
 
