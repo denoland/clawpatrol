@@ -5,10 +5,12 @@ import {
   listProfiles,
   setDeviceProfile,
   type Agent,
+  type EnrolledPeer,
   type Integration,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { Button } from "./Button";
+import { EnrollmentPanel } from "./EnrollmentPanel";
 import { HITLBar } from "./HITLBar";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
@@ -23,6 +25,7 @@ import { Sparkline } from "./Sparkline";
 export function DevicePage({
   ip,
   agents,
+  enrolledPeers,
   integrations,
   configFile,
   onBack,
@@ -31,6 +34,7 @@ export function DevicePage({
 }: {
   ip: string;
   agents: Agent[];
+  enrolledPeers: EnrolledPeer[];
   integrations: Integration[];
   configFile: string;
   onBack: () => void;
@@ -38,6 +42,14 @@ export function DevicePage({
   onRefresh: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
+  // Self-enrolled peers are reaper-managed: their profile is assigned
+  // from the pod label (not editable here) and they auto-reap when the
+  // pod dies, so the manual profile picker and the delete action are
+  // suppressed in favor of the read-only enrollment panel below.
+  const peer = useMemo(
+    () => enrolledPeers.find((x) => x.peer_ip === ip) ?? null,
+    [enrolledPeers, ip],
+  );
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
@@ -104,17 +116,21 @@ export function DevicePage({
         trail={[{ label: "Devices", href: "#/devices" }, { label: dev.hostname || dev.ip }]}
         actions={
           <>
-            <ProfilePicker
-              current={a.profile ?? ""}
-              profiles={profiles}
-              saving={profileSaving}
-              err={profileErr}
-              onPick={(next) => {
-                if (!next || next === a.profile) return;
-                setProfileErr(null);
-                setPendingProfile(next);
-              }}
-            />
+            {peer ? (
+              <LockedProfile profile={peer.profile || a.profile || "—"} />
+            ) : (
+              <ProfilePicker
+                current={a.profile ?? ""}
+                profiles={profiles}
+                saving={profileSaving}
+                err={profileErr}
+                onPick={(next) => {
+                  if (!next || next === a.profile) return;
+                  setProfileErr(null);
+                  setPendingProfile(next);
+                }}
+              />
+            )}
             <a
               href={`#/analytics/${encodeURIComponent(ip)}`}
               title="analytics"
@@ -134,29 +150,31 @@ export function DevicePage({
                 <path d="m7 16 4-8 4 4 4-6" />
               </svg>
             </a>
-            <button
-              type="button"
-              onClick={remove}
-              title="forget this device"
-              className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-danger-400 transition-colors cursor-pointer"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            {!peer && (
+              <button
+                type="button"
+                onClick={remove}
+                title="forget this device"
+                className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-danger-400 transition-colors cursor-pointer"
               >
-                <path d="M3 6h18" />
-                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                <path d="M10 11v6" />
-                <path d="M14 11v6" />
-              </svg>
-            </button>
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                </svg>
+              </button>
+            )}
           </>
         }
       />
@@ -200,6 +218,9 @@ export function DevicePage({
           </div>
         </div>
       </section>
+
+      {/* enrollment panel — only for self-enrolled (reaper-managed) peers */}
+      {peer && <EnrollmentPanel peer={peer} />}
 
       {/* pending approvals awaiting a decision for this device — same
           cards as the home page, scoped to this device's agent IP.
@@ -332,6 +353,38 @@ function ConfirmProfileChange({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// LockedProfile replaces the profile picker for enrolled peers: their
+// profile is assigned from the pod label at enrollment and can't be
+// changed from the dashboard.
+function LockedProfile({ profile }: { profile: string }) {
+  return (
+    <div
+      title="profile is assigned from the pod label — not editable here"
+      className={
+        "inline-flex items-center gap-1.5 min-w-40 pl-2.5 pr-2.5 py-1 " +
+        "border-1.5 border-navy bg-canvas text-sm text-text-muted"
+      }
+    >
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        className="shrink-0"
+      >
+        <rect x="3" y="11" width="18" height="11" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
+      <span className="font-mono text-xs uppercase tracking-wider truncate">{profile}</span>
+    </div>
   );
 }
 

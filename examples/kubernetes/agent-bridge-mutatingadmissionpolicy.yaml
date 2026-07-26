@@ -1,0 +1,356 @@
+# Optional admission-based injection for Clawpatrol agent pods.
+#
+# This example injects the same native sidecar and handoff contract used by
+# examples/kubernetes/kustomization/agent.yaml. It is not required for
+# enrollment; an explicit pod spec remains the portable baseline.
+#
+# REVIEW THESE FIXED DEPLOYMENT ASSUMPTIONS BEFORE APPLYING:
+#
+# Scope and identity:
+#   - Workload namespace: `agents`. The binding selects this namespace by its
+#     standard `kubernetes.io/metadata.name` label.
+#   - Pod scope: every Pod CREATE in that namespace is injected unless the Pod
+#     has `clawpatrol.dev/inject: "false"`.
+#   - Profile label: `clawpatrol.dev/profile`.
+#   - Default profile: `default`, added only when the profile label is absent.
+#   - Target Pods must use a ServiceAccount allowed by the `agents` enrollment
+#     authorizer, and the gateway needs Pod-read RBAC in the target namespace.
+#
+# Gateway and enrollment:
+#   - Gateway URL: `http://clawpatrol-api.clawpatrol.svc:8080`, assuming
+#     Service `clawpatrol-api` in namespace `clawpatrol` on port 8080.
+#   - Authorizer: `kubernetes_token_review/agents`.
+#   - Projected ServiceAccount token audience: `clawpatrol`.
+#   - Projected token lifetime: 600 seconds.
+#
+# Image and pod contract:
+#   - Bridge image: `ghcr.io/denoland/clawpatrol:latest`. Pin an immutable
+#     release or digest for production, and add imagePullSecrets if required.
+#   - Reserved container name: `clawpatrol-bridge`.
+#   - Reserved volume names: `clawpatrol`, `clawpatrol-token`, and
+#     `dev-net-tun`. Existing volumes with these names are reused.
+#   - Reserved paths: `/clawpatrol`, `/var/run/secrets/tokens`, and
+#     `/dev/net/tun`. If changed, update every matching argument, mount, and
+#     probe below together.
+#   - Nodes must expose `/dev/net/tun`; the bridge receives `NET_ADMIN`.
+#
+# The policy mounts the `/clawpatrol` handoff volume read-only into every
+# application container. The bridge startup probe delays application startup
+# until `/clawpatrol/env`, `/clawpatrol/ca.crt`, and `/clawpatrol/ready` exist.
+# The application still needs to source `/clawpatrol/env` before starting its
+# workload.
+#
+# Requires a Kubernetes version that serves MutatingAdmissionPolicy and
+# MutatingAdmissionPolicyBinding as admissionregistration.k8s.io/v1.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: clawpatrol-agent-bridge
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: IfNeeded
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: not-opted-out
+      expression: >-
+        !(has(object.metadata.annotations) &&
+          "clawpatrol.dev/inject" in object.metadata.annotations &&
+          object.metadata.annotations["clawpatrol.dev/inject"] == "false")
+    - name: bridge-not-present
+      expression: >-
+        !(has(object.spec.initContainers) &&
+          object.spec.initContainers.exists(c, c.name == "clawpatrol-bridge"))
+  mutations:
+    # Add the default profile only when the Pod does not already select one.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: |
+          has(object.metadata.labels) && "clawpatrol.dev/profile" in object.metadata.labels
+          ? []
+          : (
+            has(object.metadata.labels)
+            ? [JSONPatch{
+                op: "add",
+                path: "/metadata/labels/" + jsonpatch.escapeKey("clawpatrol.dev/profile"),
+                value: "default"
+              }]
+            : [JSONPatch{
+                op: "add",
+                path: "/metadata/labels",
+                value: {"clawpatrol.dev/profile": "default"}
+              }]
+          )
+
+    # Add the handoff, projected-token, and TUN volumes without replacing
+    # unrelated volumes already declared by the workload.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: |
+          has(object.spec.volumes)
+          ? (
+            (object.spec.volumes.exists(v, v.name == "clawpatrol")
+              ? []
+              : [JSONPatch{
+                  op: "add",
+                  path: "/spec/volumes/-",
+                  value: {
+                    "name": dyn("clawpatrol"),
+                    "emptyDir": dyn({})
+                  }
+                }])
+            +
+            (object.spec.volumes.exists(v, v.name == "clawpatrol-token")
+              ? []
+              : [JSONPatch{
+                  op: "add",
+                  path: "/spec/volumes/-",
+                  value: {
+                    "name": dyn("clawpatrol-token"),
+                    "projected": dyn({
+                      "sources": dyn([{
+                        "serviceAccountToken": dyn({
+                          "path": dyn("clawpatrol-token"),
+                          "audience": dyn("clawpatrol"),
+                          "expirationSeconds": dyn(600)
+                        })
+                      }])
+                    })
+                  }
+                }])
+            +
+            (object.spec.volumes.exists(v, v.name == "dev-net-tun")
+              ? []
+              : [JSONPatch{
+                  op: "add",
+                  path: "/spec/volumes/-",
+                  value: {
+                    "name": dyn("dev-net-tun"),
+                    "hostPath": dyn({
+                      "path": dyn("/dev/net/tun"),
+                      "type": dyn("CharDevice")
+                    })
+                  }
+                }])
+          )
+          : [JSONPatch{
+              op: "add",
+              path: "/spec/volumes",
+              value: [
+                {
+                  "name": dyn("clawpatrol"),
+                  "emptyDir": dyn({})
+                },
+                {
+                  "name": dyn("clawpatrol-token"),
+                  "projected": dyn({
+                    "sources": dyn([{
+                      "serviceAccountToken": dyn({
+                        "path": dyn("clawpatrol-token"),
+                        "audience": dyn("clawpatrol"),
+                        "expirationSeconds": dyn(600)
+                      })
+                    }])
+                  })
+                },
+                {
+                  "name": dyn("dev-net-tun"),
+                  "hostPath": dyn({
+                    "path": dyn("/dev/net/tun"),
+                    "type": dyn("CharDevice")
+                  })
+                }
+              ]
+            }]
+
+    # Insert the restartable init container first so its startup probe gates
+    # later init containers and application containers.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: |
+          has(object.spec.initContainers)
+          ? [JSONPatch{
+              op: "add",
+              path: "/spec/initContainers/0",
+              value: {
+                "name": dyn("clawpatrol-bridge"),
+                "restartPolicy": dyn("Always"),
+                "image": dyn("ghcr.io/denoland/clawpatrol:latest"),
+                "imagePullPolicy": dyn("IfNotPresent"),
+                "args": dyn([
+                  "bridge",
+                  "--gateway-url=http://clawpatrol-api.clawpatrol.svc:8080",
+                  "--authorizer=kubernetes_token_review/agents",
+                  "--kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token",
+                  "--env-out=/clawpatrol/env",
+                  "--ca-out=/clawpatrol/ca.crt",
+                  "--ready-file=/clawpatrol/ready"
+                ]),
+                "startupProbe": dyn({
+                  "exec": dyn({
+                    "command": dyn(["test", "-f", "/clawpatrol/ready"])
+                  }),
+                  "periodSeconds": dyn(1),
+                  "failureThreshold": dyn(120)
+                }),
+                "securityContext": dyn({
+                  "allowPrivilegeEscalation": dyn(false),
+                  "capabilities": dyn({
+                    "add": dyn(["NET_ADMIN"])
+                  })
+                }),
+                "env": dyn([
+                  {
+                    "name": dyn("POD_NAME"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.name")})
+                    })
+                  },
+                  {
+                    "name": dyn("POD_NAMESPACE"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.namespace")})
+                    })
+                  },
+                  {
+                    "name": dyn("POD_UID"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.uid")})
+                    })
+                  },
+                  {
+                    "name": dyn("NODE_NAME"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("spec.nodeName")})
+                    })
+                  }
+                ]),
+                "volumeMounts": dyn([
+                  {
+                    "name": dyn("clawpatrol"),
+                    "mountPath": dyn("/clawpatrol")
+                  },
+                  {
+                    "name": dyn("clawpatrol-token"),
+                    "mountPath": dyn("/var/run/secrets/tokens"),
+                    "readOnly": dyn(true)
+                  },
+                  {
+                    "name": dyn("dev-net-tun"),
+                    "mountPath": dyn("/dev/net/tun")
+                  }
+                ])
+              }
+            }]
+          : [JSONPatch{
+              op: "add",
+              path: "/spec/initContainers",
+              value: [{
+                "name": dyn("clawpatrol-bridge"),
+                "restartPolicy": dyn("Always"),
+                "image": dyn("ghcr.io/denoland/clawpatrol:latest"),
+                "imagePullPolicy": dyn("IfNotPresent"),
+                "args": dyn([
+                  "bridge",
+                  "--gateway-url=http://clawpatrol-api.clawpatrol.svc:8080",
+                  "--authorizer=kubernetes_token_review/agents",
+                  "--kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token",
+                  "--env-out=/clawpatrol/env",
+                  "--ca-out=/clawpatrol/ca.crt",
+                  "--ready-file=/clawpatrol/ready"
+                ]),
+                "startupProbe": dyn({
+                  "exec": dyn({
+                    "command": dyn(["test", "-f", "/clawpatrol/ready"])
+                  }),
+                  "periodSeconds": dyn(1),
+                  "failureThreshold": dyn(120)
+                }),
+                "securityContext": dyn({
+                  "allowPrivilegeEscalation": dyn(false),
+                  "capabilities": dyn({
+                    "add": dyn(["NET_ADMIN"])
+                  })
+                }),
+                "env": dyn([
+                  {
+                    "name": dyn("POD_NAME"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.name")})
+                    })
+                  },
+                  {
+                    "name": dyn("POD_NAMESPACE"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.namespace")})
+                    })
+                  },
+                  {
+                    "name": dyn("POD_UID"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("metadata.uid")})
+                    })
+                  },
+                  {
+                    "name": dyn("NODE_NAME"),
+                    "valueFrom": dyn({
+                      "fieldRef": dyn({"fieldPath": dyn("spec.nodeName")})
+                    })
+                  }
+                ]),
+                "volumeMounts": dyn([
+                  {
+                    "name": dyn("clawpatrol"),
+                    "mountPath": dyn("/clawpatrol")
+                  },
+                  {
+                    "name": dyn("clawpatrol-token"),
+                    "mountPath": dyn("/var/run/secrets/tokens"),
+                    "readOnly": dyn(true)
+                  },
+                  {
+                    "name": dyn("dev-net-tun"),
+                    "mountPath": dyn("/dev/net/tun")
+                  }
+                ])
+              }]
+            }]
+
+    # Make the handoff files available to every application container.
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: |
+          Object{
+            spec: Object.spec{
+              containers: object.spec.containers.map(c, Object.spec.containers{
+                name: c.name,
+                volumeMounts: [
+                  Object.spec.containers.volumeMounts{
+                    name: "clawpatrol",
+                    mountPath: "/clawpatrol",
+                    readOnly: true
+                  }
+                ]
+              })
+            }
+          }
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: clawpatrol-agent-bridge
+spec:
+  policyName: clawpatrol-agent-bridge
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: agents
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]

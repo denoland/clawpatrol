@@ -1,0 +1,49 @@
+# Opinionated, runnable Kubernetes example for one Clawpatrol gateway and one
+# agent workload namespace. Adapt it with a Kustomize overlay; the e2e overlay at
+# e2e/kubernetes-wireguard-e2e-overlay/kustomization.yaml demonstrates the
+# required patching pattern.
+#
+# RESOURCE MAP:
+#   - namespaces.yaml: creates the `clawpatrol` gateway namespace and `agents`
+#     workload namespace.
+#   - gateway-rbac.yaml: lets the gateway create TokenReviews and read Pods in
+#     the workload namespace.
+#   - gateway-config.yaml: contains gateway.hcl, enrollment identity matching,
+#     profile selection, WireGuard addressing, and liveness tuning.
+#   - gateway-statefulset.yaml: runs the gateway and persists its state.
+#   - gateway-services.yaml: exposes the HTTP API and WireGuard endpoint.
+#   - agent.yaml: explicit agent Pod contract, including the
+#     `clawpatrol-bridge` native sidecar.
+#
+# FIXED ASSUMPTIONS TO REVIEW:
+#   - Gateway namespace: `clawpatrol`.
+#   - Workload namespace: `agents`.
+#   - Gateway ServiceAccount: `clawpatrol-gateway`.
+#   - Workload ServiceAccount: `agent-runner`.
+#   - API Service: `clawpatrol-api.clawpatrol.svc:8080`.
+#   - WireGuard Service: `clawpatrol-wg.clawpatrol.svc:51820`.
+#   - Enrollment authorizer: `kubernetes_token_review/agents`.
+#   - Projected token audience: `clawpatrol`.
+#   - Profile label/default: `clawpatrol.dev/profile=default`.
+#   - Image: `ghcr.io/denoland/clawpatrol:latest`; pin a release or digest for
+#     production.
+#   - Storage: the gateway PVC relies on the cluster's default StorageClass.
+#
+# Namespace, ServiceAccount, authorizer, audience, profile, Service DNS, and
+# port changes span more than one file. Search this directory for the old value
+# and update every matching declaration/reference in the overlay.
+#
+# Optional hardening examples live beside this directory and are intentionally
+# not part of the runnable base:
+#   - ../agent-bridge-mutatingadmissionpolicy.yaml
+#   - ../agent-egress-networkpolicy.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespaces.yaml
+  - gateway-rbac.yaml
+  - gateway-config.yaml
+  - gateway-statefulset.yaml
+  - gateway-services.yaml
+  - agent.yaml

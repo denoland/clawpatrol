@@ -5,6 +5,10 @@ kernel module, no `wg-quick` lifecycle on the gateway, no systemd
 unit for the WG interface, no `/etc/hosts` pinning on clients. The
 clawpatrol binary IS the WG endpoint and the L3 forwarder.
 
+For Kubernetes deployments where the gateway and stateless agent pods
+run in-cluster, see the
+[Kubernetes enrollment implementation design](kubernetes-enrollment-design.md).
+
 ## How it works
 
 The gateway runs an embedded **wireguard-go** + a **gVisor netstack**

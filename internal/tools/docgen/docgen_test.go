@@ -50,6 +50,46 @@ func TestGatewayPluginBlockIsOptional(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRequiredFields(t *testing.T) {
+	got, err := render.Generate()
+	if err != nil {
+		t.Fatalf("render.Generate: %v", err)
+	}
+	const heading = "### `enrollment \"kubernetes_token_review\" \"<name>\"`"
+	start := strings.Index(got, heading)
+	if start < 0 {
+		t.Fatalf("generated config reference missing %s", heading)
+	}
+	section := got[start:]
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+	for _, row := range []string{
+		"| `audience` | `string` | yes |",
+		"| `match` | `block` | yes |",
+		"| `keepalive_interval` | `string` | no |",
+		"| `keepalive_reap_count` | `int` | no |",
+		"| `namespace` | `string` | yes |",
+		"| `service_account` | `string` | yes |",
+		"| `profile_label` | `string` | no |",
+		"| `profiles` | `[]string` | yes |",
+	} {
+		if !strings.Contains(section, row) {
+			t.Errorf("generated config reference missing row prefix %q", row)
+		}
+	}
+	if !strings.Contains(section, `enrollment "kubernetes_token_review" "example" {
+  audience = "example"
+  match {
+    namespace = "example"
+    service_account = "example"
+    profiles = ["example"]
+  }
+}`) {
+		t.Error("generated Kubernetes enrollment example omits required fields")
+	}
+}
+
 func firstDiff(a, b []string) string {
 	n := len(a)
 	if len(b) < n {
