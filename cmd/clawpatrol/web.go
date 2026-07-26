@@ -255,6 +255,8 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiPeerTsnetRegister},
+		{Method: http.MethodPost, Path: enrollmentRegisterPath, Auth: authSelfAuthenticating, Handler: w.apiEnrollmentRegister},
+		{Method: http.MethodGet, Path: "/api/enrollment/peers", Auth: authDashboard, Handler: w.apiEnrollmentList},
 		// /__login is the auth point itself — it MUST be reachable
 		// without a credential. The handler dispatches on r.Method
 		// (GET renders the form, POST validates + mints a session
@@ -1157,6 +1159,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"whoami":                  w.whoamiData(r),
 		"integrations":            w.statusList(r),
 		"agents":                  w.agentsList(),
+		"enrolled_peers":          w.enrolledPeersForState(),
 		"update":                  currentUpdateBanner.Load(),
 		"config_file":             filepath.Base(w.g.cfgPath),
 		"dashboard_config_writes": w.g.cfg.Load().DashboardConfigWrites(),
@@ -1177,6 +1180,18 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 	w.stateCacheMu.Unlock()
 
 	serveState(rw, r, body, tag)
+}
+
+// enrolledPeersForState returns the enrolled-peer views bundled into
+// /api/state for the dashboard. Errors (and the no-enrollment case)
+// degrade to an empty slice so a DB hiccup never blanks the whole
+// dashboard, and the JSON is always [] rather than null.
+func (w *webMux) enrolledPeersForState() []enrolledPeerView {
+	views, err := w.g.listEnrolledPeerViews()
+	if err != nil || views == nil {
+		return []enrolledPeerView{}
+	}
+	return views
 }
 
 const stateCacheTTL = 1 * time.Second

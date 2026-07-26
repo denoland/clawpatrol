@@ -34,13 +34,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindEnrollment Kind = "enrollment"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindEnrollment:
 		return 2 // first = type, second = name
 	case KindRule, KindProfile:
 		return 1 // name
@@ -103,6 +104,11 @@ type Plugin struct {
 	// interface escape hatch).
 	CompileRule func(body any, name string) (*CompiledRule, []string, error)
 
+	// CompileEnrollment lowers an enrollment plugin's Build output into its
+	// runtime-specific body plus the shared liveness policy. The framework
+	// wraps both in a CompiledEnrollment and indexes it by name.
+	CompileEnrollment func(body any, name string, profiles map[string]*CompiledProfile) (any, EnrollmentLiveness, error)
+
 	// Runtime is type-asserted by callers based on Kind:
 	//   KindEndpoint   → runtime.EndpointRuntime
 	//   KindCredential → runtime.CredentialRuntime
@@ -152,6 +158,7 @@ type Plugin struct {
 type BuildCtx struct {
 	Refs    *Refs
 	Symbols *SymbolTable
+	Policy  *Policy
 	Block   *hcl.Block // for diagnostic ranges when nothing more precise is available
 }
 

@@ -94,6 +94,41 @@ the same NAT shares the public v4, so pinning isn’t a standalone
 defence; it’s a blast-radius limiter for credentials that have
 already escaped.
 
+## Kubernetes enrollment (agent pods)
+
+Kubernetes enrollment is a remote-mode variant for stateless
+agent pods. The gateway and agents run in the same cluster, and each
+agent pod self-registers as a short-lived WireGuard peer using a
+projected ServiceAccount token. There is no durable join credential
+and no human approval step for each pod; authorization comes from
+Kubernetes TokenReview plus the gateway's enrollment allowlist.
+
+The pod has two different trust zones:
+
+- The **WireGuard sidecar init container** is privileged for pod
+  networking. It has `NET_ADMIN`, `/dev/net/tun`, the projected
+  ServiceAccount token, the WireGuard private key in memory, and the
+  peer API token used for env pushdown.
+- The **agent container** is the sandboxed execution environment. It
+  should have no added capabilities, no Kubernetes API token, no
+  `/dev/net/tun`, and only a read-only mount of the shared handoff
+  volume.
+
+The shared volume is intentionally narrow. The sidecar writes the CA
+bundle, env exports, and `/clawpatrol/ready`; it must not write the
+WireGuard private key or peer API token where the agent can read them.
+The gateway also derives the pod's profile from the live Pod label,
+not from a client-submitted field, so an agent cannot choose a more
+privileged profile by changing the registration request.
+
+This is still a pod-level network boundary: the sidecar changes routes
+for the whole pod network namespace, so the agent's traffic goes
+through the tunnel once setup is complete. The security bar is that
+the execution container does not receive the Kubernetes token, routing
+capabilities, peer API token, WireGuard private key, gateway
+state, or upstream credentials. Management APIs remain protected by
+the same app-layer dashboard auth described below.
+
 ## Local mode
 
 Agent and Claw Patrol on the same host. No network between them,

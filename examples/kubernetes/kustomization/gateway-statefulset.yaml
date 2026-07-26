@@ -1,0 +1,48 @@
+# The config name/state path must match gateway-config.yaml. The image is also
+# used by the bridge in agent.yaml. The PVC uses the cluster's default
+# StorageClass unless an overlay adds storageClassName.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clawpatrol-gateway
+  namespace: clawpatrol
+spec:
+  serviceName: clawpatrol-gateway
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clawpatrol-gateway
+  template:
+    metadata:
+      labels:
+        app: clawpatrol-gateway
+    spec:
+      serviceAccountName: clawpatrol-gateway
+      containers:
+        - name: gateway
+          image: ghcr.io/denoland/clawpatrol:latest
+          args: ["gateway", "/etc/clawpatrol/gateway.hcl"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: wireguard
+              containerPort: 51820
+              protocol: UDP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/clawpatrol
+              readOnly: true
+            - name: state
+              mountPath: /opt/clawpatrol
+      volumes:
+        - name: config
+          configMap:
+            name: clawpatrol-config
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

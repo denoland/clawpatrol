@@ -1,0 +1,108 @@
+# Explicit, portable agent Pod contract. Keep its namespace, ServiceAccount,
+# profile label, token audience, authorizer, gateway URL, ports, and image in
+# sync with gateway-config.yaml, gateway-rbac.yaml, gateway-services.yaml, and
+# gateway-statefulset.yaml. The admission-policy example beside this directory
+# provides optional automatic injection of the same bridge contract.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-runner
+  namespace: agents
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: clawpatrol-agent-example
+  namespace: agents
+  labels:
+    clawpatrol.dev/profile: default
+spec:
+  serviceAccountName: agent-runner
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  volumes:
+    - name: clawpatrol
+      emptyDir: {}
+    - name: clawpatrol-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: clawpatrol-token
+              audience: clawpatrol
+              expirationSeconds: 600
+    - name: dev-net-tun
+      hostPath:
+        path: /dev/net/tun
+        type: CharDevice
+  initContainers:
+    - name: clawpatrol-bridge
+      restartPolicy: Always
+      image: ghcr.io/denoland/clawpatrol:latest
+      args:
+        - bridge
+        - --gateway-url=http://clawpatrol-api.clawpatrol.svc:8080
+        - --authorizer=kubernetes_token_review/agents
+        - --kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token
+        - --env-out=/clawpatrol/env
+        - --ca-out=/clawpatrol/ca.crt
+        - --ready-file=/clawpatrol/ready
+      startupProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 120
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add: ["NET_ADMIN"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+        - name: clawpatrol-token
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+  containers:
+    - name: agent
+      image: debian:stable-slim
+      command: ["/bin/sh", "-lc"]
+      args:
+        - |
+          # Wait for the sidecar to bring up the tunnel + write the handoff,
+          # source the gateway CA + credential env, then run your workload.
+          while [ ! -f /clawpatrol/ready ]; do sleep 0.2; done
+          . /clawpatrol/env
+          echo "clawpatrol: tunnel ready; replace this with your agent command"
+          exec sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+          readOnly: true

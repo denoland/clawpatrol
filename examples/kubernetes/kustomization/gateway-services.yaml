@@ -1,0 +1,29 @@
+# Service names, namespaces, and ports are embedded in gateway-config.yaml and
+# agent.yaml. Update all three files together when changing the advertised API
+# or WireGuard endpoint.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clawpatrol-api
+  namespace: clawpatrol
+spec:
+  selector:
+    app: clawpatrol-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clawpatrol-wg
+  namespace: clawpatrol
+spec:
+  selector:
+    app: clawpatrol-gateway
+  ports:
+    - name: wireguard
+      port: 51820
+      protocol: UDP
+      targetPort: wireguard

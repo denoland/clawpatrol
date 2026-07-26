@@ -52,6 +52,12 @@ type CompiledPolicy struct {
 	// pointers into the same Entity records, no copies.
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
+
+	// Enrollments authorize new peers into profiles independently of endpoint
+	// routing. Each generic envelope carries the plugin-specific compiled body
+	// and the shared liveness policy.
+	Enrollments       []*CompiledEnrollment
+	EnrollmentsByName map[string]*CompiledEnrollment
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -295,6 +301,8 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Tunnels:        map[string]*CompiledTunnel{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
+
+		EnrollmentsByName: map[string]*CompiledEnrollment{},
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve
@@ -447,6 +455,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		dedupePatterns(&profile.HostPatterns)
 		sortHostPatterns(profile.HostPatterns)
 		cp.Profiles[name] = profile
+	}
+
+	if err := compileEnrollments(cp, p); err != nil {
+		return nil, err
 	}
 
 	return cp, nil

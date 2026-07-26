@@ -142,6 +142,40 @@ If you're on the unprivileged path and a command needs to act as root:
   command runs in the normal host environment where `sudo` works —
   you run it directly, not through `clawpatrol run`.
 
+### `clawpatrol bridge`
+
+Run the resident Linux data plane used by Kubernetes agent pods. The
+bridge self-enrolls through a configured authorizer, creates a userspace
+WireGuard tunnel, routes the pod network namespace through the gateway,
+and writes the environment and CA handoff files consumed by the
+unprivileged workload container.
+
+```bash
+clawpatrol bridge \
+  --gateway-url=http://clawpatrol-api.clawpatrol.svc:8080 \
+  --authorizer=kubernetes_token_review/agents
+```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--gateway-url URL` | required | Gateway API URL used for enrollment and env pushdown |
+| `--authorizer TYPE/NAME` | required | Enrollment provider and configured authorizer, for example `kubernetes_token_review/agents` |
+| `--kubernetes-token-path PATH` | `/var/run/secrets/tokens/clawpatrol-token` | Projected ServiceAccount token presented by the Kubernetes enrollment provider |
+| `--env-out PATH` | `/clawpatrol/env` | Shell exports written for the workload container |
+| `--ca-out PATH` | `/clawpatrol/ca.crt` | Gateway CA bundle written for the workload container |
+| `--ready-file PATH` | `/clawpatrol/ready` | Marker written after tunnel and handoff setup succeed |
+| `--iface NAME` | `clawpatrol0` | TUN interface name |
+| `--mtu N` | `1420` | Requested TUN MTU; the gateway's enrollment response can override it |
+| `--local-reset-missed N` | `2` | Failed liveness probes before rebuilding the peer in place; `0` disables the local reset stage |
+| `--route-proto PROTO` | `111` | Route protocol tag used for pinned gateway and DNS underlay routes |
+
+The bridge needs `NET_ADMIN`, `/dev/net/tun`, the projected token, and
+the downward-API `POD_NAME`, `POD_NAMESPACE`, and `POD_UID` environment
+variables. It remains in the foreground, heals a failed tunnel in
+process, and best-effort deregisters on shutdown. See
+[Kubernetes Enrollment](kubernetes-enrollment) for the complete pod
+contract, gateway configuration, and lifecycle.
+
 ### `clawpatrol test`
 
 Replay recorded gateway actions against a candidate HCL policy and

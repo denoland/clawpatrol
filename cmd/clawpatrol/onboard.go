@@ -500,6 +500,7 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.profileByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
+	delete(r.knownDeviceIPs, ip)
 	// Drop the IP from the alias graph too — both as an alias and as a
 	// canonical. Otherwise a stale alias outlives the device and, after
 	// IP reuse, AssignProfile's alias fan-out could re-stamp a profile
@@ -1065,8 +1066,8 @@ func (w *webMux) retirePlaceholderForClaim(dc, realIP string) {
 	if w.g.agents != nil {
 		w.g.agents.Delete(placeholderID)
 	}
-	if w.g.db != nil {
-		_, _ = w.g.db.Exec("DELETE FROM peer_api_tokens WHERE peer_ip = ?", placeholderID)
+	if err := deletePeerAPITokensForIP(w.g.db, placeholderID); err != nil {
+		log.Printf("onboard: retire placeholder api tokens for %s: %v", placeholderID, err)
 	}
 }
 

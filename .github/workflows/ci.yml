@@ -68,13 +68,8 @@ jobs:
       - run: make fmt-check
       - run: cd dashboard && deno task lint:github
       - run: make test
-      - name: validate HCL examples
-        run: |
-          go build -o /tmp/clawpatrol ./cmd/clawpatrol
-          for f in examples/*.hcl; do
-            echo "validating $f"
-            /tmp/clawpatrol validate "$f"
-          done
+      - name: validate example + e2e configs
+        run: make validate-examples
 
   # Exercise the Landlock fallback backend: keep AppArmor's userns
   # restriction in place (the runner default) and force the backend so
