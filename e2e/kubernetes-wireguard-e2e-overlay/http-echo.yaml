@@ -1,0 +1,49 @@
+# e2e-only TCP target. The agent curls this through the tunnel to prove the
+# WireGuard data path (not just the control plane). Uses the clawpatrol image
+# (rewritten to the local kind tag by the overlay's images: transformer) for
+# its netcat; the image name must match so the transformer catches it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: clawpatrol-e2e-http
+  namespace: agents-e2e
+  labels:
+    app: clawpatrol-e2e-http
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: http
+      image: ghcr.io/denoland/clawpatrol:latest
+      command: ["/bin/sh", "-lc"]
+      args:
+        - |
+          set -eu
+          while true; do
+            printf 'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n' | nc -l -p 8081 -q 1
+          done
+      ports:
+        - name: http
+          containerPort: 8081
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clawpatrol-e2e-http
+  namespace: agents-e2e
+spec:
+  selector:
+    app: clawpatrol-e2e-http
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http

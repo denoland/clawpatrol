@@ -1,0 +1,43 @@
+# Enrollment values in this file must agree with the Kubernetes resources:
+#   - endpoint/API DNS and ports: gateway-services.yaml and agent.yaml;
+#   - authorizer, audience, namespace, ServiceAccount, and profile:
+#     agent.yaml and gateway-rbac.yaml;
+#   - state_dir: gateway-statefulset.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clawpatrol-config
+  namespace: clawpatrol
+data:
+  gateway.hcl: |
+    gateway {
+      dashboard_listen = "0.0.0.0:8080"
+      state_dir        = "/opt/clawpatrol"
+
+      wireguard {
+        subnet_cidr = "10.55.0.0/24"
+        listen_port = 51820
+        endpoint    = "clawpatrol-wg.clawpatrol.svc:51820"
+      }
+    }
+
+    enrollment "kubernetes_token_review" "agents" {
+      audience = "clawpatrol"
+
+      match {
+        namespace       = "agents"
+        service_account = "agent-runner"
+        profile_label   = "clawpatrol.dev/profile"
+        profiles        = ["default"]
+      }
+
+      # Liveness window is derived: keepalive_interval × keepalive_reap_count.
+      # Here 25s × 3 = 75s. A longer interval means fewer keepalive packets and
+      # a longer window; keepalive_interval has no upper bound (min 10s).
+      keepalive_interval   = "25s"
+      keepalive_reap_count = 3
+    }
+
+    profile "default" {
+      credentials = []
+    }
