@@ -30,7 +30,7 @@ func TestDialEarlyReturnDoesNotDeadlock(t *testing.T) {
 		Version: "0.1.0",
 		Tunnels: []TunnelDef{{
 			TypeName: "early_return_tunnel",
-			Dial: func(ctx context.Context, req TunnelDialRequest, upstream net.Conn) error {
+			Dial: func(ctx context.Context, _ TunnelDialRequest, _ net.Conn) error {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
