@@ -285,10 +285,14 @@ func bindPlan(spec Spec) []bind {
 	return dedupeBinds(plan)
 }
 
-// loaderBinds returns the binds needed to exec a dynamically-linked
-// ELF binary: its program interpreter (.interp) and the interpreter's
-// directory (glibc keeps libc.so.6 and friends next to the loader).
-// Best-effort: static, non-ELF, or unreadable binaries yield no binds
+// loaderBinds returns the bind needed to exec a dynamically-linked ELF
+// binary: the directory holding its program interpreter (.interp).
+// glibc keeps libc.so.6 and friends next to the loader, so mirroring
+// the directory brings everything the binary needs at exec time. On
+// FHS distros the loader's directory is already in bindPlan (the /lib*
+// entries) and dedupeBinds drops this one; on non-FHS distros (NixOS,
+// Guix) this is the bind that makes the plugin executable at all.
+// Best-effort: static, non-ELF, or unreadable binaries yield no bind
 // and keep the previous behavior.
 func loaderBinds(binPath string) []bind {
 	f, err := elf.Open(binPath)
@@ -308,10 +312,7 @@ func loaderBinds(binPath string) []bind {
 	if interp == "" || !filepath.IsAbs(interp) {
 		return nil
 	}
-	return []bind{
-		{src: interp, ro: true},
-		{src: filepath.Dir(interp), ro: true},
-	}
+	return []bind{{src: filepath.Dir(interp), ro: true}}
 }
 
 // dedupeBinds keeps the first bind for each source path. The loader

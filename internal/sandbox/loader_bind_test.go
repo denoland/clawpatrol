@@ -1,3 +1,5 @@
+//go:build linux
+
 package sandbox
 
 import (
@@ -62,12 +64,12 @@ func uniqueSocketDir(t *testing.T) string {
 	return d
 }
 
-// TestBindPlanIncludesLoader pins that bindPlan mirrors the dynamic
-// loader of a dynamically-linked plugin binary into the sandbox. The
-// FHS bind list covers /lib* loaders, but non-FHS distros (NixOS,
-// Guix) keep the loader elsewhere — without a bind the exec of the
-// plugin fails with ENOENT while the probe still reports the
-// namespaces backend as available.
+// TestBindPlanIncludesLoader pins that bindPlan mirrors the directory
+// of a dynamically-linked plugin binary's dynamic loader into the
+// sandbox. The FHS bind list already covers /lib* loaders; on non-FHS
+// distros (NixOS, Guix) the loader lives elsewhere and without this
+// bind the exec of the plugin fails with ENOENT while the probe still
+// reports the namespaces backend as available.
 func TestBindPlanIncludesLoader(t *testing.T) {
 	exe := buildLoaderHelper(t)
 	interp := readInterp(t, exe)
@@ -79,11 +81,11 @@ func TestBindPlanIncludesLoader(t *testing.T) {
 	}
 	spec := Spec{PluginName: "probe", BinaryPath: exe}
 	for _, b := range bindPlan(spec) {
-		if b.src == interp {
-			return // the loader file itself is mirrored
+		if b.src == filepath.Dir(interp) {
+			return // the loader's directory is mirrored
 		}
 	}
-	t.Fatalf("bindPlan(%s) does not mirror the dynamic loader %q", exe, interp)
+	t.Fatalf("bindPlan(%s) does not mirror the dynamic loader directory %q", exe, filepath.Dir(interp))
 }
 
 // TestDynamicBinaryRunsInNamespacesSandbox spawns a real
