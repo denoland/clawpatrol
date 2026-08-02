@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"debug/elf"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -261,6 +262,11 @@ func bindPlan(spec Spec) []bind {
 		{src: "/etc/ld.so.conf", ro: true, optional: true},
 		{src: "/etc/ld.so.conf.d", ro: true, optional: true},
 	}
+	// Non-FHS distros (NixOS, Guix) keep the dynamic loader outside
+	// the FHS dirs above; without it exec of a dynamically-linked
+	// plugin fails with ENOENT. Mirror the loader from the binary's
+	// own ELF .interp section instead of assuming a location.
+	plan = append(plan, loaderBinds(spec.BinaryPath)...)
 	if spec.Network == NetworkOutbound {
 		plan = append(plan,
 			bind{src: "/etc/resolv.conf", ro: true, optional: true},
@@ -276,7 +282,53 @@ func bindPlan(spec Spec) []bind {
 		plan = append(plan, bind{src: p, ro: true})
 	}
 	plan = append(plan, bind{src: spec.SocketDir, ro: false})
-	return plan
+	return dedupeBinds(plan)
+}
+
+// loaderBinds returns the binds needed to exec a dynamically-linked
+// ELF binary: its program interpreter (.interp) and the interpreter's
+// directory (glibc keeps libc.so.6 and friends next to the loader).
+// Best-effort: static, non-ELF, or unreadable binaries yield no binds
+// and keep the previous behavior.
+func loaderBinds(binPath string) []bind {
+	f, err := elf.Open(binPath)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	sec := f.Section(".interp")
+	if sec == nil {
+		return nil
+	}
+	data, err := sec.Data()
+	if err != nil {
+		return nil
+	}
+	interp := strings.TrimRight(string(data), "\x00")
+	if interp == "" || !filepath.IsAbs(interp) {
+		return nil
+	}
+	return []bind{
+		{src: interp, ro: true},
+		{src: filepath.Dir(interp), ro: true},
+	}
+}
+
+// dedupeBinds keeps the first bind for each source path. The loader
+// binds can overlap the FHS list (on standard distros the loader
+// lives under /lib64 or /usr/lib, which are already mirrored), so a
+// duplicate would mount the same tree twice.
+func dedupeBinds(plan []bind) []bind {
+	seen := make(map[string]bool, len(plan))
+	out := plan[:0]
+	for _, b := range plan {
+		if seen[b.src] {
+			continue
+		}
+		seen[b.src] = true
+		out = append(out, b)
+	}
+	return out
 }
 
 // bindIntoRoot bind-mounts b.src at root+b.src, then remounts
