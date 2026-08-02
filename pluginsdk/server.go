@@ -1184,8 +1184,23 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 					return
 				}
 			case <-closed:
-				sendErr <- nil
-				return
+				// Flush any bytes the Dial callback wrote just before it
+				// returned (Write only buffers onto `send`), so a partial
+				// handshake isn't truncated by the teardown.
+				for {
+					select {
+					case b := <-send:
+						if err := stream.Send(&pb.DialMessage{Kind: &pb.DialMessage_Data{
+							Data: &pb.DialData{Payload: b},
+						}}); err != nil {
+							sendErr <- err
+							return
+						}
+					default:
+						sendErr <- nil
+						return
+					}
+				}
 			}
 		}
 	}()
@@ -1198,14 +1213,26 @@ func (s *server) Dial(stream pb.Tunnel_DialServer) error {
 	}, upstream)
 	_ = upstream.Close()
 	closer()
-	<-recvErr
+
+	// Wait for the send goroutine to flush every queued byte before
+	// announcing the close, so a partial handshake isn't truncated.
 	<-sendErr
 
+	// Then tell the gateway we're done. This must happen before we wait
+	// on the recv goroutine: it is blocked in stream.Recv() and only
+	// unblocks when the gateway tears the stream down — which it does
+	// in response to this Close (dialConn.Read surfaces it as EOF, and
+	// the transport closes the conn, which CloseSends the stream).
+	// Sending it after <-recvErr would deadlock when the Dial callback
+	// returns before the gateway closes the connection (e.g. an
+	// upstream dial was refused), since the gateway is simultaneously
+	// waiting on us to send it. Mirrors the HandleConn close ordering.
+	closeMsg := &pb.DialClose{}
 	if dialErr != nil {
-		_ = stream.Send(&pb.DialMessage{Kind: &pb.DialMessage_Close{Close: &pb.DialClose{Reason: dialErr.Error()}}})
-	} else {
-		_ = stream.Send(&pb.DialMessage{Kind: &pb.DialMessage_Close{Close: &pb.DialClose{}}})
+		closeMsg.Reason = dialErr.Error()
 	}
+	_ = stream.Send(&pb.DialMessage{Kind: &pb.DialMessage_Close{Close: closeMsg}})
+	<-recvErr
 	return dialErr
 }
 
