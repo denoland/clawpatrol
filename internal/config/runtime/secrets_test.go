@@ -51,3 +51,27 @@ func TestEnvSecretStore_MTLSParts(t *testing.T) {
 		}
 	}
 }
+
+// TestEnvSecretStore_SSHParts verifies all ssh_key credential slots use the
+// same multi-part environment-secret convention as other credentials.
+func TestEnvSecretStore_SSHParts(t *testing.T) {
+	t.Setenv("CLAWPATROL_SECRET_ORCA_AGENTS_SSH_PRIVATE_KEY", "private-key-pem")
+	t.Setenv("CLAWPATROL_SECRET_ORCA_AGENTS_SSH_PASSPHRASE", "key-passphrase")
+	t.Setenv("CLAWPATROL_SECRET_ORCA_AGENTS_SSH_PASSWORD", "ssh-password")
+	t.Setenv("CLAWPATROL_SECRET_ORCA_AGENTS_SSH_HOST_PUBKEY", "ssh-ed25519 AAAAexample")
+
+	sec, err := runtime.EnvSecretStore{}.Get("orca-agents-ssh")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for key, want := range map[string]string{
+		"private_key": "private-key-pem",
+		"passphrase":  "key-passphrase",
+		"password":    "ssh-password",
+		"host_pubkey": "ssh-ed25519 AAAAexample",
+	} {
+		if got := sec.Extras[key]; got != want {
+			t.Errorf("Extras[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
