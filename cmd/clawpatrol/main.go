@@ -2254,13 +2254,12 @@ func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
 }
 
 // bufferHTTPBodyForMatchTruncated is bufferHTTPBodyForMatch with the
-// overflow signal exposed: it reads one byte past the cap to detect
-// truncation, then re-attaches whatever it pulled (cap + 1 byte) in
-// front of the original stream so upstream still receives the body
-// byte-for-byte. truncated is true iff the body extended beyond
-// maxHTTPMatchBody; callers stash this on match.Request.Truncated so
-// http.body / http.body_json become CEL unknowns and rules whose
-// outcome depends on them fail-close.
+// incomplete-body signal exposed. It reads one byte past the cap and
+// re-attaches whatever it pulled in front of the original stream so upstream
+// still receives those bytes. truncated is true when the body exceeds the cap
+// or cannot be read to EOF; callers stash this on match.Request.Truncated so
+// http.body / http.body_json become CEL unknowns and rules whose outcome
+// depends on them fail-close.
 func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []byte, truncated bool) {
 	result := bufferHTTPBodyForMatchResult(req, capBytes)
 	return result.body, result.truncated
@@ -2279,7 +2278,16 @@ func bufferHTTPBodyForMatchResult(req *http.Request, capBytes int) bufferedHTTPB
 	}
 	b, err := io.ReadAll(io.LimitReader(req.Body, int64(capBytes)+1))
 	if err != nil {
-		return bufferedHTTPBodyResult{readErr: err}
+		// Preserve bytes returned alongside the error for both the audit trail
+		// and any later attempt to forward the request. The matcher must still
+		// treat the body as incomplete rather than a known prefix (or empty
+		// body), so surface the same fail-closed signal used for capped input.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		body := b
+		if len(body) > capBytes {
+			body = body[:capBytes]
+		}
+		return bufferedHTTPBodyResult{body: body, truncated: true, readErr: err}
 	}
 	if len(b) > capBytes {
 		// Pulled one byte past the cap — body is over-sized. Keep
