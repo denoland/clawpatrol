@@ -520,6 +520,10 @@ func TestSamplerEarlyResponseSerializesEventSnapshotWithInFlightWrite(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("sampler write did not reach the deterministic gate")
 	}
+	if s.mu.TryLock() {
+		s.mu.Unlock()
+		t.Fatal("sampler Write reached hash.Write without holding the sampler mutex")
+	}
 
 	eventDone := make(chan Event, 1)
 	go func() {
@@ -534,12 +538,6 @@ func TestSamplerEarlyResponseSerializesEventSnapshotWithInFlightWrite(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("event snapshot did not reach the sampler lock")
 	}
-	select {
-	case <-eventDone:
-		t.Fatal("event snapshot completed while sampler Write held the lock")
-	default:
-	}
-
 	releaseWriter()
 	if err := <-writeDone; err != nil {
 		t.Fatalf("write prefix: %v", err)
