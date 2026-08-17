@@ -2729,6 +2729,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						}
 					case wantsHTTP:
 						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
+						rewriter, isRewriter := injector.(runtime.HTTPRequestRewriter)
+						rewritesRequest := isRewriter && rewriter.RewritesHTTPRequest()
 						// Match existing request-signing behavior: an injection failure is logged,
 						// then the request continues with the agent's placeholder. The upstream
 						// service should reject that placeholder without exposing gateway secrets.
@@ -2738,7 +2740,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						// is corrupted, not merely un-injected — fail closed instead of
 						// forwarding a half-transformed request.
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-							if rw, ok := injector.(runtime.HTTPRequestRewriter); ok && rw.RewritesHTTPRequest() {
+							if rewritesRequest {
 								log.Printf("transform %s: %v; failing closed", cc.Credential.Symbol.Name, err)
 								_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 								ev.Status = "502"
@@ -2749,6 +2751,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 								return
 							}
 							log.Printf("inject %s: %v; forwarding without injection", cc.Credential.Symbol.Name, err)
+						} else if rewritesRequest {
+							ev.ReqTransformed = true
 						}
 						if rp, ok := injector.(runtime.HTTPCredentialRedactionProvider); ok {
 							for _, secret := range rp.ConsumeHTTPRedactions(req) {

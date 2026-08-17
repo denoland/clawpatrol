@@ -1753,38 +1753,39 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		return nil, fmt.Errorf("missing id")
 	}
 	var (
-		e             Event
-		tsNs          int64
-		mode          sql.NullString
-		family        sql.NullString
-		agentIP       sql.NullString
-		method        sql.NullString
-		path          sql.NullString
-		status        sql.NullString
-		in, ot        sql.NullInt64
-		ms            sql.NullInt64
-		action        sql.NullString
-		reason        sql.NullString
-		reqSha        sql.NullString
-		respSha       sql.NullString
-		reqBody       sql.NullString
-		respBody      sql.NullString
-		reqBodyState  sql.NullString
-		respBodyState sql.NullString
-		reqHeaders    sql.NullString
-		respHeaders   sql.NullString
-		extra         sql.NullString
-		endpoint      sql.NullString
-		rule          sql.NullString
-		approver      sql.NullString
-		approverType  sql.NullString
-		approverBy    sql.NullString
+		e              Event
+		tsNs           int64
+		mode           sql.NullString
+		family         sql.NullString
+		agentIP        sql.NullString
+		method         sql.NullString
+		path           sql.NullString
+		status         sql.NullString
+		in, ot         sql.NullInt64
+		ms             sql.NullInt64
+		action         sql.NullString
+		reason         sql.NullString
+		reqSha         sql.NullString
+		respSha        sql.NullString
+		reqBody        sql.NullString
+		respBody       sql.NullString
+		reqBodyState   sql.NullString
+		respBodyState  sql.NullString
+		reqTransformed sql.NullBool
+		reqHeaders     sql.NullString
+		respHeaders    sql.NullString
+		extra          sql.NullString
+		endpoint       sql.NullString
+		rule           sql.NullString
+		approver       sql.NullString
+		approverType   sql.NullString
+		approverBy     sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
-		       req_body, resp_body, req_body_state, resp_body_state,
+		       req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 		       req_headers, resp_headers, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
@@ -1793,7 +1794,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		&tsNs, &mode, &family, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
-		&reqBody, &respBody, &reqBodyState, &respBodyState,
+		&reqBody, &respBody, &reqBodyState, &respBodyState, &reqTransformed,
 		&reqHeaders, &respHeaders, &extra,
 		&endpoint, &rule,
 		&approver, &approverType, &approverBy,
@@ -1820,6 +1821,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 	e.RespBody = respBody.String
 	e.ReqBodyState = reqBodyState.String
 	e.RespBodyState = respBodyState.String
+	e.ReqTransformed = reqTransformed.Bool
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 	if extra.String != "" {
@@ -1940,6 +1942,9 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 }
 
 func validateHTTPFixtureBodyCapture(ev *Event) error {
+	if ev.ReqTransformed {
+		return fmt.Errorf("request was transformed by a credential; cannot export as fixture")
+	}
 	switch ev.ReqBodyState {
 	case bodyCaptureComplete:
 	case bodyCaptureIncomplete, bodyCaptureAborted:
@@ -2497,17 +2502,21 @@ type Event struct {
 	// / llm_approver / dashboard), and the approver-specific "By"
 	// string (Slack handle, llm:<model>, ...). All empty for rule-
 	// driven verdicts.
-	Approver      string            `json:"approver,omitempty"`
-	ApproverType  string            `json:"approver_type,omitempty"`
-	ApproverBy    string            `json:"approver_by,omitempty"`
-	ReqSha        string            `json:"req_sha,omitempty"`
-	ReqBody       string            `json:"req_body,omitempty"`
-	ReqBodyState  string            `json:"req_body_state,omitempty"`
-	RespSha       string            `json:"resp_sha,omitempty"`
-	RespBody      string            `json:"resp_body,omitempty"`
-	RespBodyState string            `json:"resp_body_state,omitempty"`
-	ReqHeaders    map[string]string `json:"req_headers,omitempty"`
-	RespHeaders   map[string]string `json:"resp_headers,omitempty"`
+	Approver     string `json:"approver,omitempty"`
+	ApproverType string `json:"approver_type,omitempty"`
+	ApproverBy   string `json:"approver_by,omitempty"`
+	ReqSha       string `json:"req_sha,omitempty"`
+	ReqBody      string `json:"req_body,omitempty"`
+	ReqBodyState string `json:"req_body_state,omitempty"`
+	// ReqTransformed records that credential injection successfully rewrote
+	// the request after policy matching. Such an audit body is not a faithful
+	// fixture input and must not be exported as one.
+	ReqTransformed bool              `json:"req_transformed,omitempty"`
+	RespSha        string            `json:"resp_sha,omitempty"`
+	RespBody       string            `json:"resp_body,omitempty"`
+	RespBodyState  string            `json:"resp_body_state,omitempty"`
+	ReqHeaders     map[string]string `json:"req_headers,omitempty"`
+	RespHeaders    map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
@@ -2599,7 +2608,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
 		       ms, action, reason, req_sha, resp_sha,
-		       req_body_state, resp_body_state, extra,
+		       req_body_state, resp_body_state, req_transformed, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
@@ -2610,35 +2619,36 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e             Event
-			actionID      sql.NullString
-			tsNs          int64
-			mode          sql.NullString
-			family        sql.NullString
-			agentIP       sql.NullString
-			method        sql.NullString
-			path          sql.NullString
-			status        sql.NullString
-			in, ot        sql.NullInt64
-			ms            sql.NullInt64
-			action        sql.NullString
-			reason        sql.NullString
-			reqSha        sql.NullString
-			respSha       sql.NullString
-			reqBodyState  sql.NullString
-			respBodyState sql.NullString
-			extra         sql.NullString
-			endpoint      sql.NullString
-			rule          sql.NullString
-			approver      sql.NullString
-			approverType  sql.NullString
-			approverBy    sql.NullString
+			e              Event
+			actionID       sql.NullString
+			tsNs           int64
+			mode           sql.NullString
+			family         sql.NullString
+			agentIP        sql.NullString
+			method         sql.NullString
+			path           sql.NullString
+			status         sql.NullString
+			in, ot         sql.NullInt64
+			ms             sql.NullInt64
+			action         sql.NullString
+			reason         sql.NullString
+			reqSha         sql.NullString
+			respSha        sql.NullString
+			reqBodyState   sql.NullString
+			respBodyState  sql.NullString
+			reqTransformed sql.NullBool
+			extra          sql.NullString
+			endpoint       sql.NullString
+			rule           sql.NullString
+			approver       sql.NullString
+			approverType   sql.NullString
+			approverBy     sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha,
-			&reqBodyState, &respBodyState, &extra,
+			&reqBodyState, &respBodyState, &reqTransformed, &extra,
 			&endpoint, &rule,
 			&approver, &approverType, &approverBy,
 		); err != nil {
@@ -2663,6 +2673,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.RespSha = respSha.String
 		e.ReqBodyState = reqBodyState.String
 		e.RespBodyState = respBodyState.String
+		e.ReqTransformed = reqTransformed.Bool
 		if extra.String != "" {
 			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 		}
@@ -2766,16 +2777,16 @@ func (s *Sink) drain() {
 				 (action_id, ts_ns, mode, family, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
-				  req_body, resp_body, req_body_state, resp_body_state,
+				  req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 				  req_headers, resp_headers, extra,
 				  endpoint, rule,
 				  approver, approver_type, approver_by)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
-				e.ReqBody, e.RespBody, e.ReqBodyState, e.RespBodyState,
+				e.ReqBody, e.RespBody, e.ReqBodyState, e.RespBodyState, e.ReqTransformed,
 				string(rqhJSON), string(rshJSON),
 				string(extraJSON),
 				e.Endpoint, e.Rule,
