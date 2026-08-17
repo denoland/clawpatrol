@@ -49,6 +49,19 @@ const (
 	// so the first user flow doesn't race the initial handshake. See
 	// macos/netstack/wgnetstack.go for the same rationale.
 	wgClientKeepalive = 10
+	// wgWatchdogPoll is how often the handshake-recovery watchdog samples
+	// the peer's last_handshake_time_sec + tx_bytes. The watchdog only
+	// acts once the handshake is older than wgWatchdogStuckTimeout, so a
+	// few seconds between polls is plenty and stays cheap.
+	wgWatchdogPoll = 5 * time.Second
+	// wgWatchdogStuckTimeout mirrors wireguard's RejectAfterTime (180s):
+	// below this a stale last_handshake is normal (no rekey was due), so
+	// rebuilding the peer would only add churn. Past it, with traffic
+	// still being staged, the handshake is genuinely wedged.
+	wgWatchdogStuckTimeout = 3 * time.Minute
+	// wgWatchdogResetCooldown holds off back-to-back rebuilds so a fresh
+	// initiation has time to complete before the watchdog fires again.
+	wgWatchdogResetCooldown = time.Minute
 )
 
 type wgTransport struct {
@@ -56,6 +69,10 @@ type wgTransport struct {
 	tun         *wgClientTun
 	localAddr   netip.Addr
 	bootWarning string
+
+	// stopWatchdog cancels the handshake-recovery watchdog goroutine.
+	// Set by startWGTransport, invoked by Close.
+	stopWatchdog context.CancelFunc
 }
 
 func (t *wgTransport) LocalAddr() netip.Addr { return t.localAddr }
@@ -97,6 +114,9 @@ func (t *wgTransport) Dial(ctx context.Context, network, addr string) (net.Conn,
 }
 
 func (t *wgTransport) Close() error {
+	if t.stopWatchdog != nil {
+		t.stopWatchdog()
+	}
 	if t.dev != nil {
 		t.dev.Close()
 	}
@@ -142,7 +162,16 @@ func startWGTransport() (daemonTransport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("netTUN: %w", err)
 	}
-	logger := device.NewLogger(device.LogLevelError, "[clawpatrol daemon wg] ")
+	// forceReset lets the watchdog short-circuit its poll cadence the
+	// instant wireguard-go logs the keypair-derivation failure, so the
+	// stuck handshake state machine is rebuilt within milliseconds
+	// rather than after the next stuck-timeout poll. Buffered to one so
+	// concurrent failures coalesce into a single wake-up.
+	forceReset := make(chan struct{}, 1)
+	logger := wrapWGLogger(
+		device.NewLogger(device.LogLevelError, "[clawpatrol daemon wg] "),
+		forceReset,
+	)
 	dev := device.NewDevice(tun, conn.NewDefaultBind(), logger)
 
 	if err := dev.IpcSet(buildDaemonWGIpc(cfg)); err != nil {
@@ -173,11 +202,44 @@ func startWGTransport() (daemonTransport, error) {
 		log.Printf("daemon: wg handshake established")
 	}
 
+	// Start the handshake-recovery watchdog. Without it, a gateway
+	// restart (which drops the gateway's in-memory peer/session state)
+	// leaves the device holding a dead session: it keeps encrypting with
+	// the old keypair until RejectAfterTime, then re-initiates — but the
+	// wireguard-go state machine can wedge in handshakeInitiationCreated
+	// and never recover, black-holing every flow (including tunnelled
+	// DNS) until the daemon is killed and the peer rebuilt by hand. The
+	// watchdog automates that rebuild: poll the handshake age, and when
+	// it goes stale while traffic is still being staged, re-IpcSet the
+	// peer to force a clean fresh initiation.
+	watchdogCtx, stopWatchdog := context.WithCancel(context.Background())
+	ticker := time.NewTicker(wgWatchdogPoll)
+	go func() {
+		defer ticker.Stop()
+		runWGWatchdogLoop(watchdogCtx, wgWatchdogConfig{
+			stats: func() *wgPeerStats {
+				uapi, err := dev.IpcGet()
+				if err != nil {
+					return nil
+				}
+				return parsePeerStats(uapi)
+			},
+			reset:         func() error { return dev.IpcSet(buildDaemonWGIpc(cfg)) },
+			log:           logger,
+			forceReset:    forceReset,
+			tick:          ticker.C,
+			stuckTimeout:  wgWatchdogStuckTimeout,
+			resetCooldown: wgWatchdogResetCooldown,
+			now:           time.Now,
+		})
+	}()
+
 	return &wgTransport{
-		dev:         dev,
-		tun:         tun,
-		localAddr:   clientIP,
-		bootWarning: bootWarning,
+		dev:          dev,
+		tun:          tun,
+		localAddr:    clientIP,
+		bootWarning:  bootWarning,
+		stopWatchdog: stopWatchdog,
 	}, nil
 }
 
