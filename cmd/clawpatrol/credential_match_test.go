@@ -85,9 +85,24 @@ profile "default" {
 	// `http.method != 'GET'` condition, so it still falls through to the
 	// default deny. This guards against a "fix" that ignores the condition.
 	t.Run("condition still gates the pinned rule", func(t *testing.T) {
+		events, cancelEvents := h.gateway.sink.Subscribe()
+		defer cancelEvents()
 		resp := h.send(t, http.MethodGet, "")
 		if resp.status != http.StatusForbidden {
 			t.Fatalf("GET status = %d (body %q); want 403 from the default deny", resp.status, resp.body)
+		}
+
+		end := waitHTTPSAuditEnd(t, events, "deny")
+		if end.ReqBodyState != bodyCaptureComplete {
+			t.Fatalf("request body state = %q, want %q", end.ReqBodyState, bodyCaptureComplete)
+		}
+		if end.ReqBody != "" {
+			t.Fatalf("recorded request body = %q, want empty", end.ReqBody)
+		}
+		rw := httptest.NewRecorder()
+		(&webMux{g: h.gateway}).writeActionFixture(rw, &end)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("fixture export status = %d, want 200; body=%s", rw.Code, rw.Body.String())
 		}
 	})
 }

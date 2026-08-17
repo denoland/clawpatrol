@@ -2250,8 +2250,7 @@ func (w *countWriter) Write(p []byte) (int, error) {
 const maxHTTPMatchBody = int(config.DefaultBodyBufferLimit)
 
 func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
-	b, _ := bufferHTTPBodyForMatchTruncated(req, capBytes)
-	return b
+	return bufferHTTPBodyForMatchResult(req, capBytes).body
 }
 
 // bufferHTTPBodyForMatchTruncated is bufferHTTPBodyForMatch with the
@@ -2263,12 +2262,24 @@ func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
 // http.body / http.body_json become CEL unknowns and rules whose
 // outcome depends on them fail-close.
 func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []byte, truncated bool) {
+	result := bufferHTTPBodyForMatchResult(req, capBytes)
+	return result.body, result.truncated
+}
+
+type bufferedHTTPBodyResult struct {
+	body      []byte
+	truncated bool
+	complete  bool
+	readErr   error
+}
+
+func bufferHTTPBodyForMatchResult(req *http.Request, capBytes int) bufferedHTTPBodyResult {
 	if req.Body == nil {
-		return nil, false
+		return bufferedHTTPBodyResult{complete: true}
 	}
 	b, err := io.ReadAll(io.LimitReader(req.Body, int64(capBytes)+1))
 	if err != nil {
-		return nil, false
+		return bufferedHTTPBodyResult{readErr: err}
 	}
 	if len(b) > capBytes {
 		// Pulled one byte past the cap — body is over-sized. Keep
@@ -2276,14 +2287,33 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []by
 		// full read (including the probe byte) in front of the
 		// remaining stream so the upstream forward stays byte-exact.
 		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-		return b[:capBytes], true
+		return bufferedHTTPBodyResult{body: b[:capBytes], truncated: true}
 	}
 	// Body fit inside the cap (or was exactly cap bytes). Re-attach
 	// what we read — req.Body may still hold bytes past it on a
 	// chunked / unknown-length stream that just hadn't surfaced
 	// before the ReadAll returned.
 	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-	return b, false
+	return bufferedHTTPBodyResult{body: b, complete: true}
+}
+
+func applyTerminalRequestCapture(ev *Event, req *http.Request, buffered bufferedHTTPBodyResult, capBytes int) {
+	contentLength := req.ContentLength
+	if buffered.truncated {
+		// The matcher retained only a prefix, so equality with a declared
+		// length cannot prove that this audit sample is the whole body.
+		contentLength = -1
+	}
+	s := newSampler(capBytes, contentLength)
+	_, _ = s.Write(buffered.body)
+	switch {
+	case buffered.readErr != nil:
+		s.finishRead(buffered.readErr)
+	case buffered.complete:
+		s.finishRead(io.EOF)
+	}
+	applyRequestBodySnapshot(ev, s.snapshot(req.Header.Get("Content-Encoding")), nil)
+	ev.ReqHeaders = flatHeaders(req.Header)
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
@@ -2352,11 +2382,14 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		// unbuffered (rare for agent traffic) but surface as
 		// Truncated=true so the dispatcher/retry relay can fail-close
 		// any path that needed the complete body.
+		var bufferedBody bufferedHTTPBodyResult
 		var matchBody []byte
 		var truncated bool
 		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
-			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req, g.cfg.Load().BodyBufferLimit())
+			bufferedBody = bufferHTTPBodyForMatchResult(req, g.cfg.Load().BodyBufferLimit())
+			matchBody = bufferedBody.body
+			truncated = bufferedBody.truncated
 		}
 
 		mreq := &match.Request{
@@ -2533,6 +2566,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				ev.ApproverBy = v.By
 				ev.Reason = reason
 				ev.Ms = time.Since(start).Milliseconds()
+				applyTerminalRequestCapture(&ev, req, bufferedBody, g.cfg.Load().BodyStorageLimit())
 				g.emitEnd(ev)
 				return
 			}
@@ -2568,6 +2602,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Action = "deny"
 			ev.Reason = reason
 			ev.Ms = time.Since(start).Milliseconds()
+			applyTerminalRequestCapture(&ev, req, bufferedBody, g.cfg.Load().BodyStorageLimit())
 			g.emitEnd(ev)
 			return
 		}
