@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,8 @@ profile "default" { credentials = [bearer_token.pat] }
 		t.Fatalf("NewSink: %v", err)
 	}
 	defer close(sink.ch)
+	events, cancelEvents := sink.Subscribe()
+	defer cancelEvents()
 	certs, _ := inMemoryCertCache(t)
 	g := &Gateway{certs: certs, sink: sink}
 	g.cfg.Store(gw)
@@ -115,10 +119,49 @@ profile "default" { credentials = [bearer_token.pat] }
 		t.Fatal("timed out waiting for approver body sample")
 	}
 
+	end := waitHTTPSAuditEnd(t, events, "denied")
+	if end.ReqBodyState != bodyCaptureComplete {
+		t.Fatalf("request body state = %q, want %q", end.ReqBodyState, bodyCaptureComplete)
+	}
+	if end.ReqBody != requestBody {
+		t.Fatalf("recorded request body = %q, want %q", end.ReqBody, requestBody)
+	}
+	if end.ReqHeaders["Content-Type"] != "application/json" {
+		t.Fatalf("recorded Content-Type = %q, want application/json", end.ReqHeaders["Content-Type"])
+	}
+	rw := httptest.NewRecorder()
+	(&webMux{g: g}).writeActionFixture(rw, &end)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("fixture export status = %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var fixture Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &fixture); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if fixture.Action.HTTP == nil || fixture.Action.HTTP.Body != requestBody {
+		t.Fatalf("fixture HTTP body = %+v, want %q", fixture.Action.HTTP, requestBody)
+	}
+
 	_ = clientTLS.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("gateway did not exit after client close")
+	}
+}
+
+func waitHTTPSAuditEnd(t *testing.T, events <-chan eventPacket, action string) Event {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case pkt := <-events:
+			if pkt.ev.Phase == "end" && pkt.ev.Action == action {
+				return pkt.ev
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for terminal %q event", action)
+		}
 	}
 }

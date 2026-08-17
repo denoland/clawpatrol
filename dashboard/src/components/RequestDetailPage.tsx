@@ -9,6 +9,7 @@ import {
   type FacetSchema,
   type RulePreview,
 } from "../lib/api";
+import { splitBodyCapture, type BodyCaptureState } from "../lib/bodyCapture";
 import { copyText, headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime, statusColorClass } from "../lib/format";
@@ -91,8 +92,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
   const facetFields = facetDetailRows(ev, schema);
   const resultFields = resultDetailRows(ev, schema);
-  const hasReq = !!ev.req_body;
-  const hasResp = !!ev.resp_body;
+  const hasReq =
+    !!ev.req_body || ev.req_body_state === "incomplete" || ev.req_body_state === "aborted";
+  const hasResp =
+    !!ev.resp_body || ev.resp_body_state === "incomplete" || ev.resp_body_state === "aborted";
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
   const hasFacets = !isSQL && facetFields.length > 0;
@@ -180,9 +183,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {hasReq && (
             <Section
               title="Request body"
-              action={<CopyButton label="request body" text={() => ev.req_body!} />}
+              action={
+                <CopyButton
+                  label="request body"
+                  text={() => splitBodyCapture(ev.req_body ?? "", ev.req_body_state).text}
+                />
+              }
             >
-              <HttpBody text={ev.req_body!} />
+              <HttpBody text={ev.req_body ?? ""} state={ev.req_body_state} />
             </Section>
           )}
           {hasRespH && (
@@ -198,9 +206,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {hasResp && (
             <Section
               title={`Response body${status ? ` (${status})` : ""}`}
-              action={<CopyButton label="response body" text={() => ev.resp_body!} />}
+              action={
+                <CopyButton
+                  label="response body"
+                  text={() => splitBodyCapture(ev.resp_body ?? "", ev.resp_body_state).text}
+                />
+              }
             >
-              <HttpBody text={ev.resp_body!} />
+              <HttpBody text={ev.resp_body ?? ""} state={ev.resp_body_state} />
             </Section>
           )}
         </div>
@@ -792,12 +805,6 @@ function parseSSE(text: string): SseEvent[] | null {
   return events.length > 0 ? events : null;
 }
 
-// BODY_TRUNCATED_MARKER mirrors bodyTruncatedMarker in cmd/clawpatrol/web.go.
-// The gateway appends it to a persisted body sample when the body exceeded
-// the actions-table cap. We strip it before parsing/rendering and surface a
-// badge so an operator knows they are looking at a prefix, not the whole body.
-const BODY_TRUNCATED_MARKER = "\n[clawpatrol:body-truncated]";
-
 function CapBadge() {
   return (
     <div className="mb-2 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider text-amber-600">
@@ -806,14 +813,45 @@ function CapBadge() {
   );
 }
 
-function HttpBody({ text: rawText }: { text: string }) {
-  if (!rawText) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
-  const capped = rawText.endsWith(BODY_TRUNCATED_MARKER);
-  const text = capped ? rawText.slice(0, -BODY_TRUNCATED_MARKER.length) : rawText;
+function CaptureStateBadge({ state }: { state: BodyCaptureState }) {
+  if (state === "complete") return null;
+  const aborted = state === "aborted";
+  const unknown = state === "unknown";
+  return (
+    <div
+      className={`mb-2 inline-block rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider ${
+        aborted
+          ? "bg-danger-500/15 text-danger-500"
+          : unknown
+            ? "bg-canvas-dark text-text-subtle"
+            : "bg-amber-500/15 text-amber-600"
+      }`}
+    >
+      {aborted
+        ? "aborted — body did not finish"
+        : unknown
+          ? "completion unknown — legacy capture"
+          : "incomplete — body was still streaming"}
+    </div>
+  );
+}
+
+function CaptureBadges({ capped, state }: { capped: boolean; state: BodyCaptureState }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <CaptureStateBadge state={state} />
+      {capped && <CapBadge />}
+    </div>
+  );
+}
+
+function HttpBody({ text: rawText, state: storedState }: { text: string; state?: string }) {
+  const { text, capped, state } = splitBodyCapture(rawText, storedState);
   if (!text) {
     return (
       <div className="px-4 py-3 text-xs text-text-subtle">
-        <CapBadge />
+        <CaptureBadges capped={capped} state={state} />
+        {!capped && state === "complete" && "(empty)"}
       </div>
     );
   }
@@ -821,7 +859,7 @@ function HttpBody({ text: rawText }: { text: string }) {
   if (result) {
     return (
       <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed">
-        {capped && <CapBadge />}
+        <CaptureBadges capped={capped} state={state} />
         <JsonNode value={result.parsed} />
         {result.truncated && <div className="mt-2 text-2xs text-text-subtle">(truncated)</div>}
       </div>
@@ -831,7 +869,7 @@ function HttpBody({ text: rawText }: { text: string }) {
   if (sse) {
     return (
       <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed space-y-3">
-        {capped && <CapBadge />}
+        <CaptureBadges capped={capped} state={state} />
         {sse.map((e, i) => {
           const dataJson = tryParseJSON(e.data);
           return (
@@ -860,7 +898,7 @@ function HttpBody({ text: rawText }: { text: string }) {
   }
   return (
     <div className="overflow-auto px-4 py-3">
-      {capped && <CapBadge />}
+      <CaptureBadges capped={capped} state={state} />
       <pre className="whitespace-pre-wrap break-all font-mono text-xs text-text-muted">{text}</pre>
     </div>
   );

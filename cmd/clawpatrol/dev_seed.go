@@ -482,6 +482,8 @@ func devSeedAction(r *rand.Rand, devices []devSeedDevice, ts time.Time) Event {
 			devSeedClaudeModels[r.Intn(len(devSeedClaudeModels))],
 			devSeedSessionTitles[r.Intn(len(devSeedSessionTitles))])
 		ev.RespBody = `{"id":"msg_abc123","type":"message","role":"assistant","content":[{"type":"text","text":"Sure — let me think about that..."}],"stop_reason":"end_turn"}`
+		ev.ReqBodyState = bodyCaptureComplete
+		ev.RespBodyState = bodyCaptureComplete
 		ev.ReqHeaders = map[string]string{
 			"Content-Type":  "application/json",
 			"User-Agent":    "clawpatrol/0.1 anthropic-sdk/0.55",
@@ -561,15 +563,15 @@ func devSeedActions(g *Gateway, r *rand.Rand, devices []devSeedDevice, count int
 				  (action_id, ts_ns, mode, family, agent_ip, host,
 				   method, path, status, bytes_in, bytes_out,
 				   ms, action, reason, req_sha, resp_sha,
-				   req_body, resp_body,
+				   req_body, resp_body, req_body_state, resp_body_state,
 				   req_headers, resp_headers, extra,
 				   endpoint, rule)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				ev.ID, ev.Ts.UnixNano(), ev.Mode, ev.Family, ev.AgentIP,
 				ev.Host, ev.Method, ev.Path, ev.Status,
 				ev.In, ev.Out, ev.Ms, ev.Action, ev.Reason,
 				ev.ReqSha, ev.RespSha,
-				ev.ReqBody, ev.RespBody,
+				ev.ReqBody, ev.RespBody, ev.ReqBodyState, ev.RespBodyState,
 				devSeedHeadersJSON(rqhJSON), devSeedHeadersJSON(rshJSON),
 				string(extraJSON),
 				ev.Endpoint, ev.Rule,

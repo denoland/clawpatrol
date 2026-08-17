@@ -145,6 +145,14 @@ rule "allow-telegram" {
 	if !strings.Contains(end.ReqBody, telegramTestPlaceholder) && !strings.Contains(strings.ToLower(end.ReqBody), "redact") {
 		t.Fatalf("request body audit sample = %q, want placeholder or redaction marker", end.ReqBody)
 	}
+	rw := httptest.NewRecorder()
+	(&webMux{g: g}).writeActionFixture(rw, &end)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("fixture export status = %d, want 400 for redacted request body; body=%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), "redacted") {
+		t.Fatalf("fixture export error = %q, want redacted-body explanation", rw.Body.String())
+	}
 
 	_ = clientTLS.Close()
 	select {

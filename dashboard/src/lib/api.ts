@@ -541,6 +541,9 @@ export type EventRecord = {
   resp_sha?: string;
   req_body?: string;
   resp_body?: string;
+  req_body_state?: "complete" | "incomplete" | "aborted";
+  req_transformed?: boolean;
+  resp_body_state?: "complete" | "incomplete" | "aborted";
   req_headers?: Record<string, string>;
   resp_headers?: Record<string, string>;
   // family identifies which facet plugin emitted this event; facets

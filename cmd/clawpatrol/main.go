@@ -2250,25 +2250,44 @@ func (w *countWriter) Write(p []byte) (int, error) {
 const maxHTTPMatchBody = int(config.DefaultBodyBufferLimit)
 
 func bufferHTTPBodyForMatch(req *http.Request, capBytes int) []byte {
-	b, _ := bufferHTTPBodyForMatchTruncated(req, capBytes)
-	return b
+	return bufferHTTPBodyForMatchResult(req, capBytes).body
 }
 
 // bufferHTTPBodyForMatchTruncated is bufferHTTPBodyForMatch with the
-// overflow signal exposed: it reads one byte past the cap to detect
-// truncation, then re-attaches whatever it pulled (cap + 1 byte) in
-// front of the original stream so upstream still receives the body
-// byte-for-byte. truncated is true iff the body extended beyond
-// maxHTTPMatchBody; callers stash this on match.Request.Truncated so
-// http.body / http.body_json become CEL unknowns and rules whose
-// outcome depends on them fail-close.
+// incomplete-body signal exposed. It reads one byte past the cap and
+// re-attaches whatever it pulled in front of the original stream so upstream
+// still receives those bytes. truncated is true when the body exceeds the cap
+// or cannot be read to EOF; callers stash this on match.Request.Truncated so
+// http.body / http.body_json become CEL unknowns and rules whose outcome
+// depends on them fail-close.
 func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []byte, truncated bool) {
+	result := bufferHTTPBodyForMatchResult(req, capBytes)
+	return result.body, result.truncated
+}
+
+type bufferedHTTPBodyResult struct {
+	body      []byte
+	truncated bool
+	complete  bool
+	readErr   error
+}
+
+func bufferHTTPBodyForMatchResult(req *http.Request, capBytes int) bufferedHTTPBodyResult {
 	if req.Body == nil {
-		return nil, false
+		return bufferedHTTPBodyResult{complete: true}
 	}
 	b, err := io.ReadAll(io.LimitReader(req.Body, int64(capBytes)+1))
 	if err != nil {
-		return nil, false
+		// Preserve bytes returned alongside the error for both the audit trail
+		// and any later attempt to forward the request. The matcher must still
+		// treat the body as incomplete rather than a known prefix (or empty
+		// body), so surface the same fail-closed signal used for capped input.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		body := b
+		if len(body) > capBytes {
+			body = body[:capBytes]
+		}
+		return bufferedHTTPBodyResult{body: body, truncated: true, readErr: err}
 	}
 	if len(b) > capBytes {
 		// Pulled one byte past the cap — body is over-sized. Keep
@@ -2276,14 +2295,33 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request, capBytes int) (body []by
 		// full read (including the probe byte) in front of the
 		// remaining stream so the upstream forward stays byte-exact.
 		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-		return b[:capBytes], true
+		return bufferedHTTPBodyResult{body: b[:capBytes], truncated: true}
 	}
 	// Body fit inside the cap (or was exactly cap bytes). Re-attach
 	// what we read — req.Body may still hold bytes past it on a
 	// chunked / unknown-length stream that just hadn't surfaced
 	// before the ReadAll returned.
 	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-	return b, false
+	return bufferedHTTPBodyResult{body: b, complete: true}
+}
+
+func applyTerminalRequestCapture(ev *Event, req *http.Request, buffered bufferedHTTPBodyResult, capBytes int) {
+	contentLength := req.ContentLength
+	if buffered.truncated {
+		// The matcher retained only a prefix, so equality with a declared
+		// length cannot prove that this audit sample is the whole body.
+		contentLength = -1
+	}
+	s := newSampler(capBytes, contentLength)
+	_, _ = s.Write(buffered.body)
+	switch {
+	case buffered.readErr != nil:
+		s.finishRead(buffered.readErr)
+	case buffered.complete:
+		s.finishRead(io.EOF)
+	}
+	applyRequestBodySnapshot(ev, s.snapshot(req.Header.Get("Content-Encoding")), nil)
+	ev.ReqHeaders = flatHeaders(req.Header)
 }
 
 const maxMITMRequestReadLogHostBytes = 255
@@ -2399,11 +2437,14 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		// unbuffered (rare for agent traffic) but surface as
 		// Truncated=true so the dispatcher/retry relay can fail-close
 		// any path that needed the complete body.
+		var bufferedBody bufferedHTTPBodyResult
 		var matchBody []byte
 		var truncated bool
 		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
-			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req, g.cfg.Load().BodyBufferLimit())
+			bufferedBody = bufferHTTPBodyForMatchResult(req, g.cfg.Load().BodyBufferLimit())
+			matchBody = bufferedBody.body
+			truncated = bufferedBody.truncated
 		}
 
 		mreq := &match.Request{
@@ -2580,6 +2621,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				ev.ApproverBy = v.By
 				ev.Reason = reason
 				ev.Ms = time.Since(start).Milliseconds()
+				applyTerminalRequestCapture(&ev, req, bufferedBody, g.cfg.Load().BodyStorageLimit())
 				g.emitEnd(ev)
 				return
 			}
@@ -2615,6 +2657,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Action = "deny"
 			ev.Reason = reason
 			ev.Ms = time.Since(start).Milliseconds()
+			applyTerminalRequestCapture(&ev, req, bufferedBody, g.cfg.Load().BodyStorageLimit())
 			g.emitEnd(ev)
 			return
 		}
@@ -2733,6 +2776,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						}
 					case wantsHTTP:
 						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
+						rewriter, isRewriter := injector.(runtime.HTTPRequestRewriter)
+						rewritesRequest := isRewriter && rewriter.RewritesHTTPRequest()
 						// Match existing request-signing behavior: an injection failure is logged,
 						// then the request continues with the agent's placeholder. The upstream
 						// service should reject that placeholder without exposing gateway secrets.
@@ -2742,7 +2787,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						// is corrupted, not merely un-injected — fail closed instead of
 						// forwarding a half-transformed request.
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-							if rw, ok := injector.(runtime.HTTPRequestRewriter); ok && rw.RewritesHTTPRequest() {
+							if rewritesRequest {
 								log.Printf("transform %s: %v; failing closed", cc.Credential.Symbol.Name, err)
 								_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 								ev.Status = "502"
@@ -2753,6 +2798,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 								return
 							}
 							log.Printf("inject %s: %v; forwarding without injection", cc.Credential.Symbol.Name, err)
+						} else if rewritesRequest {
+							ev.ReqTransformed = true
 						}
 						if rp, ok := injector.(runtime.HTTPCredentialRedactionProvider); ok {
 							for _, secret := range rp.ConsumeHTTPRedactions(req) {
@@ -2830,7 +2877,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
 			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
 		}
-		reqS := newSampler(g.cfg.Load().BodyStorageLimit())
+		reqS := newSampler(g.cfg.Load().BodyStorageLimit(), req.ContentLength)
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
@@ -2855,9 +2902,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Action = "error"
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
-			ev.ReqSha = reqS.sha()
-			ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
-			ev.In = reqS.n
+			reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
+			applyRequestBodySnapshot(&ev, reqSnapshot, reqBodySecretRedactions)
 			g.emitEnd(ev)
 			return
 		}
@@ -2877,7 +2923,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
 		}
-		respS := newSampler(g.cfg.Load().BodyStorageLimit())
+		respS := newSampler(g.cfg.Load().BodyStorageLimit(), responseBodyContentLength(req.Method, resp))
 		resp.Body = wrapBodySampler(resp.Body, respS)
 		// Close-delimited responses (no Content-Length, no Transfer-
 		// Encoding) come from h2 upstreams that we forced to http/1.1
@@ -2946,16 +2992,14 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		}
 		ev.Status = strconv.Itoa(resp.StatusCode)
 		ev.ReqHeaders = flatHeadersRedacted(req.Header, reqBodySecretRedactions)
-		ev.In = reqS.n
-		ev.Out = respS.n
-		ev.ReqSha = reqS.sha()
-		ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
-		ev.RespSha = respS.sha()
-		ev.RespBody = respS.sample(resp.Header.Get("Content-Encoding"))
+		reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
+		respSnapshot := respS.snapshot(resp.Header.Get("Content-Encoding"))
+		applyRequestBodySnapshot(&ev, reqSnapshot, reqBodySecretRedactions)
+		applyResponseBodySnapshot(&ev, respSnapshot)
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
-			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqS.n, respS.n)
+			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqSnapshot.n, respSnapshot.n)
 		}
 
 		if writeErr != nil {

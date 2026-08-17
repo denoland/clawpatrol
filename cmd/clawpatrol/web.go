@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -1752,36 +1753,39 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		return nil, fmt.Errorf("missing id")
 	}
 	var (
-		e            Event
-		tsNs         int64
-		mode         sql.NullString
-		family       sql.NullString
-		agentIP      sql.NullString
-		method       sql.NullString
-		path         sql.NullString
-		status       sql.NullString
-		in, ot       sql.NullInt64
-		ms           sql.NullInt64
-		action       sql.NullString
-		reason       sql.NullString
-		reqSha       sql.NullString
-		respSha      sql.NullString
-		reqBody      sql.NullString
-		respBody     sql.NullString
-		reqHeaders   sql.NullString
-		respHeaders  sql.NullString
-		extra        sql.NullString
-		endpoint     sql.NullString
-		rule         sql.NullString
-		approver     sql.NullString
-		approverType sql.NullString
-		approverBy   sql.NullString
+		e              Event
+		tsNs           int64
+		mode           sql.NullString
+		family         sql.NullString
+		agentIP        sql.NullString
+		method         sql.NullString
+		path           sql.NullString
+		status         sql.NullString
+		in, ot         sql.NullInt64
+		ms             sql.NullInt64
+		action         sql.NullString
+		reason         sql.NullString
+		reqSha         sql.NullString
+		respSha        sql.NullString
+		reqBody        sql.NullString
+		respBody       sql.NullString
+		reqBodyState   sql.NullString
+		respBodyState  sql.NullString
+		reqTransformed sql.NullBool
+		reqHeaders     sql.NullString
+		respHeaders    sql.NullString
+		extra          sql.NullString
+		endpoint       sql.NullString
+		rule           sql.NullString
+		approver       sql.NullString
+		approverType   sql.NullString
+		approverBy     sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
-		       req_body, resp_body,
+		       req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 		       req_headers, resp_headers, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
@@ -1790,7 +1794,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		&tsNs, &mode, &family, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
-		&reqBody, &respBody,
+		&reqBody, &respBody, &reqBodyState, &respBodyState, &reqTransformed,
 		&reqHeaders, &respHeaders, &extra,
 		&endpoint, &rule,
 		&approver, &approverType, &approverBy,
@@ -1815,6 +1819,9 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 	e.RespSha = respSha.String
 	e.ReqBody = reqBody.String
 	e.RespBody = respBody.String
+	e.ReqBodyState = reqBodyState.String
+	e.RespBodyState = respBodyState.String
+	e.ReqTransformed = reqTransformed.Bool
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 	if extra.String != "" {
@@ -1884,6 +1891,10 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
 	switch ep.Family {
 	case "http":
+		if err := validateHTTPFixtureBodyCapture(ev); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
 		fx.Action.Host = ev.Host
 		fx.Action.HTTP = exportHTTP(ev)
 	case "k8s":
@@ -1928,6 +1939,56 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	enc := json.NewEncoder(rw)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(fx)
+}
+
+func validateHTTPFixtureBodyCapture(ev *Event) error {
+	if ev.ReqTransformed {
+		return fmt.Errorf("request was transformed by a credential; cannot export as fixture")
+	}
+	switch ev.ReqBodyState {
+	case bodyCaptureComplete:
+	case bodyCaptureIncomplete, bodyCaptureAborted:
+		return fmt.Errorf("request body capture is %s; cannot export as fixture", ev.ReqBodyState)
+	case "":
+		switch {
+		case strings.HasSuffix(ev.ReqBody, legacyBodyIncompleteMarker):
+			return fmt.Errorf("request body capture is incomplete; cannot export as fixture")
+		case strings.HasSuffix(ev.ReqBody, legacyBodyAbortedMarker):
+			return fmt.Errorf("request body capture is aborted; cannot export as fixture")
+		default:
+			return fmt.Errorf("request body capture completion is unknown; cannot export as fixture")
+		}
+	default:
+		return fmt.Errorf("request body capture state %q is not complete; cannot export as fixture", ev.ReqBodyState)
+	}
+	if strings.HasSuffix(ev.ReqBody, bodyTruncatedMarker) {
+		return fmt.Errorf("request body capture is truncated; cannot export as fixture")
+	}
+	if encoding := eventHeaderValue(ev.ReqHeaders, "Content-Encoding"); encoding != "" && !strings.EqualFold(strings.TrimSpace(encoding), "identity") {
+		return fmt.Errorf("request body capture is content-encoded; cannot export as fixture")
+	}
+	if strings.HasPrefix(ev.ReqBody, "binary:") {
+		return fmt.Errorf("request body capture is a binary preview; cannot export as fixture")
+	}
+	if strings.HasSuffix(ev.ReqBody, decodedSampleTruncatedMarker) {
+		return fmt.Errorf("request body decoded preview is truncated; cannot export as fixture")
+	}
+	if strings.Contains(ev.ReqBody, credentialSampleRedaction) {
+		return fmt.Errorf("request body capture was redacted; cannot export as fixture")
+	}
+	if !utf8.ValidString(ev.ReqBody) {
+		return fmt.Errorf("request body capture is not valid UTF-8; cannot export as fixture")
+	}
+	return nil
+}
+
+func eventHeaderValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
 }
 
 // matchFromEvent maps post-chain Event.Action onto the fixture's
@@ -2441,15 +2502,21 @@ type Event struct {
 	// / llm_approver / dashboard), and the approver-specific "By"
 	// string (Slack handle, llm:<model>, ...). All empty for rule-
 	// driven verdicts.
-	Approver     string            `json:"approver,omitempty"`
-	ApproverType string            `json:"approver_type,omitempty"`
-	ApproverBy   string            `json:"approver_by,omitempty"`
-	ReqSha       string            `json:"req_sha,omitempty"`
-	ReqBody      string            `json:"req_body,omitempty"`
-	RespSha      string            `json:"resp_sha,omitempty"`
-	RespBody     string            `json:"resp_body,omitempty"`
-	ReqHeaders   map[string]string `json:"req_headers,omitempty"`
-	RespHeaders  map[string]string `json:"resp_headers,omitempty"`
+	Approver     string `json:"approver,omitempty"`
+	ApproverType string `json:"approver_type,omitempty"`
+	ApproverBy   string `json:"approver_by,omitempty"`
+	ReqSha       string `json:"req_sha,omitempty"`
+	ReqBody      string `json:"req_body,omitempty"`
+	ReqBodyState string `json:"req_body_state,omitempty"`
+	// ReqTransformed records that credential injection successfully rewrote
+	// the request after policy matching. Such an audit body is not a faithful
+	// fixture input and must not be exported as one.
+	ReqTransformed bool              `json:"req_transformed,omitempty"`
+	RespSha        string            `json:"resp_sha,omitempty"`
+	RespBody       string            `json:"resp_body,omitempty"`
+	RespBodyState  string            `json:"resp_body_state,omitempty"`
+	ReqHeaders     map[string]string `json:"req_headers,omitempty"`
+	RespHeaders    map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
@@ -2540,7 +2607,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha, extra,
+		       ms, action, reason, req_sha, resp_sha,
+		       req_body_state, resp_body_state, req_transformed, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
@@ -2551,32 +2619,36 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e            Event
-			actionID     sql.NullString
-			tsNs         int64
-			mode         sql.NullString
-			family       sql.NullString
-			agentIP      sql.NullString
-			method       sql.NullString
-			path         sql.NullString
-			status       sql.NullString
-			in, ot       sql.NullInt64
-			ms           sql.NullInt64
-			action       sql.NullString
-			reason       sql.NullString
-			reqSha       sql.NullString
-			respSha      sql.NullString
-			extra        sql.NullString
-			endpoint     sql.NullString
-			rule         sql.NullString
-			approver     sql.NullString
-			approverType sql.NullString
-			approverBy   sql.NullString
+			e              Event
+			actionID       sql.NullString
+			tsNs           int64
+			mode           sql.NullString
+			family         sql.NullString
+			agentIP        sql.NullString
+			method         sql.NullString
+			path           sql.NullString
+			status         sql.NullString
+			in, ot         sql.NullInt64
+			ms             sql.NullInt64
+			action         sql.NullString
+			reason         sql.NullString
+			reqSha         sql.NullString
+			respSha        sql.NullString
+			reqBodyState   sql.NullString
+			respBodyState  sql.NullString
+			reqTransformed sql.NullBool
+			extra          sql.NullString
+			endpoint       sql.NullString
+			rule           sql.NullString
+			approver       sql.NullString
+			approverType   sql.NullString
+			approverBy     sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason, &reqSha, &respSha, &extra,
+			&action, &reason, &reqSha, &respSha,
+			&reqBodyState, &respBodyState, &reqTransformed, &extra,
 			&endpoint, &rule,
 			&approver, &approverType, &approverBy,
 		); err != nil {
@@ -2599,6 +2671,9 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
+		e.ReqBodyState = reqBodyState.String
+		e.RespBodyState = respBodyState.String
+		e.ReqTransformed = reqTransformed.Bool
 		if extra.String != "" {
 			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 		}
@@ -2702,16 +2777,16 @@ func (s *Sink) drain() {
 				 (action_id, ts_ns, mode, family, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
-				  req_body, resp_body,
+				  req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 				  req_headers, resp_headers, extra,
 				  endpoint, rule,
 				  approver, approver_type, approver_by)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
-				e.ReqBody, e.RespBody,
+				e.ReqBody, e.RespBody, e.ReqBodyState, e.RespBodyState, e.ReqTransformed,
 				string(rqhJSON), string(rshJSON),
 				string(extraJSON),
 				e.Endpoint, e.Rule,
@@ -2814,10 +2889,36 @@ func (s *Sink) Subscribe() (<-chan eventPacket, func()) {
 }
 
 type sampler struct {
-	hash hash.Hash
-	cap  int
-	buf  bytes.Buffer
-	n    int64
+	mu            sync.Mutex
+	hash          hash.Hash
+	cap           int
+	contentLength int64
+	buf           bytes.Buffer
+	n             int64
+	state         samplerState
+	// snapshotStartForTest is a deterministic test seam used to prove that
+	// an event snapshot reaches the sampler while Write holds mu.
+	snapshotStartForTest func()
+}
+
+type samplerState string
+
+const (
+	samplerStatePending  samplerState = "pending"
+	samplerStateComplete samplerState = "complete"
+	samplerStateAborted  samplerState = "aborted"
+
+	bodyCaptureComplete   = "complete"
+	bodyCaptureIncomplete = "incomplete"
+	bodyCaptureAborted    = "aborted"
+)
+
+type samplerSnapshot struct {
+	sha       string
+	sample    string
+	n         int64
+	truncated bool
+	state     samplerState
 }
 
 func unmarshalHeaders(s string, dst *map[string]string) {
@@ -2846,12 +2947,41 @@ func flatHeadersRedacted(h http.Header, redactions []string) map[string]string {
 	return out
 }
 
-func newSampler(capBytes int) *sampler {
-	return &sampler{hash: sha256.New(), cap: capBytes}
+func newSampler(capBytes int, contentLength int64) *sampler {
+	state := samplerStatePending
+	if contentLength == 0 {
+		state = samplerStateComplete
+	}
+	return &sampler{
+		hash:          sha256.New(),
+		cap:           capBytes,
+		contentLength: contentLength,
+		state:         state,
+	}
+}
+
+func responseBodyContentLength(method string, resp *http.Response) int64 {
+	if resp == nil {
+		return 0
+	}
+	if method == http.MethodHead ||
+		(resp.StatusCode >= 100 && resp.StatusCode <= 199) ||
+		resp.StatusCode == http.StatusNoContent ||
+		resp.StatusCode == http.StatusNotModified {
+		return 0
+	}
+	if (resp.Body == nil || resp.Body == http.NoBody) && resp.ContentLength <= 0 {
+		return 0
+	}
+	return resp.ContentLength
 }
 
 func (s *sampler) Write(p []byte) (int, error) {
-	s.hash.Write(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	wasComplete := s.state == samplerStateComplete
+	_, _ = s.hash.Write(p)
 	s.n += int64(len(p))
 	if remain := s.cap - s.buf.Len(); remain > 0 {
 		take := len(p)
@@ -2860,14 +2990,17 @@ func (s *sampler) Write(p []byte) (int, error) {
 		}
 		s.buf.Write(p[:take])
 	}
-	return len(p), nil
-}
-
-func (s *sampler) sha() string {
-	if s.n == 0 {
-		return ""
+	if wasComplete && len(p) > 0 {
+		s.state = samplerStateAborted
+	} else if s.contentLength >= 0 {
+		switch {
+		case s.n > s.contentLength:
+			s.state = samplerStateAborted
+		case s.n == s.contentLength && s.state == samplerStatePending:
+			s.state = samplerStateComplete
+		}
 	}
-	return hex.EncodeToString(s.hash.Sum(nil))
+	return len(p), nil
 }
 
 // bodyTruncatedMarker is appended to a persisted body sample when the
@@ -2877,9 +3010,18 @@ func (s *sampler) sha() string {
 // parsing/rendering; see HttpBody in dashboard RequestDetailPage.tsx.
 const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
 
+const (
+	legacyBodyIncompleteMarker = "\n[clawpatrol:body-incomplete]"
+	legacyBodyAbortedMarker    = "\n[clawpatrol:body-aborted]"
+)
+
 // truncated reports whether the sampler saw more bytes than it kept,
 // i.e. the persisted sample is a prefix of the real body.
-func (s *sampler) truncated() bool { return s.n > int64(s.cap) }
+func (s *sampler) truncated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n > int64(s.cap)
+}
 
 // sample returns the audit-log preview of the captured body. When
 // encoding names a compression we know how to decode (gzip, br,
@@ -2887,16 +3029,47 @@ func (s *sampler) truncated() bool { return s.n > int64(s.cap) }
 // JSON response doesn't get rendered as "binary:<hex>" just because
 // it's still on the wire compressed.
 func (s *sampler) sample(encoding string) string {
-	if s.buf.Len() == 0 {
+	return s.snapshot(encoding).sample
+}
+
+// snapshot atomically copies every mutable sampler field. Decoding happens
+// after the lock is released against the copied prefix. The SHA is populated
+// only after EOF or the full declared Content-Length has been observed.
+func (s *sampler) snapshot(encoding string) samplerSnapshot {
+	if s.snapshotStartForTest != nil {
+		s.snapshotStartForTest()
+	}
+	s.mu.Lock()
+	n := s.n
+	state := s.state
+	capBytes := s.cap
+	raw := bytes.Clone(s.buf.Bytes())
+	var sha string
+	if state == samplerStateComplete && n > 0 {
+		sha = hex.EncodeToString(s.hash.Sum(nil))
+	}
+	s.mu.Unlock()
+
+	truncated := n > int64(capBytes)
+	return samplerSnapshot{
+		sha:       sha,
+		sample:    sampledBody(raw, truncated, encoding),
+		n:         n,
+		truncated: truncated,
+		state:     state,
+	}
+}
+
+func sampledBody(raw []byte, truncated bool, encoding string) string {
+	if len(raw) == 0 {
 		// An empty buffer with bytes counted means the cap was 0 (or the
 		// body never reached the buffer); still flag truncation so the
 		// dashboard doesn't render a capped body as the full thing.
-		if s.truncated() {
+		if truncated {
 			return bodyTruncatedMarker
 		}
 		return ""
 	}
-	raw := s.buf.Bytes()
 	body := maybeDecode(raw, encoding)
 	var out string
 	if isPrintable(body) {
@@ -2904,10 +3077,63 @@ func (s *sampler) sample(encoding string) string {
 	} else {
 		out = "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 	}
-	if s.truncated() {
+	if truncated {
 		out += bodyTruncatedMarker
 	}
 	return out
+}
+
+func (s samplerSnapshot) captureState() string {
+	switch s.state {
+	case samplerStatePending:
+		return bodyCaptureIncomplete
+	case samplerStateAborted:
+		return bodyCaptureAborted
+	default:
+		return bodyCaptureComplete
+	}
+}
+
+func applyRequestBodySnapshot(ev *Event, snapshot samplerSnapshot, redactions []string) {
+	ev.In = snapshot.n
+	ev.ReqSha = snapshot.sha
+	ev.ReqBody = redactCredentialSample(snapshot.sample, redactions)
+	ev.ReqBodyState = snapshot.captureState()
+}
+
+func applyResponseBodySnapshot(ev *Event, snapshot samplerSnapshot) {
+	ev.Out = snapshot.n
+	ev.RespSha = snapshot.sha
+	ev.RespBody = snapshot.sample
+	ev.RespBodyState = snapshot.captureState()
+}
+
+func (s *sampler) finishRead(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != samplerStatePending {
+		return
+	}
+	if errors.Is(err, io.EOF) {
+		if s.contentLength < 0 || s.n == s.contentLength {
+			s.state = samplerStateComplete
+		} else {
+			s.state = samplerStateAborted
+		}
+		return
+	}
+	s.state = samplerStateAborted
+}
+
+func (s *sampler) abort() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == samplerStatePending {
+		s.state = samplerStateAborted
+	}
 }
 
 const (
@@ -2966,6 +3192,9 @@ func maybeDecode(buf []byte, encoding string) []byte {
 }
 
 func isPrintable(b []byte) bool {
+	if !utf8.Valid(b) {
+		return false
+	}
 	for _, x := range b {
 		if x == 0 || (x < 0x20 && x != '\n' && x != '\r' && x != '\t') {
 			return false
@@ -2974,19 +3203,30 @@ func isPrintable(b []byte) bool {
 	return true
 }
 
-type teeReadCloser struct {
-	r io.Reader
-	c io.Closer
+type sampledReadCloser struct {
+	rc io.ReadCloser
+	s  *sampler
 }
 
-func (t teeReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
-func (t teeReadCloser) Close() error               { return t.c.Close() }
+func (r *sampledReadCloser) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	if n > 0 {
+		_, _ = r.s.Write(p[:n])
+	}
+	r.s.finishRead(err)
+	return n, err
+}
+
+func (r *sampledReadCloser) Close() error {
+	r.s.abort()
+	return r.rc.Close()
+}
 
 func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 	if rc == nil {
 		return nil
 	}
-	return teeReadCloser{r: io.TeeReader(rc, s), c: rc}
+	return &sampledReadCloser{rc: rc, s: s}
 }
 
 // HITL — human-in-the-loop request approval. Rules with `approve = [...]`
