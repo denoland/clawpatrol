@@ -53,16 +53,17 @@ profile "default" { credentials = [bearer_token.tok] }
 func TestExporterHTTPSHappyPath(t *testing.T) {
 	w := &webMux{g: gatewayWithPolicy(t, fixtureHCL)}
 	ev := &Event{
-		ID:       "evt-1",
-		Mode:     "mitm",
-		Family:   "https",
-		Host:     "api.github.com",
-		Method:   "GET",
-		Path:     "/user",
-		AgentIP:  "100.64.0.7",
-		Action:   "allow",
-		Endpoint: "github",
-		Rule:     "github-reads",
+		ID:           "evt-1",
+		Mode:         "mitm",
+		Family:       "https",
+		Host:         "api.github.com",
+		Method:       "GET",
+		Path:         "/user",
+		AgentIP:      "100.64.0.7",
+		Action:       "allow",
+		Endpoint:     "github",
+		Rule:         "github-reads",
+		ReqBodyState: bodyCaptureComplete,
 		ReqHeaders: map[string]string{
 			"Authorization": "***",
 			"User-Agent":    "clawpatrol-test",
@@ -111,6 +112,9 @@ func TestExporterRejectsPartialRequestBodyCapture(t *testing.T) {
 		{name: "incomplete", state: bodyCaptureIncomplete, body: `{"partial":true}`, wantError: "incomplete"},
 		{name: "aborted", state: bodyCaptureAborted, body: `{"partial":true}`, wantError: "aborted"},
 		{name: "storage capped", state: bodyCaptureComplete, body: `{"partial":true` + bodyTruncatedMarker, wantError: "truncated"},
+		{name: "unknown", body: `{"legacy":true}`, wantError: "unknown"},
+		{name: "legacy incomplete marker", body: `{"partial":true}` + legacyBodyIncompleteMarker, wantError: "incomplete"},
+		{name: "legacy aborted marker", body: `{"partial":true}` + legacyBodyAbortedMarker, wantError: "aborted"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,7 +172,7 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	ev := &Event{
 		ID: "evt-3", Mode: "mitm", Family: "https",
 		Host: "api.example.com", Method: "GET", Path: "/x",
-		Action: "allow", Endpoint: "beta", Rule: "",
+		Action: "allow", Endpoint: "beta", Rule: "", ReqBodyState: bodyCaptureComplete,
 	}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)
@@ -444,7 +448,7 @@ profile "default" { credentials = [bearer_token.tok] }
 		ID: "evt-rt", Mode: "mitm", Family: "https",
 		Host: "api.github.com", Method: "GET", Path: "/user",
 		AgentIP: "100.64.0.7", Action: "allow",
-		Endpoint: "github", Rule: "reads",
+		Endpoint: "github", Rule: "reads", ReqBodyState: bodyCaptureComplete,
 	}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)

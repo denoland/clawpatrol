@@ -1940,9 +1940,18 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 
 func validateHTTPFixtureBodyCapture(ev *Event) error {
 	switch ev.ReqBodyState {
-	case "", bodyCaptureComplete:
+	case bodyCaptureComplete:
 	case bodyCaptureIncomplete, bodyCaptureAborted:
 		return fmt.Errorf("request body capture is %s; cannot export as fixture", ev.ReqBodyState)
+	case "":
+		switch {
+		case strings.HasSuffix(ev.ReqBody, legacyBodyIncompleteMarker):
+			return fmt.Errorf("request body capture is incomplete; cannot export as fixture")
+		case strings.HasSuffix(ev.ReqBody, legacyBodyAbortedMarker):
+			return fmt.Errorf("request body capture is aborted; cannot export as fixture")
+		default:
+			return fmt.Errorf("request body capture completion is unknown; cannot export as fixture")
+		}
 	default:
 		return fmt.Errorf("request body capture state %q is not complete; cannot export as fixture", ev.ReqBodyState)
 	}
@@ -2964,6 +2973,11 @@ func (s *sampler) Write(p []byte) (int, error) {
 // body. The marker is a fixed ASCII sentinel the dashboard strips before
 // parsing/rendering; see HttpBody in dashboard RequestDetailPage.tsx.
 const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
+
+const (
+	legacyBodyIncompleteMarker = "\n[clawpatrol:body-incomplete]"
+	legacyBodyAbortedMarker    = "\n[clawpatrol:body-aborted]"
+)
 
 // truncated reports whether the sampler saw more bytes than it kept,
 // i.e. the persisted sample is a prefix of the real body.
