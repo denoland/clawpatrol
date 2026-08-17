@@ -36,18 +36,20 @@ import (
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/facet"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/oidcverify"
 )
 
 var loginTpl = template.Must(template.New("login").Parse(dashboard.LoginHTML))
 
 type webMux struct {
-	g         *Gateway
-	ts        JoinConfig // for onboarding key minting
-	publicURL string
-	mu        sync.Mutex
-	sessions  map[string]*oauthSession
-	onboard   *onboardRegistry
-	routeAuth map[string]authRequirement
+	g            *Gateway
+	ts           JoinConfig // for onboarding key minting
+	publicURL    string
+	mu           sync.Mutex
+	sessions     map[string]*oauthSession
+	onboard      *onboardRegistry
+	routeAuth    map[string]authRequirement
+	oidcVerifier *oidcverify.Verifier
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -191,7 +193,7 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 }
 
 func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, oidcVerifier: oidcverify.New(oidcverify.Options{})}
 	return w.handler()
 }
 
@@ -253,6 +255,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/onboard/approve", Auth: authDashboardOrTailnetOperator, Handler: w.apiOnboardApprove},
 		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
+		{Method: http.MethodPost, Path: "/api/onboard/oidc", Auth: authPublic, Handler: w.apiOnboardOIDC},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiPeerTsnetRegister},
 		// /__login is the auth point itself — it MUST be reachable

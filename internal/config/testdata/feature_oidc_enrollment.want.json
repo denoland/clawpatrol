@@ -1,0 +1,38 @@
+{
+  "gateway": {
+    "public_url": "https://clawpatrol.example.com",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
+  "policy": {
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "github",
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "ci-readonly": {
+        "credentials": [
+          "github-pat"
+        ]
+      }
+    }
+  }
+}

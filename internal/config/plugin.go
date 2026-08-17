@@ -34,13 +34,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindEnrollment Kind = "enrollment"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindEnrollment:
 		return 2 // first = type, second = name
 	case KindRule, KindProfile:
 		return 1 // name
@@ -152,6 +153,7 @@ type Plugin struct {
 type BuildCtx struct {
 	Refs    *Refs
 	Symbols *SymbolTable
+	Policy  *Policy
 	Block   *hcl.Block // for diagnostic ranges when nothing more precise is available
 }
 
