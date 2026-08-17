@@ -126,11 +126,16 @@ func runMalformedMITMRequest(t *testing.T, payload string) string {
 	})
 
 	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
 	t.Cleanup(func() {
 		_ = clientConn.Close()
 		_ = serverConn.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("gateway goroutine did not exit during cleanup")
+		}
 	})
-	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		g.mitmHTTPS(serverConn, "api.example.test", ep)
