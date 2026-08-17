@@ -1968,6 +1968,9 @@ func validateHTTPFixtureBodyCapture(ev *Event) error {
 	if strings.HasSuffix(ev.ReqBody, decodedSampleTruncatedMarker) {
 		return fmt.Errorf("request body decoded preview is truncated; cannot export as fixture")
 	}
+	if strings.Contains(ev.ReqBody, credentialSampleRedaction) {
+		return fmt.Errorf("request body capture was redacted; cannot export as fixture")
+	}
 	if !utf8.ValidString(ev.ReqBody) {
 		return fmt.Errorf("request body capture is not valid UTF-8; cannot export as fixture")
 	}
