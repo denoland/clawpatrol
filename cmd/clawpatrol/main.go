@@ -2324,6 +2324,53 @@ func applyTerminalRequestCapture(ev *Event, req *http.Request, buffered buffered
 	ev.ReqHeaders = flatHeaders(req.Header)
 }
 
+const maxMITMRequestReadLogHostBytes = 255
+
+func sanitizeMITMRequestReadLogHost(host string) string {
+	if len(host) > maxMITMRequestReadLogHostBytes {
+		host = host[:maxMITMRequestReadLogHostBytes]
+	}
+	if host == "" {
+		return "unknown"
+	}
+	b := []byte(host)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '.', c == '-', c == '_', c == ':', c == '[', c == ']':
+		default:
+			b[i] = '_'
+		}
+	}
+	return string(b)
+}
+
+func mitmRequestReadErrorReason(err error) string {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "incomplete_request"
+	}
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return "request_too_large"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "timeout"
+		}
+		return "network_error"
+	}
+	return "invalid_request"
+}
+
+func logMITMRequestReadError(host string, err error) {
+	// net/http parser errors can embed the request line or malformed
+	// header verbatim. Keep err out of the log and emit only a fixed
+	// category derived from its type.
+	log.Printf("mitm_request_read_error host=%q reason=%s", sanitizeMITMRequestReadLogHost(host), mitmRequestReadErrorReason(err))
+}
+
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
@@ -2370,7 +2417,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		req, err := http.ReadRequest(br)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				log.Printf("mitm read req %s: %v", host, err)
+				logMITMRequestReadError(host, err)
 			}
 			return
 		}
