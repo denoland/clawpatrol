@@ -2814,10 +2814,29 @@ func (s *Sink) Subscribe() (<-chan eventPacket, func()) {
 }
 
 type sampler struct {
-	hash hash.Hash
-	cap  int
-	buf  bytes.Buffer
-	n    int64
+	mu            sync.Mutex
+	hash          hash.Hash
+	cap           int
+	contentLength int64
+	buf           bytes.Buffer
+	n             int64
+	state         samplerState
+}
+
+type samplerState string
+
+const (
+	samplerStatePending  samplerState = "pending"
+	samplerStateComplete samplerState = "complete"
+	samplerStateAborted  samplerState = "aborted"
+)
+
+type samplerSnapshot struct {
+	sha       string
+	sample    string
+	n         int64
+	truncated bool
+	state     samplerState
 }
 
 func unmarshalHeaders(s string, dst *map[string]string) {
@@ -2846,12 +2865,25 @@ func flatHeadersRedacted(h http.Header, redactions []string) map[string]string {
 	return out
 }
 
-func newSampler(capBytes int) *sampler {
-	return &sampler{hash: sha256.New(), cap: capBytes}
+func newSampler(capBytes int, contentLength int64) *sampler {
+	state := samplerStatePending
+	if contentLength == 0 {
+		state = samplerStateComplete
+	}
+	return &sampler{
+		hash:          sha256.New(),
+		cap:           capBytes,
+		contentLength: contentLength,
+		state:         state,
+	}
 }
 
 func (s *sampler) Write(p []byte) (int, error) {
-	s.hash.Write(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	wasComplete := s.state == samplerStateComplete
+	_, _ = s.hash.Write(p)
 	s.n += int64(len(p))
 	if remain := s.cap - s.buf.Len(); remain > 0 {
 		take := len(p)
@@ -2860,14 +2892,17 @@ func (s *sampler) Write(p []byte) (int, error) {
 		}
 		s.buf.Write(p[:take])
 	}
-	return len(p), nil
-}
-
-func (s *sampler) sha() string {
-	if s.n == 0 {
-		return ""
+	if wasComplete && len(p) > 0 {
+		s.state = samplerStateAborted
+	} else if s.contentLength >= 0 {
+		switch {
+		case s.n > s.contentLength:
+			s.state = samplerStateAborted
+		case s.n == s.contentLength && s.state == samplerStatePending:
+			s.state = samplerStateComplete
+		}
 	}
-	return hex.EncodeToString(s.hash.Sum(nil))
+	return len(p), nil
 }
 
 // bodyTruncatedMarker is appended to a persisted body sample when the
@@ -2877,9 +2912,22 @@ func (s *sampler) sha() string {
 // parsing/rendering; see HttpBody in dashboard RequestDetailPage.tsx.
 const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
 
+// These markers make a partial request-body capture explicit in the
+// persisted sample. Incomplete means the body was still being read when the
+// event was emitted; aborted means it was closed or failed before EOF/full
+// Content-Length. A partial body never receives a whole-body SHA.
+const (
+	bodyIncompleteMarker = "\n[clawpatrol:body-incomplete]"
+	bodyAbortedMarker    = "\n[clawpatrol:body-aborted]"
+)
+
 // truncated reports whether the sampler saw more bytes than it kept,
 // i.e. the persisted sample is a prefix of the real body.
-func (s *sampler) truncated() bool { return s.n > int64(s.cap) }
+func (s *sampler) truncated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n > int64(s.cap)
+}
 
 // sample returns the audit-log preview of the captured body. When
 // encoding names a compression we know how to decode (gzip, br,
@@ -2887,16 +2935,44 @@ func (s *sampler) truncated() bool { return s.n > int64(s.cap) }
 // JSON response doesn't get rendered as "binary:<hex>" just because
 // it's still on the wire compressed.
 func (s *sampler) sample(encoding string) string {
-	if s.buf.Len() == 0 {
+	return s.snapshot(encoding).sample
+}
+
+// snapshot atomically copies every mutable sampler field. Decoding happens
+// after the lock is released against the copied prefix. The SHA is populated
+// only after EOF or the full declared Content-Length has been observed.
+func (s *sampler) snapshot(encoding string) samplerSnapshot {
+	s.mu.Lock()
+	n := s.n
+	state := s.state
+	capBytes := s.cap
+	raw := bytes.Clone(s.buf.Bytes())
+	var sha string
+	if state == samplerStateComplete && n > 0 {
+		sha = hex.EncodeToString(s.hash.Sum(nil))
+	}
+	s.mu.Unlock()
+
+	truncated := n > int64(capBytes)
+	return samplerSnapshot{
+		sha:       sha,
+		sample:    sampledBody(raw, truncated, encoding),
+		n:         n,
+		truncated: truncated,
+		state:     state,
+	}
+}
+
+func sampledBody(raw []byte, truncated bool, encoding string) string {
+	if len(raw) == 0 {
 		// An empty buffer with bytes counted means the cap was 0 (or the
 		// body never reached the buffer); still flag truncation so the
 		// dashboard doesn't render a capped body as the full thing.
-		if s.truncated() {
+		if truncated {
 			return bodyTruncatedMarker
 		}
 		return ""
 	}
-	raw := s.buf.Bytes()
 	body := maybeDecode(raw, encoding)
 	var out string
 	if isPrintable(body) {
@@ -2904,10 +2980,57 @@ func (s *sampler) sample(encoding string) string {
 	} else {
 		out = "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 	}
-	if s.truncated() {
+	if truncated {
 		out += bodyTruncatedMarker
 	}
 	return out
+}
+
+// auditSample appends the lifecycle state to partial captures while keeping
+// the existing cap-truncation marker last for backward-compatible rendering.
+func (s samplerSnapshot) auditSample() string {
+	var marker string
+	switch s.state {
+	case samplerStatePending:
+		marker = bodyIncompleteMarker
+	case samplerStateAborted:
+		marker = bodyAbortedMarker
+	default:
+		return s.sample
+	}
+	if s.truncated && strings.HasSuffix(s.sample, bodyTruncatedMarker) {
+		body := strings.TrimSuffix(s.sample, bodyTruncatedMarker)
+		return body + marker + bodyTruncatedMarker
+	}
+	return s.sample + marker
+}
+
+func (s *sampler) finishRead(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != samplerStatePending {
+		return
+	}
+	if errors.Is(err, io.EOF) {
+		if s.contentLength < 0 || s.n == s.contentLength {
+			s.state = samplerStateComplete
+		} else {
+			s.state = samplerStateAborted
+		}
+		return
+	}
+	s.state = samplerStateAborted
+}
+
+func (s *sampler) abort() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == samplerStatePending {
+		s.state = samplerStateAborted
+	}
 }
 
 const (
@@ -2974,19 +3097,30 @@ func isPrintable(b []byte) bool {
 	return true
 }
 
-type teeReadCloser struct {
-	r io.Reader
-	c io.Closer
+type sampledReadCloser struct {
+	rc io.ReadCloser
+	s  *sampler
 }
 
-func (t teeReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
-func (t teeReadCloser) Close() error               { return t.c.Close() }
+func (r *sampledReadCloser) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	if n > 0 {
+		_, _ = r.s.Write(p[:n])
+	}
+	r.s.finishRead(err)
+	return n, err
+}
+
+func (r *sampledReadCloser) Close() error {
+	r.s.abort()
+	return r.rc.Close()
+}
 
 func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 	if rc == nil {
 		return nil
 	}
-	return teeReadCloser{r: io.TeeReader(rc, s), c: rc}
+	return &sampledReadCloser{rc: rc, s: s}
 }
 
 // HITL — human-in-the-loop request approval. Rules with `approve = [...]`

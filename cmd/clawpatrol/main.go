@@ -2783,7 +2783,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
 			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
 		}
-		reqS := newSampler(g.cfg.Load().BodyStorageLimit())
+		reqS := newSampler(g.cfg.Load().BodyStorageLimit(), req.ContentLength)
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
@@ -2808,9 +2808,10 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Action = "error"
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
-			ev.ReqSha = reqS.sha()
-			ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
-			ev.In = reqS.n
+			reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
+			ev.ReqSha = reqSnapshot.sha
+			ev.ReqBody = redactCredentialSample(reqSnapshot.auditSample(), reqBodySecretRedactions)
+			ev.In = reqSnapshot.n
 			g.emitEnd(ev)
 			return
 		}
@@ -2830,7 +2831,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
 		}
-		respS := newSampler(g.cfg.Load().BodyStorageLimit())
+		respS := newSampler(g.cfg.Load().BodyStorageLimit(), resp.ContentLength)
 		resp.Body = wrapBodySampler(resp.Body, respS)
 		// Close-delimited responses (no Content-Length, no Transfer-
 		// Encoding) come from h2 upstreams that we forced to http/1.1
@@ -2899,16 +2900,18 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		}
 		ev.Status = strconv.Itoa(resp.StatusCode)
 		ev.ReqHeaders = flatHeadersRedacted(req.Header, reqBodySecretRedactions)
-		ev.In = reqS.n
-		ev.Out = respS.n
-		ev.ReqSha = reqS.sha()
-		ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
-		ev.RespSha = respS.sha()
-		ev.RespBody = respS.sample(resp.Header.Get("Content-Encoding"))
+		reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
+		respSnapshot := respS.snapshot(resp.Header.Get("Content-Encoding"))
+		ev.In = reqSnapshot.n
+		ev.Out = respSnapshot.n
+		ev.ReqSha = reqSnapshot.sha
+		ev.ReqBody = redactCredentialSample(reqSnapshot.auditSample(), reqBodySecretRedactions)
+		ev.RespSha = respSnapshot.sha
+		ev.RespBody = respSnapshot.auditSample()
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
-			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqS.n, respS.n)
+			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqSnapshot.n, respSnapshot.n)
 		}
 
 		if writeErr != nil {
