@@ -8,44 +8,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"hash"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
-
-type gatedRequestBody struct {
-	first          []byte
-	rest           []byte
-	read           int
-	waitingForRest chan struct{}
-	releaseRest    chan struct{}
-}
-
-func (b *gatedRequestBody) Read(p []byte) (int, error) {
-	switch b.read {
-	case 0:
-		b.read++
-		return copy(p, b.first), nil
-	case 1:
-		b.read++
-		close(b.waitingForRest)
-		<-b.releaseRest
-		return copy(p, b.rest), nil
-	default:
-		return 0, io.EOF
-	}
-}
-
-func (*gatedRequestBody) Close() error { return nil }
-
-type earlyResponseRoundTripper struct {
-	waitingForBody <-chan struct{}
-	bodyReadDone   chan error
-}
 
 type dataThenErrorReader struct {
 	data []byte
@@ -63,18 +36,28 @@ func (r *dataThenErrorReader) Read(p []byte) (int, error) {
 
 func (*dataThenErrorReader) Close() error { return nil }
 
-func (rt earlyResponseRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	go func() {
-		_, err := io.Copy(io.Discard, req.Body)
-		rt.bodyReadDone <- err
-	}()
-	<-rt.waitingForBody
-	return &http.Response{
-		StatusCode: http.StatusUnauthorized,
-		Header:     make(http.Header),
-		Body:       http.NoBody,
-		Request:    req,
-	}, nil
+type blockingWriteHash struct {
+	hash.Hash
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (h *blockingWriteHash) Write(p []byte) (int, error) {
+	close(h.entered)
+	<-h.release
+	return h.Hash.Write(p)
+}
+
+type blockingSumHash struct {
+	hash.Hash
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (h *blockingSumHash) Sum(b []byte) []byte {
+	close(h.entered)
+	<-h.release
+	return h.Hash.Sum(b)
 }
 
 func fullBodySHA(body []byte) string {
@@ -323,8 +306,11 @@ func TestSamplerEmptyBodyIsComplete(t *testing.T) {
 	if snap.sha != "" {
 		t.Fatalf("empty body SHA = %q, want empty", snap.sha)
 	}
-	if got := snap.auditSample(); got != "" {
+	if got := snap.sample; got != "" {
 		t.Fatalf("empty body sample = %q, want empty", got)
+	}
+	if got := snap.captureState(); got != bodyCaptureComplete {
+		t.Fatalf("capture state = %q, want %q", got, bodyCaptureComplete)
 	}
 }
 
@@ -384,8 +370,8 @@ func TestSamplerCloseBeforeCompletionIsAborted(t *testing.T) {
 	if snap.sha != "" {
 		t.Fatalf("aborted body SHA = %q, want empty", snap.sha)
 	}
-	if got := snap.auditSample(); !strings.HasSuffix(got, bodyAbortedMarker) {
-		t.Fatalf("aborted sample = %q, want suffix %q", got, bodyAbortedMarker)
+	if got := snap.captureState(); got != bodyCaptureAborted {
+		t.Fatalf("capture state = %q, want %q", got, bodyCaptureAborted)
 	}
 }
 
@@ -406,8 +392,8 @@ func TestSamplerReadErrorBeforeCompletionIsAborted(t *testing.T) {
 	if snap.sha != "" {
 		t.Fatalf("failed body SHA = %q, want empty", snap.sha)
 	}
-	if got := snap.auditSample(); !strings.HasSuffix(got, bodyAbortedMarker) {
-		t.Fatalf("failed sample = %q, want suffix %q", got, bodyAbortedMarker)
+	if got := snap.captureState(); got != bodyCaptureAborted {
+		t.Fatalf("capture state = %q, want %q", got, bodyCaptureAborted)
 	}
 }
 
@@ -467,16 +453,19 @@ func TestSamplerWriteAfterCompleteInvalidatesDigest(t *testing.T) {
 	}
 }
 
-func TestSamplerIncompleteCappedBodyKeepsBothMarkers(t *testing.T) {
+func TestSamplerIncompleteCappedBodyKeepsStateAndCapMarker(t *testing.T) {
 	s := newSampler(2, 10)
 	if _, err := s.Write([]byte("partial")); err != nil {
 		t.Fatalf("write partial body: %v", err)
 	}
 
 	snap := s.snapshot("")
-	want := "pa" + bodyIncompleteMarker + bodyTruncatedMarker
-	if got := snap.auditSample(); got != want {
+	want := "pa" + bodyTruncatedMarker
+	if got := snap.sample; got != want {
 		t.Fatalf("sample = %q, want %q", got, want)
+	}
+	if got := snap.captureState(); got != bodyCaptureIncomplete {
+		t.Fatalf("capture state = %q, want %q", got, bodyCaptureIncomplete)
 	}
 	if snap.sha != "" {
 		t.Fatalf("incomplete body SHA = %q, want empty", snap.sha)
@@ -499,67 +488,133 @@ func TestSamplerCappedCompleteBodyKeepsFullSHA(t *testing.T) {
 	if snap.sha != fullBodySHA(body) {
 		t.Fatalf("sha = %q, want full-body SHA %q", snap.sha, fullBodySHA(body))
 	}
-	if got := snap.auditSample(); got != string(body[:5])+bodyTruncatedMarker {
+	if got := snap.sample; got != string(body[:5])+bodyTruncatedMarker {
 		t.Fatalf("sample = %q, want capped prefix plus marker", got)
 	}
 }
 
-func TestSamplerEarlyResponseDoesNotEmitPartialSHA(t *testing.T) {
-	first := []byte(`{"prompt":"first half`)
-	rest := []byte(` and second half"}`)
-	whole := append(append([]byte(nil), first...), rest...)
-	body := &gatedRequestBody{
-		first:          first,
-		rest:           rest,
-		waitingForRest: make(chan struct{}),
-		releaseRest:    make(chan struct{}),
+func TestSamplerEarlyResponseSerializesEventSnapshotWithInFlightWrite(t *testing.T) {
+	prefix := []byte(`{"prompt":"first half`)
+	s := newSampler(4096, int64(len(prefix)+20))
+	writeEntered := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	var releaseWriteOnce sync.Once
+	releaseWriter := func() { releaseWriteOnce.Do(func() { close(releaseWrite) }) }
+	defer releaseWriter()
+	s.hash = &blockingWriteHash{Hash: s.hash, entered: writeEntered, release: releaseWrite}
+
+	snapshotAttempted := make(chan struct{})
+	var snapshotAttemptOnce sync.Once
+	s.snapshotStartForTest = func() {
+		snapshotAttemptOnce.Do(func() { close(snapshotAttempted) })
 	}
 
-	req, err := http.NewRequest(http.MethodPost, "https://api.example/v1/messages", body)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.ContentLength = int64(len(whole))
-	s := newSampler(4096, req.ContentLength)
-	req.Body = wrapBodySampler(req.Body, s)
-	bodyReadDone := make(chan error, 1)
-	rt := earlyResponseRoundTripper{
-		waitingForBody: body.waitingForRest,
-		bodyReadDone:   bodyReadDone,
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := s.Write(prefix)
+		writeDone <- err
+	}()
+
+	select {
+	case <-writeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("sampler write did not reach the deterministic gate")
 	}
 
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("round trip: %v", err)
+	eventDone := make(chan Event, 1)
+	go func() {
+		snap := s.snapshot("")
+		ev := Event{}
+		applyRequestBodySnapshot(&ev, snap, nil)
+		eventDone <- ev
+	}()
+
+	select {
+	case <-snapshotAttempted:
+	case <-time.After(time.Second):
+		t.Fatal("event snapshot did not reach the sampler lock")
 	}
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	select {
+	case <-eventDone:
+		t.Fatal("event snapshot completed while sampler Write held the lock")
+	default:
 	}
 
-	partial := s.snapshot("")
-	if partial.state != samplerStatePending {
-		t.Fatalf("early-response state = %q, want %q", partial.state, samplerStatePending)
+	releaseWriter()
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write prefix: %v", err)
 	}
-	if partial.sha != "" {
-		t.Fatalf("early-response SHA = %q, want empty (partial body)", partial.sha)
+	ev := <-eventDone
+	if ev.ReqBody != string(prefix) {
+		t.Fatalf("request sample = %q, want %q", ev.ReqBody, prefix)
 	}
-	if got := partial.auditSample(); !strings.HasSuffix(got, bodyIncompleteMarker) {
-		t.Fatalf("early-response sample = %q, want suffix %q", got, bodyIncompleteMarker)
+	if ev.ReqBodyState != bodyCaptureIncomplete {
+		t.Fatalf("request capture state = %q, want %q", ev.ReqBodyState, bodyCaptureIncomplete)
+	}
+	if ev.ReqSha != "" {
+		t.Fatalf("early-response SHA = %q, want empty", ev.ReqSha)
+	}
+}
+
+func TestSamplerSnapshotHoldsLockWhileHashing(t *testing.T) {
+	body := []byte("complete body")
+	s := newSampler(4096, int64(len(body)))
+	if _, err := s.Write(body); err != nil {
+		t.Fatalf("write body: %v", err)
 	}
 
-	close(body.releaseRest)
-	if err := <-bodyReadDone; err != nil {
-		t.Fatalf("finish reading body: %v", err)
+	sumEntered := make(chan struct{})
+	releaseSum := make(chan struct{})
+	var releaseSumOnce sync.Once
+	releaseHasher := func() { releaseSumOnce.Do(func() { close(releaseSum) }) }
+	defer releaseHasher()
+	s.hash = &blockingSumHash{Hash: s.hash, entered: sumEntered, release: releaseSum}
+
+	snapshotDone := make(chan samplerSnapshot, 1)
+	go func() { snapshotDone <- s.snapshot("") }()
+	select {
+	case <-sumEntered:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot did not reach the deterministic hash gate")
+	}
+	if s.mu.TryLock() {
+		s.mu.Unlock()
+		t.Fatal("snapshot hashed without holding the sampler mutex")
 	}
 
-	complete := s.snapshot("")
-	if complete.state != samplerStateComplete {
-		t.Fatalf("finished state = %q, want %q", complete.state, samplerStateComplete)
+	releaseHasher()
+	snap := <-snapshotDone
+	if snap.sha != fullBodySHA(body) {
+		t.Fatalf("SHA = %q, want %q", snap.sha, fullBodySHA(body))
 	}
-	if complete.sha != fullBodySHA(whole) {
-		t.Fatalf("finished SHA = %q, want full-body SHA %q", complete.sha, fullBodySHA(whole))
+}
+
+func TestResponseBodyContentLengthUsesHTTPBodySemantics(t *testing.T) {
+	tests := []struct {
+		name          string
+		method        string
+		status        int
+		contentLength int64
+		body          io.ReadCloser
+		want          int64
+	}{
+		{name: "ordinary", method: http.MethodGet, status: http.StatusOK, contentLength: 12, body: http.NoBody, want: 12},
+		{name: "head", method: http.MethodHead, status: http.StatusOK, contentLength: 12, body: http.NoBody, want: 0},
+		{name: "informational", method: http.MethodGet, status: http.StatusEarlyHints, contentLength: -1, body: http.NoBody, want: 0},
+		{name: "no content", method: http.MethodGet, status: http.StatusNoContent, contentLength: -1, body: http.NoBody, want: 0},
+		{name: "not modified", method: http.MethodGet, status: http.StatusNotModified, contentLength: 55, body: http.NoBody, want: 0},
+		{name: "explicit no body", method: http.MethodGet, status: http.StatusOK, contentLength: -1, body: http.NoBody, want: 0},
 	}
-	if got := complete.auditSample(); got != string(whole) {
-		t.Fatalf("finished sample = %q, want %q", got, whole)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				StatusCode:    tt.status,
+				ContentLength: tt.contentLength,
+				Body:          tt.body,
+			}
+			if got := responseBodyContentLength(tt.method, resp); got != tt.want {
+				t.Fatalf("response body content length = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

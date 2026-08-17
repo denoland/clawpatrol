@@ -1752,36 +1752,38 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		return nil, fmt.Errorf("missing id")
 	}
 	var (
-		e            Event
-		tsNs         int64
-		mode         sql.NullString
-		family       sql.NullString
-		agentIP      sql.NullString
-		method       sql.NullString
-		path         sql.NullString
-		status       sql.NullString
-		in, ot       sql.NullInt64
-		ms           sql.NullInt64
-		action       sql.NullString
-		reason       sql.NullString
-		reqSha       sql.NullString
-		respSha      sql.NullString
-		reqBody      sql.NullString
-		respBody     sql.NullString
-		reqHeaders   sql.NullString
-		respHeaders  sql.NullString
-		extra        sql.NullString
-		endpoint     sql.NullString
-		rule         sql.NullString
-		approver     sql.NullString
-		approverType sql.NullString
-		approverBy   sql.NullString
+		e             Event
+		tsNs          int64
+		mode          sql.NullString
+		family        sql.NullString
+		agentIP       sql.NullString
+		method        sql.NullString
+		path          sql.NullString
+		status        sql.NullString
+		in, ot        sql.NullInt64
+		ms            sql.NullInt64
+		action        sql.NullString
+		reason        sql.NullString
+		reqSha        sql.NullString
+		respSha       sql.NullString
+		reqBody       sql.NullString
+		respBody      sql.NullString
+		reqBodyState  sql.NullString
+		respBodyState sql.NullString
+		reqHeaders    sql.NullString
+		respHeaders   sql.NullString
+		extra         sql.NullString
+		endpoint      sql.NullString
+		rule          sql.NullString
+		approver      sql.NullString
+		approverType  sql.NullString
+		approverBy    sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
-		       req_body, resp_body,
+		       req_body, resp_body, req_body_state, resp_body_state,
 		       req_headers, resp_headers, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
@@ -1790,7 +1792,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		&tsNs, &mode, &family, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
-		&reqBody, &respBody,
+		&reqBody, &respBody, &reqBodyState, &respBodyState,
 		&reqHeaders, &respHeaders, &extra,
 		&endpoint, &rule,
 		&approver, &approverType, &approverBy,
@@ -1815,6 +1817,8 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 	e.RespSha = respSha.String
 	e.ReqBody = reqBody.String
 	e.RespBody = respBody.String
+	e.ReqBodyState = reqBodyState.String
+	e.RespBodyState = respBodyState.String
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 	if extra.String != "" {
@@ -1884,6 +1888,10 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
 	switch ep.Family {
 	case "http":
+		if err := validateHTTPFixtureBodyCapture(ev); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
 		fx.Action.Host = ev.Host
 		fx.Action.HTTP = exportHTTP(ev)
 	case "k8s":
@@ -1928,6 +1936,20 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	enc := json.NewEncoder(rw)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(fx)
+}
+
+func validateHTTPFixtureBodyCapture(ev *Event) error {
+	switch ev.ReqBodyState {
+	case "", bodyCaptureComplete:
+	case bodyCaptureIncomplete, bodyCaptureAborted:
+		return fmt.Errorf("request body capture is %s; cannot export as fixture", ev.ReqBodyState)
+	default:
+		return fmt.Errorf("request body capture state %q is not complete; cannot export as fixture", ev.ReqBodyState)
+	}
+	if strings.HasSuffix(ev.ReqBody, bodyTruncatedMarker) {
+		return fmt.Errorf("request body capture is truncated; cannot export as fixture")
+	}
+	return nil
 }
 
 // matchFromEvent maps post-chain Event.Action onto the fixture's
@@ -2441,15 +2463,17 @@ type Event struct {
 	// / llm_approver / dashboard), and the approver-specific "By"
 	// string (Slack handle, llm:<model>, ...). All empty for rule-
 	// driven verdicts.
-	Approver     string            `json:"approver,omitempty"`
-	ApproverType string            `json:"approver_type,omitempty"`
-	ApproverBy   string            `json:"approver_by,omitempty"`
-	ReqSha       string            `json:"req_sha,omitempty"`
-	ReqBody      string            `json:"req_body,omitempty"`
-	RespSha      string            `json:"resp_sha,omitempty"`
-	RespBody     string            `json:"resp_body,omitempty"`
-	ReqHeaders   map[string]string `json:"req_headers,omitempty"`
-	RespHeaders  map[string]string `json:"resp_headers,omitempty"`
+	Approver      string            `json:"approver,omitempty"`
+	ApproverType  string            `json:"approver_type,omitempty"`
+	ApproverBy    string            `json:"approver_by,omitempty"`
+	ReqSha        string            `json:"req_sha,omitempty"`
+	ReqBody       string            `json:"req_body,omitempty"`
+	ReqBodyState  string            `json:"req_body_state,omitempty"`
+	RespSha       string            `json:"resp_sha,omitempty"`
+	RespBody      string            `json:"resp_body,omitempty"`
+	RespBodyState string            `json:"resp_body_state,omitempty"`
+	ReqHeaders    map[string]string `json:"req_headers,omitempty"`
+	RespHeaders   map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
@@ -2540,7 +2564,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha, extra,
+		       ms, action, reason, req_sha, resp_sha,
+		       req_body_state, resp_body_state, extra,
 		       endpoint, rule,
 		       approver, approver_type, approver_by
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
@@ -2551,32 +2576,35 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e            Event
-			actionID     sql.NullString
-			tsNs         int64
-			mode         sql.NullString
-			family       sql.NullString
-			agentIP      sql.NullString
-			method       sql.NullString
-			path         sql.NullString
-			status       sql.NullString
-			in, ot       sql.NullInt64
-			ms           sql.NullInt64
-			action       sql.NullString
-			reason       sql.NullString
-			reqSha       sql.NullString
-			respSha      sql.NullString
-			extra        sql.NullString
-			endpoint     sql.NullString
-			rule         sql.NullString
-			approver     sql.NullString
-			approverType sql.NullString
-			approverBy   sql.NullString
+			e             Event
+			actionID      sql.NullString
+			tsNs          int64
+			mode          sql.NullString
+			family        sql.NullString
+			agentIP       sql.NullString
+			method        sql.NullString
+			path          sql.NullString
+			status        sql.NullString
+			in, ot        sql.NullInt64
+			ms            sql.NullInt64
+			action        sql.NullString
+			reason        sql.NullString
+			reqSha        sql.NullString
+			respSha       sql.NullString
+			reqBodyState  sql.NullString
+			respBodyState sql.NullString
+			extra         sql.NullString
+			endpoint      sql.NullString
+			rule          sql.NullString
+			approver      sql.NullString
+			approverType  sql.NullString
+			approverBy    sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason, &reqSha, &respSha, &extra,
+			&action, &reason, &reqSha, &respSha,
+			&reqBodyState, &respBodyState, &extra,
 			&endpoint, &rule,
 			&approver, &approverType, &approverBy,
 		); err != nil {
@@ -2599,6 +2627,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
+		e.ReqBodyState = reqBodyState.String
+		e.RespBodyState = respBodyState.String
 		if extra.String != "" {
 			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 		}
@@ -2702,16 +2732,16 @@ func (s *Sink) drain() {
 				 (action_id, ts_ns, mode, family, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
-				  req_body, resp_body,
+				  req_body, resp_body, req_body_state, resp_body_state,
 				  req_headers, resp_headers, extra,
 				  endpoint, rule,
 				  approver, approver_type, approver_by)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
-				e.ReqBody, e.RespBody,
+				e.ReqBody, e.RespBody, e.ReqBodyState, e.RespBodyState,
 				string(rqhJSON), string(rshJSON),
 				string(extraJSON),
 				e.Endpoint, e.Rule,
@@ -2821,6 +2851,9 @@ type sampler struct {
 	buf           bytes.Buffer
 	n             int64
 	state         samplerState
+	// snapshotStartForTest is a deterministic test seam used to prove that
+	// an event snapshot reaches the sampler while Write holds mu.
+	snapshotStartForTest func()
 }
 
 type samplerState string
@@ -2829,6 +2862,10 @@ const (
 	samplerStatePending  samplerState = "pending"
 	samplerStateComplete samplerState = "complete"
 	samplerStateAborted  samplerState = "aborted"
+
+	bodyCaptureComplete   = "complete"
+	bodyCaptureIncomplete = "incomplete"
+	bodyCaptureAborted    = "aborted"
 )
 
 type samplerSnapshot struct {
@@ -2878,6 +2915,22 @@ func newSampler(capBytes int, contentLength int64) *sampler {
 	}
 }
 
+func responseBodyContentLength(method string, resp *http.Response) int64 {
+	if resp == nil {
+		return 0
+	}
+	if method == http.MethodHead ||
+		(resp.StatusCode >= 100 && resp.StatusCode <= 199) ||
+		resp.StatusCode == http.StatusNoContent ||
+		resp.StatusCode == http.StatusNotModified {
+		return 0
+	}
+	if (resp.Body == nil || resp.Body == http.NoBody) && resp.ContentLength <= 0 {
+		return 0
+	}
+	return resp.ContentLength
+}
+
 func (s *sampler) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2912,15 +2965,6 @@ func (s *sampler) Write(p []byte) (int, error) {
 // parsing/rendering; see HttpBody in dashboard RequestDetailPage.tsx.
 const bodyTruncatedMarker = "\n[clawpatrol:body-truncated]"
 
-// These markers make a partial request-body capture explicit in the
-// persisted sample. Incomplete means the body was still being read when the
-// event was emitted; aborted means it was closed or failed before EOF/full
-// Content-Length. A partial body never receives a whole-body SHA.
-const (
-	bodyIncompleteMarker = "\n[clawpatrol:body-incomplete]"
-	bodyAbortedMarker    = "\n[clawpatrol:body-aborted]"
-)
-
 // truncated reports whether the sampler saw more bytes than it kept,
 // i.e. the persisted sample is a prefix of the real body.
 func (s *sampler) truncated() bool {
@@ -2942,6 +2986,9 @@ func (s *sampler) sample(encoding string) string {
 // after the lock is released against the copied prefix. The SHA is populated
 // only after EOF or the full declared Content-Length has been observed.
 func (s *sampler) snapshot(encoding string) samplerSnapshot {
+	if s.snapshotStartForTest != nil {
+		s.snapshotStartForTest()
+	}
 	s.mu.Lock()
 	n := s.n
 	state := s.state
@@ -2986,23 +3033,29 @@ func sampledBody(raw []byte, truncated bool, encoding string) string {
 	return out
 }
 
-// auditSample appends the lifecycle state to partial captures while keeping
-// the existing cap-truncation marker last for backward-compatible rendering.
-func (s samplerSnapshot) auditSample() string {
-	var marker string
+func (s samplerSnapshot) captureState() string {
 	switch s.state {
 	case samplerStatePending:
-		marker = bodyIncompleteMarker
+		return bodyCaptureIncomplete
 	case samplerStateAborted:
-		marker = bodyAbortedMarker
+		return bodyCaptureAborted
 	default:
-		return s.sample
+		return bodyCaptureComplete
 	}
-	if s.truncated && strings.HasSuffix(s.sample, bodyTruncatedMarker) {
-		body := strings.TrimSuffix(s.sample, bodyTruncatedMarker)
-		return body + marker + bodyTruncatedMarker
-	}
-	return s.sample + marker
+}
+
+func applyRequestBodySnapshot(ev *Event, snapshot samplerSnapshot, redactions []string) {
+	ev.In = snapshot.n
+	ev.ReqSha = snapshot.sha
+	ev.ReqBody = redactCredentialSample(snapshot.sample, redactions)
+	ev.ReqBodyState = snapshot.captureState()
+}
+
+func applyResponseBodySnapshot(ev *Event, snapshot samplerSnapshot) {
+	ev.Out = snapshot.n
+	ev.RespSha = snapshot.sha
+	ev.RespBody = snapshot.sample
+	ev.RespBodyState = snapshot.captureState()
 }
 
 func (s *sampler) finishRead(err error) {

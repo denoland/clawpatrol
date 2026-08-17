@@ -100,6 +100,39 @@ func TestExporterHTTPSHappyPath(t *testing.T) {
 	}
 }
 
+func TestExporterRejectsPartialRequestBodyCapture(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, fixtureHCL)}
+	tests := []struct {
+		name      string
+		state     string
+		body      string
+		wantError string
+	}{
+		{name: "incomplete", state: bodyCaptureIncomplete, body: `{"partial":true}`, wantError: "incomplete"},
+		{name: "aborted", state: bodyCaptureAborted, body: `{"partial":true}`, wantError: "aborted"},
+		{name: "storage capped", state: bodyCaptureComplete, body: `{"partial":true` + bodyTruncatedMarker, wantError: "truncated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := &Event{
+				ID: "partial", Mode: "mitm", Family: "https",
+				Host: "api.github.com", Method: "POST", Path: "/user",
+				Action: "allow", Endpoint: "github",
+				ReqBody: tt.body, ReqBodyState: tt.state,
+			}
+			rw := httptest.NewRecorder()
+			w.writeActionFixture(rw, ev)
+
+			if rw.Code != 400 {
+				t.Fatalf("status=%d want 400; body=%s", rw.Code, rw.Body.String())
+			}
+			if !strings.Contains(strings.ToLower(rw.Body.String()), tt.wantError) {
+				t.Fatalf("body=%q want error containing %q", rw.Body.String(), tt.wantError)
+			}
+		})
+	}
+}
+
 // Events recorded before the Endpoint column was populated have
 // no endpoint to find; the exporter must 400 with a clear reason.
 func TestExporterRejectsEmptyEndpoint(t *testing.T) {

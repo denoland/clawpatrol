@@ -2809,9 +2809,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
-			ev.ReqSha = reqSnapshot.sha
-			ev.ReqBody = redactCredentialSample(reqSnapshot.auditSample(), reqBodySecretRedactions)
-			ev.In = reqSnapshot.n
+			applyRequestBodySnapshot(&ev, reqSnapshot, reqBodySecretRedactions)
 			g.emitEnd(ev)
 			return
 		}
@@ -2831,7 +2829,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
 			}
 		}
-		respS := newSampler(g.cfg.Load().BodyStorageLimit(), resp.ContentLength)
+		respS := newSampler(g.cfg.Load().BodyStorageLimit(), responseBodyContentLength(req.Method, resp))
 		resp.Body = wrapBodySampler(resp.Body, respS)
 		// Close-delimited responses (no Content-Length, no Transfer-
 		// Encoding) come from h2 upstreams that we forced to http/1.1
@@ -2902,12 +2900,8 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		ev.ReqHeaders = flatHeadersRedacted(req.Header, reqBodySecretRedactions)
 		reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
 		respSnapshot := respS.snapshot(resp.Header.Get("Content-Encoding"))
-		ev.In = reqSnapshot.n
-		ev.Out = respSnapshot.n
-		ev.ReqSha = reqSnapshot.sha
-		ev.ReqBody = redactCredentialSample(reqSnapshot.auditSample(), reqBodySecretRedactions)
-		ev.RespSha = respSnapshot.sha
-		ev.RespBody = respSnapshot.auditSample()
+		applyRequestBodySnapshot(&ev, reqSnapshot, reqBodySecretRedactions)
+		applyResponseBodySnapshot(&ev, respSnapshot)
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {

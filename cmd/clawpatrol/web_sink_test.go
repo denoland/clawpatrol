@@ -77,6 +77,46 @@ func TestSinkPersistsGeneratedID(t *testing.T) {
 	}
 }
 
+func TestSinkPersistsBodyCaptureState(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "clawpatrol.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s, err := NewSink(db, 4)
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	defer close(s.ch)
+
+	ch, cancel := s.Subscribe()
+	defer cancel()
+	s.Emit(Event{
+		ID: "body-state", Phase: "end", Mode: "mitm", Host: "api.example.com",
+		ReqBody: "partial request", ReqBodyState: bodyCaptureIncomplete,
+		RespBody: "complete response", RespBodyState: bodyCaptureComplete,
+	})
+
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for persisted event")
+	}
+
+	w := &webMux{g: &Gateway{db: db}}
+	got, err := w.loadAction("body-state")
+	if err != nil {
+		t.Fatalf("loadAction: %v", err)
+	}
+	if got.ReqBodyState != bodyCaptureIncomplete {
+		t.Fatalf("request body state = %q, want %q", got.ReqBodyState, bodyCaptureIncomplete)
+	}
+	if got.RespBodyState != bodyCaptureComplete {
+		t.Fatalf("response body state = %q, want %q", got.RespBodyState, bodyCaptureComplete)
+	}
+}
+
 func TestSinkPreservesExistingPersistentEventID(t *testing.T) {
 	s, err := NewSink(nil, 4)
 	if err != nil {
