@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -1958,7 +1959,28 @@ func validateHTTPFixtureBodyCapture(ev *Event) error {
 	if strings.HasSuffix(ev.ReqBody, bodyTruncatedMarker) {
 		return fmt.Errorf("request body capture is truncated; cannot export as fixture")
 	}
+	if encoding := eventHeaderValue(ev.ReqHeaders, "Content-Encoding"); encoding != "" && !strings.EqualFold(strings.TrimSpace(encoding), "identity") {
+		return fmt.Errorf("request body capture is content-encoded; cannot export as fixture")
+	}
+	if strings.HasPrefix(ev.ReqBody, "binary:") {
+		return fmt.Errorf("request body capture is a binary preview; cannot export as fixture")
+	}
+	if strings.HasSuffix(ev.ReqBody, decodedSampleTruncatedMarker) {
+		return fmt.Errorf("request body decoded preview is truncated; cannot export as fixture")
+	}
+	if !utf8.ValidString(ev.ReqBody) {
+		return fmt.Errorf("request body capture is not valid UTF-8; cannot export as fixture")
+	}
 	return nil
+}
+
+func eventHeaderValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
 }
 
 // matchFromEvent maps post-chain Event.Action onto the fixture's
@@ -3156,6 +3178,9 @@ func maybeDecode(buf []byte, encoding string) []byte {
 }
 
 func isPrintable(b []byte) bool {
+	if !utf8.Valid(b) {
+		return false
+	}
 	for _, x := range b {
 		if x == 0 || (x < 0x20 && x != '\n' && x != '\r' && x != '\t') {
 			return false

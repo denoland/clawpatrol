@@ -107,6 +107,7 @@ func TestExporterRejectsPartialRequestBodyCapture(t *testing.T) {
 		name      string
 		state     string
 		body      string
+		headers   map[string]string
 		wantError string
 	}{
 		{name: "incomplete", state: bodyCaptureIncomplete, body: `{"partial":true}`, wantError: "incomplete"},
@@ -115,6 +116,9 @@ func TestExporterRejectsPartialRequestBodyCapture(t *testing.T) {
 		{name: "unknown", body: `{"legacy":true}`, wantError: "unknown"},
 		{name: "legacy incomplete marker", body: `{"partial":true}` + legacyBodyIncompleteMarker, wantError: "incomplete"},
 		{name: "legacy aborted marker", body: `{"partial":true}` + legacyBodyAbortedMarker, wantError: "aborted"},
+		{name: "content encoded", state: bodyCaptureComplete, body: `{"decoded":true}`, headers: map[string]string{"content-encoding": "gzip"}, wantError: "content-encoded"},
+		{name: "binary preview", state: bodyCaptureComplete, body: "binary:00ff", wantError: "binary"},
+		{name: "decoded preview capped", state: bodyCaptureComplete, body: "expanded" + decodedSampleTruncatedMarker, wantError: "decoded preview is truncated"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,7 +126,7 @@ func TestExporterRejectsPartialRequestBodyCapture(t *testing.T) {
 				ID: "partial", Mode: "mitm", Family: "https",
 				Host: "api.github.com", Method: "POST", Path: "/user",
 				Action: "allow", Endpoint: "github",
-				ReqBody: tt.body, ReqBodyState: tt.state,
+				ReqBody: tt.body, ReqBodyState: tt.state, ReqHeaders: tt.headers,
 			}
 			rw := httptest.NewRecorder()
 			w.writeActionFixture(rw, ev)

@@ -228,6 +228,15 @@ func TestSamplerSampleBinaryFallback(t *testing.T) {
 	}
 }
 
+func TestSamplerSampleInvalidUTF8UsesBinaryFallback(t *testing.T) {
+	s := newSampler(4096, 2)
+	_, _ = s.Write([]byte{0xff, 0xfe})
+	got := s.sample("")
+	if !strings.HasPrefix(got, "binary:") {
+		t.Fatalf("expected binary: prefix for invalid UTF-8, got %q", got)
+	}
+}
+
 func TestSamplerSampleUnknownEncodingIgnored(t *testing.T) {
 	// Unknown encoding falls through to the printable check on raw bytes.
 	s := newSampler(4096, -1)
