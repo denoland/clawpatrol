@@ -92,8 +92,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
   const facetFields = facetDetailRows(ev, schema);
   const resultFields = resultDetailRows(ev, schema);
-  const hasReq = !!ev.req_body;
-  const hasResp = !!ev.resp_body;
+  const hasReq =
+    !!ev.req_body || ev.req_body_state === "incomplete" || ev.req_body_state === "aborted";
+  const hasResp =
+    !!ev.resp_body || ev.resp_body_state === "incomplete" || ev.resp_body_state === "aborted";
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
   const hasFacets = !isSQL && facetFields.length > 0;
@@ -181,9 +183,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {hasReq && (
             <Section
               title="Request body"
-              action={<CopyButton label="request body" text={() => ev.req_body!} />}
+              action={
+                <CopyButton
+                  label="request body"
+                  text={() => splitBodyCapture(ev.req_body ?? "", ev.req_body_state).text}
+                />
+              }
             >
-              <HttpBody text={ev.req_body!} />
+              <HttpBody text={ev.req_body ?? ""} state={ev.req_body_state} />
             </Section>
           )}
           {hasRespH && (
@@ -199,9 +206,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {hasResp && (
             <Section
               title={`Response body${status ? ` (${status})` : ""}`}
-              action={<CopyButton label="response body" text={() => ev.resp_body!} />}
+              action={
+                <CopyButton
+                  label="response body"
+                  text={() => splitBodyCapture(ev.resp_body ?? "", ev.resp_body_state).text}
+                />
+              }
             >
-              <HttpBody text={ev.resp_body!} />
+              <HttpBody text={ev.resp_body ?? ""} state={ev.resp_body_state} />
             </Section>
           )}
         </div>
@@ -804,13 +816,22 @@ function CapBadge() {
 function CaptureStateBadge({ state }: { state: BodyCaptureState }) {
   if (state === "complete") return null;
   const aborted = state === "aborted";
+  const unknown = state === "unknown";
   return (
     <div
       className={`mb-2 inline-block rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider ${
-        aborted ? "bg-danger-500/15 text-danger-500" : "bg-amber-500/15 text-amber-600"
+        aborted
+          ? "bg-danger-500/15 text-danger-500"
+          : unknown
+            ? "bg-canvas-dark text-text-subtle"
+            : "bg-amber-500/15 text-amber-600"
       }`}
     >
-      {aborted ? "aborted — body did not finish" : "incomplete — body was still streaming"}
+      {aborted
+        ? "aborted — body did not finish"
+        : unknown
+          ? "completion unknown — legacy capture"
+          : "incomplete — body was still streaming"}
     </div>
   );
 }
@@ -824,13 +845,13 @@ function CaptureBadges({ capped, state }: { capped: boolean; state: BodyCaptureS
   );
 }
 
-function HttpBody({ text: rawText }: { text: string }) {
-  if (!rawText) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
-  const { text, capped, state } = splitBodyCapture(rawText);
+function HttpBody({ text: rawText, state: storedState }: { text: string; state?: string }) {
+  const { text, capped, state } = splitBodyCapture(rawText, storedState);
   if (!text) {
     return (
       <div className="px-4 py-3 text-xs text-text-subtle">
         <CaptureBadges capped={capped} state={state} />
+        {!capped && state === "complete" && "(empty)"}
       </div>
     );
   }
