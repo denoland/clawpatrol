@@ -45,7 +45,7 @@ func init() {
 	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
 }
 
-func runRunTsnet(args []string) {
+func runRunTsnet(args []string, envOpts runEnvFlags) {
 	warnIfOnGatewayHost()
 
 	if _, err := os.Stat(macHelperPath); err != nil {
@@ -135,7 +135,7 @@ func runRunTsnet(args []string) {
 	all := append([]string{"run", "--"}, args...)
 	c := exec.Command(macHelperPath, all...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	c.Env = os.Environ()
+	c.Env = sanitizedChildEnv(os.Environ(), envOpts)
 	if err := c.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

@@ -64,7 +64,7 @@ func sudoSetupAvailable() bool {
 
 // runViaSudo ensures the per-host daemon is up (as this user), then
 // launches the privileged setup helper under sudo and waits on it.
-func runViaSudo(cmd []string) {
+func runViaSudo(cmd []string, envOpts runEnvFlags) {
 	// The helper connects to the daemon but must never spawn one (a
 	// root-spawned daemon would own state in the wrong home). Ensure
 	// it's running here, as this user. The daemon is persistent
@@ -80,7 +80,7 @@ func runViaSudo(cmd []string) {
 	// user's env. Capture it — after the OAuth shim, so CLAUDE_CONFIG_DIR
 	// is included — into a 0600 file the helper reads and deletes.
 	installClaudeCodeOAuthShim(cmd)
-	envFile, err := writePrivilegedEnvFile(os.Environ())
+	envFile, err := writePrivilegedEnvFile(sanitizedChildEnv(os.Environ(), envOpts))
 	if err != nil {
 		fail("env file: %v", err)
 	}

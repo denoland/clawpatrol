@@ -372,6 +372,7 @@ func applyEnvPushdownVars(vars []pushdownEnvVar) {
 		return
 	}
 	for _, ev := range vars {
+		recordPushedRunEnv(ev.Name, ev.Value)
 		if !clawpatrolCAVarNames[ev.Name] && os.Getenv(ev.Name) != "" {
 			continue
 		}
