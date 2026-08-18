@@ -438,7 +438,7 @@ credential "telegram_bot_token" "example" {}
 
 Block syntax: `endpoint "<type>" "<name>" { ... }`
 
-Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`remote_mcp`](#endpoint-remotemcp), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
 
@@ -567,6 +567,23 @@ Family: `sql`.
 ```hcl
 endpoint "postgres" "example" {
   host = "db.internal:5432"
+}
+```
+
+### `endpoint "remote_mcp" "<name>"`
+
+Family: `mcp`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | `string` | yes | The full MCP endpoint URL (absolute https). Its host is indexed for SNI dispatch and its path scopes which requests on that host run the MCP facet. |
+| `transport` | `string` | no | An advisory hint about the MCP transport the agent uses (auto \| streamable_http \| sse). The gateway never rewrites the agent's transport; this is reserved for future reporting. |
+| `protocol_version` | `string` | no | Optionally pins the MCP protocol version for reporting / documentation. |
+| `hosts` | `[]string` | no | Additional hostnames (or host:port pairs) this endpoint also intercepts beyond the URL host — an advanced override. |
+
+```hcl
+endpoint "remote_mcp" "example" {
+  url = "example"
 }
 ```
 

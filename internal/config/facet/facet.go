@@ -162,6 +162,19 @@ func Lookup(name string) Runtime {
 	return registry.byName[name]
 }
 
+// IsHTTPSMITMFamily reports whether the facet registered for family
+// drives its wire through the HTTPS MITM handler (Transport() ==
+// "https-mitm"). The gateway dispatch and config tooling use this to
+// route a TLS connection without switching on hardcoded family strings
+// — http, k8s, and mcp all answer true.
+func IsHTTPSMITMFamily(family string) bool {
+	if family == "" {
+		return false
+	}
+	f := Lookup(family)
+	return f != nil && f.Transport() == "https-mitm"
+}
+
 // All returns every registered facet, sorted by Name. Stable order
 // matters for golden tests and for deterministic config dumps.
 func All() []Runtime {
