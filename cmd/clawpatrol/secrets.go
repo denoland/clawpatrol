@@ -153,6 +153,67 @@ func credentialUpdatedAt(db *sql.DB, credential string) int64 {
 	return best / int64(time.Second)
 }
 
+// credentialVerification is the dashboard-facing view of a credential's
+// most recent verification attempt (Slack auth.test, Discord users/@me,
+// …). Empty Status means no verification has run for this credential —
+// either the plugin doesn't implement runtime.CredentialVerifier or the
+// credential was last saved before the verification path was wired in.
+type credentialVerification struct {
+	Status     string // 'ok' | 'failed'
+	Error      string
+	VerifiedNS int64
+}
+
+// setCredentialVerification upserts the verification outcome for a
+// credential. Called by apiCredentialsSet after running a synchronous
+// VerifyCredential probe against the freshly-saved slot bytes.
+func setCredentialVerification(db *sql.DB, credential, status, errMsg string) error {
+	if db == nil {
+		return fmt.Errorf("no db")
+	}
+	_, err := db.Exec(
+		`INSERT INTO credential_verifications (credential, status, error, verified_ns)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(credential) DO UPDATE SET
+		   status = excluded.status,
+		   error = excluded.error,
+		   verified_ns = excluded.verified_ns`,
+		credential, status, errMsg, time.Now().UnixNano(),
+	)
+	return err
+}
+
+// clearCredentialVerification drops the verification record for a
+// credential. Called by the disconnect path so a re-connect starts
+// from a clean slate instead of inheriting the previous outcome.
+func clearCredentialVerification(db *sql.DB, credential string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM credential_verifications WHERE credential = ?`, credential)
+	return err
+}
+
+// getCredentialVerification reads the most recent verification outcome
+// for a credential. Returns zero value + ok=false when no record
+// exists yet.
+func getCredentialVerification(db *sql.DB, credential string) (credentialVerification, bool) {
+	if db == nil {
+		return credentialVerification{}, false
+	}
+	var v credentialVerification
+	var errNull sql.NullString
+	err := db.QueryRow(
+		`SELECT status, error, verified_ns FROM credential_verifications WHERE credential = ?`,
+		credential,
+	).Scan(&v.Status, &errNull, &v.VerifiedNS)
+	if err != nil {
+		return credentialVerification{}, false
+	}
+	v.Error = errNull.String
+	return v, true
+}
+
 // credentialSlotPresence returns the set of slots persisted for the
 // named credential. Used by the dashboard to render per-slot
 // "filled / empty" status without leaking the secret bytes.

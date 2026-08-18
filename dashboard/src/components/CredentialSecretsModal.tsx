@@ -38,7 +38,17 @@ export function CredentialSecretsModal({
     setSaving(true);
     setErr(null);
     try {
-      await setCredentialSlots(integration.id, values);
+      const result = await setCredentialSlots(integration.id, values);
+      // Backend verification probe (Slack auth.test, Discord users/@me,
+      // …) failed: keep the modal open and show the upstream reason
+      // inline so the operator can fix the token without re-opening
+      // the form. Trigger a refresh too so the dashboard badge flips
+      // to the failed state.
+      if (result.verified === false) {
+        onSaved();
+        setErr(`Verification failed: ${result.error ?? "unknown error"}`);
+        return;
+      }
       onSaved();
       onClose();
     } catch (e) {

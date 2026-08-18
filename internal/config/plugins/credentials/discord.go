@@ -10,11 +10,20 @@ package credentials
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+)
+
+var (
+	discordUsersMeURL = "https://discord.com/api/v10/users/@me"
+	discordHTTPClient = &http.Client{Timeout: 5 * time.Second}
 )
 
 // phDiscord is intentionally token-shaped enough for Discord SDKs and
@@ -74,10 +83,44 @@ func (*DiscordBotToken) EnvVars() []config.EnvVar {
 	}
 }
 
+// VerifyCredential confirms the bot token is live by calling
+// Discord's GET /users/@me. Returns nil on success or an error
+// carrying the Discord error message on failure.
+func (*DiscordBotToken) VerifyCredential(ctx context.Context, sec runtime.Secret) error {
+	tok := discordBotTokenSecret(sec)
+	if tok == "" {
+		return fmt.Errorf("no bot token to verify")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", discordUsersMeURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bot "+tok)
+	resp, err := discordHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	var parsed struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	if parsed.Message != "" {
+		return fmt.Errorf("discord users/@me: %s", parsed.Message)
+	}
+	return fmt.Errorf("discord users/@me: HTTP %d", resp.StatusCode)
+}
+
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ runtime.WebSocketCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ config.EnvPushdownProvider = (*DiscordBotToken)(nil)
+	var _ runtime.CredentialVerifier = (*DiscordBotToken)(nil)
 	config.Register(&config.Plugin{
 		Kind:           config.KindCredential,
 		Type:           "discord_bot_token",

@@ -42,6 +42,7 @@ type SlackTokens struct{}
 var (
 	slackPostMessageURL     = "https://slack.com/api/chat.postMessage"
 	slackUpdateMessageURL   = "https://slack.com/api/chat.update"
+	slackAuthTestURL        = "https://slack.com/api/auth.test"
 	slackHTTPClient         = &http.Client{Timeout: 5 * time.Second}
 	slackNotifyRetryBackoff = 500 * time.Millisecond
 )
@@ -914,11 +915,54 @@ func slackFormDecode(s string) (string, error) {
 	return sb.String(), nil
 }
 
+// VerifyCredential calls Slack's auth.test with the bot token (or
+// app token if no bot is set). Returns nil on success; on failure,
+// returns the slack error code (e.g. "invalid_auth") so the
+// dashboard can surface it inline.
+func (s *SlackTokens) VerifyCredential(ctx context.Context, sec runtime.Secret) error {
+	bot := sec.Extras["bot"]
+	app := sec.Extras["app"]
+	tok := bot
+	if tok == "" {
+		tok = app
+	}
+	if tok == "" && len(sec.Bytes) > 0 {
+		tok = string(sec.Bytes)
+	}
+	if tok == "" {
+		return fmt.Errorf("no bot token to verify")
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", slackAuthTestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := slackHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var parsed struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	if resp.StatusCode >= 400 || !parsed.OK {
+		if parsed.Error != "" {
+			return fmt.Errorf("slack auth.test: %s", parsed.Error)
+		}
+		return fmt.Errorf("slack auth.test: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func init() {
 	var (
 		_ runtime.HTTPCredentialRuntime = (*SlackTokens)(nil)
 		_ runtime.HITLNotifier          = (*SlackTokens)(nil)
 		_ runtime.WebhookProvider       = (*SlackTokens)(nil)
+		_ runtime.CredentialVerifier    = (*SlackTokens)(nil)
 	)
 	config.Register(&config.Plugin{
 		Kind:           config.KindCredential,
