@@ -8,12 +8,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // KubernetesEndpoint is part of the clawpatrol plugin API.
@@ -38,6 +40,30 @@ type KubernetesEndpoint struct {
 	ClusterName string `hcl:"cluster_name,optional"`
 	// Region is the AWS region used by aws_credential for EKS auth.
 	Region string `hcl:"region,optional"`
+}
+
+// KubernetesEndpointRuntime selects a profile-bound credential from the
+// bearer placeholder that a Kubernetes client sends in Authorization.
+type KubernetesEndpointRuntime struct{}
+
+// DetectPlaceholder is part of the clawpatrol plugin API. Kubernetes bearer
+// placeholders must match the complete bearer value. This prevents one
+// placeholder from selecting another credential when their values overlap.
+func (KubernetesEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
+	if req == nil || req.Headers == nil {
+		return ""
+	}
+	scheme, token, ok := strings.Cut(strings.TrimSpace(req.Headers.Get("Authorization")), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	token = strings.TrimSpace(token)
+	for _, candidate := range candidates {
+		if candidate != "" && token == candidate {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
@@ -101,11 +127,13 @@ func validateKubernetesEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Di
 }
 
 func init() {
+	var _ runtime.PlaceholderDetector = KubernetesEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "kubernetes",
 		Family:   "k8s",
 		New:      func() any { return &KubernetesEndpoint{} },
+		Runtime:  KubernetesEndpointRuntime{},
 		Validate: validateKubernetesEndpoint,
 		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {

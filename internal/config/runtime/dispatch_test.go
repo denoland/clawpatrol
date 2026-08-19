@@ -858,6 +858,51 @@ profile "default" {
 	}
 }
 
+func TestResolveCredentialKubernetesPlaceholderWithFallback(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "kubernetes" "cluster" {
+  server = "cluster.example.com"
+}
+credential "bearer_token" "reader"   { endpoint = kubernetes.cluster }
+credential "bearer_token" "admin"    { endpoint = kubernetes.cluster }
+credential "bearer_token" "fallback" { endpoint = kubernetes.cluster }
+profile "default" {
+  credentials = [
+    { credential = bearer_token.reader, placeholder = "PH_k8s" },
+    { credential = bearer_token.admin, placeholder = "PH_k8s_admin" },
+    bearer_token.fallback,
+  ]
+}
+`)
+	ep := cp.Endpoints["cluster"]
+	resolve := func(authorization string) string {
+		headers := make(http.Header)
+		if authorization != "" {
+			headers.Set("Authorization", authorization)
+		}
+		credential := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "k8s", Headers: headers})
+		if credential == nil {
+			return ""
+		}
+		return credential.Credential.Symbol.Name
+	}
+
+	tests := []struct {
+		authorization string
+		want          string
+	}{
+		{authorization: "Bearer PH_k8s", want: "reader"},
+		{authorization: "Bearer PH_k8s_admin", want: "admin"},
+		{authorization: "Bearer PH_unknown", want: "fallback"},
+		{want: "fallback"},
+	}
+	for _, tt := range tests {
+		if got := resolve(tt.authorization); got != tt.want {
+			t.Errorf("Authorization %q selected %q, want %q", tt.authorization, got, tt.want)
+		}
+	}
+}
+
 // TestResolveCredentialDatabaseOnly: SQL credentials dispatch on
 // req.Database alone — the discriminator lives on the credential
 // body's `database` attr, not on the profile entry.
