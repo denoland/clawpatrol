@@ -375,11 +375,20 @@ type Gateway struct {
 	blobs runtime.BlobStore
 	// pluginMgr supervises the external plugin subprocesses; the
 	// dashboard reads it for the Plugins page.
-	pluginMgr *extplugin.Manager
-	oauth     *OAuthRegistry
-	agents    *AgentRegistry
-	hitl      *HITLRegistry
-	onboard   *onboardRegistry
+	pluginMgr    *extplugin.Manager
+	oauth        *OAuthRegistry
+	agents       *AgentRegistry
+	hitl         *HITLRegistry
+	onboard      *onboardRegistry
+	enrollmentMu sync.Mutex
+	// enrollLive tracks per-peer WireGuard rx_bytes progress for the
+	// enrollment liveness reaper. Guarded by enrollmentMu.
+	enrollLive map[string]enrollmentLiveness
+	// k8sVerifier lets tests inject a fake Kubernetes verifier. In
+	// production it stays nil and each register request builds a
+	// short-lived in-cluster client, which re-reads the rotating
+	// ServiceAccount token, so there is nothing to cache here.
+	k8sVerifier k8sRegistrationVerifier
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
@@ -3106,6 +3115,10 @@ func main() {
 		runJoin(os.Args[2:])
 	case "run":
 		runRun(os.Args[2:])
+	case "bridge":
+		// Foreground data plane: self-enroll through an authorizer, bring up
+		// and host a userspace WireGuard tunnel, route the netns, stay up.
+		runBridge(os.Args[2:])
 	case "daemon-internal":
 		// internal: re-exec'd by `clawpatrol run` (Linux only) to host
 		// the per-user tsnet daemon. Hidden from usage(); name carries
@@ -3218,6 +3231,9 @@ usage:
                                          with no public URL (creds discarded
                                          once join completes)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
+  clawpatrol bridge --authorizer <type>/<name> [flags]
+                                         resident sidecar: self-enroll, host the
+                                         WireGuard tunnel, route the netns
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
@@ -3485,6 +3501,16 @@ func runGateway(args []string) {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
+		// Restore any persisted enrolled peers into the device + registry,
+		// then run the liveness reaper. Both are always-on once WireGuard is
+		// up: enrollment can be turned on by a later config reload, and any
+		// peers left behind must keep getting reaped after the feature is
+		// turned off. The reaper is a cheap no-op while there are none.
+		g.logEnrollmentReconcile(context.Background())
+		go g.startEnrollmentReaper(context.Background())
+		if cfg.IsEnrollmentEnabled() {
+			log.Printf("enrollment: enabled")
+		}
 		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
 		dashPort := portOf(dashListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {

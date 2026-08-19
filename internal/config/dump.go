@@ -161,6 +161,9 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Tunnels); v != nil {
 		out["tunnels"] = v
 	}
+	if v := dumpEntityMap(p.Enrollments); v != nil {
+		out["enrollments"] = v
+	}
 	if v := dumpProfiles(p.Profiles); v != nil {
 		out["profiles"] = v
 	}

@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"expvar"
@@ -53,6 +54,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
+
+// allocateWGPeerMu serializes selection with WireGuard and database updates.
+var allocateWGPeerMu sync.Mutex
 
 // defaultWGListenPort is the UDP port the gateway binds for WG peers
 // when wireguard.listen_port is unset. Also the port advertised to
@@ -309,6 +313,9 @@ var (
 func setWGServer(s *WGServer) { globalWG = s }
 func setDB(d *sql.DB)         { globalDB = d }
 
+// GatewayTunnelIP is the gateway's own address inside the WireGuard subnet
+func (s *WGServer) GatewayTunnelIP() netip.Addr { return s.serverIP }
+
 // StartWGServer brings up a userspace WG endpoint listening on
 // 0.0.0.0:<ListenPort>. Server private key is read from the
 // wg_server_key sqlite row; if missing, generated and persisted on
@@ -376,23 +383,23 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 // onboards otherwise win the trie race on restart and silently drop
 // the current client's traffic.
 func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	return s.addPeerLocked(pubkeyHex, peerIP)
+}
+
+// addPeerLocked updates the WireGuard device and persists its allocation.
+// Caller holds allocateWGPeerMu.
+func (s *WGServer) addPeerLocked(pubkeyHex, peerIP string) error {
 	if s.db != nil {
-		rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, pubkeyHex)
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			var stale []string
-			for rows.Next() {
-				var k string
-				if rows.Scan(&k) == nil {
-					stale = append(stale, k)
-				}
-			}
-			if err := rows.Err(); err != nil {
-				stale = nil
-			}
-			for _, k := range stale {
-				_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
-				_, _ = s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k)
+		stale, err := peerKeysForIPExcept(s.db, peerIP, pubkeyHex)
+		if err != nil {
+			return fmt.Errorf("query existing peer for %s: %w", peerIP, err)
+		}
+		for _, k := range stale {
+			_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
+			if _, err := s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k); err != nil {
+				return fmt.Errorf("delete replaced peer %s: %w", k, err)
 			}
 		}
 	}
@@ -408,9 +415,99 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 			INSERT INTO wg_peers (pubkey, ip, added_ns) VALUES (?, ?, ?)
 			ON CONFLICT(pubkey) DO UPDATE SET ip = excluded.ip
 		`, pubkeyHex, peerIP, time.Now().UnixNano())
+		if err != nil {
+			_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubkeyHex))
+		}
 		return err
 	}
 	return nil
+}
+
+func peerKeysForIPExcept(db *sql.DB, peerIP, exceptPubkey string) ([]string, error) {
+	rows, err := db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, exceptPubkey)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// allocatePeer selects and persists a free client /32 as one critical section.
+func (s *WGServer) allocatePeer(ts JoinConfig, pubkeyHex string) (string, error) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	ip, err := allocateWGPeerIPLocked(s.db, ts)
+	if err != nil {
+		return "", err
+	}
+	if err := s.addPeerLocked(pubkeyHex, ip); err != nil {
+		return "", fmt.Errorf("add peer %s: %w", ip, err)
+	}
+	return ip, nil
+}
+
+// allocateWGPeerIPLocked returns the next free client /32 from WGSubnetCIDR.
+// Caller holds allocateWGPeerMu, and must persist the result before releasing
+// it so another caller cannot select the same address.
+func allocateWGPeerIPLocked(db *sql.DB, ts JoinConfig) (string, error) {
+	used := map[string]bool{}
+	if db != nil {
+		var err error
+		used, err = usedWGPeerIPs(db)
+		if err != nil {
+			return "", fmt.Errorf("read wireguard peer allocations: %w", err)
+		}
+	}
+	_, cidr, err := net.ParseCIDR(ts.WGSubnetCIDR)
+	if err != nil {
+		return "", err
+	}
+	base := cidr.IP.To4()
+	if base == nil {
+		return "", fmt.Errorf("wireguard subnet must be IPv4")
+	}
+	ones, _ := cidr.Mask.Size()
+	size := uint32(1) << uint(32-ones)
+	if size < 4 {
+		return "", fmt.Errorf("wireguard subnet %s is too small", ts.WGSubnetCIDR)
+	}
+	network := binary.BigEndian.Uint32(base)
+	// Skip the network address (offset 0), the gateway's own .1 (offset 1),
+	// and the broadcast (offset size-1).
+	for off := uint32(2); off < size-1; off++ {
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], network+off)
+		ip := net.IP(b[:]).String()
+		if !used[ip] {
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("wireguard subnet %s exhausted", ts.WGSubnetCIDR)
+}
+
+func usedWGPeerIPs(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query("SELECT ip FROM wg_peers")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	used := map[string]bool{}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		used[ip] = true
+	}
+	return used, rows.Err()
 }
 
 // wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4
@@ -625,6 +722,25 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	<-done
 }
 
+// wgDevPeerStat is the per-peer liveness subset of the device's IpcGet
+type wgDevPeerStat struct {
+	rxBytes       uint64
+	lastHandshake time.Time
+}
+
+// PeerStats returns per-peer receive + handshake stats keyed by hex public
+// key, parsed from the device's UAPI dump. nil when the device is down.
+func (s *WGServer) PeerStats() map[string]wgDevPeerStat {
+	if s == nil || s.dev == nil {
+		return nil
+	}
+	uapi, err := s.dev.IpcGet()
+	if err != nil {
+		return nil
+	}
+	return parseAllPeerStats(uapi)
+}
+
 func (s *WGServer) loadPeers() map[string]string {
 	out := map[string]string{}
 	if s.db == nil {
@@ -656,6 +772,13 @@ func (s *WGServer) loadPeers() map[string]string {
 // device from the dashboard so the tunnel + the trie entry don't
 // linger after the (owner, hostname) row is gone.
 func (s *WGServer) RevokePeerByIP(ip string) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	s.revokePeerByIPLocked(ip)
+}
+
+// revokePeerByIPLocked removes an allocation while holding allocateWGPeerMu.
+func (s *WGServer) revokePeerByIPLocked(ip string) {
 	if s == nil || s.db == nil {
 		return
 	}
@@ -764,7 +887,6 @@ func hexToB64(h string) (string, error) {
 
 type wireguardOnboarder struct {
 	ts JoinConfig
-	mu sync.Mutex
 }
 
 // wgClientEndpoint returns the host:port string clients should put in
@@ -839,14 +961,14 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 		// one row per device. AddPeer evicts the stale pubkey on the same
 		// IP from both the wg-go trie and wg_peers.
 		ip = reuseIP
+		if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
+			return "", "", "", fmt.Errorf("wg add peer: %w", err)
+		}
 	} else {
-		ip, err = w.allocateIP()
+		ip, err = globalWG.allocatePeer(w.ts, clientPubHex)
 		if err != nil {
 			return "", "", "", err
 		}
-	}
-	if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
-		return "", "", "", fmt.Errorf("wg add peer: %w", err)
 	}
 	serverPub, err := globalWG.PublicKey()
 	if err != nil {
@@ -882,40 +1004,4 @@ func (w *wireguardOnboarder) iface() string {
 		return w.ts.WGInterface
 	}
 	return "clawpatrol"
-}
-
-// allocateIP grabs the next free IP from WGSubnetCIDR. The allocation
-// set is derived from wg_peers (one row per active peer); a fresh DB
-// = a fresh subnet. AddPeer commits the (pubkey, ip) row.
-func (w *wireguardOnboarder) allocateIP() (string, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	used := map[string]bool{}
-	if globalDB != nil {
-		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			for rows.Next() {
-				var ip string
-				if rows.Scan(&ip) == nil {
-					used[ip] = true
-				}
-			}
-			if err := rows.Err(); err != nil {
-				used = map[string]bool{}
-			}
-		}
-	}
-	_, cidr, err := net.ParseCIDR(w.ts.WGSubnetCIDR)
-	if err != nil {
-		return "", err
-	}
-	first := cidr.IP.To4()
-	for i := 2; i < 255; i++ {
-		ip := net.IPv4(first[0], first[1], first[2], byte(i)).String()
-		if !used[ip] {
-			return ip, nil
-		}
-	}
-	return "", fmt.Errorf("wireguard subnet %s exhausted", w.ts.WGSubnetCIDR)
 }

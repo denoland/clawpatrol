@@ -1,0 +1,12 @@
+# These names are referenced by gateway-config.yaml, gateway-rbac.yaml,
+# gateway-services.yaml, and agent.yaml. Change them through an overlay and
+# update all cross-namespace subjects and Service DNS names at the same time.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clawpatrol
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents

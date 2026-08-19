@@ -1,0 +1,78 @@
+# Recommended (defense-in-depth) egress NetworkPolicy for agent pods.
+#
+# This is NOT part of the default Kustomization base and nothing in the
+# enrollment path depends on it. The bridge already fails closed at the
+# routing layer. This policy adds a second, cluster-enforced layer that allows
+# only the egress paths needed for enrollment and the WireGuard tunnel.
+#
+# REVIEW THESE FIXED DEPLOYMENT ASSUMPTIONS BEFORE APPLYING:
+#
+# Workload selection:
+#   - Policy namespace: `agents`.
+#   - Pod selector: `clawpatrol.dev/profile: default`.
+#   - Every matching Pod becomes default-deny for egress except for the rules
+#     below. Narrow or broaden the selector to match the workloads that should
+#     use Clawpatrol.
+#
+# Gateway path:
+#   - Gateway namespace: `clawpatrol`, selected through the standard
+#     `kubernetes.io/metadata.name` namespace label.
+#   - Gateway Pod label: `app: clawpatrol-gateway`.
+#   - Gateway API: TCP 8080.
+#   - WireGuard endpoint: UDP 51820.
+#
+# DNS path:
+#   - DNS namespace: `kube-system`.
+#   - DNS Pod label: `k8s-app: kube-dns`.
+#   - DNS ports: UDP and TCP 53.
+#   - Replace these selectors if the cluster uses different CoreDNS/kube-dns
+#     labels or an external DNS service.
+#
+# Enforcement behavior:
+#   - The CNI must enforce NetworkPolicy, such as Calico or Cilium. Some CNIs,
+#     including kind's default kindnet, do not; this manifest is inert there.
+#   - Once the tunnel is up, workload traffic leaves the Pod as WireGuard
+#     traffic to the gateway. If the tunnel drops, the bridge removes the
+#     default route, so traffic also fails closed at the routing layer.
+#   - Add explicit rules before applying if matching workloads need other
+#     direct cluster services, metadata endpoints, or control planes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clawpatrol-agent-egress
+  namespace: agents
+spec:
+  # Scope to enrollment agents. Narrow this podSelector if the namespace also
+  # runs pods that should keep unrestricted egress.
+  podSelector:
+    matchLabels:
+      clawpatrol.dev/profile: default
+  policyTypes:
+    - Egress
+  egress:
+    # clawpatrol gateway: API + WireGuard endpoint.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: clawpatrol
+          podSelector:
+            matchLabels:
+              app: clawpatrol-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: UDP
+          port: 51820
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

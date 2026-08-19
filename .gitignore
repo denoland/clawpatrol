@@ -30,3 +30,4 @@ macos/netstack/libwgnetstack.h
 macos/netstack/wgnetstack
 *.swp
 /plugin-example/plugin-example
+e2e/.e2e-runtime.*/

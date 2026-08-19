@@ -114,6 +114,185 @@ func TestCompile(t *testing.T) {
 	}
 }
 
+func TestEnrollmentConfigValidation(t *testing.T) {
+	// Enrollment is a top-level block (sibling of profile/credential), not
+	// nested in gateway { ... }.
+	const enrollBlock = `enrollment "kubernetes_token_review" "agents" {
+  audience = "clawpatrol"
+
+  match {
+    namespace       = "agents"
+    service_account = "agent-runner"
+    profile_label   = "clawpatrol.dev/profile"
+    profiles        = ["default"]
+  }
+
+  keepalive_interval = "20s"
+  keepalive_reap_count = 6
+}
+`
+	valid := `gateway {
+  state_dir = "/opt/clawpatrol"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint = "clawpatrol-wg.clawpatrol.svc:51820"
+  }
+}
+
+` + enrollBlock + `
+profile "default" { credentials = [] }
+`
+	gw, diags := config.LoadBytes([]byte(valid), "k8s.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("valid config diagnostics: %v", diags)
+	}
+	if !gw.IsEnrollmentEnabled() {
+		t.Fatal("enrollment should be enabled")
+	}
+	ent, ok := gw.Policy.Enrollments["agents"]
+	if !ok {
+		t.Fatalf("enrollment %q not loaded; have %v", "agents", gw.Policy.Enrollments)
+	}
+	if ent.Plugin.Type != "kubernetes_token_review" {
+		t.Fatalf("enrollment type = %q, want kubernetes_token_review", ent.Plugin.Type)
+	}
+	ke, ok := ent.Body.(*config.K8sEnrollment)
+	if !ok {
+		t.Fatalf("enrollment body = %T, want *config.K8sEnrollment", ent.Body)
+	}
+	if ke.KeepaliveInterval != "20s" || ke.KeepaliveReapCount == nil || *ke.KeepaliveReapCount != 6 {
+		t.Fatalf("keepalive/reap = %q/%v, want 20s/6", ke.KeepaliveInterval, ke.KeepaliveReapCount)
+	}
+	if len(ke.Matches) != 1 || ke.Matches[0].ProfileLabel != "clawpatrol.dev/profile" {
+		t.Fatalf("unexpected matches: %+v", ke.Matches)
+	}
+
+	// The compiled policy exposes the parsed, profile-resolved form.
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	enrollment := cp.EnrollmentsByName["agents"]
+	if enrollment == nil {
+		t.Fatalf("compiled enrollment %q missing", "agents")
+	}
+	if enrollment.Type != "kubernetes_token_review" {
+		t.Fatalf("compiled enrollment type = %q, want kubernetes_token_review", enrollment.Type)
+	}
+	enr, ok := enrollment.Body.(*config.CompiledK8sEnrollment)
+	if !ok {
+		t.Fatalf("compiled enrollment body = %T, want *config.CompiledK8sEnrollment", enrollment.Body)
+	}
+	if enr.Audience != "clawpatrol" || len(enr.Matches) != 1 {
+		t.Fatalf("unexpected compiled enrollment body: %+v", enr)
+	}
+	// Liveness is derived and shared: keepalive_interval × keepalive_reap_count = 20s×6 = 2m.
+	l := enrollment.Liveness
+	if l.KeepaliveInterval != 20*time.Second || l.ReapCount != 6 || l.LivenessWindow() != 2*time.Minute {
+		t.Fatalf("compiled keepalive/reap/liveness = %s/%d/%s, want 20s/6/2m",
+			l.KeepaliveInterval, l.ReapCount, l.LivenessWindow())
+	}
+
+	dump, err := gw.Dump()
+	if err != nil {
+		t.Fatalf("dump: %v", err)
+	}
+	if !strings.Contains(string(dump), `"enrollments"`) {
+		t.Fatalf("dump does not use enrollment shape:\n%s", dump)
+	}
+
+	// profile_label defaults to clawpatrol.dev/profile when omitted.
+	noLabel := strings.Replace(valid, `    profile_label   = "clawpatrol.dev/profile"`+"\n", "", 1)
+	gw2, diags := config.LoadBytes([]byte(noLabel), "k8s-nolabel.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("no-label config diagnostics: %v", diags)
+	}
+	ke2 := gw2.Policy.Enrollments["agents"].Body.(*config.K8sEnrollment)
+	if ke2.Matches[0].ProfileLabel != config.K8sDefaultProfileLabel {
+		t.Fatalf("default profile_label = %q, want %q", ke2.Matches[0].ProfileLabel, config.K8sDefaultProfileLabel)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing audience",
+			body: strings.Replace(valid, `  audience = "clawpatrol"`+"\n", "", 1),
+			want: `The argument "audience" is required`,
+		},
+		{
+			name: "keepalive_interval below minimum",
+			body: strings.Replace(valid, `keepalive_interval = "20s"`, `keepalive_interval = "5s"`, 1),
+			want: "Invalid enrollment keepalive_interval",
+		},
+		{
+			name: "keepalive_reap_count of 1 rejected",
+			body: strings.Replace(valid, `keepalive_reap_count = 6`, `keepalive_reap_count = 1`, 1),
+			want: "Invalid enrollment keepalive_reap_count",
+		},
+		{
+			name: "missing match",
+			body: strings.Replace(valid, `  match {
+    namespace       = "agents"
+    service_account = "agent-runner"
+    profile_label   = "clawpatrol.dev/profile"
+    profiles        = ["default"]
+  }
+`, "", 1),
+			want: "Missing enrollment match",
+		},
+		{
+			name: "match missing profiles",
+			body: strings.Replace(valid, `    profiles        = ["default"]`+"\n", "", 1),
+			want: `The argument "profiles" is required`,
+		},
+		{
+			name: "unknown profile",
+			body: strings.Replace(valid, `profiles        = ["default"]`, `profiles        = ["ghost"]`, 1),
+			want: "Unknown enrollment profile",
+		},
+		{
+			name: "no wireguard",
+			body: strings.Replace(valid, `  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint = "clawpatrol-wg.clawpatrol.svc:51820"
+  }
+`, "", 1),
+			want: "enrollment requires a wireguard block",
+		},
+		{
+			name: "duplicate enrollment",
+			body: strings.Replace(valid, enrollBlock, enrollBlock+enrollBlock, 1),
+			want: "Duplicate enrollment name",
+		},
+		{
+			name: "unsupported type",
+			body: strings.Replace(valid, `enrollment "kubernetes_token_review" "agents"`, `enrollment "oidc_jwt" "agents"`, 1),
+			want: "Unknown enrollment type",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, diags := config.LoadBytes([]byte(tc.body), tc.name+".hcl")
+			if !diags.HasErrors() {
+				t.Fatalf("expected diagnostics")
+			}
+			found := false
+			for _, d := range diags {
+				if strings.Contains(d.Summary, tc.want) || strings.Contains(d.Detail, tc.want) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("diagnostics = %v, want %q", diags, tc.want)
+			}
+		})
+	}
+}
+
 // TestCompileWildcardHosts verifies that wildcard hosts are accepted,
 // land in HostPatterns (not HostIndex), and that malformed wildcards
 // or within-endpoint duplicates are rejected at load time.
@@ -503,5 +682,95 @@ func TestCompileFullSpec(t *testing.T) {
 	}
 	if totalRules < 50 {
 		t.Errorf("expected ~50+ rule attachments, got %d", totalRules)
+	}
+}
+
+// TestEnrollmentLivenessDerivation covers the derived liveness window:
+// defaults when the knobs are omitted, and keepalive_reap_count = 0 disabling
+// reaping (LivenessWindow() == 0).
+func TestEnrollmentLivenessDerivation(t *testing.T) {
+	base := func(knobs string) string {
+		return `gateway {
+  state_dir = "/opt/clawpatrol"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "clawpatrol-wg.clawpatrol.svc:51820"
+  }
+}
+
+enrollment "kubernetes_token_review" "agents" {
+  audience = "clawpatrol"
+  match {
+    namespace       = "agents"
+    service_account = "agent-runner"
+    profiles        = ["default"]
+  }
+` + knobs + `}
+
+profile "default" { credentials = [] }
+`
+	}
+
+	cases := []struct {
+		name           string
+		knobs          string
+		wantKeepalive  time.Duration
+		wantMultiplier int
+		wantLiveness   time.Duration
+	}{
+		{
+			name:           "defaults",
+			knobs:          "",
+			wantKeepalive:  config.EnrollmentDefaultKeepalive,
+			wantMultiplier: config.EnrollmentDefaultReapCount,
+			wantLiveness:   config.EnrollmentDefaultKeepalive * config.EnrollmentDefaultReapCount,
+		},
+		{
+			name:           "explicit",
+			knobs:          "  keepalive_interval = \"20s\"\n  keepalive_reap_count = 5\n",
+			wantKeepalive:  20 * time.Second,
+			wantMultiplier: 5,
+			wantLiveness:   100 * time.Second,
+		},
+		{
+			name:           "disabled",
+			knobs:          "  keepalive_reap_count = 0\n",
+			wantKeepalive:  config.EnrollmentDefaultKeepalive,
+			wantMultiplier: 0,
+			wantLiveness:   0, // reaping disabled
+		},
+		{
+			// No upper bound on keepalive_interval: a long interval is accepted
+			// (the 25s rekey-safety ceiling was lifted once the sidecar became
+			// the sole keepalive sender + ICMP-probe liveness).
+			name:           "long keepalive allowed",
+			knobs:          "  keepalive_interval = \"120s\"\n  keepalive_reap_count = 3\n",
+			wantKeepalive:  120 * time.Second,
+			wantMultiplier: 3,
+			wantLiveness:   6 * time.Minute,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, diags := config.LoadBytes([]byte(base(tc.knobs)), "k8s.hcl")
+			if diags.HasErrors() {
+				t.Fatalf("diagnostics: %v", diags)
+			}
+			cp, err := config.Compile(gw)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			enrollment := cp.EnrollmentsByName["agents"]
+			if enrollment == nil {
+				t.Fatal("compiled enrollment liveness missing")
+			}
+			l := enrollment.Liveness
+			if l.KeepaliveInterval != tc.wantKeepalive || l.ReapCount != tc.wantMultiplier || l.LivenessWindow() != tc.wantLiveness {
+				t.Fatalf("keepalive/reap/liveness = %s/%d/%s, want %s/%d/%s",
+					l.KeepaliveInterval, l.ReapCount, l.LivenessWindow(),
+					tc.wantKeepalive, tc.wantMultiplier, tc.wantLiveness)
+			}
+		})
 	}
 }

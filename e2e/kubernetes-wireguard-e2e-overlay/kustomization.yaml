@@ -1,0 +1,79 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../examples/kubernetes/kustomization
+  - http-echo.yaml
+
+# Swap the gateway config for the e2e one (short liveness window + *-e2e namespaces).
+# behavior: replace targets the base configMapGenerator by name+namespace;
+# the namespace is then renamed to clawpatrol-e2e by the patch below.
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: clawpatrol-config
+    namespace: clawpatrol
+    behavior: replace
+    files:
+      - gateway.hcl
+
+# Use the locally-built kind image instead of the published one. Applies to
+# every resource that references it (gateway StatefulSet, agent sidecar,
+# http-echo).
+images:
+  - name: ghcr.io/denoland/clawpatrol
+    newName: clawpatrol-kind-e2e
+    newTag: dev
+
+patches:
+  - target: { version: v1, kind: Namespace, name: clawpatrol }
+    patch: |-
+      - { op: replace, path: /metadata/name, value: clawpatrol-e2e }
+  - target: { version: v1, kind: Namespace, name: agents }
+    patch: |-
+      - { op: replace, path: /metadata/name, value: agents-e2e }
+  - target: { version: v1, kind: ConfigMap, name: clawpatrol-config }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  - target: { version: v1, kind: ServiceAccount, name: clawpatrol-gateway }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  - target: { version: v1, kind: ServiceAccount, name: agent-runner }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: agents-e2e }
+  - target: { group: apps, version: v1, kind: StatefulSet, name: clawpatrol-gateway }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  - target: { version: v1, kind: Service, name: clawpatrol-api }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  - target: { version: v1, kind: Service, name: clawpatrol-wg }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  - target: { group: rbac.authorization.k8s.io, version: v1, kind: ClusterRole, name: clawpatrol-tokenreview }
+    patch: |-
+      - { op: replace, path: /metadata/name, value: clawpatrol-tokenreview-e2e }
+  - target: { group: rbac.authorization.k8s.io, version: v1, kind: ClusterRoleBinding, name: clawpatrol-tokenreview }
+    patch: |-
+      - { op: replace, path: /metadata/name, value: clawpatrol-tokenreview-e2e }
+      - { op: replace, path: /roleRef/name, value: clawpatrol-tokenreview-e2e }
+      - { op: replace, path: /subjects/0/namespace, value: clawpatrol-e2e }
+  - target: { group: rbac.authorization.k8s.io, version: v1, kind: Role, name: clawpatrol-pod-reader }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: agents-e2e }
+  - target: { group: rbac.authorization.k8s.io, version: v1, kind: RoleBinding, name: clawpatrol-pod-reader }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: agents-e2e }
+      - { op: replace, path: /subjects/0/namespace, value: clawpatrol-e2e }
+  # Reuse the base sample agent as the e2e agent: move it to agents-e2e,
+  # repoint the sidecar initContainer at the e2e gateway, and give
+  # the agent container (container 0) the clawpatrol image so the in-pod
+  # assertions have ip/curl/nc (the base example keeps a minimal workload
+  # image). The images: transformer rewrites it to the local kind tag.
+  - target: { version: v1, kind: Pod, name: clawpatrol-agent-example }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: agents-e2e }
+      - op: replace
+        path: /spec/initContainers/0/args/1
+        value: --gateway-url=http://clawpatrol-api.clawpatrol-e2e.svc:8080
+      - { op: replace, path: /spec/containers/0/image, value: ghcr.io/denoland/clawpatrol:latest }

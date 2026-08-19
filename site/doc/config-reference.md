@@ -2,7 +2,7 @@
 
 A clawpatrol gateway config mixes **operational** settings in the
 required top-level `gateway { ... }` block with **policy** blocks.
-Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `enrollment`, `rule`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -19,12 +19,12 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `enrollment`, `rule`)
 list one subsection per registered type.
 
 ## Top-level blocks
 
-Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
+Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `enrollment`, `rule`, `tunnel`) are documented in their own sections.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -593,6 +593,49 @@ Family: `ssh`.
 ```hcl
 endpoint "ssh" "example" {
   hosts = ["api.example.com"]
+}
+```
+
+## `enrollment` blocks
+
+Block syntax: `enrollment "<type>" "<name>" { ... }`
+
+Registered types: [`kubernetes_token_review`](#enrollment-kubernetestokenreview).
+
+### `enrollment "kubernetes_token_review" "<name>"`
+
+The body of an `enrollment
+"kubernetes_token_review" "<name>"` block. It authorizes Kubernetes
+workloads to self-enroll as transient WireGuard peers by verifying a
+projected ServiceAccount token with the Kubernetes TokenReview API.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `audience` | `string` | yes | Passed to Kubernetes TokenReview and must match the projected ServiceAccount token's audience. Required. |
+| `match` | `block` | yes | The repeated `match { ... }` rules. Each binds one namespace + service_account identity to a profile allowlist. At least one is required. |
+| `keepalive_interval` | `string` | no | The WireGuard persistent-keepalive interval (time.ParseDuration) the sidecar applies to enrolled peers and pushed to it at enroll. Optional; defaults to 25s and must be at least 10s (the floor is pinned to the gateway reaper's sample cadence). There is no upper bound: a longer interval just means fewer keepalive packets and a longer liveness window (keepalive_interval × keepalive_reap_count). |
+| `keepalive_reap_count` | `int` | no | How many missed keepalives elapse before an enrolled peer is reaped; the liveness window is keepalive_interval × keepalive_reap_count. Expressing it as a count keeps the safety ratio an integer that can't be misconfigured. Optional; defaults to 3. Set to 0 to disable reaping (and the sidecar's self-heal escalation) entirely; any other value must be 2 or greater. |
+
+**Nested block `match {}`:**
+
+One identity → profile-binding rule inside a
+kubernetes_token_review enrollment.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `namespace` | `string` | yes | The pod must run in. Required. |
+| `service_account` | `string` | yes | The pod's token must belong to. Required. |
+| `profile_label` | `string` | no | The Pod label the clawpatrol profile is read from. Optional; defaults to "clawpatrol.dev/profile". |
+| `profiles` | `[]string` | yes | The allowlist of profiles a matched pod may bind. The value of the profile_label pod label must appear here. Required (at least one), and each must be a declared `profile "<name>"`. |
+
+```hcl
+enrollment "kubernetes_token_review" "example" {
+  audience = "example"
+  match {
+    namespace = "example"
+    service_account = "example"
+    profiles = ["example"]
+  }
 }
 ```
 
