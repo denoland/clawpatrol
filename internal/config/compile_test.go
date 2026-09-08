@@ -541,17 +541,13 @@ profile "default" { credentials = [] }
 	}
 }
 
-func TestCompileUnknownHostInspectSynthesizesEndpoint(t *testing.T) {
-	cp, err := loadCompile(t, `
+func TestCompileUnknownHostInspectRequiresEndpoint(t *testing.T) {
+	_, err := loadCompile(t, `
 defaults { unknown_host = "inspect" }
 profile "default" { credentials = [] }
 `)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	ep := cp.Endpoints[config.UnknownInspectEndpoint]
-	if ep == nil || ep.Name != "unknown" {
-		t.Fatal("expected synthesized https.unknown")
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require endpoint https.unknown", err)
 	}
 }
 

@@ -179,18 +179,6 @@ profile "default" { credentials = [] }
 	}
 }
 
-func TestOffersHTTP11(t *testing.T) {
-	if !offersHTTP11(nil) {
-		t.Fatal("missing ALPN should be HTTP/1.1-capable")
-	}
-	if !offersHTTP11([]string{"h2", "http/1.1"}) {
-		t.Fatal("mixed ALPN should be HTTP/1.1-capable")
-	}
-	if offersHTTP11([]string{"h2"}) {
-		t.Fatal("h2-only should not be HTTP/1.1-capable")
-	}
-}
-
 func TestSNIDispatchUnknownHostInspectHTTP2Splices(t *testing.T) {
 	g := gatewayWithPolicy(t, `
 defaults { unknown_host = "inspect" }

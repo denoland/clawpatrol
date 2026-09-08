@@ -360,12 +360,6 @@ func parseALPNExtension(body []byte) []string {
 	return protos
 }
 
-// offersHTTP11 reports whether the client will speak HTTP/1.1 after TLS.
-// Missing ALPN (pre-7301 clients) is treated as HTTP/1.1-capable.
-func offersHTTP11(alpn []string) bool {
-	return len(alpn) == 0 || slices.Contains(alpn, "http/1.1")
-}
-
 type peekConn struct {
 	net.Conn
 	r io.Reader
@@ -1739,16 +1733,11 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("sni: %s: unknown host denied", host)
 			return
 		case "inspect":
-			if !offersHTTP11(alpn) {
-				log.Printf("sni: %s: inspect splice alpn_no_http1", host)
-				g.splice(c, host)
-				return
-			}
-			if p := g.Policy(); p != nil {
-				ep = p.Endpoints[config.UnknownInspectEndpoint]
+			// MITM is HTTP/1.1-only. Missing ALPN (pre-7301) still qualifies.
+			if p := g.Policy(); p != nil && (len(alpn) == 0 || slices.Contains(alpn, "http/1.1")) {
+				ep = p.Endpoints["unknown"]
 			}
 			if ep == nil {
-				log.Printf("sni: %s: inspect missing https.unknown; splice", host)
 				g.splice(c, host)
 				return
 			}
@@ -1813,12 +1802,6 @@ func unknownHostPolicy(policy *config.CompiledPolicy) string {
 		return "passthrough"
 	}
 	return policy.UnknownHost
-}
-
-// dropUDP443 is true for VIP-bound hosts and, when inspect is on,
-// every UDP/443 (otherwise HTTP/3 bypasses https.unknown).
-func (g *Gateway) dropUDP443(dstIP string) bool {
-	return unknownHostPolicy(g.Policy()) == "inspect" || (g.dnsvip != nil && g.dnsvip.IsVIP(dstIP))
 }
 
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
@@ -3602,7 +3585,7 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
-			if dstPort == 443 && g.dropUDP443(dstIP) {
+			if dstPort == 443 && (g.dnsvip.IsVIP(dstIP) || unknownHostPolicy(g.Policy()) == "inspect") {
 				// QUIC / HTTP-3 to an intercepted (VIP'd) host, or any
 				// UDP/443 when unknown_host=inspect: drop so the client
 				// falls back to TCP/443, which we MITM.

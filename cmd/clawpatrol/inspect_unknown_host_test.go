@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/denoland/clawpatrol/internal/config"
 )
 
 func TestInspectUnknownHostRules(t *testing.T) {
@@ -43,7 +41,7 @@ rule "allow-unknown" {
 profile "default" { credentials = [] }
 `
 
-	h := newEndpointHarness(t, hcl, config.UnknownInspectEndpoint)
+	h := newCredentialMatchHarness(t, hcl, "unknown")
 	page := inspectUnknownSend(t, h.gateway, "/")
 	if page.status != http.StatusOK || !strings.Contains(page.body, "upstream-ok") {
 		t.Fatalf("GET / = %d %q, want 200 upstream-ok", page.status, page.body)

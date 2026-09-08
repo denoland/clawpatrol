@@ -393,7 +393,7 @@ func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDis
 			return udpDNS
 		}
 	case 443:
-		if g.dropUDP443(dst.Addr().String()) {
+		if unknownHostPolicy(g.Policy()) == "inspect" || (g.dnsvip != nil && g.dnsvip.IsVIP(dst.Addr().String())) {
 			return udpDrop
 		}
 	}

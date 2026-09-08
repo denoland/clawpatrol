@@ -69,7 +69,7 @@ profile "default" {
 }
 `
 
-	h := newCredentialMatchHarness(t, policyHCL)
+	h := newCredentialMatchHarness(t, policyHCL, "api")
 
 	t.Run("pinned credential allows mutation", func(t *testing.T) {
 		resp := h.send(t, http.MethodPost, `{"app":"avocet-test"}`)
@@ -102,11 +102,7 @@ type credentialMatchResponse struct {
 	body   string
 }
 
-func newCredentialMatchHarness(t *testing.T, policyHCL string) *credentialMatchHarness {
-	return newEndpointHarness(t, policyHCL, "api")
-}
-
-func newEndpointHarness(t *testing.T, policyHCL, endpointName string) *credentialMatchHarness {
+func newCredentialMatchHarness(t *testing.T, policyHCL, endpointName string) *credentialMatchHarness {
 	t.Helper()
 
 	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))

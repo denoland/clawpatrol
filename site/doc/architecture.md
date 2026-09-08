@@ -381,9 +381,9 @@ configured endpoint:
 
 - `passthrough` — splice the TLS stream unchanged
 - `deny` — hang up at SNI
-- `inspect` — MITM as `https.unknown` and apply that endpoint’s
-  rules (HTTP/2-only ClientHellos still splice; UDP/443 is dropped
-  so the client retries TCP)
+- `inspect` — MITM as declared `https.unknown` and apply that
+  endpoint’s rules (HTTP/2-only ClientHellos still splice; UDP/443
+  is dropped so the client retries TCP)
 
 UDP dispatch is narrower: only `:53` is handled today (DNS-VIP);
 other UDP datagrams are dropped except UDP/443 to a VIP or when

@@ -366,11 +366,11 @@ Unknown hosts fall through to `defaults.unknown_host`
 
 - `passthrough` — splice the TLS stream; the plugin never sees the URL
 - `deny` — hang up at SNI; the plugin never sees the URL
-- `inspect` — MITM unmatched SNI as `https.unknown` (declare the
-  endpoint, or the loader synthesizes a rule-less one) and run its
-  rules on method/path/headers. HTTP/2-only ClientHellos splice
-  because the MITM stack is HTTP/1.1. UDP/443 is dropped so clients
-  fall back to TCP.
+- `inspect` — MITM unmatched SNI as `https.unknown` (declare
+  `endpoint "https" "unknown"`) and run its rules on
+  method/path/headers. HTTP/2-only ClientHellos splice because the
+  MITM stack is HTTP/1.1. UDP/443 is dropped so clients fall back
+  to TCP.
 
 ## Plugin system
 

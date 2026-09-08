@@ -320,10 +320,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		cp.Endpoints[name] = ce
 	}
 
-	if err := attachUnknownInspect(cp, d.UnknownHost); err != nil {
-		return nil, err
-	}
-
 	// Invert credential→endpoint refs into per-endpoint credential
 	// lists. This is the global, profile-agnostic view used by
 	// code that inspects an endpoint's binding (TLS cert lookup,
@@ -356,7 +352,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		}
 	}
 
-	if err := validateUnknownInspectRules(cp); err != nil {
+	if err := validateUnknownInspect(cp); err != nil {
 		return nil, err
 	}
 
@@ -475,38 +471,17 @@ func validateUnknownHost(value string) error {
 	}
 }
 
-func attachUnknownInspect(cp *CompiledPolicy, unknownHost string) error {
-	if unknownHost != "inspect" {
-		return nil
-	}
-	plugin := Lookup(KindEndpoint, "https")
-	if plugin == nil {
-		return fmt.Errorf("unknown_host=inspect requires the built-in https endpoint plugin")
-	}
-	if existing, ok := cp.Endpoints[UnknownInspectEndpoint]; ok {
-		if existing.Family != "" && existing.Family != plugin.Family {
-			return fmt.Errorf("endpoint %q must be family %s for unknown_host=inspect, got %q", UnknownInspectEndpoint, plugin.Family, existing.Family)
-		}
-		return nil
-	}
-	var body any
-	if plugin.New != nil {
-		body = plugin.New()
-	}
-	ce, err := compileEndpoint(UnknownInspectEndpoint, &Entity{Plugin: plugin, Body: body}, cp)
-	if err != nil {
-		return err
-	}
-	cp.Endpoints[UnknownInspectEndpoint] = ce
-	return nil
-}
-
-func validateUnknownInspectRules(cp *CompiledPolicy) error {
+func validateUnknownInspect(cp *CompiledPolicy) error {
 	ce, ok := cp.Endpoints[UnknownInspectEndpoint]
-	if !ok || len(ce.Rules) == 0 {
-		return nil
+	if cp.UnknownHost == "inspect" {
+		if !ok {
+			return fmt.Errorf("unknown_host=inspect requires endpoint \"https\" \"unknown\"")
+		}
+		if ce.Family != "" && ce.Family != "http" {
+			return fmt.Errorf("endpoint %q must be family http for unknown_host=inspect, got %q", UnknownInspectEndpoint, ce.Family)
+		}
 	}
-	if cp.UnknownHost != "inspect" {
+	if ok && len(ce.Rules) > 0 && cp.UnknownHost != "inspect" {
 		return fmt.Errorf("rules on https.unknown require defaults.unknown_host = \"inspect\"")
 	}
 	return nil

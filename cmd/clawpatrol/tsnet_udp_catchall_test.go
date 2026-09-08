@@ -105,6 +105,7 @@ func TestTsnetUDPDisposition(t *testing.T) {
 
 	gInspect := gatewayWithPolicy(t, `
 defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
 profile "default" { credentials = [] }
 `)
 	gInspect.onboard = r
