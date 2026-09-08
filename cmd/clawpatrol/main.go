@@ -1834,6 +1834,15 @@ func (g *Gateway) inspectsUnknown() bool {
 	return unknownHostPolicy(g.Policy()) == "inspect"
 }
 
+// dropUDP443 is true for VIP-bound hosts and, when inspect is on,
+// every UDP/443 (otherwise HTTP/3 bypasses https.unknown).
+func (g *Gateway) dropUDP443(dstIP string) bool {
+	if g.inspectsUnknown() {
+		return true
+	}
+	return g.dnsvip != nil && g.dnsvip.IsVIP(dstIP)
+}
+
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
 	policy := g.Policy()
 	exact := runtime.HostEndpoint(policy, profile, host)
@@ -3615,7 +3624,7 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
-			if dstPort == 443 && (g.dnsvip.IsVIP(dstIP) || g.inspectsUnknown()) {
+			if dstPort == 443 && g.dropUDP443(dstIP) {
 				// QUIC / HTTP-3 to an intercepted (VIP'd) host, or any
 				// UDP/443 when unknown_host=inspect: drop so the client
 				// falls back to TCP/443, which we MITM.

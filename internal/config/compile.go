@@ -482,22 +482,25 @@ func attachUnknownInspect(cp *CompiledPolicy, unknownHost string) error {
 	if unknownHost != "inspect" {
 		return nil
 	}
-	if existing, ok := cp.Endpoints[UnknownInspectEndpoint]; ok {
-		if existing.Family != "" && existing.Family != "http" {
-			return fmt.Errorf("endpoint %q must be family http for unknown_host=inspect, got %q", UnknownInspectEndpoint, existing.Family)
-		}
-		cp.UnknownInspect = existing
-		return nil
-	}
 	plugin := Lookup(KindEndpoint, "https")
 	if plugin == nil {
 		return fmt.Errorf("unknown_host=inspect requires the built-in https endpoint plugin")
 	}
+	if existing, ok := cp.Endpoints[UnknownInspectEndpoint]; ok {
+		if existing.Family != "" && existing.Family != plugin.Family {
+			return fmt.Errorf("endpoint %q must be family %s for unknown_host=inspect, got %q", UnknownInspectEndpoint, plugin.Family, existing.Family)
+		}
+		cp.UnknownInspect = existing
+		return nil
+	}
 	ce := &CompiledEndpoint{
 		Name:   UnknownInspectEndpoint,
-		Family: "http",
+		Family: plugin.Family,
 		Plugin: plugin,
 		Hosts:  nil,
+	}
+	if plugin.New != nil {
+		ce.Body = plugin.New()
 	}
 	cp.Endpoints[UnknownInspectEndpoint] = ce
 	cp.UnknownInspect = ce

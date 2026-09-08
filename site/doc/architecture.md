@@ -247,7 +247,7 @@ based on the destination port and IP:
   <rect class="b-disp" x="240" y="142" width="720" height="52" rx="4"/>
   <text class="row-disp" x="250" y="162">
     <tspan x="250" dy="0">SNI peek; matched endpoint ⇒ MitM TLS (https / k8s family);</tspan>
-    <tspan x="250" dy="1.3em">no match ⇒ unknown_host policy (passthrough or close)</tspan>
+    <tspan x="250" dy="1.3em">no match ⇒ unknown_host (passthrough / deny / inspect)</tspan>
   </text>
   <line class="arr-disp" x1="120" y1="234" x2="240" y2="234" marker-end="url(#ar-disp)"/>
   <text class="cond-disp" x="125" y="229">TCP :5432</text>
