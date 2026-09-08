@@ -1685,16 +1685,17 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	profile := g.profileFor(pip)
 	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
-		switch unknownHostPolicy(g.Policy()) {
+		policy := g.Policy()
+		switch unknownHostPolicy(policy) {
 		case "deny":
 			log.Printf("sni: %s: unknown host denied", host)
 			return
 		case "inspect":
-			if p := g.Policy(); p != nil {
-				ep = p.Endpoints["unknown"]
+			if policy != nil {
+				ep = policy.Endpoints["unknown"]
 			}
 			if ep == nil {
-				g.splice(c, host)
+				log.Printf("sni: %s: unknown host denied", host)
 				return
 			}
 			log.Printf("sni: %s: unknown host inspect", host)

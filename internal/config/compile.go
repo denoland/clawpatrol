@@ -474,11 +474,8 @@ func validateUnknownHost(value string) error {
 func validateUnknownInspect(cp *CompiledPolicy) error {
 	ce, ok := cp.Endpoints[UnknownInspectEndpoint]
 	if cp.UnknownHost == "inspect" {
-		if !ok {
+		if !ok || ce.Plugin == nil || ce.Plugin.Type != "https" {
 			return fmt.Errorf("unknown_host=inspect requires endpoint \"https\" \"unknown\"")
-		}
-		if ce.Family != "" && ce.Family != "http" {
-			return fmt.Errorf("endpoint %q must be family http for unknown_host=inspect, got %q", UnknownInspectEndpoint, ce.Family)
 		}
 	}
 	if ok && len(ce.Rules) > 0 && cp.UnknownHost != "inspect" {

@@ -576,3 +576,16 @@ profile "default" { credentials = [] }
 		t.Fatalf("err = %v, want invalid unknown_host", err)
 	}
 }
+
+func TestCompileUnknownHostInspectRequiresHTTPSType(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "openai_codex_https" "unknown" {
+  hosts = ["chatgpt.com"]
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require type https", err)
+	}
+}
