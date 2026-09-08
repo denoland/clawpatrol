@@ -505,3 +505,121 @@ func TestCompileFullSpec(t *testing.T) {
 		t.Errorf("expected ~50+ rule attachments, got %d", totalRules)
 	}
 }
+
+func loadCompile(t *testing.T, hcl string) (*config.CompiledPolicy, error) {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+hcl), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	return config.Compile(gw)
+}
+
+func TestCompileUnknownHostInspect(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "http.path.endsWith('.tgz')"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownHost != "inspect" {
+		t.Fatalf("UnknownHost = %q", cp.UnknownHost)
+	}
+	if cp.UnknownInspect == nil || cp.UnknownInspect.Name != "unknown" {
+		t.Fatal("missing UnknownInspect")
+	}
+	if len(cp.UnknownInspect.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(cp.UnknownInspect.Rules))
+	}
+}
+
+func TestCompileUnknownHostInspectSynthesizesEndpoint(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownInspect == nil {
+		t.Fatal("expected synthesized https.unknown")
+	}
+}
+
+func TestCompileUnknownRulesRequireInspect(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "deny" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "true"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown_host") {
+		t.Fatalf("err = %v, want unknown_host inspect requirement", err)
+	}
+}
+
+func TestCompileInspectGoldCEL(t *testing.T) {
+	const gold = `('Accept' in http.headers && http.headers['Accept'].exists(v, v.contains('application/vnd.npm.install-v1+json'))) || ` +
+		`('X-Nuget-Client-Version' in http.headers && size(http.headers['X-Nuget-Client-Version']) > 0) || ` +
+		`(http.path.contains('/v3-flatcontainer/')) || ` +
+		`(http.path.matches('^/.+/.+/.+/.+[.]jar$')) || ` +
+		`(http.path.matches('^/p2/[^/]+/[^/]+[.]json$')) || ` +
+		`(http.path.contains('/dists/') && http.path.endsWith('/InRelease')) || ` +
+		`(http.path.contains('/releases/assets/') && 'Accept' in http.headers && http.headers['Accept'].exists(v, v.contains('application/octet-stream')))`
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "`+gold+`"
+  verdict   = "deny"
+  reason    = "package resolve"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("gold CEL compile: %v", err)
+	}
+}
+
+func TestCompileCloudStorageRedirectCEL(t *testing.T) {
+	const redirect = `(http.path.contains('/filestore/')) || ` +
+		`(('X-Amz-Signature' in http.query && size(http.query['X-Amz-Signature']) > 0) && ('X-Amz-Algorithm' in http.query && size(http.query['X-Amz-Algorithm']) > 0) && ('X-Amz-Credential' in http.query && size(http.query['X-Amz-Credential']) > 0)) || ` +
+		`(('sv' in http.query && size(http.query['sv']) > 0) && ('sig' in http.query && size(http.query['sig']) > 0) && ('se' in http.query && size(http.query['se']) > 0))`
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+rule "allow-redirect" {
+  endpoint  = https.unknown
+  priority  = 200
+  condition = "`+redirect+`"
+  verdict   = "allow"
+  reason    = "cloud storage redirect"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("redirect CEL compile: %v", err)
+	}
+}
+
+func TestCompileUnknownHostInvalid(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "close" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "inspect") {
+		t.Fatalf("err = %v, want invalid unknown_host", err)
+	}
+}

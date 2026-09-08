@@ -19,7 +19,10 @@ import (
 // Build with Compile after Load.
 type CompiledPolicy struct {
 	// Policy fallbacks (mirrored from the top-level Gateway fields).
-	UnknownHost    string
+	UnknownHost string
+	// UnknownInspect is the https.unknown endpoint used when
+	// UnknownHost is "inspect". Nil when inspect is off.
+	UnknownInspect *CompiledEndpoint
 	LLMFailMode    string
 	LLMCacheTTL    int
 	HumanTimeout   int
@@ -283,6 +286,9 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if d == nil {
 		d = &Defaults{}
 	}
+	if err := validateUnknownHost(d.UnknownHost); err != nil {
+		return nil, err
+	}
 	cp := &CompiledPolicy{
 		UnknownHost:    d.UnknownHost,
 		LLMFailMode:    d.LLMFailMode,
@@ -317,6 +323,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		cp.Endpoints[name] = ce
 	}
 
+	if err := attachUnknownInspect(cp, d.UnknownHost); err != nil {
+		return nil, err
+	}
+
 	// Invert credential→endpoint refs into per-endpoint credential
 	// lists. This is the global, profile-agnostic view used by
 	// code that inspects an endpoint's binding (TLS cert lookup,
@@ -347,6 +357,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 			ce.Rules = append(ce.Rules, cr)
 		}
+	}
+
+	if err := validateUnknownInspectRules(cp); err != nil {
+		return nil, err
 	}
 
 	// Sort each endpoint's rules by priority descending. Ties keep
@@ -450,6 +464,55 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 
 	return cp, nil
+}
+
+// UnknownInspectEndpoint is the compiled name of endpoint "https" "unknown".
+const UnknownInspectEndpoint = "unknown"
+
+func validateUnknownHost(value string) error {
+	switch value {
+	case "", "passthrough", "deny", "inspect":
+		return nil
+	default:
+		return fmt.Errorf("defaults.unknown_host %q must be passthrough, deny, or inspect", value)
+	}
+}
+
+func attachUnknownInspect(cp *CompiledPolicy, unknownHost string) error {
+	if unknownHost != "inspect" {
+		return nil
+	}
+	if existing, ok := cp.Endpoints[UnknownInspectEndpoint]; ok {
+		if existing.Family != "" && existing.Family != "http" {
+			return fmt.Errorf("endpoint %q must be family http for unknown_host=inspect, got %q", UnknownInspectEndpoint, existing.Family)
+		}
+		cp.UnknownInspect = existing
+		return nil
+	}
+	plugin := Lookup(KindEndpoint, "https")
+	if plugin == nil {
+		return fmt.Errorf("unknown_host=inspect requires the built-in https endpoint plugin")
+	}
+	ce := &CompiledEndpoint{
+		Name:   UnknownInspectEndpoint,
+		Family: "http",
+		Plugin: plugin,
+		Hosts:  nil,
+	}
+	cp.Endpoints[UnknownInspectEndpoint] = ce
+	cp.UnknownInspect = ce
+	return nil
+}
+
+func validateUnknownInspectRules(cp *CompiledPolicy) error {
+	ce, ok := cp.Endpoints[UnknownInspectEndpoint]
+	if !ok || len(ce.Rules) == 0 {
+		return nil
+	}
+	if cp.UnknownHost != "inspect" {
+		return fmt.Errorf("rules on https.unknown require defaults.unknown_host = \"inspect\"")
+	}
+	return nil
 }
 
 // CredentialEndpointTargets returns the endpoint names a credential

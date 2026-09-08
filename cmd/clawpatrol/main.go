@@ -242,56 +242,69 @@ func orderedProfileNames(p *config.Policy) []string {
 }
 
 func peekSNI(c net.Conn) (string, []byte, error) {
+	host, _, prefix, err := peekClientHello(c)
+	return host, prefix, err
+}
+
+func peekClientHello(c net.Conn) (host string, alpn []string, prefix []byte, err error) {
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 
 	hdr := make([]byte, 5)
-	if _, err := io.ReadFull(c, hdr); err != nil {
-		return "", nil, err
+	if _, err = io.ReadFull(c, hdr); err != nil {
+		return "", nil, nil, err
 	}
 	if hdr[0] != 0x16 {
-		return "", hdr, errors.New("not TLS")
+		return "", nil, hdr, errors.New("not TLS")
 	}
 	recLen := int(hdr[3])<<8 | int(hdr[4])
 	if recLen < 42 || recLen > 16384 {
-		return "", hdr, errors.New("bad TLS record length")
+		return "", nil, hdr, errors.New("bad TLS record length")
 	}
 	rec := make([]byte, recLen)
-	if _, err := io.ReadFull(c, rec); err != nil {
-		return "", nil, err
+	if _, err = io.ReadFull(c, rec); err != nil {
+		return "", nil, nil, err
 	}
 	buf := append(hdr, rec...)
 
+	host, alpn, err = parseClientHello(rec)
+	if err != nil {
+		return "", alpn, buf, err
+	}
+	return host, alpn, buf, nil
+}
+
+func parseClientHello(rec []byte) (host string, alpn []string, err error) {
 	p := rec
 	if len(p) < 38 || p[0] != 0x01 {
-		return "", buf, errors.New("not ClientHello")
+		return "", nil, errors.New("not ClientHello")
 	}
 	p = p[38:]
 	if len(p) < 1 {
-		return "", buf, errors.New("truncated")
+		return "", nil, errors.New("truncated")
 	}
 	sidLen := int(p[0])
 	p = p[1:]
 	if len(p) < sidLen+2 {
-		return "", buf, errors.New("truncated sid")
+		return "", nil, errors.New("truncated sid")
 	}
 	p = p[sidLen:]
 	csLen := int(p[0])<<8 | int(p[1])
 	p = p[2:]
 	if len(p) < csLen+1 {
-		return "", buf, errors.New("truncated cs")
+		return "", nil, errors.New("truncated cs")
 	}
 	p = p[csLen:]
 	cmLen := int(p[0])
 	p = p[1:]
 	if len(p) < cmLen+2 {
-		return "", buf, errors.New("truncated cm")
+		return "", nil, errors.New("truncated cm")
 	}
 	p = p[cmLen:]
 	extLen := int(p[0])<<8 | int(p[1])
 	p = p[2:]
 	if len(p) < extLen {
-		return "", buf, errors.New("truncated ext")
+		return "", nil, errors.New("truncated ext")
 	}
 	exts := p[:extLen]
 	for len(exts) >= 4 {
@@ -299,22 +312,65 @@ func peekSNI(c net.Conn) (string, []byte, error) {
 		l := int(exts[2])<<8 | int(exts[3])
 		exts = exts[4:]
 		if l > len(exts) {
-			return "", buf, errors.New("truncated ext body")
+			return "", alpn, errors.New("truncated ext body")
 		}
-		if t == 0x00 {
-			body := exts[:l]
+		body := exts[:l]
+		switch t {
+		case 0x00:
 			if len(body) < 5 {
-				return "", buf, errors.New("bad sni")
+				return "", alpn, errors.New("bad sni")
 			}
 			n := int(body[3])<<8 | int(body[4])
 			if 5+n > len(body) {
-				return "", buf, errors.New("truncated sni name")
+				return "", alpn, errors.New("truncated sni name")
 			}
-			return string(body[5 : 5+n]), buf, nil
+			host = string(body[5 : 5+n])
+		case 0x10:
+			alpn = parseALPNExtension(body)
 		}
 		exts = exts[l:]
 	}
-	return "", buf, errors.New("no SNI")
+	if host == "" {
+		return "", alpn, errors.New("no SNI")
+	}
+	return host, alpn, nil
+}
+
+func parseALPNExtension(body []byte) []string {
+	if len(body) < 2 {
+		return nil
+	}
+	listLen := int(body[0])<<8 | int(body[1])
+	body = body[2:]
+	if listLen > len(body) {
+		listLen = len(body)
+	}
+	body = body[:listLen]
+	var protos []string
+	for len(body) >= 1 {
+		n := int(body[0])
+		body = body[1:]
+		if n > len(body) {
+			break
+		}
+		protos = append(protos, string(body[:n]))
+		body = body[n:]
+	}
+	return protos
+}
+
+// offersHTTP11 reports whether the client will speak HTTP/1.1 after TLS.
+// Missing ALPN (pre-7301 clients) is treated as HTTP/1.1-capable.
+func offersHTTP11(alpn []string) bool {
+	if len(alpn) == 0 {
+		return true
+	}
+	for _, proto := range alpn {
+		if proto == "http/1.1" {
+			return true
+		}
+	}
+	return false
 }
 
 type peekConn struct {
@@ -1647,7 +1703,7 @@ func truncate(s string, n int) string {
 func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
-	host, prefix, err := peekSNI(raw)
+	host, alpn, prefix, err := peekClientHello(raw)
 	if err != nil {
 		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/https
 		// endpoints whose `server` field is an IP literal (kubectl connects
@@ -1685,12 +1741,29 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	profile := g.profileFor(pip)
 	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
-		if policy := g.Policy(); policy != nil && policy.UnknownHost == "deny" {
+		switch unknownHostPolicy(g.Policy()) {
+		case "deny":
 			log.Printf("sni: %s: unknown host denied", host)
 			return
+		case "inspect":
+			if !offersHTTP11(alpn) {
+				log.Printf("sni: %s: inspect splice alpn_no_http1", host)
+				g.splice(c, host)
+				return
+			}
+			ep = unknownInspectEndpoint(g.Policy())
+			if ep == nil {
+				log.Printf("sni: %s: inspect missing https.unknown; splice", host)
+				g.splice(c, host)
+				return
+			}
+			log.Printf("sni: %s: unknown host inspect", host)
+			g.mitmHTTPSWithCertHost(c, host, host, ep)
+			return
+		default:
+			g.splice(c, host)
+			return
 		}
-		g.splice(c, host)
-		return
 	}
 	if isHTTPSMITMFamily(ep.Family) {
 		// Every facet whose Transport() is "https-mitm" — https and
@@ -1738,6 +1811,27 @@ func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16
 	profile := g.profileFor(peerIP(c))
 	ep, _, _ := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 	return ep != nil && isHTTPSMITMFamily(ep.Family)
+}
+
+func unknownHostPolicy(policy *config.CompiledPolicy) string {
+	if policy == nil || policy.UnknownHost == "" {
+		return "passthrough"
+	}
+	return policy.UnknownHost
+}
+
+func unknownInspectEndpoint(policy *config.CompiledPolicy) *config.CompiledEndpoint {
+	if policy == nil {
+		return nil
+	}
+	if policy.UnknownInspect != nil {
+		return policy.UnknownInspect
+	}
+	return policy.Endpoints[config.UnknownInspectEndpoint]
+}
+
+func (g *Gateway) inspectsUnknown() bool {
+	return unknownHostPolicy(g.Policy()) == "inspect"
 }
 
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
@@ -3521,12 +3615,10 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
-			if dstPort == 443 && g.dnsvip.IsVIP(dstIP) {
-				// QUIC / HTTP-3 to an intercepted (VIP'd) host: drop so
-				// the client falls back to TCP/443, which we MITM.
-				// Relaying it would let that host's HTTPS bypass
-				// interception. UDP/443 to a passed-through host falls
-				// through to relayUDP — we don't intercept it.
+			if dstPort == 443 && (g.dnsvip.IsVIP(dstIP) || g.inspectsUnknown()) {
+				// QUIC / HTTP-3 to an intercepted (VIP'd) host, or any
+				// UDP/443 when unknown_host=inspect: drop so the client
+				// falls back to TCP/443, which we MITM.
 				_ = c.Close()
 				return true
 			}

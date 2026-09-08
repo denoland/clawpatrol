@@ -367,7 +367,7 @@ summary:
 
 | dst port             | handler                                                                                  |
 |----------------------|------------------------------------------------------------------------------------------|
-| `:443`               | SNI peek, then HTTPS family dispatch (`https` / `k8s`) or passthrough                    |
+| `:443`               | SNI peek, then HTTPS family dispatch (`https` / `k8s`), `inspect` MITM, or passthrough   |
 | `:5432`              | postgres wire-protocol gateway (auth offload + `sql`-family rule matching)               |
 | `:53`                | DNS-VIP responder (UDP and TCP fallback)                                                 |
 | any port, dst is VIP | VIP-bound endpoint runtime (today: `ssh`, `clickhouse_native` reached by hostname)       |
@@ -375,10 +375,16 @@ summary:
 
 If no endpoint plugin claims the destination, the gateway falls
 back to a transparent relay: it dials the real destination IP and
-pipes bytes both ways. The top-level `unknown_host` setting in
-`gateway.hcl` (`passthrough` by default) decides what to do when
-an HTTPS SNI doesn’t match any configured endpoint — splice it
-unchanged or close it.
+pipes bytes both ways. `defaults.unknown_host` (`passthrough` by
+default) decides what to do when an HTTPS SNI doesn’t match any
+configured endpoint:
+
+- `passthrough` — splice the TLS stream unchanged
+- `deny` — hang up at SNI
+- `inspect` — MITM as `https.unknown` and apply that endpoint’s
+  rules (HTTP/2-only ClientHellos still splice; UDP/443 is dropped
+  so the client retries TCP)
 
 UDP dispatch is narrower: only `:53` is handled today (DNS-VIP);
-other UDP datagrams are dropped.
+other UDP datagrams are dropped except UDP/443 to a VIP or when
+`unknown_host=inspect` (QUIC drop).

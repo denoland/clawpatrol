@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -175,6 +176,116 @@ profile "default" { credentials = [] }
 				t.Errorf("upstream dial count = %d, want %d", got, wantDials)
 			}
 		})
+	}
+}
+
+func TestOffersHTTP11(t *testing.T) {
+	if !offersHTTP11(nil) {
+		t.Fatal("missing ALPN should be HTTP/1.1-capable")
+	}
+	if !offersHTTP11([]string{"h2", "http/1.1"}) {
+		t.Fatal("mixed ALPN should be HTTP/1.1-capable")
+	}
+	if offersHTTP11([]string{"h2"}) {
+		t.Fatal("h2-only should not be HTTP/1.1-capable")
+	}
+}
+
+func TestSNIDispatchUnknownHostInspectHTTP2Splices(t *testing.T) {
+	g := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	g.onboard = newOnboardRegistry()
+	dialer := newSNIDispatchDialer()
+	g.dialer = dialer
+	serverConn, clientConn := net.Pipe()
+	g.onboard.profileByIP[peerIP(serverConn)] = "default"
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	handlerDone := make(chan struct{})
+	go func() {
+		g.handle(serverConn, "", 443)
+		close(handlerDone)
+	}()
+
+	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+	go func() {
+		tlsClient := tls.Client(clientConn, &tls.Config{
+			ServerName:         unknownHostSNI,
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h2"},
+		})
+		_ = tlsClient.Handshake()
+	}()
+
+	var upstream net.Conn
+	select {
+	case upstream = <-dialer.upstreams:
+	case <-time.After(2 * time.Second):
+		t.Fatal("inspect did not splice h2-only ClientHello")
+	}
+	host, _, err := peekSNI(upstream)
+	_ = upstream.Close()
+	if err != nil {
+		t.Fatalf("read relayed ClientHello: %v", err)
+	}
+	if host != unknownHostSNI {
+		t.Errorf("relayed SNI = %q, want %q", host, unknownHostSNI)
+	}
+	_ = clientConn.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway handler did not return")
+	}
+}
+
+func TestSNIDispatchUnknownHostInspectMITM(t *testing.T) {
+	certs, _ := inMemoryCertCache(t)
+	g := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	g.certs = certs
+	g.cfg.Store(&config.Gateway{Policy: &config.Policy{}})
+	g.onboard = newOnboardRegistry()
+	dialer := newSNIDispatchDialer()
+	g.dialer = dialer
+	serverConn, clientConn := net.Pipe()
+	g.onboard.profileByIP[peerIP(serverConn)] = "default"
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	handlerDone := make(chan struct{})
+	go func() {
+		g.handle(serverConn, "", 443)
+		close(handlerDone)
+	}()
+
+	if err := clientConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+	tlsClient := tls.Client(clientConn, &tls.Config{
+		ServerName:         unknownHostSNI,
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"http/1.1"},
+	})
+	if err := tlsClient.Handshake(); err != nil {
+		t.Fatalf("inspect MITM handshake: %v", err)
+	}
+	_ = tlsClient.Close()
+	_ = clientConn.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway handler did not return")
+	}
+	if got := dialer.calls.Load(); got != 0 {
+		t.Errorf("inspect MITM spliced ClientHello (%d dials)", got)
 	}
 }
 
