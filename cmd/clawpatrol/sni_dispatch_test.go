@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -175,6 +176,101 @@ profile "default" { credentials = [] }
 				t.Errorf("upstream dial count = %d, want %d", got, wantDials)
 			}
 		})
+	}
+}
+
+func TestSNIDispatchUnknownHostInspectMITM(t *testing.T) {
+	certs, _ := inMemoryCertCache(t)
+	g := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	g.certs = certs
+	g.cfg.Store(&config.Gateway{Policy: &config.Policy{}})
+	g.onboard = newOnboardRegistry()
+	dialer := newSNIDispatchDialer()
+	g.dialer = dialer
+	serverConn, clientConn := net.Pipe()
+	g.onboard.profileByIP[peerIP(serverConn)] = "default"
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	handlerDone := make(chan struct{})
+	go func() {
+		g.handle(serverConn, "", 443)
+		close(handlerDone)
+	}()
+
+	if err := clientConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+	tlsClient := tls.Client(clientConn, &tls.Config{
+		ServerName:         unknownHostSNI,
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"http/1.1"},
+	})
+	if err := tlsClient.Handshake(); err != nil {
+		t.Fatalf("inspect MITM handshake: %v", err)
+	}
+	_ = tlsClient.Close()
+	_ = clientConn.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway handler did not return")
+	}
+	if got := dialer.calls.Load(); got != 0 {
+		t.Errorf("inspect MITM spliced ClientHello (%d dials)", got)
+	}
+}
+
+func TestSNIDispatchUnknownHostInspectMissingEndpointHangsUp(t *testing.T) {
+	g := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	p := g.Policy()
+	delete(p.Endpoints, "unknown")
+	g.onboard = newOnboardRegistry()
+	dialer := newSNIDispatchDialer()
+	g.dialer = dialer
+	serverConn, clientConn := net.Pipe()
+	g.onboard.profileByIP[peerIP(serverConn)] = "default"
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	handlerDone := make(chan struct{})
+	go func() {
+		g.handle(serverConn, "", 443)
+		close(handlerDone)
+	}()
+	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+	handshakeDone := make(chan error, 1)
+	go func() {
+		tlsClient := tls.Client(clientConn, &tls.Config{
+			ServerName:         unknownHostSNI,
+			InsecureSkipVerify: true,
+		})
+		handshakeDone <- tlsClient.Handshake()
+	}()
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway handler did not return")
+	}
+	_ = clientConn.Close()
+	select {
+	case err := <-handshakeDone:
+		if err == nil {
+			t.Fatal("TLS handshake unexpectedly succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TLS client handshake did not return")
+	}
+	if got := dialer.calls.Load(); got != 0 {
+		t.Errorf("missing https.unknown spliced (%d dials), want hang up", got)
 	}
 }
 

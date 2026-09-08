@@ -326,7 +326,8 @@ type TailscaleBlock struct {
 // needed to override one.
 type Defaults struct {
 	// UnknownHost controls traffic whose destination does not match
-	// any endpoint. "passthrough" relays it; "deny" closes it.
+	// any endpoint. "passthrough" relays it; "deny" closes it;
+	// "inspect" MITMs it as the declared https.unknown endpoint.
 	UnknownHost string `hcl:"unknown_host,optional"`
 
 	// LLMFailMode controls requests guarded by LLM approvers when

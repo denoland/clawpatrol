@@ -377,7 +377,8 @@ const (
 //     to TCP/443, which the gateway intercepts. UDP/443 to a host we
 //     pass through (no VIP) is *not* dropped — we don't intercept that
 //     host's HTTPS either, so there's nothing to bypass, and breaking its
-//     HTTP/3 would be gratuitous. (WG mode's udpDispatch does the same.)
+//     HTTP/3 would be gratuitous. unknown_host=inspect is the exception:
+//     unmatched SNI is MITM'd, so every UDP/443 drops (same helper as WG).
 //     Limitation: an https-mitm endpoint bound to an IP literal isn't
 //     VIP'd, so its UDP/443 isn't dropped here — rare (those are dialled
 //     by IP, e.g. kubectl, and over TCP), and Alt-Svc stripping still
@@ -392,7 +393,7 @@ func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDis
 			return udpDNS
 		}
 	case 443:
-		if g.dnsvip != nil && g.dnsvip.IsVIP(dst.Addr().String()) {
+		if unknownHostPolicy(g.Policy()) == "inspect" || (g.dnsvip != nil && g.dnsvip.IsVIP(dst.Addr().String())) {
 			return udpDrop
 		}
 	}

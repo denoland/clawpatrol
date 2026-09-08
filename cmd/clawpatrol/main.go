@@ -1685,12 +1685,26 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	profile := g.profileFor(pip)
 	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
-		if policy := g.Policy(); policy != nil && policy.UnknownHost == "deny" {
+		policy := g.Policy()
+		switch unknownHostPolicy(policy) {
+		case "deny":
 			log.Printf("sni: %s: unknown host denied", host)
 			return
+		case "inspect":
+			if policy != nil {
+				ep = policy.Endpoints["unknown"]
+			}
+			if ep == nil {
+				log.Printf("sni: %s: unknown host denied", host)
+				return
+			}
+			log.Printf("sni: %s: unknown host inspect", host)
+			g.mitmHTTPSWithCertHost(c, host, host, ep)
+			return
+		default:
+			g.splice(c, host)
+			return
 		}
-		g.splice(c, host)
-		return
 	}
 	if isHTTPSMITMFamily(ep.Family) {
 		// Every facet whose Transport() is "https-mitm" — https and
@@ -1738,6 +1752,13 @@ func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16
 	profile := g.profileFor(peerIP(c))
 	ep, _, _ := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 	return ep != nil && isHTTPSMITMFamily(ep.Family)
+}
+
+func unknownHostPolicy(policy *config.CompiledPolicy) string {
+	if policy == nil || policy.UnknownHost == "" {
+		return "passthrough"
+	}
+	return policy.UnknownHost
 }
 
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
@@ -3521,12 +3542,10 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
-			if dstPort == 443 && g.dnsvip.IsVIP(dstIP) {
-				// QUIC / HTTP-3 to an intercepted (VIP'd) host: drop so
-				// the client falls back to TCP/443, which we MITM.
-				// Relaying it would let that host's HTTPS bypass
-				// interception. UDP/443 to a passed-through host falls
-				// through to relayUDP — we don't intercept it.
+			if dstPort == 443 && (g.dnsvip.IsVIP(dstIP) || unknownHostPolicy(g.Policy()) == "inspect") {
+				// QUIC / HTTP-3 to an intercepted (VIP'd) host, or any
+				// UDP/443 when unknown_host=inspect: drop so the client
+				// falls back to TCP/443, which we MITM.
 				_ = c.Close()
 				return true
 			}

@@ -505,3 +505,87 @@ func TestCompileFullSpec(t *testing.T) {
 		t.Errorf("expected ~50+ rule attachments, got %d", totalRules)
 	}
 }
+
+func loadCompile(t *testing.T, hcl string) (*config.CompiledPolicy, error) {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+hcl), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	return config.Compile(gw)
+}
+
+func TestCompileUnknownHostInspect(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "http.path.endsWith('.tgz')"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownHost != "inspect" {
+		t.Fatalf("UnknownHost = %q", cp.UnknownHost)
+	}
+	ep := cp.Endpoints[config.UnknownInspectEndpoint]
+	if ep == nil || ep.Name != "unknown" {
+		t.Fatal("missing https.unknown")
+	}
+	if len(ep.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(ep.Rules))
+	}
+}
+
+func TestCompileUnknownHostInspectRequiresEndpoint(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require endpoint https.unknown", err)
+	}
+}
+
+func TestCompileUnknownRulesRequireInspect(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "deny" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "true"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown_host") {
+		t.Fatalf("err = %v, want unknown_host inspect requirement", err)
+	}
+}
+
+func TestCompileUnknownHostInvalid(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "close" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "inspect") {
+		t.Fatalf("err = %v, want invalid unknown_host", err)
+	}
+}
+
+func TestCompileUnknownHostInspectRequiresHTTPSType(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "openai_codex_https" "unknown" {
+  hosts = ["chatgpt.com"]
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require type https", err)
+	}
+}

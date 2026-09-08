@@ -283,6 +283,9 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if d == nil {
 		d = &Defaults{}
 	}
+	if err := validateUnknownHost(d.UnknownHost); err != nil {
+		return nil, err
+	}
 	cp := &CompiledPolicy{
 		UnknownHost:    d.UnknownHost,
 		LLMFailMode:    d.LLMFailMode,
@@ -347,6 +350,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 			ce.Rules = append(ce.Rules, cr)
 		}
+	}
+
+	if err := validateUnknownInspect(cp); err != nil {
+		return nil, err
 	}
 
 	// Sort each endpoint's rules by priority descending. Ties keep
@@ -450,6 +457,31 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 
 	return cp, nil
+}
+
+// UnknownInspectEndpoint is the compiled name of endpoint "https" "unknown".
+const UnknownInspectEndpoint = "unknown"
+
+func validateUnknownHost(value string) error {
+	switch value {
+	case "", "passthrough", "deny", "inspect":
+		return nil
+	default:
+		return fmt.Errorf("defaults.unknown_host %q must be passthrough, deny, or inspect", value)
+	}
+}
+
+func validateUnknownInspect(cp *CompiledPolicy) error {
+	ce, ok := cp.Endpoints[UnknownInspectEndpoint]
+	if cp.UnknownHost == "inspect" {
+		if !ok || ce.Plugin == nil || ce.Plugin.Type != "https" {
+			return fmt.Errorf("unknown_host=inspect requires endpoint \"https\" \"unknown\"")
+		}
+	}
+	if ok && len(ce.Rules) > 0 && cp.UnknownHost != "inspect" {
+		return fmt.Errorf("rules on https.unknown require defaults.unknown_host = \"inspect\"")
+	}
+	return nil
 }
 
 // CredentialEndpointTargets returns the endpoint names a credential

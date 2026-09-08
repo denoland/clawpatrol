@@ -102,4 +102,14 @@ func TestTsnetUDPDisposition(t *testing.T) {
 	if got := g2.tsnetUDPDisposition(mk(vip, 443), onboarded); got != udpRelay {
 		t.Errorf("443 w/o dnsvip from onboarded: disposition = %d, want relay", got)
 	}
+
+	gInspect := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	gInspect.onboard = r
+	if got := gInspect.tsnetUDPDisposition(mk(pub, 443), onboarded); got != udpDrop {
+		t.Errorf("inspect UDP/443: disposition = %d, want drop", got)
+	}
 }
