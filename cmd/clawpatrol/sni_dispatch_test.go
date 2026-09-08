@@ -179,59 +179,6 @@ profile "default" { credentials = [] }
 	}
 }
 
-func TestSNIDispatchUnknownHostInspectHTTP2Splices(t *testing.T) {
-	g := gatewayWithPolicy(t, `
-defaults { unknown_host = "inspect" }
-endpoint "https" "unknown" { hosts = [] }
-profile "default" { credentials = [] }
-`)
-	g.onboard = newOnboardRegistry()
-	dialer := newSNIDispatchDialer()
-	g.dialer = dialer
-	serverConn, clientConn := net.Pipe()
-	g.onboard.profileByIP[peerIP(serverConn)] = "default"
-	t.Cleanup(func() { _ = clientConn.Close() })
-
-	handlerDone := make(chan struct{})
-	go func() {
-		g.handle(serverConn, "", 443)
-		close(handlerDone)
-	}()
-
-	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set client deadline: %v", err)
-	}
-	go func() {
-		tlsClient := tls.Client(clientConn, &tls.Config{
-			ServerName:         unknownHostSNI,
-			InsecureSkipVerify: true,
-			NextProtos:         []string{"h2"},
-		})
-		_ = tlsClient.Handshake()
-	}()
-
-	var upstream net.Conn
-	select {
-	case upstream = <-dialer.upstreams:
-	case <-time.After(2 * time.Second):
-		t.Fatal("inspect did not splice h2-only ClientHello")
-	}
-	host, _, err := peekSNI(upstream)
-	_ = upstream.Close()
-	if err != nil {
-		t.Fatalf("read relayed ClientHello: %v", err)
-	}
-	if host != unknownHostSNI {
-		t.Errorf("relayed SNI = %q, want %q", host, unknownHostSNI)
-	}
-	_ = clientConn.Close()
-	select {
-	case <-handlerDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("gateway handler did not return")
-	}
-}
-
 func TestSNIDispatchUnknownHostInspectMITM(t *testing.T) {
 	certs, _ := inMemoryCertCache(t)
 	g := gatewayWithPolicy(t, `

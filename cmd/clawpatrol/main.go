@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -243,69 +242,56 @@ func orderedProfileNames(p *config.Policy) []string {
 }
 
 func peekSNI(c net.Conn) (string, []byte, error) {
-	host, _, prefix, err := peekClientHello(c)
-	return host, prefix, err
-}
-
-func peekClientHello(c net.Conn) (host string, alpn []string, prefix []byte, err error) {
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 
 	hdr := make([]byte, 5)
-	if _, err = io.ReadFull(c, hdr); err != nil {
-		return "", nil, nil, err
+	if _, err := io.ReadFull(c, hdr); err != nil {
+		return "", nil, err
 	}
 	if hdr[0] != 0x16 {
-		return "", nil, hdr, errors.New("not TLS")
+		return "", hdr, errors.New("not TLS")
 	}
 	recLen := int(hdr[3])<<8 | int(hdr[4])
 	if recLen < 42 || recLen > 16384 {
-		return "", nil, hdr, errors.New("bad TLS record length")
+		return "", hdr, errors.New("bad TLS record length")
 	}
 	rec := make([]byte, recLen)
-	if _, err = io.ReadFull(c, rec); err != nil {
-		return "", nil, nil, err
+	if _, err := io.ReadFull(c, rec); err != nil {
+		return "", nil, err
 	}
 	buf := append(hdr, rec...)
 
-	host, alpn, err = parseClientHello(rec)
-	if err != nil {
-		return "", alpn, buf, err
-	}
-	return host, alpn, buf, nil
-}
-
-func parseClientHello(rec []byte) (host string, alpn []string, err error) {
 	p := rec
 	if len(p) < 38 || p[0] != 0x01 {
-		return "", nil, errors.New("not ClientHello")
+		return "", buf, errors.New("not ClientHello")
 	}
 	p = p[38:]
 	if len(p) < 1 {
-		return "", nil, errors.New("truncated")
+		return "", buf, errors.New("truncated")
 	}
 	sidLen := int(p[0])
 	p = p[1:]
 	if len(p) < sidLen+2 {
-		return "", nil, errors.New("truncated sid")
+		return "", buf, errors.New("truncated sid")
 	}
 	p = p[sidLen:]
 	csLen := int(p[0])<<8 | int(p[1])
 	p = p[2:]
 	if len(p) < csLen+1 {
-		return "", nil, errors.New("truncated cs")
+		return "", buf, errors.New("truncated cs")
 	}
 	p = p[csLen:]
 	cmLen := int(p[0])
 	p = p[1:]
 	if len(p) < cmLen+2 {
-		return "", nil, errors.New("truncated cm")
+		return "", buf, errors.New("truncated cm")
 	}
 	p = p[cmLen:]
 	extLen := int(p[0])<<8 | int(p[1])
 	p = p[2:]
 	if len(p) < extLen {
-		return "", nil, errors.New("truncated ext")
+		return "", buf, errors.New("truncated ext")
 	}
 	exts := p[:extLen]
 	for len(exts) >= 4 {
@@ -313,51 +299,22 @@ func parseClientHello(rec []byte) (host string, alpn []string, err error) {
 		l := int(exts[2])<<8 | int(exts[3])
 		exts = exts[4:]
 		if l > len(exts) {
-			return "", alpn, errors.New("truncated ext body")
+			return "", buf, errors.New("truncated ext body")
 		}
-		body := exts[:l]
-		switch t {
-		case 0x00:
+		if t == 0x00 {
+			body := exts[:l]
 			if len(body) < 5 {
-				return "", alpn, errors.New("bad sni")
+				return "", buf, errors.New("bad sni")
 			}
 			n := int(body[3])<<8 | int(body[4])
 			if 5+n > len(body) {
-				return "", alpn, errors.New("truncated sni name")
+				return "", buf, errors.New("truncated sni name")
 			}
-			host = string(body[5 : 5+n])
-		case 0x10:
-			alpn = parseALPNExtension(body)
+			return string(body[5 : 5+n]), buf, nil
 		}
 		exts = exts[l:]
 	}
-	if host == "" {
-		return "", alpn, errors.New("no SNI")
-	}
-	return host, alpn, nil
-}
-
-func parseALPNExtension(body []byte) []string {
-	if len(body) < 2 {
-		return nil
-	}
-	listLen := int(body[0])<<8 | int(body[1])
-	body = body[2:]
-	if listLen > len(body) {
-		listLen = len(body)
-	}
-	body = body[:listLen]
-	var protos []string
-	for len(body) >= 1 {
-		n := int(body[0])
-		body = body[1:]
-		if n > len(body) {
-			break
-		}
-		protos = append(protos, string(body[:n]))
-		body = body[n:]
-	}
-	return protos
+	return "", buf, errors.New("no SNI")
 }
 
 type peekConn struct {
@@ -1690,7 +1647,7 @@ func truncate(s string, n int) string {
 func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
-	host, alpn, prefix, err := peekClientHello(raw)
+	host, prefix, err := peekSNI(raw)
 	if err != nil {
 		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/https
 		// endpoints whose `server` field is an IP literal (kubectl connects
@@ -1733,8 +1690,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("sni: %s: unknown host denied", host)
 			return
 		case "inspect":
-			// MITM is HTTP/1.1-only. Missing ALPN (pre-7301) still qualifies.
-			if p := g.Policy(); p != nil && (len(alpn) == 0 || slices.Contains(alpn, "http/1.1")) {
+			if p := g.Policy(); p != nil {
 				ep = p.Endpoints["unknown"]
 			}
 			if ep == nil {

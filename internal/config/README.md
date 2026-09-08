@@ -368,8 +368,7 @@ Unknown hosts fall through to `defaults.unknown_host`
 - `deny` — hang up at SNI; the plugin never sees the URL
 - `inspect` — MITM unmatched SNI as `https.unknown` (declare
   `endpoint "https" "unknown"`) and run its rules on
-  method/path/headers. HTTP/2-only ClientHellos splice because the
-  MITM stack is HTTP/1.1. UDP/443 is dropped so clients fall back
+  method/path/headers. UDP/443 is dropped so clients fall back
   to TCP.
 
 ## Plugin system
