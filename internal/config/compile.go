@@ -19,10 +19,7 @@ import (
 // Build with Compile after Load.
 type CompiledPolicy struct {
 	// Policy fallbacks (mirrored from the top-level Gateway fields).
-	UnknownHost string
-	// UnknownInspect is the https.unknown endpoint used when
-	// UnknownHost is "inspect". Nil when inspect is off.
-	UnknownInspect *CompiledEndpoint
+	UnknownHost    string
 	LLMFailMode    string
 	LLMCacheTTL    int
 	HumanTimeout   int
@@ -490,20 +487,17 @@ func attachUnknownInspect(cp *CompiledPolicy, unknownHost string) error {
 		if existing.Family != "" && existing.Family != plugin.Family {
 			return fmt.Errorf("endpoint %q must be family %s for unknown_host=inspect, got %q", UnknownInspectEndpoint, plugin.Family, existing.Family)
 		}
-		cp.UnknownInspect = existing
 		return nil
 	}
-	ce := &CompiledEndpoint{
-		Name:   UnknownInspectEndpoint,
-		Family: plugin.Family,
-		Plugin: plugin,
-		Hosts:  nil,
-	}
+	var body any
 	if plugin.New != nil {
-		ce.Body = plugin.New()
+		body = plugin.New()
+	}
+	ce, err := compileEndpoint(UnknownInspectEndpoint, &Entity{Plugin: plugin, Body: body}, cp)
+	if err != nil {
+		return err
 	}
 	cp.Endpoints[UnknownInspectEndpoint] = ce
-	cp.UnknownInspect = ce
 	return nil
 }
 

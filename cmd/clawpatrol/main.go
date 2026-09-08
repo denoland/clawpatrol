@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -362,15 +363,7 @@ func parseALPNExtension(body []byte) []string {
 // offersHTTP11 reports whether the client will speak HTTP/1.1 after TLS.
 // Missing ALPN (pre-7301 clients) is treated as HTTP/1.1-capable.
 func offersHTTP11(alpn []string) bool {
-	if len(alpn) == 0 {
-		return true
-	}
-	for _, proto := range alpn {
-		if proto == "http/1.1" {
-			return true
-		}
-	}
-	return false
+	return len(alpn) == 0 || slices.Contains(alpn, "http/1.1")
 }
 
 type peekConn struct {
@@ -1751,7 +1744,9 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 				g.splice(c, host)
 				return
 			}
-			ep = unknownInspectEndpoint(g.Policy())
+			if p := g.Policy(); p != nil {
+				ep = p.Endpoints[config.UnknownInspectEndpoint]
+			}
 			if ep == nil {
 				log.Printf("sni: %s: inspect missing https.unknown; splice", host)
 				g.splice(c, host)
@@ -1820,27 +1815,10 @@ func unknownHostPolicy(policy *config.CompiledPolicy) string {
 	return policy.UnknownHost
 }
 
-func unknownInspectEndpoint(policy *config.CompiledPolicy) *config.CompiledEndpoint {
-	if policy == nil {
-		return nil
-	}
-	if policy.UnknownInspect != nil {
-		return policy.UnknownInspect
-	}
-	return policy.Endpoints[config.UnknownInspectEndpoint]
-}
-
-func (g *Gateway) inspectsUnknown() bool {
-	return unknownHostPolicy(g.Policy()) == "inspect"
-}
-
 // dropUDP443 is true for VIP-bound hosts and, when inspect is on,
 // every UDP/443 (otherwise HTTP/3 bypasses https.unknown).
 func (g *Gateway) dropUDP443(dstIP string) bool {
-	if g.inspectsUnknown() {
-		return true
-	}
-	return g.dnsvip != nil && g.dnsvip.IsVIP(dstIP)
+	return unknownHostPolicy(g.Policy()) == "inspect" || (g.dnsvip != nil && g.dnsvip.IsVIP(dstIP))
 }
 
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {

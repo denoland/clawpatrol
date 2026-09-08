@@ -103,6 +103,10 @@ type credentialMatchResponse struct {
 }
 
 func newCredentialMatchHarness(t *testing.T, policyHCL string) *credentialMatchHarness {
+	return newEndpointHarness(t, policyHCL, "api")
+}
+
+func newEndpointHarness(t *testing.T, policyHCL, endpointName string) *credentialMatchHarness {
 	t.Helper()
 
 	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
@@ -119,9 +123,9 @@ func newCredentialMatchHarness(t *testing.T, policyHCL string) *credentialMatchH
 	if err != nil {
 		t.Fatalf("compile config: %v", err)
 	}
-	ep := policy.Endpoints["api"]
+	ep := policy.Endpoints[endpointName]
 	if ep == nil {
-		t.Fatal("missing compiled api endpoint")
+		t.Fatalf("missing compiled %s endpoint", endpointName)
 	}
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

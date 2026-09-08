@@ -532,11 +532,12 @@ profile "default" { credentials = [] }
 	if cp.UnknownHost != "inspect" {
 		t.Fatalf("UnknownHost = %q", cp.UnknownHost)
 	}
-	if cp.UnknownInspect == nil || cp.UnknownInspect.Name != "unknown" {
-		t.Fatal("missing UnknownInspect")
+	ep := cp.Endpoints[config.UnknownInspectEndpoint]
+	if ep == nil || ep.Name != "unknown" {
+		t.Fatal("missing https.unknown")
 	}
-	if len(cp.UnknownInspect.Rules) != 1 {
-		t.Fatalf("rules = %d, want 1", len(cp.UnknownInspect.Rules))
+	if len(ep.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(ep.Rules))
 	}
 }
 
@@ -548,7 +549,8 @@ profile "default" { credentials = [] }
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if cp.UnknownInspect == nil || cp.UnknownInspect.Name != "unknown" {
+	ep := cp.Endpoints[config.UnknownInspectEndpoint]
+	if ep == nil || ep.Name != "unknown" {
 		t.Fatal("expected synthesized https.unknown")
 	}
 }

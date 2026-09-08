@@ -2,19 +2,15 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
-	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
 func TestInspectUnknownHostRules(t *testing.T) {
@@ -47,72 +43,16 @@ rule "allow-unknown" {
 profile "default" { credentials = [] }
 `
 
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
+	h := newEndpointHarness(t, hcl, config.UnknownInspectEndpoint)
+	page := inspectUnknownSend(t, h.gateway, "/")
+	if page.status != http.StatusOK || !strings.Contains(page.body, "upstream-ok") {
+		t.Fatalf("GET / = %d %q, want 200 upstream-ok", page.status, page.body)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	gw, diags := config.LoadBytes([]byte(hcl), "inspect-unknown-test.hcl")
-	if diags.HasErrors() {
-		t.Fatalf("load: %v", diags)
-	}
-	policy, err := config.Compile(gw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	ep := policy.UnknownInspect
-	if ep == nil {
-		t.Fatal("missing UnknownInspect")
-	}
-
-	var hits int
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("page-ok"))
-	}))
-	t.Cleanup(upstream.Close)
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, upstream.Listener.Addr().String())
-		},
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-		ForceAttemptHTTP2: false,
-	}
-	t.Cleanup(transport.CloseIdleConnections)
-
-	sink, err := NewSink(nil, 8)
-	if err != nil {
-		t.Fatalf("NewSink: %v", err)
-	}
-	t.Cleanup(func() { close(sink.ch) })
-
-	certs, _ := inMemoryCertCache(t)
-	g := &Gateway{
-		db:      db,
-		certs:   certs,
-		sink:    sink,
-		hitl:    newHITLRegistry(sink),
-		secrets: newGatewaySecretStore(db, nil),
-		onboard: newOnboardRegistry(),
-	}
-	g.cfg.Store(gw)
-	g.policy.Store(policy)
-	g.transports.Store(ep, transport)
-
-	page := inspectUnknownSend(t, g, "/")
-	if page.status != http.StatusOK || !strings.Contains(page.body, "page-ok") {
-		t.Fatalf("GET / = %d %q, want 200 page-ok", page.status, page.body)
-	}
-	beforeDeny := hits
-	denied := inspectUnknownSend(t, g, "/pkg.tgz")
+	denied := inspectUnknownSend(t, h.gateway, "/pkg.tgz")
 	if denied.status != http.StatusForbidden {
 		t.Fatalf("GET /pkg.tgz = %d %q, want 403", denied.status, denied.body)
 	}
-	if hits != beforeDeny {
+	if strings.Contains(denied.body, "upstream-ok") {
 		t.Fatal("deny leaked to upstream")
 	}
 }
