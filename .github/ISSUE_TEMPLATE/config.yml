@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/denoland/clawpatrol/security/advisories/new
+    about: Private report. Please do not open a public issue for a vulnerability.
+  - name: Documentation
+    url: https://clawpatrol.dev/docs/
+    about: Getting started, configuration reference, security model.

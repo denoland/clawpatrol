@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform
+      description: Output of `clawpatrol --version`, plus the OS on the gateway and on the client if different.
+      placeholder: "0.5.9 on Ubuntu 24.04 (gateway), macOS 15 arm64 (client)"
+    validations:
+      required: true
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Deployment shape
+      options:
+        - clawpatrol gateway
+        - clawpatrol join (whole machine)
+        - clawpatrol run (per process, Linux)
+        - clawpatrol run (per process, macOS)
+        - dashboard
+        - plugin / plugin SDK
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: What you did
+      description: The exact command(s) and the relevant part of gateway.hcl. Replace real hostnames and secrets with placeholders.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Error output, gateway log lines, and for `clawpatrol run` on Linux the tail of `~/.local/state/clawpatrol/run/daemon.log`.
+      render: text
+    validations:
+      required: true

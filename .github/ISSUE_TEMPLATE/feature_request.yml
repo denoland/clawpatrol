@@ -1,0 +1,20 @@
+name: Feature request
+description: Something the gateway should be able to do for an operator.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The operator problem
+      description: What you are trying to do with an agent behind the gateway, and what stops you today. Lead with the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Optional. Config shape, CLI, or behaviour you have in mind. Note that integrations with one specific service usually belong in an external plugin.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
