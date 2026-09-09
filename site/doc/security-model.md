@@ -408,6 +408,16 @@ over a side channel it opens outside the tunnel; if that is in your
 threat model, use whole-machine mode or an external network egress
 control.
 
+The same holds for everything else on the client host. `clawpatrol
+run` is not a sandbox: the wrapped process runs as your OS user and
+can read whatever that user can read — files, the environment of the
+shell it was launched from, other processes, keychains and credential
+helpers. Claw Patrol does not try to strip or hide any of that from
+the wrapped process, because it could not do so reliably, and a
+partial measure would only suggest a boundary that is not there. Keep
+real secrets out of the shell you launch agents from; put them in the
+gateway, where the agent only ever sees placeholders.
+
 ## Out of scope
 
 Claw Patrol does not defend against:
@@ -421,4 +431,7 @@ Claw Patrol does not defend against:
 - cross-user side channels (shared-CPU timing, etc.);
 - exfiltration of locally-readable data by a process that bypasses
   per-process egress interception (see [Egress interception is
-  best-effort](#egress-interception-is-best-effort)).
+  best-effort](#egress-interception-is-best-effort));
+- anything the wrapped process's OS user can already read on the
+  client host, including secrets in the launching shell's environment
+  (`clawpatrol run` is not a sandbox).
