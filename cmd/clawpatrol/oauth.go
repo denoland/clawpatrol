@@ -62,8 +62,16 @@ type oauthState struct {
 	// works across gateway restarts.
 	clientID string
 	flow     string
-	db       *sql.DB
-	mu       sync.Mutex
+	// resource is the RFC 8707 resource indicator (the canonical MCP
+	// resource URL) sent on token refresh for remote_mcp_oauth
+	// credentials. Empty for every other flow.
+	resource string
+	// httpClient, when set, is used by hosted-MCP refresh sources so
+	// remote_mcp_oauth can enforce its no-redirect policy while keeping
+	// existing notion_mcp/dynamic_mcp behavior unchanged.
+	httpClient *http.Client
+	db         *sql.DB
+	mu         sync.Mutex
 }
 
 // OAuthRegistry holds all configured OAuth integrations and one token
@@ -169,6 +177,34 @@ func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.integrations[id] = &def
+	if def.Flow == "remote_mcp_oauth" && def.OAuth.TokenURL == "" {
+		// The current policy binding has no matching persisted discovery
+		// metadata. Clear any live state from a previous binding so reloads
+		// fail closed and require a fresh Connect.
+		delete(r.states, id)
+	}
+}
+
+// SetDiscoveredEndpoints stamps the authorize/token URLs + RFC 8707
+// resource indicator discovered for a remote_mcp_oauth credential onto
+// the in-memory integration (and any live token state). Called right
+// before the token exchange so refresh works immediately after the first
+// connect — without it, the integration registered at boot (before the
+// discovery blob existed) carries an empty token URL and refresh fails
+// until the next restart rehydrates it from gateway_blobs.
+func (r *OAuthRegistry) SetDiscoveredEndpoints(id, authURL, tokenURL, resource string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if it, ok := r.integrations[id]; ok {
+		it.OAuth.AuthURL = authURL
+		it.OAuth.TokenURL = tokenURL
+		it.OAuth.ResourceURL = resource
+	}
+	if s := r.states[id]; s != nil {
+		s.cfg.Endpoint.AuthURL = authURL
+		s.cfg.Endpoint.TokenURL = tokenURL
+		s.resource = resource
+	}
 }
 
 // Status returns connected info for the named credential.
@@ -255,6 +291,92 @@ func (r *OAuthRegistry) SetWithClient(ctx context.Context, id string, tok *oauth
 	return nil
 }
 
+// SetRemoteMCPWithClient atomically installs both the newly discovered
+// remote_mcp_oauth endpoints/resource and the freshly exchanged token.
+// Do not call SetDiscoveredEndpoints before exchange: mutating a live
+// refresh source while it still holds an old refresh token can leak that
+// old token to the new endpoint during a concurrent refresh.
+func (r *OAuthRegistry) SetRemoteMCPWithClient(ctx context.Context, id string, tok *oauth2.Token, clientID, authURL, tokenURL, resource string, meta *remoteMCPMeta) error {
+	r.mu.Lock()
+	it, ok := r.integrations[id]
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("oauth registry: unknown integration: %s", id)
+	}
+	old := r.states[id]
+	s := newState(it, r.db)
+	if old != nil {
+		s.displayName = old.displayName
+		s.avatarURL = old.avatarURL
+	}
+	if r.db != nil && meta != nil {
+		if err := persistRemoteMCPTokenAndMeta(ctx, r.db, id, tok, clientID, *meta); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+	} else {
+		s.persist(tok)
+	}
+	s.cfg.Endpoint.AuthURL = authURL
+	s.cfg.Endpoint.TokenURL = tokenURL
+	s.resource = resource
+	s.httpClient = noRedirectOAuthHTTPClient(http.DefaultClient)
+	if clientID != "" {
+		s.clientID = clientID
+		s.cfg.ClientID = clientID
+	}
+	s.installTokenSource(tok)
+	r.states[id] = s
+	r.mu.Unlock()
+
+	name, avatar := fetchOAuthProfile(ctx, id, tok.AccessToken)
+	if name != "" || avatar != "" {
+		s.persistProfile(name, avatar)
+	}
+	return nil
+}
+
+func persistRemoteMCPTokenAndMeta(ctx context.Context, db *sql.DB, id string, tok *oauth2.Token, clientID string, meta remoteMCPMeta) error {
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("remote_mcp_oauth: encode metadata: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("remote_mcp_oauth: begin token/meta transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var expiryNs int64
+	if !tok.Expiry.IsZero() {
+		expiryNs = tok.Expiry.UnixNano()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO credentials (id, access_token, token_type, refresh_token, expiry_ns, updated_ns, client_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			access_token  = excluded.access_token,
+			token_type    = excluded.token_type,
+			refresh_token = excluded.refresh_token,
+			expiry_ns     = excluded.expiry_ns,
+			updated_ns    = excluded.updated_ns,
+			client_id     = excluded.client_id
+	`, id, tok.AccessToken, tok.TokenType, tok.RefreshToken, expiryNs, time.Now().UnixNano(), nullableString(clientID)); err != nil {
+		return fmt.Errorf("remote_mcp_oauth: persist token: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO gateway_blobs (kind, name, value, updated_ns)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(kind, name) DO UPDATE SET
+			value = excluded.value, updated_ns = excluded.updated_ns
+	`, remoteMCPMetaBlobKind, id, metaBytes, time.Now().UnixNano()); err != nil {
+		return fmt.Errorf("remote_mcp_oauth: persist metadata: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("remote_mcp_oauth: commit token/meta transaction: %w", err)
+	}
+	return nil
+}
+
 // OAuthProfile holds the human-identity bits we surface on the
 // dashboard (real name + avatar). Populated after a successful token
 // exchange by hitting the provider's userinfo endpoint.
@@ -331,17 +453,27 @@ func newState(it *OAuthIntegration, db *sql.DB) *oauthState {
 	if prefix == "" && header == "Authorization" {
 		prefix = "Bearer "
 	}
-	return &oauthState{
-		cfg:    cfg,
-		header: header,
-		prefix: prefix,
-		id:     it.ID,
-		flow:   it.Flow,
-		db:     db,
+	state := &oauthState{
+		cfg:      cfg,
+		header:   header,
+		prefix:   prefix,
+		id:       it.ID,
+		flow:     it.Flow,
+		resource: it.OAuth.ResourceURL,
+		db:       db,
 	}
+	if it.Flow == "remote_mcp_oauth" {
+		state.httpClient = noRedirectOAuthHTTPClient(http.DefaultClient)
+	}
+	return state
 }
 
 func (s *oauthState) setToken(tok *oauth2.Token) {
+	s.installTokenSource(tok)
+	s.persist(tok)
+}
+
+func (s *oauthState) installTokenSource(tok *oauth2.Token) {
 	var base oauth2.TokenSource
 	switch {
 	case isAnthropicTokenURL(s.cfg.Endpoint.TokenURL):
@@ -349,13 +481,17 @@ func (s *oauthState) setToken(tok *oauth2.Token) {
 		// (returns "Invalid request format" otherwise). Stdlib oauth2
 		// only sends form-urlencoded.
 		base = &anthropicRefreshSource{cfg: s.cfg, current: tok}
-	case s.flow == "dynamic_mcp" || s.flow == "notion_mcp":
+	case s.flow == "dynamic_mcp" || s.flow == "notion_mcp" || s.flow == "remote_mcp_oauth":
 		// Hosted MCP token endpoints refresh via form-urlencoded body and
 		// expect the dynamically registered client_id (no static
 		// ClientSecret — PKCE-only public client). The flow, not the
 		// provider hostname, selects this behavior so external credential
-		// plugins can supply their own MCP OAuth endpoints.
-		base = &dynamicMCPRefreshSource{cfg: s.cfg, current: tok}
+		// plugins can supply their own MCP OAuth endpoints. remote_mcp_oauth
+		// additionally carries the RFC 8707 resource indicator and refreshes
+		// against the token endpoint discovered + persisted at connect time,
+		// so a later compromise of the resource server cannot substitute the
+		// token endpoint here.
+		base = &dynamicMCPRefreshSource{cfg: s.cfg, current: tok, resource: s.resource, httpClient: s.httpClient}
 	default:
 		base = s.cfg.TokenSource(context.Background(), tok)
 	}
@@ -364,7 +500,6 @@ func (s *oauthState) setToken(tok *oauth2.Token) {
 		&persistingSource{base: base, state: s},
 		60*time.Second,
 	)
-	s.persist(tok)
 }
 
 // anthropicRefreshSource refreshes Anthropic OAuth tokens via JSON
@@ -537,6 +672,12 @@ func (r *OAuthRegistry) loadFromDB() error {
 		if !ok {
 			continue
 		}
+		if it.Flow == "remote_mcp_oauth" && it.OAuth.TokenURL == "" {
+			// No validated metadata matched the currently bound remote_mcp
+			// endpoint at boot. Do not attach a previously stored token to a
+			// potentially different resource; require a fresh Connect.
+			continue
+		}
 		s := newState(it, r.db)
 		// Restore the dynamically-registered client_id BEFORE setToken
 		// so dynamic MCP refresh sources pick it up via s.cfg.
@@ -574,6 +715,18 @@ type oauthSession struct {
 	// Stamped onto the credential row at exchange time so refresh can
 	// replay it.
 	dynClientID string
+	// resource is the RFC 8707 resource indicator (the canonical MCP
+	// resource URL) for remote_mcp_oauth sessions, sent on the token
+	// exchange. Empty for every other flow.
+	resource string
+	// httpClient is set for remote_mcp_oauth so oauth2.Exchange cannot
+	// follow redirects while posting code/verifier/client metadata.
+	httpClient *http.Client
+	// remoteMCPMeta carries pending non-secret discovery/DCR metadata for
+	// remote_mcp_oauth. It is persisted only after token exchange succeeds,
+	// so a failed/abandoned reconnect cannot poison refresh for an existing
+	// stored credential.
+	remoteMCPMeta *remoteMCPMeta
 }
 
 // mergeExtraScopes appends user-selected scopes from the connect-time
@@ -649,6 +802,10 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	if flow.Flow == "openai_device" {
 		w.startOpenAIDeviceFlow(rw, r, id, flow)
+		return
+	}
+	if flow.Flow == "remote_mcp_oauth" {
+		w.startRemoteMCPOAuthFlow(rw, r, id, flow)
 		return
 	}
 	if flow.Flow == "notion_mcp" || flow.Flow == "dynamic_mcp" {
@@ -754,6 +911,16 @@ func (w *webMux) dashboardRedirectURI(r *http.Request, path string) string {
 // against `registerURL`, asking for a public PKCE client bound to the
 // given redirect URI. Returns the issued client_id.
 func registerOAuthClient(ctx context.Context, registerURL, redirectURI string, scopes []string) (string, error) {
+	return registerOAuthClientClient(ctx, http.DefaultClient, registerURL, redirectURI, scopes)
+}
+
+// registerOAuthClientClient is registerOAuthClient with an explicit HTTP
+// client, so remote_mcp_oauth discovery/DCR can run against a test TLS
+// server whose self-signed cert the default client would reject.
+func registerOAuthClientClient(ctx context.Context, client *http.Client, registerURL, redirectURI string, scopes []string) (string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	bodyMap := map[string]any{
 		"client_name":                "clawpatrol",
 		"redirect_uris":              []string{redirectURI},
@@ -771,7 +938,7 @@ func registerOAuthClient(ctx context.Context, registerURL, redirectURI string, s
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -891,6 +1058,14 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	it := w.g.oauth.Integration(sess.id)
+	if it != nil && it.Flow == "remote_mcp_oauth" {
+		if it.OAuth.ResourceURL == "" || !sameResource(sess.resource, it.OAuth.ResourceURL) {
+			http.Error(rw, "stale remote_mcp_oauth session for current resource binding", http.StatusBadRequest)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	tok, err := exchangeOAuthCode(ctx, sess, body.Code, body.State)
@@ -898,9 +1073,19 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "token exchange: "+err.Error(), 400)
 		return
 	}
-	if err := w.g.oauth.SetWithClient(r.Context(), sess.id, tok, sess.dynClientID); err != nil {
-		http.Error(rw, err.Error(), 500)
-		return
+	// remote_mcp_oauth discovers its token endpoint at connect time; stamp
+	// it onto the registry so the freshly-stored token can refresh against
+	// the validated endpoint without waiting for a restart.
+	if it != nil && it.Flow == "remote_mcp_oauth" {
+		if err := w.g.oauth.SetRemoteMCPWithClient(r.Context(), sess.id, tok, sess.dynClientID, sess.cfg.Endpoint.AuthURL, sess.cfg.Endpoint.TokenURL, sess.resource, sess.remoteMCPMeta); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+	} else {
+		if err := w.g.oauth.SetWithClient(r.Context(), sess.id, tok, sess.dynClientID); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
 	}
 	writeJSON(rw, map[string]any{"connected": true, "expires": tok.Expiry.Unix()})
 }
@@ -1228,10 +1413,19 @@ func exchangeOAuthCode(ctx context.Context, sess *oauthSession, code, state stri
 	if isAnthropicTokenURL(sess.cfg.Endpoint.TokenURL) {
 		return exchangeAnthropicCode(ctx, sess, code, state)
 	}
-	return sess.cfg.Exchange(ctx, code,
+	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("code_verifier", sess.verifier),
 		oauth2.SetAuthURLParam("redirect_uri", sess.cfg.RedirectURL),
-	)
+	}
+	// RFC 8707: bind the issued token to the MCP resource for
+	// remote_mcp_oauth. Empty for every other flow.
+	if sess.resource != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("resource", sess.resource))
+	}
+	if sess.httpClient != nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, sess.httpClient)
+	}
+	return sess.cfg.Exchange(ctx, code, opts...)
 }
 
 func isAnthropicTokenURL(u string) bool {
@@ -1247,6 +1441,13 @@ type dynamicMCPRefreshSource struct {
 	mu      sync.Mutex
 	cfg     *oauth2.Config
 	current *oauth2.Token
+	// httpClient uses the remote_mcp_oauth redirect policy when set. Nil
+	// preserves existing notion_mcp/dynamic_mcp refresh behavior.
+	httpClient *http.Client
+	// resource, when set, is sent as the RFC 8707 resource indicator on
+	// the refresh request (remote_mcp_oauth). Empty for notion_mcp /
+	// dynamic_mcp, which omit it.
+	resource string
 }
 
 func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
@@ -1265,6 +1466,9 @@ func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", d.current.RefreshToken)
 	form.Set("client_id", d.cfg.ClientID)
+	if d.resource != "" {
+		form.Set("resource", d.resource)
+	}
 	// See anthropicRefreshSource.Token: oauth2 has no ctx on Token(),
 	// so we bound the upstream round-trip here so d.mu stays available
 	// even if the MCP token endpoint hangs.
@@ -1276,7 +1480,11 @@ func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := d.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic_mcp refresh: %w", err)
 	}
