@@ -172,8 +172,10 @@ type GatewaySettings struct {
 	// tunnel and plugin events) to this file, created 0600. It is
 	// not an audit log: allowed requests are recorded in the state
 	// database and shown in the dashboard, not logged. The gateway
-	// never rotates the file. Read at startup; changing it requires
-	// a restart.
+	// never rotates the file. Opened right after state_dir is
+	// created, so a path inside state_dir works on a first run;
+	// lines logged while the config itself is being parsed go to
+	// stderr only. Changing it requires a restart.
 	LogPath string `hcl:"log_path,optional"`
 
 	// Telemetry opts in/out of the update-checker / anonymous usage

@@ -688,9 +688,22 @@ func teeGatewayLog(path string) error {
 	if err != nil {
 		return err
 	}
-	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.SetOutput(logTee{os.Stderr, f})
 	log.Printf("log: also writing to %s", path)
 	return nil
+}
+
+// logTee writes every line to all sinks and never reports an error:
+// unlike io.MultiWriter it does not stop at the first failing writer,
+// so a closed or broken stderr does not silence the log file (and
+// vice versa). The standard logger discards write errors anyway.
+type logTee []io.Writer
+
+func (t logTee) Write(p []byte) (int, error) {
+	for _, w := range t {
+		_, _ = w.Write(p)
+	}
+	return len(p), nil
 }
 
 // logDashboardAuthState emits a one-line summary of dashboard-auth
@@ -3337,14 +3350,18 @@ func runGateway(args []string) {
 		}
 		log.Fatalf("config: %v", err)
 	}
+	stateDir := resolveStateDir(cfg)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		log.Fatalf("state dir: %v", err)
+	}
+	// After the state dir exists, so a log_path inside it works on a
+	// first run; before anything else, so the file sees the rest of
+	// startup. Lines logged while parsing the config itself (plugin
+	// load messages included) are stderr-only.
 	if logPath := cfg.LogPath(); logPath != "" {
 		if err := teeGatewayLog(logPath); err != nil {
 			log.Fatalf("log_path: %v", err)
 		}
-	}
-	stateDir := resolveStateDir(cfg)
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		log.Fatalf("state dir: %v", err)
 	}
 	if err := checkDirWritable(stateDir); err != nil {
 		log.Fatalf("state dir: cannot create files in state_dir %s as uid %d: %v\n      Fix: run the gateway as the user that owns it, `chown` it to that user, or set a writable state_dir in the gateway block of %s.", stateDir, os.Getuid(), err, cfgPath)

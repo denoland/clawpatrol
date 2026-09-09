@@ -48,3 +48,19 @@ func TestTeeGatewayLogMissingDir(t *testing.T) {
 		t.Fatal("expected an error for a missing parent directory")
 	}
 }
+
+func TestLogTeeWritesAllSinksDespiteFailure(t *testing.T) {
+	var good strings.Builder
+	tee := logTee{failingWriter{}, &good}
+	n, err := tee.Write([]byte("line\n"))
+	if err != nil || n != 5 {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if good.String() != "line\n" {
+		t.Fatalf("second sink got %q", good.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
