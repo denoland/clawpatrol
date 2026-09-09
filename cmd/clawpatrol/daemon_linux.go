@@ -301,9 +301,14 @@ func daemonSpawn(_ string) error {
 		// The daemon boots its transport before it signals ready and
 		// log.Fatalf's on failure, so every transport-boot error
 		// arrives here as a bare EOF. Its last log line is the actual
-		// cause; surface it.
-		if last := lastLogLineSince(daemonLogPath(), logStart); last != "" {
-			return fmt.Errorf("daemon exited during startup: %s\n  (daemon log: %s)", last, daemonLogPath())
+		// cause; surface it. Only EOF means the daemon is gone: a
+		// read deadline can expire while a slow transport (tsnet
+		// login) is still coming up, and that daemon is alive.
+		if errors.Is(err, io.EOF) {
+			if last := lastLogLineSince(daemonLogPath(), logStart); last != "" {
+				return fmt.Errorf("daemon exited during startup: %s\n  (daemon log: %s)", last, daemonLogPath())
+			}
+			return fmt.Errorf("daemon exited during startup before logging a reason\n  (daemon log: %s)", daemonLogPath())
 		}
 		return fmt.Errorf("daemon ready: %w (read %q)\n  (daemon log: %s)", err, line, daemonLogPath())
 	}
