@@ -667,11 +667,29 @@ func (g *Gateway) reloadConfigFromFileLocked(path string) error {
 		}
 	}
 	// Hot-swap the operational *config.Gateway too. Listen / CA dir /
-	// Tailscale process changes are still restart-only.
+	// Tailscale process / log_path changes are still restart-only.
+	if prev := g.cfg.Load(); prev != nil && prev.LogPath() != next.LogPath() {
+		log.Printf("config reload: log_path changed to %q; takes effect on restart", next.LogPath())
+	}
 	g.cfg.Store(next)
 	log.Printf("config reloaded: %d endpoints across %d profile(s)",
 		len(policy.Endpoints), len(policy.Profiles))
 	logDashboardAuthState(g.db, next)
+	return nil
+}
+
+// teeGatewayLog makes the standard logger write every line to path
+// (created 0600, appended) as well as stderr. This is gateway.log_path:
+// a durable copy of what the journal / stderr already shows, for
+// deployments where stderr is not captured. Opened once at startup;
+// the file is never rotated or truncated by the gateway.
+func teeGatewayLog(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.Printf("log: also writing to %s", path)
 	return nil
 }
 
@@ -3301,6 +3319,11 @@ func runGateway(args []string) {
 			os.Exit(2)
 		}
 		log.Fatalf("config: %v", err)
+	}
+	if logPath := cfg.LogPath(); logPath != "" {
+		if err := teeGatewayLog(logPath); err != nil {
+			log.Fatalf("log_path: %v", err)
+		}
 	}
 	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {

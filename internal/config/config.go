@@ -167,7 +167,13 @@ type GatewaySettings struct {
 	// upstream lookups when the runtime needs an explicit resolver.
 	Resolver string `hcl:"resolver,optional"`
 
-	// LogPath is an optional file path for gateway log output.
+	// LogPath, when set, appends every gateway log line (the same
+	// lines written to stderr: startup, config reloads, denials,
+	// tunnel and plugin events) to this file, created 0600. It is
+	// not an audit log: allowed requests are recorded in the state
+	// database and shown in the dashboard, not logged. The gateway
+	// never rotates the file. Read at startup; changing it requires
+	// a restart.
 	LogPath string `hcl:"log_path,optional"`
 
 	// Telemetry opts in/out of the update-checker / anonymous usage
