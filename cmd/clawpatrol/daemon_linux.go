@@ -257,8 +257,15 @@ func daemonSpawn(_ string) error {
 	// check keeps recent history across a handful of restarts while
 	// bounding total size.
 	logFlags := os.O_CREATE | os.O_APPEND | os.O_WRONLY
-	if fi, err := os.Stat(daemonLogPath()); err == nil && fi.Size() > daemonLogMaxBytes {
-		logFlags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+	// Remember where this daemon's output starts so a boot failure can
+	// be reported from its own log lines, not an earlier daemon's.
+	var logStart int64
+	if fi, err := os.Stat(daemonLogPath()); err == nil {
+		if fi.Size() > daemonLogMaxBytes {
+			logFlags = os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+		} else {
+			logStart = fi.Size()
+		}
 	}
 	logf, err := os.OpenFile(daemonLogPath(), logFlags, 0o600)
 	if err != nil {
@@ -291,7 +298,14 @@ func daemonSpawn(_ string) error {
 	br := bufio.NewReader(pr)
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("daemon ready: %w (read %q)", err, line)
+		// The daemon boots its transport before it signals ready and
+		// log.Fatalf's on failure, so every transport-boot error
+		// arrives here as a bare EOF. Its last log line is the actual
+		// cause; surface it.
+		if last := lastLogLineSince(daemonLogPath(), logStart); last != "" {
+			return fmt.Errorf("daemon exited during startup: %s\n  (daemon log: %s)", last, daemonLogPath())
+		}
+		return fmt.Errorf("daemon ready: %w (read %q)\n  (daemon log: %s)", err, line, daemonLogPath())
 	}
 	if line != "ready\n" {
 		return fmt.Errorf("daemon ready: unexpected %q", line)

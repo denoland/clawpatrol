@@ -144,7 +144,9 @@ func runRun(args []string) {
 	// none is alive. Hello handshake happens inside daemonConnect.
 	ctrl, err := daemonConnect()
 	if err != nil {
-		fail("daemon connect: %v\n  (if this machine was joined with --whole-machine, run the command directly — `clawpatrol run` isn't needed; traffic already routes through the gateway)", err)
+		// Not a whole-machine join: that case returned above, so the
+		// old hint about it would only mislead here.
+		fail("daemon connect: %v", err)
 	}
 	defer func() { _ = ctrl.Close() }()
 
