@@ -25,8 +25,8 @@ func lastLogLineSince(path string, off int64) string {
 			return ""
 		}
 	}
-	const cap = 64 << 10
-	buf, err := io.ReadAll(io.LimitReader(f, cap))
+	const maxRead = 64 << 10
+	buf, err := io.ReadAll(io.LimitReader(f, maxRead))
 	if err != nil && len(buf) == 0 {
 		return ""
 	}
