@@ -402,6 +402,14 @@ before a final allow decision, Claw Patrol does **not** call upstream.
 Deny and timeout responses are gateway-generated failures, not upstream
 responses.
 
+For `llm_approver`, a model call that cannot complete (credential
+fetch or injection failure, transport error or timeout, non-200
+status, undecodable response) is resolved by `defaults.llm_fail_mode`:
+`"closed"` (the default) denies, `"open"` allows and records the
+failure as the reason. A model that answers is judged as usual, and
+an ambiguous answer denies. Misconfiguration, such as a missing
+credential, always denies.
+
 For `human_approver`, [set `timeout` to the maximum time Claw Patrol
 should wait for a human decision](/docs/config-reference/#approver-human_approver-name).
 

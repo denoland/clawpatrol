@@ -283,6 +283,11 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if d == nil {
 		d = &Defaults{}
 	}
+	switch d.LLMFailMode {
+	case "", "closed", "open":
+	default:
+		return nil, fmt.Errorf("defaults.llm_fail_mode %q must be \"closed\" or \"open\"", d.LLMFailMode)
+	}
 	cp := &CompiledPolicy{
 		UnknownHost:    d.UnknownHost,
 		LLMFailMode:    d.LLMFailMode,

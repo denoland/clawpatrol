@@ -1,10 +1,14 @@
 package approvers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -47,5 +51,46 @@ func TestHITLSummaryJSONContractUsesSubjectLabelSummary(t *testing.T) {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("marshaled summary contains legacy field %q: %s", forbidden, raw)
 		}
+	}
+}
+
+type failingSecrets struct{}
+
+func (failingSecrets) Get(string) (runtime.Secret, error) {
+	return runtime.Secret{}, errors.New("vault unreachable")
+}
+
+type nopHTTPCredential struct{}
+
+func (nopHTTPCredential) InjectHTTP(context.Context, *http.Request, runtime.Secret) error {
+	return nil
+}
+
+// A model call that cannot complete must leave Decision empty so the
+// approve chain can apply defaults.llm_fail_mode; misconfiguration
+// must deny outright.
+func TestLLMApproverUndecidedOnCallFailure(t *testing.T) {
+	policy := &config.CompiledPolicy{Credentials: map[string]*config.Entity{
+		"judge": {Body: nopHTTPCredential{}},
+	}}
+	a := &LLMApprover{Model: "claude-test", Credential: "judge"}
+	v, err := a.Approve(context.Background(), runtime.ApproveRequest{Policy: policy, Secrets: failingSecrets{}})
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if v.Decision != "" {
+		t.Fatalf("Decision = %q, want empty (undecided)", v.Decision)
+	}
+	if !strings.HasPrefix(v.Reason, "secret fetch: ") {
+		t.Fatalf("Reason = %q", v.Reason)
+	}
+
+	misconfigured := &LLMApprover{Model: "claude-test", Credential: "missing"}
+	v, err = misconfigured.Approve(context.Background(), runtime.ApproveRequest{Policy: policy, Secrets: failingSecrets{}})
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if v.Decision != "deny" {
+		t.Fatalf("misconfigured Decision = %q, want deny", v.Decision)
 	}
 }

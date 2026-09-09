@@ -3070,17 +3070,34 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		if err != nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway", ApproverName: v.ApproverName, ApproverType: v.ApproverType}
 		}
+		if v.Decision == "" {
+			v = resolveUndecidedVerdict(policy, st.Name, approverType, v)
+		}
 		if v.Decision != "allow" {
-			if v.Decision == "" {
-				v.Decision = "deny"
-				if v.Reason == "" {
-					v.Reason = "approver " + st.Name + " timed out"
-				}
-			}
 			return v
 		}
 	}
 	return runtime.ApproveVerdict{Decision: "allow"}
+}
+
+// resolveUndecidedVerdict turns an approver's empty Decision (it could
+// not decide: timeout, model-call failure) into a final verdict. LLM
+// approvers honor defaults.llm_fail_mode: "open" allows and records
+// why; anything else denies. Every other approver type denies.
+func resolveUndecidedVerdict(policy *config.CompiledPolicy, name, approverType string, v runtime.ApproveVerdict) runtime.ApproveVerdict {
+	if v.Reason == "" {
+		v.Reason = "approver " + name + " timed out"
+	}
+	if approverType == "llm_approver" && policy != nil && policy.LLMFailMode == "open" {
+		v.Decision = "allow"
+		v.Reason = "llm_fail_mode = open: " + v.Reason
+		if v.By == "" {
+			v.By = "gateway"
+		}
+		return v
+	}
+	v.Decision = "deny"
+	return v
 }
 
 // ifNotEmpty returns f(v) when v != nil, else "".

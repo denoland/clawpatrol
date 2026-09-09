@@ -505,3 +505,31 @@ func TestCompileFullSpec(t *testing.T) {
 		t.Errorf("expected ~50+ rule attachments, got %d", totalRules)
 	}
 }
+
+func TestCompileLLMFailModeValues(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		ok    bool
+	}{
+		{"", true}, {"closed", true}, {"open", true}, {"opne", false}, {"OPEN", false},
+	} {
+		src := testGatewayPrefix
+		if c.value != "" {
+			src += "defaults { llm_fail_mode = \"" + c.value + "\" }\n"
+		}
+		gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+		if diags.HasErrors() {
+			t.Fatalf("%q: load: %v", c.value, diags)
+		}
+		cp, err := config.Compile(gw)
+		if c.ok && err != nil {
+			t.Fatalf("%q: compile: %v", c.value, err)
+		}
+		if !c.ok && err == nil {
+			t.Fatalf("%q: compile accepted an invalid llm_fail_mode", c.value)
+		}
+		if c.ok && cp.LLMFailMode != c.value {
+			t.Fatalf("%q: compiled LLMFailMode = %q", c.value, cp.LLMFailMode)
+		}
+	}
+}

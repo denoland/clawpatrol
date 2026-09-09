@@ -95,30 +95,40 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	}
 	sec, err := req.Secrets.Get(a.Credential)
 	if err != nil {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
+		return llmUndecided("secret fetch: " + err.Error()), nil
 	}
 	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
 		discardHTTPRedactions(injector, hreq)
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
+		return llmUndecided("credential inject: " + err.Error()), nil
 	}
 	discardHTTPRedactions(injector, hreq)
 	c := &http.Client{Timeout: 30 * time.Second}
 	resp, err := c.Do(hreq)
 	if err != nil {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm call: " + err.Error()}, nil
+		return llmUndecided("llm call: " + err.Error()), nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return runtime.ApproveVerdict{Decision: "deny", Reason: fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))}, nil
+		return llmUndecided(fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))), nil
 	}
 	text, err := decode(resp.Body)
 	if err != nil {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm response decode: " + err.Error()}, nil
+		return llmUndecided("llm response decode: " + err.Error()), nil
 	}
 	verdict, reason := parseJudgeVerdict(text)
 	by := "llm:" + a.Model
 	return runtime.ApproveVerdict{Decision: verdict, Reason: reason, By: by}, nil
+}
+
+// llmUndecided is the verdict for a model call that could not
+// complete: credential fetch/inject failure, transport error, non-200
+// status, or an undecodable body. Decision is left empty so the
+// approve chain applies defaults.llm_fail_mode ("closed" denies,
+// "open" allows). Misconfiguration (no model, undeclared credential,
+// unknown model family) is not a call failure and always denies.
+func llmUndecided(reason string) runtime.ApproveVerdict {
+	return runtime.ApproveVerdict{Decision: "", Reason: reason}
 }
 
 func discardHTTPRedactions(injector runtime.HTTPCredentialRuntime, req *http.Request) {
