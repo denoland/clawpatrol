@@ -107,11 +107,13 @@ func detectAgentTypeFromHost(host string) string {
 }
 
 type AgentRegistry struct {
-	mu      sync.RWMutex
-	agents  map[string]*Agent
-	lc      *local.Client
-	onboard *onboardRegistry // set by Gateway ctor; supplies hostname/owner overrides in WG mode
-	db      *sql.DB          // optional; persists Session rows. nil → in-memory only.
+	mu     sync.RWMutex
+	agents map[string]*Agent
+	lc     *local.Client
+	// whoisOverride replaces the LocalClient whois in tests.
+	whoisOverride func(ip string) *whoisResult
+	onboard       *onboardRegistry // set by Gateway ctor; supplies hostname/owner overrides in WG mode
+	db            *sql.DB          // optional; persists Session rows. nil → in-memory only.
 
 	// persistState debounces per-session DB writes (see persistSession).
 	// Separate mutex from r.mu so a slow SQLite write doesn't block
@@ -256,6 +258,12 @@ func (r *AgentRegistry) trackUA(remoteAddr, host, ua string, in, out int64) {
 // lookupWhois does a synchronous whois (short timeout). Used for
 // credential-owner derivation per-request. Returns nil on failure.
 func (r *AgentRegistry) lookupWhois(ip string) *whoisResult {
+	if r.whoisOverride != nil {
+		return r.whoisOverride(ip)
+	}
+	if r.lc == nil {
+		return nil
+	}
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return nil

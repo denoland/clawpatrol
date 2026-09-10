@@ -586,12 +586,14 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		// Two ways to prove tailnet membership:
-		//   1. peer IP whois (direct tailnet → gateway, no proxy).
-		//   2. Tailscale-User-Login header from `tailscale serve` —
-		//      ONLY trusted when the proxy hop is local (127.0.0.1 /
-		//      ::1). Anyone hitting us via funnel can otherwise forge
-		//      the header trivially.
+		// The only proof of tailnet membership is a whois of the
+		// peer address of a direct tailnet connection. Requests that
+		// arrive through a local reverse proxy are anonymous: the
+		// Tailscale-User-Login and X-Forwarded-For headers a
+		// `tailscale serve` hop sets are indistinguishable from ones
+		// an attacker sends through any other proxy on the host, so
+		// they are not consulted. In Tailscale mode the dashboard is
+		// served on the tsnet node itself, which is the direct path.
 		host := r.RemoteAddr
 		if i := strings.LastIndex(host, ":"); i >= 0 {
 			host = host[:i]
@@ -603,12 +605,6 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 				device = who.Node.StableID
 				displayHost = who.Node.HostName
 			}
-		}
-		if login == "" && isLoopback(host) {
-			// `tailscale serve` proxy hop. The header is authoritative
-			// here because nothing public can reach loopback.
-			login = r.Header.Get("Tailscale-User-Login")
-			displayHost = host
 		}
 		if login == "" {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
