@@ -41,10 +41,6 @@ import (
 )
 
 const (
-	// wgClientMTU mirrors the per-process wireguard-go MTU used by
-	// the macOS NE and the gateway side. Path-MTU + ICMP frag-needed
-	// in wireguard-go shaves this down further when needed.
-	wgClientMTU = 1420
 	// wgClientKeepalive forces wireguard-go to send periodic keepalives
 	// so the first user flow doesn't race the initial handshake. See
 	// macos/netstack/wgnetstack.go for the same rationale.
@@ -138,7 +134,9 @@ func startWGTransport() (daemonTransport, error) {
 		return nil, fmt.Errorf("wg conf: no IPv4 in Address %q", cfg.Address)
 	}
 
-	tun, err := newWGClientTun(clientIP, clientIP6, wgClientMTU)
+	mtu, mtuSrc := deriveWGClientMTU(cfg.Endpoint)
+	log.Printf("daemon: wg mtu %d (%s)", mtu, mtuSrc)
+	tun, err := newWGClientTun(clientIP, clientIP6, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("netTUN: %w", err)
 	}

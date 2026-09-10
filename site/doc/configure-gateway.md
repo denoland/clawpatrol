@@ -91,6 +91,28 @@ wireguard {
 }
 ```
 
+### WireGuard over a narrower path (MTU)
+
+The gateway's WireGuard device emits 1420-byte packets by default,
+which fits a 1500-byte Ethernet path once the 80 bytes of WireGuard
+and UDP/IP framing are added. If peers reach the gateway over a
+narrower path, most commonly a Tailscale address (1280-byte
+interface), the large packets are dropped on the gateway's own send
+path: the log fills with `sendmmsg: message too long` at a steady
+few per second, small requests work, and anything over about 16 KiB
+never completes. Set the gateway side explicitly:
+
+```hcl
+wireguard {
+  subnet_cidr = "10.55.0.0/24"
+  mtu         = 1200                      # 1280 (Tailscale) minus 80
+}
+```
+
+Linux clients derive their own side from the route to the gateway
+endpoint, the way `wg-quick` does; `CLAWPATROL_WG_MTU=1200` overrides
+that for one `clawpatrol run` daemon. The macOS extension uses 1420.
+
 ### Single-host (loopback) WireGuard
 
 Running the gateway and `clawpatrol run` on the same machine — the

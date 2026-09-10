@@ -334,10 +334,18 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	serverIP := prefix.Addr().Next() // x.x.x.1
 	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
 
-	tun, err := newNetTUN(serverIP, serverIP6, 1420)
+	mtu := wgDefaultMTU
+	if ts.WGMTU != 0 {
+		if ts.WGMTU < wgMinMTU || ts.WGMTU > 1500 {
+			return nil, fmt.Errorf("wireguard: mtu %d out of range (%d-1500)", ts.WGMTU, wgMinMTU)
+		}
+		mtu = ts.WGMTU
+	}
+	tun, err := newNetTUN(serverIP, serverIP6, mtu)
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("wireguard: mtu %d", mtu)
 	dev := device.NewDevice(tun, conn.NewDefaultBind(),
 		device.NewLogger(device.LogLevelError, "[wg] "))
 	if err := dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", priv, listenPort)); err != nil {

@@ -268,6 +268,18 @@ type WireGuardBlock struct {
 	// the dashboard).
 	Endpoint string `hcl:"endpoint,optional"`
 
+	// MTU is the packet size the gateway's WireGuard device emits
+	// toward peers, before the 80 bytes of WireGuard and UDP/IP
+	// framing. Default 1420, which fits a 1500-byte Ethernet path.
+	// Lower it when peers reach the gateway over a narrower path:
+	// 1200 when the listen address is a Tailscale IP (1280 minus 80).
+	// Too large a value shows up as "sendmmsg: message too long" in
+	// the gateway log and transfers over about 16 KiB that never
+	// finish. Range 1000 to 1500. Linux clients derive their own
+	// side from the route to the gateway; this setting covers the
+	// gateway's side.
+	MTU int `hcl:"mtu,optional"`
+
 	// Interface is the WireGuard interface name the gateway manages.
 	// Mostly irrelevant in userspace mode; leave unset.
 	Interface string `hcl:"interface,optional"`
@@ -496,6 +508,7 @@ type JoinConfig struct {
 	WGInterface       string
 	WGEndpoint        string
 	WGListenPort      int
+	WGMTU             int
 	WGServerPub       string
 	WGSubnetCIDR      string
 	TailscaleEnabled  bool
@@ -528,6 +541,7 @@ func (g *Gateway) Join() JoinConfig {
 		jc.WGInterface = w.Interface
 		jc.WGEndpoint = w.Endpoint
 		jc.WGListenPort = w.ListenPort
+		jc.WGMTU = w.MTU
 		jc.WGServerPub = w.ServerPub
 		jc.WGSubnetCIDR = w.SubnetCIDR
 	}

@@ -74,6 +74,7 @@ gateway {
     # for the dashboard) or to override the advertised port. Examples:
     #   listen_port = 41820                          # custom port
     #   endpoint    = "wg.example.com:51820"         # WG host != dashboard host
+    #   mtu         = 1200                           # peers reach us over Tailscale (1280 - 80)
     #
     # host_loopback_port defaults to 8443 — the 127.0.0.1 TCP landing
     # pad host-local clients dial. Override it to run two gateways on
