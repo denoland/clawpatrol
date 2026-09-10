@@ -1,10 +1,13 @@
 # Telemetry
 
-Status: design — nothing is built yet. This is an internal design
-doc; the user-facing pitch ("clawpatrol's update checker") lives in
-the README and at [clawpatrol.dev](https://clawpatrol.dev). What
-follows is the contract for the implementation: if anything ships
-differently than what's described here, this document changes first.
+Status: shipped. The gateway side is `cmd/clawpatrol/telemetry.go`,
+the receiver is the Cloudflare Worker in `site/worker/` with its D1
+schema in `site/migrations/`, and `site/sql/telemetry/` holds the
+queries behind `npm run telemetry` in `site/`. This document is the
+contract for that implementation: if anything ships differently from
+what is described here, this document changes first. The user-facing
+pitch ("clawpatrol's update checker") lives in the README and at
+[clawpatrol.dev](https://clawpatrol.dev).
 
 ## What this is
 

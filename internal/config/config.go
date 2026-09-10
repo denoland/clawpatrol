@@ -161,6 +161,12 @@ type GatewaySettings struct {
 	// DashboardConfigWrites allows authenticated dashboard users to
 	// append generated config snippets to the gateway HCL. Default
 	// false: config remains read-only and changes happen out-of-band.
+	// Enabling it hands every dashboard login full control of the
+	// gateway: rules, credential bindings, and tunnels, including
+	// `local_command` tunnels that run a program as the gateway's
+	// service user. Treat the dashboard password as a root credential
+	// when this is on, and keep it off for gateways whose dashboard
+	// is reachable beyond the operators you trust with that.
 	DashboardConfigWrites bool `hcl:"dashboard_config_writes,optional"`
 
 	// Resolver is the DNS resolver address the gateway uses for
