@@ -3107,10 +3107,14 @@ func applyRequestBodySnapshot(ev *Event, snapshot samplerSnapshot, redactions []
 	ev.ReqBodyState = snapshot.captureState()
 }
 
-func applyResponseBodySnapshot(ev *Event, snapshot samplerSnapshot) {
+// applyResponseBodySnapshot records the response sample with the same
+// credential redactions as the request: an upstream that echoes the
+// injected secret back (401 bodies, debug pages, error messages)
+// must not get it persisted or displayed.
+func applyResponseBodySnapshot(ev *Event, snapshot samplerSnapshot, redactions []string) {
 	ev.Out = snapshot.n
 	ev.RespSha = snapshot.sha
-	ev.RespBody = snapshot.sample
+	ev.RespBody = redactCredentialSample(snapshot.sample, redactions)
 	ev.RespBodyState = snapshot.captureState()
 }
 

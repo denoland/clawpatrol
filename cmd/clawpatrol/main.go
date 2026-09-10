@@ -3037,7 +3037,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		reqSnapshot := reqS.snapshot(req.Header.Get("Content-Encoding"))
 		respSnapshot := respS.snapshot(resp.Header.Get("Content-Encoding"))
 		applyRequestBodySnapshot(&ev, reqSnapshot, reqBodySecretRedactions)
-		applyResponseBodySnapshot(&ev, respSnapshot)
+		applyResponseBodySnapshot(&ev, respSnapshot, reqBodySecretRedactions)
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {

@@ -59,8 +59,11 @@ rule "allow-telegram" {
 			t.Errorf("read upstream body: %v", err)
 		}
 		upstreamBodies <- string(body)
+		// Echo the request back, the way an API error page or a debug
+		// endpoint reflects what it received, so the response sample
+		// carries the injected token unless it is redacted too.
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("echo: " + string(body)))
 	}))
 	defer upstream.Close()
 
@@ -141,6 +144,12 @@ rule "allow-telegram" {
 	}
 	if strings.Contains(end.ReqBody, string(fakeTelegramRequestBodyToken)) {
 		t.Fatal("request body audit sample contains injected Telegram token")
+	}
+	if strings.Contains(end.RespBody, string(fakeTelegramRequestBodyToken)) {
+		t.Fatal("response body audit sample contains injected Telegram token echoed by upstream")
+	}
+	if !strings.HasPrefix(end.RespBody, "echo: ") {
+		t.Fatalf("response body audit sample = %q, want the echoed body", end.RespBody)
 	}
 	if !strings.Contains(end.ReqBody, telegramTestPlaceholder) && !strings.Contains(strings.ToLower(end.ReqBody), "redact") {
 		t.Fatalf("request body audit sample = %q, want placeholder or redaction marker", end.ReqBody)
