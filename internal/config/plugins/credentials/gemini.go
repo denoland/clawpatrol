@@ -24,12 +24,12 @@ func (g *GeminiAPIKey) InjectHTTP(_ context.Context, req *http.Request, sec runt
 	}
 	key := string(sec.Bytes)
 	req.Header.Set("x-goog-api-key", key)
-	q := req.URL.Query()
-	if q.Get("key") != "" {
-		// Only rewrite the param when the agent set one — otherwise
-		// header injection above is sufficient and we don't want to
-		// surprise the agent with an extra param.
-		q.Set("key", key)
+	// The header is sufficient for every Gemini endpoint. An agent
+	// that put a placeholder in ?key= gets it removed rather than
+	// replaced: the real key must not travel in the URL, where
+	// upstream and proxy logs record it.
+	if q := req.URL.Query(); q.Has("key") {
+		q.Del("key")
 		req.URL.RawQuery = q.Encode()
 	}
 	return nil

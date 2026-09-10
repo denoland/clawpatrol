@@ -59,10 +59,15 @@ func (c *ClickhouseCredential) InjectHTTP(_ context.Context, req *http.Request, 
 	}
 	password := string(sec.Bytes)
 	req.SetBasicAuth(c.User, password)
-	q := req.URL.Query()
-	q.Set("user", c.User)
-	q.Set("password", password)
-	req.URL.RawQuery = q.Encode()
+	// Auth goes in the header only. ClickHouse accepts ?user=&password=
+	// too, but a secret in the URL ends up in upstream access logs,
+	// proxy logs and error strings. Strip any copy the agent sent so a
+	// placeholder never reaches the server either.
+	if q := req.URL.Query(); q.Has("user") || q.Has("password") {
+		q.Del("user")
+		q.Del("password")
+		req.URL.RawQuery = q.Encode()
+	}
 	return nil
 }
 
