@@ -120,8 +120,14 @@ func resolveFileIncludes(s, configDir, entityName string, blockRange hcl.Range) 
 }
 
 // includePath resolves an include name against configDir and refuses
-// anything that would escape it. An empty configDir means the
-// current directory.
+// anything that would lexically escape it. An empty configDir means
+// the current directory.
+//
+// Symlinks inside configDir are followed and trusted: the threat here
+// is someone who can write gateway.hcl (the dashboard editor), not
+// someone who can place files or links in the config directory, who
+// already has the gateway user's filesystem access. Operators do keep
+// certificates as symlinks next to the config, and that must work.
 func includePath(configDir, name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("empty file name")
