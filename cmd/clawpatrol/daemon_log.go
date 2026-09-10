@@ -20,12 +20,18 @@ func lastLogLineSince(path string, off int64) string {
 		return ""
 	}
 	defer func() { _ = f.Close() }()
+	// Read the last maxRead bytes written since off: a verbose boot
+	// can log far more than that before it dies, and the reason is
+	// at the end.
+	const maxRead = 64 << 10
+	if fi, err := f.Stat(); err == nil && fi.Size()-off > maxRead {
+		off = fi.Size() - maxRead
+	}
 	if off > 0 {
 		if _, err := f.Seek(off, io.SeekStart); err != nil {
 			return ""
 		}
 	}
-	const maxRead = 64 << 10
 	buf, err := io.ReadAll(io.LimitReader(f, maxRead))
 	if err != nil && len(buf) == 0 {
 		return ""

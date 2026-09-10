@@ -38,3 +38,23 @@ func TestLastLogLineSince(t *testing.T) {
 		t.Fatalf("missing file: got %q", got)
 	}
 }
+
+func TestLastLogLineSinceReadsTheTailOfALongBoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("old daemon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	off := int64(len("old daemon\n"))
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2000; i++ {
+		_, _ = f.WriteString("debug: a chatty line of startup output that repeats\n") // ~100 KiB total
+	}
+	_, _ = f.WriteString("daemon: transport: the real reason\n")
+	_ = f.Close()
+	if got := lastLogLineSince(path, off); got != "daemon: transport: the real reason" {
+		t.Fatalf("got %q", got)
+	}
+}

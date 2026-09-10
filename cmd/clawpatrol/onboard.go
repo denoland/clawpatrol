@@ -911,10 +911,18 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			w.onboard.mu.Unlock()
 			return
 		}
-		s.authKey = key
-		s.loginServer = loginServer
 		dc := s.deviceCode
 		w.onboard.mu.Unlock()
+		// Publish the key last, after the peer is claimed and its api
+		// token minted below. The poll hands the material out exactly
+		// once; a poll landing between key and token would deliver a
+		// key with no token, and the client would have to re-join.
+		defer func() {
+			w.onboard.mu.Lock()
+			s.authKey = key
+			s.loginServer = loginServer
+			w.onboard.mu.Unlock()
+		}()
 		// WG path: server allocated peerIP and knows the approver, so
 		// register the (ip → owner) mapping right here. Saves the CLI
 		// from making a /api/onboard/claim round-trip after wg-quick

@@ -344,13 +344,15 @@ type Defaults struct {
 	UnknownHost string `hcl:"unknown_host,optional"`
 
 	// LLMFailMode controls requests guarded by an llm_approver when
-	// the model call cannot complete: credential fetch or injection
-	// failure, transport error or timeout, non-200 status, or an
-	// undecodable response. "closed" (the default) denies; "open"
-	// allows and records the failure as the reason. A model that
-	// answers, even ambiguously, is not a failure and is judged as
-	// usual. Misconfiguration (missing model or credential, unknown
-	// model family) always denies regardless of this setting.
+	// the model call cannot complete: the credential's secret cannot
+	// be fetched or injected, transport error or timeout, any
+	// non-200 status (including 401/403 from a revoked judge key),
+	// or an undecodable response. "closed" (the default) denies;
+	// "open" allows and records the failure as the reason. A model
+	// that answers, even ambiguously, is not a failure and is judged
+	// as usual. Misconfiguration (no model, a credential that is not
+	// declared, unknown model family) always denies regardless of
+	// this setting.
 	LLMFailMode string `hcl:"llm_fail_mode,optional"`
 
 	// LLMCacheTTL is the LLM decision cache lifetime in seconds.

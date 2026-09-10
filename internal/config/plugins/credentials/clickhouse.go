@@ -68,6 +68,11 @@ func (c *ClickhouseCredential) InjectHTTP(_ context.Context, req *http.Request, 
 		q.Del("password")
 		req.URL.RawQuery = q.Encode()
 	}
+	// The X-ClickHouse-User / X-ClickHouse-Key placeholder form must go
+	// too: ClickHouse rejects a request that carries those headers and
+	// an Authorization header at the same time.
+	req.Header.Del("X-ClickHouse-User")
+	req.Header.Del("X-ClickHouse-Key")
 	return nil
 }
 

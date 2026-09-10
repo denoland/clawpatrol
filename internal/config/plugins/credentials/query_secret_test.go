@@ -13,6 +13,8 @@ import (
 // the agent put in the query string must not reach upstream.
 func TestClickhouseInjectKeepsSecretOutOfQuery(t *testing.T) {
 	req, _ := http.NewRequest("POST", "https://ch.example.test/?query=SELECT+1&user=PH_user&password=PH_pw", strings.NewReader("SELECT 1"))
+	req.Header.Set("X-ClickHouse-User", "PH_user")
+	req.Header.Set("X-ClickHouse-Key", "PH_pw")
 	c := &ClickhouseCredential{User: "svc"}
 	if err := c.InjectHTTP(context.Background(), req, runtime.Secret{Bytes: []byte("s3cret")}); err != nil {
 		t.Fatal(err)
@@ -29,6 +31,9 @@ func TestClickhouseInjectKeepsSecretOutOfQuery(t *testing.T) {
 	}
 	if strings.Contains(req.URL.String(), "s3cret") {
 		t.Fatalf("secret in URL: %s", req.URL)
+	}
+	if req.Header.Get("X-ClickHouse-User") != "" || req.Header.Get("X-ClickHouse-Key") != "" {
+		t.Fatalf("X-ClickHouse-* placeholder headers survived: %v", req.Header)
 	}
 }
 

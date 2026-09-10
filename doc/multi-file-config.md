@@ -65,6 +65,10 @@ relative to the **directory passed to `Load`**. For directory
 mode, that's the config directory itself. For single-file mode,
 it's `filepath.Dir(path)`. In both cases markers and the files
 they reference live alongside the `.hcl` files that wield them.
+Absolute paths and paths that resolve outside that directory are
+rejected at load time (a dashboard config writer must not be able
+to read arbitrary files through the include syntax); symlinks
+inside the directory are followed.
 
 ## What's intentionally out of scope (v1)
 
