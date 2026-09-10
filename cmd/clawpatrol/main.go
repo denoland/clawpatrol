@@ -2808,8 +2808,12 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 					switch {
 					case wantsSign:
 						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
+						headersBefore := req.Header.Clone()
 						if err := signer.SignHTTPRequest(req.Context(), req, sec, ep.Body); err != nil {
 							log.Printf("sign %s: %v", cc.Credential.Symbol.Name, err)
+						}
+						for _, v := range injectedHeaderSecrets(headersBefore, req.Header) {
+							reqBodySecretRedactions = appendCredentialSecretRedaction(reqBodySecretRedactions, v)
 						}
 					case wantsHTTP:
 						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
@@ -2823,7 +2827,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 						// consumes the request body during injection, so on failure the request
 						// is corrupted, not merely un-injected — fail closed instead of
 						// forwarding a half-transformed request.
-						bodyBefore, urlBefore := req.Body, req.URL.String()
+						bodyBefore, urlBefore, headersBefore := req.Body, req.URL.String(), req.Header.Clone()
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 							if rewritesRequest {
 								log.Printf("transform %s: %v; failing closed", cc.Credential.Symbol.Name, err)
@@ -2847,6 +2851,9 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 							for _, secret := range rp.ConsumeHTTPRedactions(req) {
 								reqBodySecretRedactions = appendCredentialSecretRedaction(reqBodySecretRedactions, secret)
 							}
+						}
+						for _, v := range injectedHeaderSecrets(headersBefore, req.Header) {
+							reqBodySecretRedactions = appendCredentialSecretRedaction(reqBodySecretRedactions, v)
 						}
 					}
 					if wantsWS && isWSUpgrade(req) {
