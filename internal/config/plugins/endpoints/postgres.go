@@ -713,7 +713,8 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 		}
 		if !shadow {
 			emit(ch, runtime.ConnEvent{
-				Action: "approved", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Action: "approved", Reason: v.Reason,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
 		}

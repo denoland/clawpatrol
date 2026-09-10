@@ -2614,6 +2614,9 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			ev.Approver = v.ApproverName
 			ev.ApproverType = v.ApproverType
 			ev.ApproverBy = v.By
+			// Non-empty only when the chain allowed for a reason worth
+			// recording, such as llm_fail_mode = "open".
+			ev.Reason = v.Reason
 		}
 
 		// Verdict.

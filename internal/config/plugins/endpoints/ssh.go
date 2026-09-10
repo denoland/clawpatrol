@@ -969,7 +969,8 @@ func (rt *SSHEndpointRuntime) makeGate(ch *runtime.ConnHandle, emit func(runtime
 				return true, reason
 			}
 			emit(runtime.ConnEvent{
-				Action: "approved", Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Action: "approved", Reason: v.Reason,
+				Verb: m.Verb, Summary: summary, Facets: facets, Rule: rule,
 				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
 			return false, ""
