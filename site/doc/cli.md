@@ -155,15 +155,18 @@ the whole system:
   privileged setup path described above and never creates a user
   namespace. This is the simplest option on a single-user machine.
 - **An AppArmor profile for the clawpatrol binary.** This is the
-  mechanism Ubuntu uses for its own browsers. Create
-  `/etc/apparmor.d/clawpatrol` with the path where the binary is
-  installed (`install.sh` puts it in `~/.local/bin`):
+  mechanism Ubuntu uses for its own browsers. The profile attaches
+  by path, and whatever sits at that path runs with the `userns`
+  grant, so put the binary somewhere only root can write (for
+  example `/usr/local/bin/clawpatrol`) and name that exact path; a
+  glob over home directories would hand the grant to any file a
+  user drops there. Create `/etc/apparmor.d/clawpatrol`:
 
   ```
   abi <abi/4.0>,
   include <tunables/global>
 
-  profile clawpatrol /home/*/.local/bin/clawpatrol flags=(unconfined) {
+  profile clawpatrol /usr/local/bin/clawpatrol flags=(unconfined) {
     userns,
     include if exists <local/clawpatrol>
   }
@@ -172,7 +175,8 @@ the whole system:
   then load it with `sudo apparmor_parser -r /etc/apparmor.d/clawpatrol`.
   The profile is unconfined apart from granting `userns`, so it
   changes nothing else about how clawpatrol runs; it has to be
-  reloaded if the binary moves.
+  reloaded if the binary moves. The warning prints the path of the
+  binary that is running.
 
 Setting `kernel.apparmor_restrict_unprivileged_userns=0` also works
 but removes the restriction for every program on the host, which is
