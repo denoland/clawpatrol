@@ -55,6 +55,12 @@ type onboardSession struct {
 	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
 	apiToken    string // per-peer bearer for gated client API calls (env-pushdown)
+	// delivered is set once the approved auth material has been
+	// handed to a poller. The device code is a bearer capability for
+	// one joining client, so the material goes out exactly once; a
+	// later poll gets expired_token, and a client that lost the
+	// response re-runs join.
+	delivered bool
 	// wholeMachine: client asked at /start to install a persistent tailnet
 	// node (system tailscale on linux, NE-routed on macOS) rather than
 	// per-process tsnet. Determines whether the minted auth key is
@@ -1170,6 +1176,11 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]string{"error": "slow_down"})
 		return
 	}
+	if s.delivered {
+		writeJSON(rw, map[string]string{"error": "expired_token", "detail": "auth material already delivered; re-run clawpatrol join"})
+		return
+	}
+	s.delivered = true
 	resp := map[string]any{
 		"auth_key":     s.authKey,
 		"api_token":    s.apiToken,
