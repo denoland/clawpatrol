@@ -37,7 +37,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/curve25519"
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -338,7 +337,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	dev := device.NewDevice(tun, conn.NewDefaultBind(),
+	dev := device.NewDevice(tun, newGSOFallbackBind("wireguard"),
 		device.NewLogger(device.LogLevelError, "[wg] "))
 	if err := dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", priv, listenPort)); err != nil {
 		return nil, fmt.Errorf("wg ipc: %w", err)

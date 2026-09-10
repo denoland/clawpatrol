@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -143,7 +142,7 @@ func startWGTransport() (daemonTransport, error) {
 		return nil, fmt.Errorf("netTUN: %w", err)
 	}
 	logger := device.NewLogger(device.LogLevelError, "[clawpatrol daemon wg] ")
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), logger)
+	dev := device.NewDevice(tun, newGSOFallbackBind("daemon: wg"), logger)
 
 	if err := dev.IpcSet(buildDaemonWGIpc(cfg)); err != nil {
 		_ = tun.Close()
