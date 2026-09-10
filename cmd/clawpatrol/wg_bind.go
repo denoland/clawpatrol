@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,9 +26,23 @@ import (
 // arrives fine.
 //
 // The wrapper sends batches as usual; the first EMSGSIZE switches
-// it to one datagram per send for the life of the bind. Nothing else
-// changes: MTU stays 1420, IPv6 inside the tunnel keeps working, and
-// paths that can carry full batches never pay for it.
+// it to one datagram per send for the life of the bind. MTU stays
+// 1420, IPv6 inside the tunnel keeps working, and paths that can
+// carry full batches never pay for it.
+//
+// One known cost: wireguard-go starts its Linux route-change
+// listener (device/sticky_linux.go) only when the bind is the
+// concrete *conn.StdNetBind, so wrapping it loses that listener.
+// Its job is to drop a peer's cached source address when the route
+// to it changes; without it the address is still refreshed by every
+// received packet and by the handshake-retry timers, so after an
+// interface change a silent peer can see stale-source sends for a
+// few seconds instead of none. The proper fix is upstream (treat
+// EMSGSIZE like EIO in conn/errors_linux.go); until then this is the
+// smaller trade.
+//
+// Only Linux coalesces with GSO, so other platforms get the plain
+// bind.
 type gsoFallbackBind struct {
 	conn.Bind
 	single   atomic.Bool
@@ -36,7 +51,11 @@ type gsoFallbackBind struct {
 }
 
 func newGSOFallbackBind(describe string) conn.Bind {
-	return &gsoFallbackBind{Bind: conn.NewDefaultBind(), describe: describe}
+	b := conn.NewDefaultBind()
+	if runtime.GOOS != "linux" {
+		return b
+	}
+	return &gsoFallbackBind{Bind: b, describe: describe}
 }
 
 func (b *gsoFallbackBind) Send(bufs [][]byte, ep conn.Endpoint) error {
@@ -55,8 +74,11 @@ func (b *gsoFallbackBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 }
 
 // sendEach sends every buffer as its own datagram. A single-buffer
-// Send never carries a GSO header, so the kernel fragments it when
-// the route is narrower than the packet.
+// Send never carries a GSO header (bind_std.go coalesceMessages only
+// sets one when it merged two or more datagrams), so the kernel
+// fragments it when the route is narrower than the packet. When a
+// batch failed part-way, the datagrams the kernel already accepted
+// are sent again; WireGuard's receiver drops them as replays.
 func (b *gsoFallbackBind) sendEach(bufs [][]byte, ep conn.Endpoint) error {
 	for _, buf := range bufs {
 		if err := b.Bind.Send([][]byte{buf}, ep); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net"
 	"os"
 	"syscall"
 	"testing"
@@ -23,7 +24,8 @@ func (f *fakeBind) Send(bufs [][]byte, _ conn.Endpoint) error {
 	}
 	f.calls = append(f.calls, lens)
 	if len(bufs) > 1 {
-		return &os.SyscallError{Syscall: "sendmmsg", Err: syscall.EMSGSIZE}
+		// The real chain from x/net: *net.OpError wrapping the syscall error.
+		return &net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendmmsg", syscall.EMSGSIZE)}
 	}
 	return nil
 }
@@ -74,3 +76,23 @@ type errBind struct {
 }
 
 func (e *errBind) Send([][]byte, conn.Endpoint) error { return e.err }
+
+// A single buffer never goes through the batched attempt, and a
+// failure while sending singly stops at that buffer.
+func TestGSOFallbackBindSingleBufferAndStopOnError(t *testing.T) {
+	inner := &fakeBind{}
+	b := &gsoFallbackBind{Bind: inner, describe: "test"}
+	if err := b.Send([][]byte{make([]byte, 1500)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.calls) != 1 || len(inner.calls[0]) != 1 || b.single.Load() {
+		t.Fatalf("single buffer took the batched path: %v single=%v", inner.calls, b.single.Load())
+	}
+
+	failing := &errBind{err: &net.OpError{Op: "write", Err: os.NewSyscallError("sendmsg", syscall.ENETUNREACH)}}
+	b = &gsoFallbackBind{Bind: failing, describe: "test"}
+	b.single.Store(true)
+	if err := b.Send([][]byte{{1}, {2}, {3}}, nil); !errors.Is(err, syscall.ENETUNREACH) {
+		t.Fatalf("err = %v", err)
+	}
+}
