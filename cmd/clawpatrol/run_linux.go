@@ -807,8 +807,13 @@ func checkUserNS() {
 	}
 	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
 		if strings.TrimSpace(string(b)) == "1" {
-			fmt.Fprintf(os.Stderr, "warning: AppArmor may block TUN in user namespaces.\n"+
-				"  if `clawpatrol run` fails: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n")
+			self, _ := os.Executable()
+			fmt.Fprintf(os.Stderr, "warning: AppArmor restricts unprivileged user namespaces on this host (Ubuntu 24.04 default).\n"+
+				"  If `clawpatrol run` fails, either give this user passwordless sudo (clawpatrol then\n"+
+				"  sets the namespace up as root and needs no user namespace), or grant this binary\n"+
+				"  the userns permission with an AppArmor profile:\n"+
+				"    https://clawpatrol.dev/docs/cli/#ubuntu-2404-and-apparmor\n"+
+				"  (binary: %s)\n", self)
 		}
 	}
 }

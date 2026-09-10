@@ -142,6 +142,42 @@ If you're on the unprivileged path and a command needs to act as root:
   command runs in the normal host environment where `sudo` works —
   you run it directly, not through `clawpatrol run`.
 
+#### Ubuntu 24.04 and AppArmor
+
+Ubuntu 24.04 ships with `kernel.apparmor_restrict_unprivileged_userns=1`,
+which denies unprivileged user namespaces to any program that has no
+AppArmor profile granting them. `clawpatrol run` then prints a
+warning and, without passwordless `sudo`, fails to build its
+namespace. Two ways to run without turning that protection off for
+the whole system:
+
+- **Passwordless `sudo` for the invoking user.** clawpatrol uses the
+  privileged setup path described above and never creates a user
+  namespace. This is the simplest option on a single-user machine.
+- **An AppArmor profile for the clawpatrol binary.** This is the
+  mechanism Ubuntu uses for its own browsers. Create
+  `/etc/apparmor.d/clawpatrol` with the path where the binary is
+  installed (`install.sh` puts it in `~/.local/bin`):
+
+  ```
+  abi <abi/4.0>,
+  include <tunables/global>
+
+  profile clawpatrol /home/*/.local/bin/clawpatrol flags=(unconfined) {
+    userns,
+    include if exists <local/clawpatrol>
+  }
+  ```
+
+  then load it with `sudo apparmor_parser -r /etc/apparmor.d/clawpatrol`.
+  The profile is unconfined apart from granting `userns`, so it
+  changes nothing else about how clawpatrol runs; it has to be
+  reloaded if the binary moves.
+
+Setting `kernel.apparmor_restrict_unprivileged_userns=0` also works
+but removes the restriction for every program on the host, which is
+what it exists to prevent.
+
 ### `clawpatrol test`
 
 Replay recorded gateway actions against a candidate HCL policy and
