@@ -1,10 +1,9 @@
 package credentials
 
 // gemini_api_key: Google Gemini accepts the API key in either the
-// `x-goog-api-key` header or the `?key=` query parameter. Always
-// overwrite both — agents that send placeholder values get them
-// swapped; agents that don't send anything get the real key stamped
-// in.
+// `x-goog-api-key` header or the `?key=` query parameter. Only the
+// header is used: a `?key=` the agent sent (a placeholder) is removed
+// rather than swapped, so the real key never travels in the URL.
 
 import (
 	"context"

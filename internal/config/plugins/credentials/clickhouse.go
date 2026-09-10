@@ -1,9 +1,9 @@
 package credentials
 
-// clickhouse_credential: HTTPS API takes user + password as query
-// params (?user=…&password=…) or basic-auth header. We populate both
-// — basic-auth handles default-auth ClickHouse setups, query params
-// handle setups that disable header auth.
+// clickhouse_credential: the HTTPS API accepts user + password as a
+// basic-auth header or as ?user=…&password=… query params. Only the
+// header is used: a secret in the URL ends up in access and proxy
+// logs, so any query copy (placeholder or not) is stripped.
 
 import (
 	"context"
