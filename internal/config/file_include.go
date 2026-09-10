@@ -63,8 +63,11 @@ type FileIncludeField struct {
 
 // resolveFileIncludes scans s for `<<file:NAME>>` markers and
 // substitutes each with the contents of NAME read relative to
-// configDir. Multiple markers in one string are supported. Markers
-// with absolute paths are read as-is (no configDir join).
+// configDir. Multiple markers in one string are supported. NAME must
+// stay inside configDir: absolute paths and `..` traversal are
+// rejected, so a config writer (the dashboard editor included) cannot
+// turn the include syntax into a read of arbitrary files the gateway
+// process can see.
 func resolveFileIncludes(s, configDir, entityName string, blockRange hcl.Range) (string, hcl.Diagnostics) {
 	if !strings.Contains(s, "<<file:") {
 		return s, nil
@@ -87,9 +90,16 @@ func resolveFileIncludes(s, configDir, entityName string, blockRange hcl.Range) 
 			break
 		}
 		name := out[i+len("<<file:") : i+j]
-		path := name
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(configDir, name)
+		path, err := includePath(configDir, name)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Cannot inline file %q", name),
+				Detail:   fmt.Sprintf("Entity %q referenced %q via <<file:...>>: %v.", entityName, name, err),
+				Subject:  &blockRange,
+			})
+			out = out[:i] + out[i+j+2:]
+			continue
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -107,4 +117,26 @@ func resolveFileIncludes(s, configDir, entityName string, blockRange hcl.Range) 
 		out = out[:i] + string(data) + out[i+j+2:]
 	}
 	return out, diags
+}
+
+// includePath resolves an include name against configDir and refuses
+// anything that would escape it. An empty configDir means the
+// current directory.
+func includePath(configDir, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty file name")
+	}
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("absolute paths are not allowed; includes must be relative to the config directory")
+	}
+	root := configDir
+	if root == "" {
+		root = "."
+	}
+	path := filepath.Join(root, name)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes the config directory")
+	}
+	return path, nil
 }
