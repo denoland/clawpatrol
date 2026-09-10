@@ -18,10 +18,15 @@ rules decide what is allowed. Current priorities, in order:
    as workload enrollment (Kubernetes and OIDC) and remote MCP.
 
 Things we are not taking on at the moment: Windows support and
-dashboard theming. Integrations with a specific third-party service
-usually belong in an external plugin rather than core; see
-[Plugins](https://clawpatrol.dev/docs/plugins) and the `pluginsdk`
-package.
+dashboard theming.
+
+Integrations with a specific third-party service, human-in-the-loop
+notifiers and approvers included, are built as external plugins,
+not added to core; see [Plugins](https://clawpatrol.dev/docs/plugins)
+and the `pluginsdk` package. If the plugin interfaces cannot express
+what your integration needs, that gap is the thing to raise (the
+roadmap tracks reaching parity with the built-ins), and closing it
+is welcome core work.
 
 If you are unsure whether a change fits, open an issue first and
 describe the operator problem it solves. A short issue saves a long
