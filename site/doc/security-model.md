@@ -143,6 +143,34 @@ Patrol’s control. Onboarding offers to import recognised
 credentials and delete the originals; anything not recognised or
 not migrated stays readable to the agent.
 
+### Secrets at rest
+
+Everything the gateway needs across restarts lives in `state_dir`,
+mostly in `clawpatrol.db`. That file holds, in plaintext: the MITM CA
+private key, the WireGuard server key, OAuth access and refresh
+tokens, and every credential value pasted into the dashboard. The
+dashboard root password and per-device API tokens are stored as
+hashes. There is no application-level encryption; file permissions
+are the defense. The gateway creates `state_dir` mode `0700` and
+warns at startup when it finds it looser.
+
+Consequences for operators:
+
+- Anyone who can read `state_dir` as the gateway user or root holds
+  every injected credential and can mint certificates the agents
+  trust. Run the gateway under a dedicated user with no other role.
+- Backups, disk snapshots, and copies of `clawpatrol.db` are as
+  sensitive as the live file. Encrypt them, or exclude the state
+  directory and re-enter credentials after a restore.
+- Full-disk encryption on the gateway host covers the stolen-disk
+  case; it does not help against a process running as the gateway
+  user.
+
+Encrypting the sensitive columns with an operator-held key is a
+possible future hardening; it would move the problem to where that
+key lives rather than remove it, which is why it has not been
+prioritised over the controls above.
+
 ## Dashboard and management API
 
 Everything the agent must not reach — credential storage, profile
