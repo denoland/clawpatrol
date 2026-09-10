@@ -1623,10 +1623,6 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, result)
 }
 
-func isLoopback(host string) bool {
-	return host == "127.0.0.1" || host == "::1" || strings.HasPrefix(host, "127.")
-}
-
 func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Type", "text/event-stream")
 	rw.Header().Set("Cache-Control", "no-cache")
