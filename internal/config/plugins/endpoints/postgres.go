@@ -299,7 +299,11 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	// Step 5 + 6: drive upstream auth, replay post-auth to agent.
 	postAuth, err := pgPerformAuth(upstream, realUser, realPassword)
 	if err != nil {
-		pgWriteError(ch.Conn, "upstream auth: "+err.Error())
+		// The upstream's own error text names the real user and often
+		// the database or host; the agent must not learn either. Log
+		// the detail for the operator, send a generic failure.
+		log.Printf("pg-upstream-auth %s: credential %q: %v", ch.PeerIP, cc.Credential.Symbol.Name, err)
+		pgWriteError(ch.Conn, "upstream authentication failed (details in the gateway log)")
 		return err
 	}
 	if err := pgWriteAuthOK(ch.Conn, postAuth); err != nil {
