@@ -34,15 +34,18 @@ no subnet allocation — Tailscale's control plane handles all of that.
    and relays other UDP from onboarded peers via `relayUDP` — so a
    tsnet-mode `clawpatrol run` child gets arbitrary UDP (NTP, custom
    protocols) without a UDP-over-TCP shim, since the userspace exit node
-   already receives the datagrams. **QUIC / HTTP-3 (UDP/443) to an
-   intercepted host is dropped** in both modes so HTTPS can't ride UDP
-   past the TCP/443 SNI-peek MITM — the client falls back to
-   interceptable TCP. UDP/443 to a host the gateway *passes through* (no
-   VIP) is relayed normally: clawpatrol doesn't intercept that host's
-   HTTPS either, so there's nothing to bypass and no reason to break its
-   HTTP/3. For the hosts it does MITM, the gateway also strips the
-   `Alt-Svc` response header so agents don't discover h3 in the first
-   place (intercepted names already return no SVCB/HTTPS DNS record).
+   already receives the datagrams. **QUIC / HTTP-3 (UDP/443) is dropped for every
+   destination** in both modes, so HTTPS can't ride UDP past the
+   TCP/443 SNI-peek MITM; the client falls back to interceptable TCP.
+   The drop is unconditional because plain `https` endpoints are
+   dispatched by SNI and carry no VIP, so a per-destination rule would
+   miss exactly the hosts that have rules. Pass-through hosts lose
+   HTTP/3 too (and anything else on UDP/443, such as DTLS or TURN on
+   that port). For the hosts it MITMs, the gateway also strips the
+   `Alt-Svc` response header so agents don't try h3 in the first
+   place; VIP'd names return no SVCB/HTTPS DNS record, other names'
+   HTTPS records are relayed as-is, which only costs h3-capable
+   clients their own fallback delay.
 5. Device identity (hostname, OS, Tailscale user) is populated via
    `tailscale whois` at first connection — richer than WireGuard mode
    which only captures hostname at join time.
