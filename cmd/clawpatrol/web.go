@@ -1030,14 +1030,11 @@ func (w *webMux) caFingerprint() string {
 // callerIdentity resolves the (user, device) of the request peer via
 // tailscale whois. May be empty if Tailscale is not available.
 func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost string) {
-	host := r.Header.Get("X-Forwarded-For")
-	if host == "" {
-		ipPort := r.RemoteAddr
-		if i := strings.LastIndex(ipPort, ":"); i >= 0 {
-			host = ipPort[:i]
-		} else {
-			host = ipPort
-		}
+	// The peer address only. X-Forwarded-For is client-controlled and
+	// the tailnet gate no longer consults it either.
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
 	}
 	if w.g.agents == nil {
 		return "", "", host

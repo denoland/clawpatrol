@@ -372,7 +372,9 @@ After a rule matches:
   carrying `reason`.
 - `approve = [a, b, c]` — approvers run in order, **all must allow**.
   The first non-allow approver short-circuits and is returned. An
-  approver that returns no decision (e.g. timeout) is treated as deny.
+  approver that returns no decision (e.g. timeout) is treated as deny,
+  except an `llm_approver` under `defaults.llm_fail_mode = "open"`
+  (see below).
 
 LLM approvers call the configured model via its bound credential and
 judge the request against the approver's policy. Human approvers park
@@ -402,15 +404,16 @@ before a final allow decision, Claw Patrol does **not** call upstream.
 Deny and timeout responses are gateway-generated failures, not upstream
 responses.
 
-For `llm_approver`, a model call that cannot complete (the
-credential's secret cannot be fetched or injected, transport error
-or timeout, any non-200 status including 401/403 from a revoked
-judge key, undecodable response) is resolved by
+For `llm_approver`, a judge that is unavailable (transport error or
+timeout, 429 or 5xx status, undecodable response) is resolved by
 `defaults.llm_fail_mode`: `"closed"` (the default) denies, `"open"`
-allows and records the failure as the reason. A model that answers
-is judged as usual, and an ambiguous answer denies. Misconfiguration
-(no model, a credential that is not declared, unknown model family)
-always denies.
+allows, records the failure as the reason on the action, and logs
+one line per request. A model that answers is judged as usual, and
+an ambiguous answer denies. Anything that points at the gateway's own
+configuration always denies regardless of the setting: no model, a
+credential that is not declared or has no secret pasted, unknown
+model family, and any other 4xx such as 401 or 403 from a revoked
+judge key.
 
 For `human_approver`, [set `timeout` to the maximum time Claw Patrol
 should wait for a human decision](/docs/config-reference/#approver-human_approver-name).
@@ -681,6 +684,10 @@ This example gates several clusters with one shared rule set. It blocks
 secret reads and interactive shells at high priority, allows ordinary
 reads, permits debug pod workflows, and denies anything not explicitly
 covered.
+
+`<<file:NAME>>` reads NAME relative to the config directory; absolute
+paths and paths that escape the directory are rejected (symlinks
+inside it are followed).
 
 ```hcl
 credential "mtls_credential" "k8s-client" {}

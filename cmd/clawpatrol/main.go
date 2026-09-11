@@ -688,6 +688,11 @@ func teeGatewayLog(path string) error {
 	if err != nil {
 		return err
 	}
+	// 0600 applies only when the file is created; an existing file
+	// keeps its mode, and the log carries denied request paths.
+	if fi, err := f.Stat(); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		log.Printf("warning: %s has mode %#o (want 0600); tighten with: chmod 0600 %s", path, fi.Mode().Perm(), path)
+	}
 	// File first: a write to a broken stderr pipe can still end the
 	// process with SIGPIPE (Go's default for fds 1 and 2), and the
 	// file should have the line by then.
@@ -3199,6 +3204,10 @@ func resolveUndecidedVerdict(policy *config.CompiledPolicy, name, approverType s
 		if v.By == "" {
 			v.By = "gateway"
 		}
+		// Allowed requests are not otherwise logged; a fail-open is
+		// worth a journal line so an ongoing judge outage is visible
+		// without reading per-action reasons.
+		log.Printf("approver %s: %s", name, v.Reason)
 		return v
 	}
 	v.Decision = "deny"
