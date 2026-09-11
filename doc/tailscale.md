@@ -51,9 +51,15 @@ no subnet allocation — Tailscale's control plane handles all of that.
    datagram relay cannot carry the gateway's ICMP back to the wrapped
    process). For the hosts it MITMs, the gateway also strips the
    `Alt-Svc` response header so agents don't try h3 in the first
-   place; VIP'd names return no SVCB/HTTPS DNS record, other names'
-   HTTPS records are relayed as-is, which only costs h3-capable
-   clients their own fallback delay.
+   place, and the DNS relay answers HTTPS/SVCB queries NODATA for every
+   name (not only VIP'd ones), so agents learn neither `alpn=h3` nor
+   the origin's `ech=` config — the latter would let a client present
+   the provider's public name as SNI, which is what the MITM dispatches
+   on. That covers DNS the relay sees; a client resolving over DoH/DoT
+   to a passed-through resolver can still obtain the record, and real
+   ECH is indistinguishable from the GREASE ECH browsers always send,
+   so `unknown_host = "deny"` remains the backstop against an outer
+   SNI the policy does not know.
 5. Device identity (hostname, OS, Tailscale user) is populated via
    `tailscale whois` at first connection — richer than WireGuard mode
    which only captures hostname at join time.

@@ -763,6 +763,23 @@ func (a *Allocator) lazyAllocateForPattern(hostname string) bool {
 // PostUp) produces NXDOMAIN for any internal name and is the bug
 // this layer exists to fix.
 //
+// HTTPS (type 65) and SVCB (type 64) are answered NODATA — NOERROR with
+// an empty answer section, the same shape a VIP'd name returns for a
+// type it doesn't serve — and never relayed. The upstream record is
+// what tells a client to try HTTP/3 (`alpn=h3`) and hands it the
+// Encrypted Client Hello config (`ech=`). The gateway refuses UDP/443
+// regardless, so `alpn=h3` would only cost an h3-capable client a
+// refused probe per origin; `ech=` is the one that matters: a client
+// holding an ECH config sends the provider's public name as the outer
+// SNI (cloudflare-ech.com, for instance) and the MITM's SNI dispatch
+// and unknown_host verdict would be evaluated against that name, not
+// the real host. Without the record neither happens. (Names with a VIP
+// already answered this way; this extends it to every name.) This only
+// covers DNS that reaches the relay: a client resolving over DoH/DoT to
+// a passed-through resolver, or with a cached config, still holds the
+// record, and the MITM cannot tell real ECH from the GREASE ECH every
+// current browser sends, so unknown_host = deny is the backstop.
+//
 // Other record types (TXT / SRV / MX / CAA / etc.) keep their raw-
 // relay behavior. Go's stdlib doesn't expose a generic "any record
 // type" lookup, so synthesising from the local resolver would mean
@@ -787,9 +804,24 @@ func (a *Allocator) forwardUpstream(q *dns.Msg, dstIP string) *dns.Msg {
 		return synthIPResponse(q, "ip4")
 	case dns.TypeAAAA:
 		return synthIPResponse(q, "ip6")
+	case dns.TypeHTTPS, dns.TypeSVCB:
+		return nodataResponse(q)
 	default:
 		return relayUpstream(q, dstIP)
 	}
+}
+
+// nodataResponse is the minimal "name exists, no record of this type"
+// answer: NOERROR, empty answer section, no SOA — the same shape
+// handleQuery returns for a VIP'd name queried for a type it doesn't
+// serve. Without an SOA the answer is not negative-cached (RFC 2308),
+// so a client re-asks per lookup; that is the same cost VIP'd names
+// already pay and keeps the two paths indistinguishable on the wire.
+func nodataResponse(q *dns.Msg) *dns.Msg {
+	r := new(dns.Msg)
+	r.SetReply(q)
+	r.RecursionAvailable = true
+	return r
 }
 
 // synthIPResponse resolves the query name via the gateway's host

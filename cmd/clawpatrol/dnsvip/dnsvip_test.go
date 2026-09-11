@@ -640,6 +640,62 @@ func TestForwardUpstreamRelaysOtherTypes(t *testing.T) {
 	}
 }
 
+// TestForwardUpstreamNodataForHTTPSAndSVCB: HTTPS (65) and SVCB (64)
+// queries for a name the VIP table doesn't claim are answered NODATA
+// locally — NOERROR, no answer, no SOA, the VIP'd-name shape — and
+// never reach relayUpstream. dstIP="" would make the relay path
+// SERVFAIL, so a SERVFAIL here means the query leaked to the relay.
+// The upstream record is what advertises `alpn=h3` and carries the
+// `ech=` config, neither of which a client behind the gateway may
+// learn.
+func TestForwardUpstreamNodataForHTTPSAndSVCB(t *testing.T) {
+	a, err := New(testDB(t), DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, qtype := range []uint16{dns.TypeHTTPS, dns.TypeSVCB} {
+		name := dns.TypeToString[qtype]
+		q := new(dns.Msg)
+		q.SetQuestion("example.com.", qtype)
+		q.Id = 4242
+		resp := a.forwardUpstream(q, "")
+		if resp == nil {
+			t.Fatalf("%s: forwardUpstream returned nil", name)
+		}
+		if resp.Rcode != dns.RcodeSuccess {
+			t.Errorf("%s: rcode = %s, want NOERROR (SERVFAIL means the query hit relayUpstream)",
+				name, dns.RcodeToString[resp.Rcode])
+		}
+		if !resp.Response || resp.Id != q.Id {
+			t.Errorf("%s: not a reply to the query (response=%v id=%d)", name, resp.Response, resp.Id)
+		}
+		if len(resp.Question) != 1 || resp.Question[0].Qtype != qtype {
+			t.Errorf("%s: question not echoed: %v", name, resp.Question)
+		}
+		if len(resp.Answer) != 0 || len(resp.Ns) != 0 || len(resp.Extra) != 0 {
+			t.Errorf("%s: want empty answer/authority/additional, got %d/%d/%d",
+				name, len(resp.Answer), len(resp.Ns), len(resp.Extra))
+		}
+		if !resp.RecursionAvailable {
+			t.Errorf("%s: RA not set", name)
+		}
+	}
+
+	// Same shape as a VIP'd name queried for HTTPS: the two must be
+	// indistinguishable on the wire apart from AA (the VIP path is
+	// authoritative for names it owns).
+	if err := a.RebuildFromPolicy(fakePolicy(t, []string{"api.example.com:22"})); err != nil {
+		t.Fatalf("RebuildFromPolicy: %v", err)
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("api.example.com.", dns.TypeHTTPS)
+	vipResp := a.handleQuery(q, "")
+	if vipResp.Rcode != dns.RcodeSuccess || len(vipResp.Answer) != 0 || len(vipResp.Ns) != 0 {
+		t.Fatalf("VIP'd HTTPS: rcode=%s answer=%d ns=%d, want NOERROR/0/0",
+			dns.RcodeToString[vipResp.Rcode], len(vipResp.Answer), len(vipResp.Ns))
+	}
+}
+
 // TestPersistLockedWrapsErrors closes the DB out from under an
 // allocator that's already been seeded with an allocation, then drives
 // a rebuild that has to call persistLocked. The closed connection
