@@ -60,10 +60,10 @@ func newTestDNSVIP(t *testing.T) *dnsvip.Allocator {
 	return a
 }
 
-// tsnetUDPDisposition: UDP/53 → dnsvip; UDP/443 to an intercepted (VIP'd)
-// host → drop (force HTTPS to the TCP MITM); UDP/443 to a pass-through
-// host is NOT dropped (we don't intercept it); other UDP from an
-// onboarded peer → relay; the rest → tsnet's default handler.
+// tsnetUDPDisposition: UDP/53 → dnsvip; UDP/443 → drop for every
+// destination (QUIC is never inspected, so HTTPS must take the TCP
+// MITM path); other UDP from an onboarded peer → relay; the rest →
+// tsnet's default handler.
 func TestTsnetUDPDisposition(t *testing.T) {
 	r := newOnboardRegistry()
 	r.knownDeviceIPs["100.64.0.2"] = true

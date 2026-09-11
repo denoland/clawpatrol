@@ -355,7 +355,7 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			return nil, false
 		}
 	}
-	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped for VIPs, other → relay for onboarded peers)")
+	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped, other → relay for onboarded peers)")
 }
 
 // udpDisposition is what the gateway does with a forwarded UDP flow.
