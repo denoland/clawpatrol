@@ -479,32 +479,34 @@ func TestEndpointSetResultBodyCapped(t *testing.T) {
 }
 
 // blockingBodyReader serves a fixed prefix once, then parks every subsequent
-// Read until release is closed. It signals reading exactly once (the first
-// time the SDK pulls a chunk on the gateway's behalf) so a test can learn the
-// gateway's body pull is genuinely in flight before it tears the transport
-// down. Returning io.EOF after release lets the parked Read unwind cleanly.
+// Read until release is closed. It signals parked exactly once, when the
+// second Read lands. The SDK only reads on a StreamRead from the gateway,
+// so a second Read proves the gateway received the prefix chunk and asked
+// for more: the body pull is genuinely in flight, with the prefix already
+// captured, before a test tears the transport down. Returning io.EOF after
+// release lets the parked Read unwind cleanly.
 type blockingBodyReader struct {
-	prefix    []byte
-	served    atomic.Bool
-	reading   chan struct{} // closed once, when the first Read lands
-	readingMu sync.Once
-	release   chan struct{} // test closes this to unblock the parked Read
+	prefix   []byte
+	served   atomic.Bool
+	parked   chan struct{} // closed once, when the second Read lands
+	parkedMu sync.Once
+	release  chan struct{} // test closes this to unblock the parked Read
 }
 
 func newBlockingBodyReader(prefix []byte) *blockingBodyReader {
 	return &blockingBodyReader{
 		prefix:  prefix,
-		reading: make(chan struct{}),
+		parked:  make(chan struct{}),
 		release: make(chan struct{}),
 	}
 }
 
 func (b *blockingBodyReader) Read(p []byte) (int, error) {
-	b.readingMu.Do(func() { close(b.reading) })
 	if b.served.CompareAndSwap(false, true) {
 		n := copy(p, b.prefix)
 		return n, nil
 	}
+	b.parkedMu.Do(func() { close(b.parked) })
 	// Park until the test releases us; then report EOF so the SDK reader
 	// goroutine unwinds without leaking.
 	<-b.release
@@ -629,13 +631,15 @@ func TestEndpointSetResultBodyPullConnErrorsNoHang(t *testing.T) {
 		_, _ = io.Copy(io.Discard, agent)
 	}()
 
-	// Wait until the gateway's body pull is genuinely in flight: the SDK's
-	// reader has been invoked (first StreamRead delivered) and the handler is
-	// parked after SetResult.
+	// Wait until the gateway's body pull is genuinely in flight: the
+	// prefix chunk has reached the gateway (it issued a second StreamRead,
+	// which parked the reader) and the handler is parked after SetResult.
+	// Waiting on the first Read alone races the chunk's delivery against
+	// the transport sever below, which left RespBody empty on slow runners.
 	select {
-	case <-body.reading:
+	case <-body.parked:
 	case <-time.After(5 * time.Second):
-		t.Fatal("body pull never started (reader Read not invoked)")
+		t.Fatal("body pull never parked (second StreamRead not delivered)")
 	}
 	select {
 	case <-handlerBlocked:
