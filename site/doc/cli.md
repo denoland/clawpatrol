@@ -77,16 +77,19 @@ clawpatrol login [flags]
 Run a command with its traffic routed through the joined gateway.
 
 ```bash
-clawpatrol run [--no-auto-expose] -- <command> [args...]
+clawpatrol run -- <command> [args...]
 ```
 
 `run` reads the WG conf that `clawpatrol join` wrote to the standard
 location; there is no flag to point it elsewhere. On Linux the wrapped
 command runs in an unprivileged user namespace with a private WG
 tunnel; on macOS the Network Extension does the capture.
-`--no-auto-expose` disables the loopback relay that mirrors TCP
-listeners inside the namespace back to the host and forwards the
-wrapped command's connections to 127.0.0.1 out to host services.
+
+Linux only, and only on the no-`sudo` path described below:
+`--no-auto-expose` (before the `--`) disables the loopback relay that
+mirrors TCP listeners inside the namespace back to the host and
+forwards the wrapped command's connections to 127.0.0.1 out to host
+services. macOS does not parse it.
 
 ```bash
 clawpatrol run -- claude
