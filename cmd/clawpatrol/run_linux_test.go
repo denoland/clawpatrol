@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRewriteHostsLines(t *testing.T) {
@@ -302,4 +305,189 @@ func TestSplitWGAddresses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLastLineWriter pins the contract used to quote the relay
+// supervisor's final stderr line: every byte is forwarded to the sink
+// (live output is never suppressed) and LastLine returns the trailing
+// non-empty line.
+func TestLastLineWriter(t *testing.T) {
+	cases := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{"single line no trailing newline", []string{"hello world"}, "hello world"},
+		{"two lines trailing newline", []string{"first\nsecond\n"}, "second"},
+		{"split writes", []string{"par", "tial\nsec", "ond line\n"}, "second line"},
+		{"trailing whitespace stripped", []string{"last line   \n\n\r\n"}, "last line"},
+		{"empty", nil, ""},
+		{"only newlines", []string{"\n\n\n"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sink bytes.Buffer
+			lw := newLastLineWriter(&sink)
+			for _, w := range tc.writes {
+				n, err := lw.Write([]byte(w))
+				if err != nil || n != len(w) {
+					t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(w))
+				}
+			}
+			if got, want := sink.String(), strings.Join(tc.writes, ""); got != want {
+				t.Errorf("sink = %q, want %q (must pass through every byte)", got, want)
+			}
+			if got := lw.LastLine(); got != tc.want {
+				t.Errorf("LastLine() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLastLineWriterBounded ensures a chatty child can't grow the tail
+// buffer past its bound, and that the last line survives the trimming.
+func TestLastLineWriterBounded(t *testing.T) {
+	lw := newLastLineWriter(nil)
+	for i := 0; i < 20; i++ {
+		if _, err := lw.Write([]byte(strings.Repeat("a", 1024) + "\n")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if _, err := lw.Write([]byte("final\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := len(lw.buf); got > lastLineMaxBytes {
+		t.Fatalf("buf size %d exceeds bound %d", got, lastLineMaxBytes)
+	}
+	if got := lw.LastLine(); got != "final" {
+		t.Fatalf("LastLine() = %q, want %q", got, "final")
+	}
+}
+
+func TestRelayExitWarning(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		lastLine string
+		want     string
+	}{
+		{
+			name: "clean exit no output",
+			want: "⚠ clawpatrol run: auto-expose relay supervisor exited; port auto-expose and host-loopback forwarding are off for the rest of this run",
+		},
+		{
+			name:     "error with last line",
+			err:      errors.New("exit status 1"),
+			lastLine: "relay-supervisor: boom",
+			want:     "⚠ clawpatrol run: auto-expose relay supervisor exited (exit status 1); port auto-expose and host-loopback forwarding are off for the rest of this run; last output: \"relay-supervisor: boom\"",
+		},
+		{
+			name:     "long last line truncated at rune boundary",
+			lastLine: strings.Repeat("é", relayLastLineMaxRunes+50),
+			want: "⚠ clawpatrol run: auto-expose relay supervisor exited; port auto-expose and host-loopback forwarding are off for the rest of this run; last output: \"" +
+				strings.Repeat("é", relayLastLineMaxRunes) + "…\"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := relayExitWarning(tc.err, tc.lastLine); got != tc.want {
+				t.Errorf("relayExitWarning() =\n %q\nwant\n %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAwaitRunExit pins runRun's wait/decision logic: the child's Wait
+// result is always returned, the supervisor is killed and drained when
+// the child goes first, and the warning fires only when the supervisor
+// exits and the child does not follow within the grace.
+func TestAwaitRunExit(t *testing.T) {
+	const grace = 30 * time.Millisecond
+	childErr := errors.New("exit status 3")
+	supErr := errors.New("exit status 1")
+
+	type result struct {
+		err    error
+		killed int
+		warned []error
+	}
+	run := func(t *testing.T, drive func(childDone, supDone chan error), supDone chan error) result {
+		t.Helper()
+		childDone := make(chan error, 1)
+		var res result
+		done := make(chan struct{})
+		go func() {
+			res.err = awaitRunExit(childDone, supDone, grace,
+				func() { res.killed++ },
+				func(err error) { res.warned = append(res.warned, err) })
+			close(done)
+		}()
+		drive(childDone, supDone)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("awaitRunExit did not return")
+		}
+		return res
+	}
+
+	t.Run("child first kills supervisor, no warning", func(t *testing.T) {
+		supDone := make(chan error, 1)
+		res := run(t, func(childDone, supDone chan error) {
+			childDone <- childErr
+			// Supervisor "exits" in response to the kill.
+			time.Sleep(grace / 3)
+			supDone <- errors.New("signal: terminated")
+		}, supDone)
+		if !errors.Is(res.err, childErr) || res.killed != 1 || len(res.warned) != 0 {
+			t.Fatalf("got err=%v killed=%d warned=%v", res.err, res.killed, res.warned)
+		}
+	})
+
+	t.Run("no supervisor", func(t *testing.T) {
+		res := run(t, func(childDone, _ chan error) { childDone <- nil }, nil)
+		if res.err != nil || res.killed != 0 || len(res.warned) != 0 {
+			t.Fatalf("got err=%v killed=%d warned=%v", res.err, res.killed, res.warned)
+		}
+	})
+
+	t.Run("supervisor first, child within grace: no warning", func(t *testing.T) {
+		supDone := make(chan error, 1)
+		res := run(t, func(childDone, supDone chan error) {
+			supDone <- nil
+			time.Sleep(grace / 3)
+			childDone <- childErr
+		}, supDone)
+		if !errors.Is(res.err, childErr) || res.killed != 0 || len(res.warned) != 0 {
+			t.Fatalf("got err=%v killed=%d warned=%v", res.err, res.killed, res.warned)
+		}
+	})
+
+	t.Run("supervisor first, grace expires: warn once, child result wins", func(t *testing.T) {
+		supDone := make(chan error, 1)
+		res := run(t, func(childDone, supDone chan error) {
+			supDone <- supErr
+			time.Sleep(3 * grace)
+			childDone <- childErr
+		}, supDone)
+		if !errors.Is(res.err, childErr) || res.killed != 0 {
+			t.Fatalf("got err=%v killed=%d", res.err, res.killed)
+		}
+		if len(res.warned) != 1 || !errors.Is(res.warned[0], supErr) {
+			t.Fatalf("warned = %v, want exactly [%v]", res.warned, supErr)
+		}
+	})
+
+	t.Run("both ready: no warning", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			supDone := make(chan error, 1)
+			res := run(t, func(childDone, supDone chan error) {
+				supDone <- nil
+				childDone <- childErr
+			}, supDone)
+			if !errors.Is(res.err, childErr) || len(res.warned) != 0 {
+				t.Fatalf("iteration %d: got err=%v killed=%d warned=%v", i, res.err, res.killed, res.warned)
+			}
+		}
+	})
 }

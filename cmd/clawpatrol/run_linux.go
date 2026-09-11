@@ -54,6 +54,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -276,12 +277,13 @@ func runRun(args []string) {
 	// sup sock fd), fork the supervisor in the host netns. Absence
 	// (--no-auto-expose, unsupported arch) is non-fatal.
 	var relaySup *exec.Cmd
+	relayStderr := newLastLineWriter(os.Stderr)
 	if autoExpose {
 		if relayFDs, err := recvFDs(pSock, 3); err == nil {
 			notifyFile := os.NewFile(uintptr(relayFDs[0]), "seccomp-notify")
 			supSock := os.NewFile(uintptr(relayFDs[1]), "relay-sup-sock")
 			lbSock := os.NewFile(uintptr(relayFDs[2]), "relay-lb-sock")
-			if c, serr := spawnRelaySupervisor(notifyFile, supSock, lbSock); serr != nil {
+			if c, serr := spawnRelaySupervisor(notifyFile, supSock, lbSock, relayStderr); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: auto-expose relay: %v (webhooks won't be reachable from host, host loopback unreachable from wrapped cmd)\n", serr)
 			} else {
 				relaySup = c
@@ -302,12 +304,26 @@ func runRun(args []string) {
 		}
 	}()
 
-	waitErr := child.Wait()
-
-	if relaySup != nil && relaySup.Process != nil {
-		_ = relaySup.Process.Signal(syscall.SIGTERM)
-		_, _ = relaySup.Process.Wait()
+	// Wait on the wrapped child and the relay supervisor concurrently.
+	// Normally the child exits first and we SIGTERM the supervisor. If
+	// the supervisor exits first the relay is gone for the rest of the
+	// run: the worker has already removed its REDIRECT (#688), so the
+	// wrapped command keeps running with plain in-netns loopback. We
+	// reap the supervisor right away (no <defunct> lingering until the
+	// command ends), warn once with its last stderr line, and keep
+	// waiting on the child — its exit code is the run's exit code.
+	childDoneCh := make(chan error, 1)
+	go func() { childDoneCh <- child.Wait() }()
+	var supDoneCh chan error
+	if relaySup != nil {
+		supDoneCh = make(chan error, 1)
+		go func() { supDoneCh <- relaySup.Wait() }()
 	}
+	waitErr := awaitRunExit(childDoneCh, supDoneCh, relayExitGrace,
+		func() { _ = relaySup.Process.Signal(syscall.SIGTERM) },
+		func(supErr error) {
+			fmt.Fprintln(os.Stderr, relayExitWarning(supErr, relayStderr.LastLine()))
+		})
 
 	// Closing ctrl (via the deferred Close) tears the session down on
 	// the daemon side.
@@ -319,6 +335,109 @@ func runRun(args []string) {
 		}
 		fail("wait: %v", waitErr)
 	}
+}
+
+// relayExitGrace is how long runRun waits for the child's Wait to
+// report after the relay supervisor exits before treating the exit as
+// a relay failure rather than the tail of a normal shutdown.
+const relayExitGrace = 500 * time.Millisecond
+
+// awaitRunExit is runRun's wait/decision logic, factored out so it can
+// be tested with fake channels. childDone carries the wrapped child's
+// Wait result; supDone the relay supervisor's (nil when there is no
+// supervisor). Returns the child's Wait result — the child's exit is
+// always the run's exit.
+//
+//   - Child first: killSup is invoked and supDone drained.
+//   - Supervisor first: the normal cascade (child exits → seccomp filter
+//     empties → supervisor gets ENOENT and exits 0) can reach us before
+//     the child's own Wait does, so the child waiter gets grace to
+//     report. Only if it doesn't is warn called (once) with the
+//     supervisor's Wait result; either way we keep waiting on the
+//     child. The grace only delays the warning, never the run's exit.
+func awaitRunExit(childDone, supDone <-chan error, grace time.Duration, killSup func(), warn func(error)) error {
+	select {
+	case err := <-childDone:
+		if supDone != nil {
+			killSup()
+			<-supDone
+		}
+		return err
+	case supErr := <-supDone:
+		select {
+		case err := <-childDone:
+			return err
+		case <-time.After(grace):
+			warn(supErr)
+			return <-childDone
+		}
+	}
+}
+
+// relayLastLineMaxRunes caps the supervisor line quoted in
+// relayExitWarning so one runaway log line can't swamp the terminal.
+const relayLastLineMaxRunes = 200
+
+// relayExitWarning formats the one-line warning `clawpatrol run` prints
+// when the auto-expose relay supervisor exits while the wrapped command
+// is still running. waitErr is the supervisor's Wait result (nil for a
+// clean exit 0); lastLine is its final stderr line, quoted when present
+// so the operator sees the cause without tailing anything.
+func relayExitWarning(waitErr error, lastLine string) string {
+	var b strings.Builder
+	b.WriteString("⚠ clawpatrol run: auto-expose relay supervisor exited")
+	if waitErr != nil {
+		fmt.Fprintf(&b, " (%v)", waitErr)
+	}
+	b.WriteString("; port auto-expose and host-loopback forwarding are off for the rest of this run")
+	if lastLine != "" {
+		if r := []rune(lastLine); len(r) > relayLastLineMaxRunes {
+			lastLine = string(r[:relayLastLineMaxRunes]) + "…"
+		}
+		fmt.Fprintf(&b, "; last output: %q", lastLine)
+	}
+	return b.String()
+}
+
+// lastLineWriter tees writes to w while keeping a bounded tail so the
+// last line a child wrote can be retrieved after it exits. Live output
+// still streams through in real time; a chatty child can't grow the
+// buffer past lastLineMaxBytes.
+type lastLineWriter struct {
+	mu  sync.Mutex
+	buf []byte
+	w   io.Writer
+}
+
+const lastLineMaxBytes = 4096
+
+func newLastLineWriter(w io.Writer) *lastLineWriter {
+	return &lastLineWriter{w: w}
+}
+
+func (l *lastLineWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	l.buf = append(l.buf, p...)
+	if len(l.buf) > lastLineMaxBytes {
+		l.buf = l.buf[len(l.buf)-lastLineMaxBytes:]
+	}
+	l.mu.Unlock()
+	if l.w == nil {
+		return len(p), nil
+	}
+	return l.w.Write(p)
+}
+
+// LastLine returns the trailing non-empty line with surrounding
+// whitespace stripped, or "" if nothing was captured.
+func (l *lastLineWriter) LastLine() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := strings.TrimRight(string(l.buf), "\r\n \t")
+	if i := strings.LastIndexAny(s, "\r\n"); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(s)
 }
 
 // runWholeMachineDirect handles `clawpatrol run <cmd>` on a

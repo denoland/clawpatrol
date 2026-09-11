@@ -270,6 +270,12 @@ func runRelaySupervisor(_ []string) {
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
 	ignoreSIGPIPE()
+	// We share the terminal's foreground process group with the wrapped
+	// command, so a Ctrl-C reaches us too. Interactive commands (Claude
+	// Code) survive their first Ctrl-C and would then run relay-less,
+	// with `run` reporting a relay death. Only SIGTERM — run's explicit
+	// kill and our Pdeathsig — and the seccomp ENOENT end us.
+	ignoreTerminalSignals()
 
 	// Hand the per-direction loops RawConns rather than raw int fds.
 	// RawConn carries an internal reference to the underlying *os.File
@@ -291,8 +297,10 @@ func runRelaySupervisor(_ []string) {
 	// and we don't want it auto-exposed back to the host.
 	workerPID, err := recvWorkerPID(lbRC)
 	if err != nil {
-		relayDebugf("[clawpatrol relay] read worker pid: %v\n", err)
-		return
+		// Raw cause only; `run` quotes our last stderr line in its own
+		// warning, so this is what the operator sees as the reason.
+		fmt.Fprintf(os.Stderr, "relay-supervisor: read worker pid: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Loopback direction: worker forwards each agent → 127.0.0.0/8:port
@@ -320,14 +328,12 @@ func runRelaySupervisor(_ []string) {
 			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
 				continue
 			}
-			// Anything else means we can no longer service notifications.
-			// Surface it unconditionally (not just under CLAWPATROL_DEBUG):
-			// the worker will now fail the REDIRECT open and host-loopback
-			// forwarding stops, so operators can see why telemetry/webhooks
-			// to host services went quiet.
-			fmt.Fprintf(os.Stderr, "⚠ clawpatrol relay: notification channel failed (%v); "+
-				"host-loopback forwarding disabled, reverting wrapped process to direct loopback\n", err)
-			return
+			// Anything else means we can no longer service notifications:
+			// host-loopback forwarding and port auto-expose stop. Print the
+			// raw cause and exit non-zero; `run` reaps us, quotes this line
+			// and explains the consequences, so it stays the one reporter.
+			fmt.Fprintf(os.Stderr, "relay-supervisor: notif_recv: %v\n", err)
+			os.Exit(1)
 		}
 
 		isListen := uint32(n.Data.NR) == listenNR
@@ -779,6 +785,11 @@ func runRelayWorker(_ []string) {
 		fail("relay-worker: expected fds 3,4,5 to be open")
 	}
 	ignoreSIGPIPE()
+	// Same foreground process group as the wrapped command (see the
+	// supervisor): a Ctrl-C the command survives must not take the
+	// forwarder — and with it host-loopback — away for the rest of the
+	// session. Pdeathsig SIGTERM and EOF on the supervisor sock end us.
+	ignoreTerminalSignals()
 
 	rc, err := sock.SyscallConn()
 	if err != nil {
@@ -818,9 +829,10 @@ func runRelayWorker(_ []string) {
 		defer cleanup()
 		// Pdeathsig delivers SIGTERM when the agent exits, which would
 		// otherwise skip the deferred cleanup; trap it so the rule is
-		// always removed before we exit.
+		// always removed before we exit. SIGINT/SIGHUP are ignored above:
+		// only SIGTERM and EOF from the supervisor end this worker.
 		sigCh := make(chan os.Signal, 2)
-		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		signal.Notify(sigCh, syscall.SIGTERM)
 		go func() {
 			<-sigCh
 			cleanup()
@@ -1375,10 +1387,11 @@ func setupRelayInChild(parentSock *os.File) {
 
 // spawnRelaySupervisor re-execs self as `relay-supervisor`, passing the
 // seccomp notify fd, worker socket, and loopback supervisor socket via
-// ExtraFiles (fds 3, 4, 5). Returns the started *exec.Cmd; the caller
-// does not Wait — Pdeathsig reaps the supervisor when the top parent
-// exits.
-func spawnRelaySupervisor(notifyFile, workerSock, lbSock *os.File) (*exec.Cmd, error) {
+// ExtraFiles (fds 3, 4, 5). The supervisor's stderr goes to the given
+// writer (run wires a last-line-capturing tee in front of os.Stderr so
+// it can quote the supervisor's final line if it exits early). Returns
+// the started *exec.Cmd; the caller must Wait on it.
+func spawnRelaySupervisor(notifyFile, workerSock, lbSock *os.File, stderr io.Writer) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("relay-supervisor: self path: %w", err)
@@ -1387,7 +1400,7 @@ func spawnRelaySupervisor(notifyFile, workerSock, lbSock *os.File) (*exec.Cmd, e
 	c.ExtraFiles = []*os.File{notifyFile, workerSock, lbSock}
 	c.Stdin = nil
 	c.Stdout = nil
-	c.Stderr = os.Stderr
+	c.Stderr = stderr
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,
 	}
@@ -1433,4 +1446,13 @@ func spawnRelayWorker(workerSock, lbSock, readyW *os.File) (*exec.Cmd, error) {
 // and starve the running webhook.
 func ignoreSIGPIPE() {
 	signal.Ignore(syscall.SIGPIPE)
+}
+
+// ignoreTerminalSignals makes a relay process immune to the terminal's
+// SIGINT (Ctrl-C) and SIGHUP. Both relay processes sit in the wrapped
+// command's foreground process group, and the command may legitimately
+// survive those signals; the relay's lifetime is tied to the command
+// via Pdeathsig/SIGTERM and socket EOF instead.
+func ignoreTerminalSignals() {
+	signal.Ignore(syscall.SIGINT, syscall.SIGHUP)
 }
