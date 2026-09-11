@@ -253,7 +253,7 @@ func TestHITLRegistryCancelUpdatesRecordedMessageRefs(t *testing.T) {
 	var gotRef string
 	var gotResult runtime.HITLResolveResult
 	updated := make(chan struct{}, 1)
-	registry.pendingMessageUpdater = func(_ context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+	registry.pendingMessageUpdater = func(_ context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult, _ string) {
 		gotPending = pending
 		gotRef = ref
 		gotResult = result
@@ -292,7 +292,7 @@ func TestHITLRegistryCancelUpdatesRecordedMessageRefs(t *testing.T) {
 func TestHITLRegistryLateMessageRefUpdateUsesFreshContext(t *testing.T) {
 	registry := newHITLRegistry(nil)
 	updated := make(chan error, 1)
-	registry.pendingMessageUpdater = func(ctx context.Context, _ runtime.HITLPending, _ string, _ runtime.HITLResolveResult) {
+	registry.pendingMessageUpdater = func(ctx context.Context, _ runtime.HITLPending, _ string, _ runtime.HITLResolveResult, _ string) {
 		updated <- ctx.Err()
 	}
 	id, _ := registry.Add(runtime.HITLPending{

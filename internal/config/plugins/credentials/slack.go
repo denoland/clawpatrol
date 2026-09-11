@@ -212,7 +212,7 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 		return err
 	}
 	if posted.Channel != "" && posted.TS != "" {
-		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary})
+		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary, Endpoint: endpoint, QueryLabel: queryLabel})
 		if target.MessageUpdateSink != nil && req.AsyncOperationID != "" {
 			if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
 				log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
@@ -391,6 +391,13 @@ type slackMessageRef struct {
 	Interactive bool                 `json:"interactive,omitempty"`
 	Message     string               `json:"message,omitempty"`
 	Summary     *runtime.HITLSummary `json:"summary,omitempty"`
+	// Endpoint and QueryLabel are the header endpoint and body label
+	// the original post rendered with ("pg-prod", "Query"), so a later
+	// chat.update keeps the same card instead of falling back to the
+	// upstream host and "Path". Refs written before these existed
+	// decode with both empty and take the fallback.
+	Endpoint   string `json:"endpoint,omitempty"`
+	QueryLabel string `json:"query_label,omitempty"`
 }
 
 func encodeSlackMessageRef(ref slackMessageRef) string {
@@ -447,8 +454,16 @@ func slackHITLUpdateBlocks(update runtime.HITLMessageUpdate, ref slackMessageRef
 	if path == "" {
 		path = "/"
 	}
-	title := slackTrunc(runtime.HITLTitle(update.Method, update.Host), 140)
-	blocks := slackHITLContentBlocks(title, "Path", path, ref.Message, ref.Summary)
+	endpoint := ref.Endpoint
+	if endpoint == "" {
+		endpoint = update.Host
+	}
+	queryLabel := ref.QueryLabel
+	if queryLabel == "" {
+		queryLabel = "Path"
+	}
+	title := slackTrunc(runtime.HITLTitle(update.Method, endpoint), 140)
+	blocks := slackHITLContentBlocks(title, queryLabel, path, ref.Message, ref.Summary)
 	guidance := runtime.HITLApprovalMessage(update.State, runtime.HITLApprovalEffectForOperationState(update.State), update.UpstreamCalled)
 	if strings.TrimSpace(guidance) != "" {
 		blocks = append(blocks, map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(guidance, 1000)}})
@@ -471,8 +486,10 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 	switch update.State {
 	case runtime.HITLOperationStatePendingApproval:
 		return ":hourglass_flowing_sand: HITL approval is pending"
+	case runtime.HITLOperationStateApproved:
+		return ":white_check_mark: Approved" + slackDecidedBySuffix(update.DecidedBy)
 	case runtime.HITLOperationStateApprovedWaitingForRetry:
-		return ":white_check_mark: Approved — waiting for matching client retry"
+		return ":white_check_mark: Approved" + slackDecidedBySuffix(update.DecidedBy) + " — waiting for matching client retry"
 	case runtime.HITLOperationStateExecutingUpstream:
 		return ":arrow_forward: Matching retry received — executing upstream"
 	case runtime.HITLOperationStateUpstreamSucceeded:
@@ -483,7 +500,7 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 		}
 		return ":x: Upstream request failed"
 	case runtime.HITLOperationStateDenied:
-		return ":no_entry: Denied"
+		return ":no_entry: Denied" + slackDecidedBySuffix(update.DecidedBy)
 	case runtime.HITLOperationStateExpired:
 		return ":alarm_clock: HITL approval expired"
 	case runtime.HITLOperationStateClientDisconnected:
@@ -491,6 +508,23 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 	default:
 		return "HITL state: `" + string(update.State) + "`"
 	}
+}
+
+// slackDecidedBySuffix renders " by <operator>" for a status line, or
+// "" when no human made the decision. The operator string is
+// mrkdwn-escaped so a name like "<@U1>" can't turn into a mention.
+func slackDecidedBySuffix(by string) string {
+	by = strings.TrimSpace(by)
+	if by == "" {
+		return ""
+	}
+	return " by " + slackMrkdwnEscape(slackTrunc(by, 120))
+}
+
+var slackMrkdwnEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+func slackMrkdwnEscape(s string) string {
+	return slackMrkdwnEscaper.Replace(s)
 }
 
 func slackPostJSON(ctx context.Context, endpoint, bot string, buf []byte, method string) error {

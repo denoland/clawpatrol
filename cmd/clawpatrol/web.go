@@ -3289,7 +3289,7 @@ type HITLRegistry struct {
 	terminal              map[string]terminalHITLEntry
 	sink                  *Sink // SSE fan-out for the dashboard
 	asyncGrantResolver    func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
-	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult)
+	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult, decidedBy string)
 }
 
 type pendingEntry struct {
@@ -3299,9 +3299,13 @@ type pendingEntry struct {
 }
 
 type terminalHITLEntry struct {
-	result    runtime.HITLResolveResult
-	pending   runtime.HITLPending
-	refs      []string
+	result  runtime.HITLResolveResult
+	pending runtime.HITLPending
+	refs    []string
+	// decidedBy is the operator behind an approve/deny terminal
+	// state, kept so a message ref recorded after the decision still
+	// renders "approved by ...". Empty for timeouts and cancels.
+	decidedBy string
 	expiresAt time.Time
 }
 
@@ -3442,13 +3446,19 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 	pend := e.p
 	e.decision <- d
 	delete(r.pending, id)
+	// Keep the pending entry and decider on the terminal record so a
+	// notifier that finishes posting after the decision (see
+	// RecordMessageRef) can still edit its message.
 	r.terminal[id] = terminalHITLEntry{
 		result:    runtime.HITLResolveResult{OK: false, State: state, Reason: reason},
+		pending:   terminalHITLPending(pend),
+		refs:      refs,
+		decidedBy: d.By,
 		expiresAt: now.Add(hitlTerminalTTL),
 	}
 	r.mu.Unlock()
 	result := runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
-	r.updateRecordedMessageRefs(context.Background(), pend, refs, result)
+	r.updateRecordedMessageRefs(context.Background(), pend, refs, result, d.By)
 	return result
 }
 
@@ -3469,7 +3479,7 @@ func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string)
 	}
 	e, result := r.resolve(id, state, reason)
 	if e != nil && result.OK {
-		r.updateRecordedMessageRefs(context.Background(), e.p, e.messageRefs, result)
+		r.updateRecordedMessageRefs(context.Background(), e.p, e.messageRefs, result, "")
 	}
 	return result
 }
@@ -3488,8 +3498,18 @@ func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string
 	}
 	delete(r.pending, id)
 	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
-	r.terminal[id] = terminalHITLEntry{result: terminal, pending: e.p, refs: append([]string(nil), e.messageRefs...), expiresAt: now.Add(hitlTerminalTTL)}
+	r.terminal[id] = terminalHITLEntry{result: terminal, pending: terminalHITLPending(e.p), refs: append([]string(nil), e.messageRefs...), expiresAt: now.Add(hitlTerminalTTL)}
 	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+// terminalHITLPending is the copy of a pending entry kept on its
+// terminal record for hitlTerminalTTL. Late message updates only need
+// the routing/rendering fields, so the body sample — the one field
+// that can be large — is dropped rather than retained for 30 minutes
+// per decision.
+func terminalHITLPending(p runtime.HITLPending) runtime.HITLPending {
+	p.BodySample = ""
+	return p
 }
 
 // RecordMessageRef records the channel-specific message id for a pending sync
@@ -3503,6 +3523,7 @@ func (r *HITLRegistry) RecordMessageRef(_ context.Context, pendingID, ref string
 	}
 	var pending runtime.HITLPending
 	var result runtime.HITLResolveResult
+	var decidedBy string
 	var shouldUpdate bool
 	now := time.Now()
 	r.mu.Lock()
@@ -3517,16 +3538,21 @@ func (r *HITLRegistry) RecordMessageRef(_ context.Context, pendingID, ref string
 		r.terminal[pendingID] = terminal
 		pending = terminal.pending
 		result = terminal.result
+		decidedBy = terminal.decidedBy
 		shouldUpdate = true
 	}
 	r.mu.Unlock()
 	if shouldUpdate {
-		r.updateRecordedMessageRefs(context.Background(), pending, []string{ref}, result)
+		r.updateRecordedMessageRefs(context.Background(), pending, []string{ref}, result, decidedBy)
 	}
 	return nil
 }
 
-func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending runtime.HITLPending, refs []string, result runtime.HITLResolveResult) {
+// updateRecordedMessageRefs pushes a terminal result to every channel
+// message posted for the pending entry. decidedBy is the operator
+// behind an approve/deny decision and empty for timeouts, cancels, and
+// client disconnects.
+func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending runtime.HITLPending, refs []string, result runtime.HITLResolveResult, decidedBy string) {
 	if r == nil || r.pendingMessageUpdater == nil {
 		return
 	}
@@ -3534,7 +3560,7 @@ func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending ru
 		if strings.TrimSpace(ref) == "" {
 			continue
 		}
-		r.pendingMessageUpdater(ctx, pending, ref, result)
+		r.pendingMessageUpdater(ctx, pending, ref, result, decidedBy)
 	}
 }
 

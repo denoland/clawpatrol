@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
@@ -336,5 +337,141 @@ func TestSlackUpdateHITLMessageDoesNotAddButtonsForNonInteractivePrompt(t *testi
 	text := string(buf)
 	if strings.Contains(text, "action_id") || strings.Contains(text, "pending-123") {
 		t.Fatalf("non-interactive update should not introduce Slack buttons: %s", text)
+	}
+}
+
+// A sync approval (client still connected, approval executes upstream
+// immediately) must not be rendered with the async retry-grant wording,
+// and the edited card keeps the endpoint header and family label the
+// original post used (#843).
+func TestSlackUpdateHITLMessageSyncApprovalSaysApprovedByAndKeepsCard(t *testing.T) {
+	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
+		State:     runtime.HITLOperationStateApproved,
+		Method:    "NOTIFY",
+		Host:      "10.0.0.5:5432",
+		Path:      "NOTIFY reload, 'now'",
+		DecidedBy: "dashboard:alice",
+	}, slackMessageRef{
+		Credential:  "slack-approvals",
+		Channel:     "C123",
+		TS:          "1778764174.925659",
+		PendingID:   "pending-123",
+		Interactive: true,
+		Endpoint:    "pg-prod",
+		QueryLabel:  "Query",
+	})
+	buf, _ := json.Marshal(blocks)
+	text := string(buf)
+	if !strings.Contains(text, ":white_check_mark: Approved by dashboard:alice") {
+		t.Fatalf("sync approval blocks = %s, want approved-by status", text)
+	}
+	for _, async := range []string{"waiting for matching client retry", "Waiting for the client to retry", "Upstream has not been called"} {
+		if strings.Contains(text, async) {
+			t.Fatalf("sync approval blocks kept async retry-grant wording %q: %s", async, text)
+		}
+	}
+	if !strings.Contains(text, "Approve NOTIFY · pg-prod") {
+		t.Fatalf("sync approval header = %s, want the endpoint name the original post used", text)
+	}
+	if strings.Contains(text, "10.0.0.5:5432") {
+		t.Fatalf("sync approval header fell back to the upstream host: %s", text)
+	}
+	if !strings.Contains(text, `*Query*`) || strings.Contains(text, `*Path*`) {
+		t.Fatalf("sync approval label = %s, want *Query* like the original post", text)
+	}
+	if strings.Contains(text, "action_id") {
+		t.Fatalf("approved chat.update should not keep action buttons: %s", text)
+	}
+}
+
+func TestSlackUpdateHITLMessageDenialSaysDeniedBy(t *testing.T) {
+	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
+		State:     runtime.HITLOperationStateDenied,
+		Method:    "POST",
+		Host:      "api.example.test",
+		Path:      "/v1/resources/update",
+		DecidedBy: "slack:bob",
+	}, slackMessageRef{Credential: "slack-approvals", Channel: "C123", TS: "1778764174.925659"})
+	buf, _ := json.Marshal(blocks)
+	text := string(buf)
+	if !strings.Contains(text, ":no_entry: Denied by slack:bob") {
+		t.Fatalf("denial blocks = %s, want denied-by status", text)
+	}
+}
+
+// Old refs (and async operation updates) carry no endpoint/label, so
+// the update keeps rendering host + Path as before; async approvals
+// keep their retry-grant status line untouched.
+func TestSlackUpdateHITLMessageFallsBackToHostAndPath(t *testing.T) {
+	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
+		State:  runtime.HITLOperationStateApprovedWaitingForRetry,
+		Method: "POST",
+		Host:   "api.example.test",
+		Path:   "/v1/resources/update",
+	}, slackMessageRef{Credential: "slack-approvals", Channel: "C123", TS: "1778764174.925659"})
+	buf, _ := json.Marshal(blocks)
+	text := string(buf)
+	if !strings.Contains(text, "Approve POST · api.example.test") || !strings.Contains(text, `*Path*`) {
+		t.Fatalf("legacy ref update = %s, want host header and Path label", text)
+	}
+	if !strings.Contains(text, ":white_check_mark: Approved — waiting for matching client retry") {
+		t.Fatalf("async approval status changed: %s", text)
+	}
+}
+
+func TestSlackDecidedBySuffixEscapesMrkdwn(t *testing.T) {
+	if got := slackDecidedBySuffix("<@U123>&"); got != " by &lt;@U123&gt;&amp;" {
+		t.Fatalf("slackDecidedBySuffix = %q", got)
+	}
+	if got := slackDecidedBySuffix("  "); got != "" {
+		t.Fatalf("slackDecidedBySuffix(blank) = %q, want empty", got)
+	}
+}
+
+func TestSlackNotifyHITLRecordsEndpointAndLabelInMessageRef(t *testing.T) {
+	var recordedRef string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1778764174.925659"}`))
+	}))
+	defer server.Close()
+
+	oldURL := slackPostMessageURL
+	oldClient := slackHTTPClient
+	oldBackoff := slackNotifyRetryBackoff
+	slackPostMessageURL = server.URL
+	slackHTTPClient = server.Client()
+	slackNotifyRetryBackoff = 0
+	defer func() {
+		slackPostMessageURL = oldURL
+		slackHTTPClient = oldClient
+		slackNotifyRetryBackoff = oldBackoff
+	}()
+
+	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
+		Secrets:  testSecretStore{"slack-approvals": {Extras: map[string]string{"bot": "xoxb-test"}}},
+		Endpoint: &config.CompiledEndpoint{Name: "billing-api", Family: "https"},
+		Method:   "POST",
+		Host:     "api.example.test",
+		Path:     "/v1/resources/update",
+	}, runtime.HITLTarget{
+		CredentialName: "slack-approvals",
+		Channel:        "C123",
+		PendingID:      "pending-123",
+		Interactive:    true,
+		PendingMessageUpdateSink: func(_ context.Context, _, ref string) error {
+			recordedRef = ref
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NotifyHITL returned error: %v", err)
+	}
+	ref, ok := decodeSlackMessageRef(recordedRef)
+	if !ok {
+		t.Fatalf("recorded ref did not decode: %q", recordedRef)
+	}
+	if ref.Endpoint != "billing-api" || ref.QueryLabel != "Path" {
+		t.Fatalf("recorded ref endpoint/label = %q/%q, want billing-api/Path", ref.Endpoint, ref.QueryLabel)
 	}
 }

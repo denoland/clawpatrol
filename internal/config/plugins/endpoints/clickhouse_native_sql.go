@@ -217,7 +217,11 @@ func chSortedKeys(m map[string]struct{}) []string {
 func chSummary(info chSQLInfo) string {
 	var parts []string
 	if info.Verb != "" {
-		parts = append(parts, strings.ToUpper(info.Verb))
+		// Same rule as pgSummary: the statement already starts with
+		// the verb in the common case, so do not print it twice.
+		if !sqlStatementStartsWithVerb(info.Statement, info.Verb) {
+			parts = append(parts, strings.ToUpper(info.Verb))
+		}
 	} else {
 		// Unparseable query — surface the marker so dashboard event
 		// cards / HITL prompts read "UNPARSEABLE <stmt>" rather than

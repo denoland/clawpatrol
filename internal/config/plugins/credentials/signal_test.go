@@ -521,3 +521,27 @@ func TestSignalUpdateHITLMessageRetriesTransientDeleteFailure(t *testing.T) {
 		t.Fatalf("remote-delete calls = %d, want 2 (one retry after 503)", deletes)
 	}
 }
+
+// A sync approval (client still connected) is a decision too: the
+// prompt must be deleted just like the async retry-grant approval.
+func TestSignalUpdateHITLMessageDeletesOnSyncApproval(t *testing.T) {
+	server, _, deleted := signalDeleteServer(t, "1000000000000")
+	withSignalClient(t, server.Client())
+
+	s := &SignalCLI{DeleteOnDecision: true}
+	store := testSecretStore{
+		"signal-ops": {Extras: map[string]string{"api_url": server.URL, "number": "+15550000000"}},
+	}
+	_, ref := signalNotifyCapturingRef(t, s, store)
+
+	if err := s.UpdateHITLMessage(context.Background(), store, runtime.HITLMessageUpdate{
+		MessageRef: ref,
+		State:      runtime.HITLOperationStateApproved,
+		DecidedBy:  "dashboard:alice",
+	}); err != nil {
+		t.Fatalf("UpdateHITLMessage: %v", err)
+	}
+	if *deleted != 1 {
+		t.Fatalf("remote-delete calls = %d, want 1", *deleted)
+	}
+}

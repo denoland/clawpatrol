@@ -778,19 +778,47 @@ func pgWriteError(conn net.Conn, reason string) {
 	_, _ = conn.Write(msg)
 }
 
+// pgSummary renders the one-line event / HITL description for a
+// statement. The uppercased verb is prepended unless the statement
+// text already opens with it — otherwise "NOTIFY NOTIFY chan" shows
+// up on every card. Statements that don't start with their verb keep
+// the prefix: a WITH-CTE whose verb is the inner DML, or the shadow
+// sub-statements visitCTEs synthesises, whose Statement is just the
+// CTE name.
 func pgSummary(info pgInfo) string {
-	parts := []string{strings.ToUpper(info.Verb)}
+	var parts []string
+	if info.Verb != "" && !sqlStatementStartsWithVerb(info.Statement, info.Verb) {
+		parts = append(parts, strings.ToUpper(info.Verb))
+	}
 	if len(info.Tables) > 0 {
 		parts = append(parts, "tables=["+strings.Join(info.Tables, ",")+"]")
 	}
-	if info.Statement != "" {
-		s := info.Statement
+	if s := strings.TrimSpace(info.Statement); s != "" {
 		if len(s) > 80 {
 			s = s[:80] + "..."
 		}
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, " ")
+}
+
+// sqlStatementStartsWithVerb reports whether stmt's first word is verb
+// (case-insensitive, ignoring leading whitespace).
+func sqlStatementStartsWithVerb(stmt, verb string) bool {
+	stmt = strings.TrimLeft(stmt, " \t\r\n")
+	if verb == "" || len(stmt) < len(verb) || !strings.EqualFold(stmt[:len(verb)], verb) {
+		return false
+	}
+	if len(stmt) == len(verb) {
+		return true
+	}
+	return !sqlIdentByte(stmt[len(verb)])
+}
+
+// sqlIdentByte reports whether b can continue an SQL identifier or
+// keyword, so "NOTIFYX" does not count as starting with NOTIFY.
+func sqlIdentByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func pgUpstreamAddr(ep *config.CompiledEndpoint) string {

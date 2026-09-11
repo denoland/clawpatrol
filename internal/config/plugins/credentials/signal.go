@@ -379,7 +379,8 @@ func (s *SignalCLI) UpdateHITLMessage(ctx context.Context, secrets runtime.Secre
 // remote-deleting an already-deleted timestamp is a no-op.
 func signalDecided(state runtime.HITLOperationState) bool {
 	switch state {
-	case runtime.HITLOperationStateApprovedWaitingForRetry,
+	case runtime.HITLOperationStateApproved,
+		runtime.HITLOperationStateApprovedWaitingForRetry,
 		runtime.HITLOperationStateDenied,
 		runtime.HITLOperationStateExpired,
 		runtime.HITLOperationStateClientDisconnected,

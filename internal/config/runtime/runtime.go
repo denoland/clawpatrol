@@ -425,6 +425,11 @@ type HITLMessageUpdate struct {
 	Profile        string
 	UpstreamCalled bool
 	LastError      string
+	// DecidedBy names the operator whose decision produced this update
+	// ("dashboard:alice", "slack:bob"). Empty for states no human
+	// chose: expiry, client disconnect, and the async retry-relay
+	// transitions.
+	DecidedBy string
 }
 
 // HITLTarget is the per-approver config the notifier needs:
@@ -637,10 +642,15 @@ const (
 type HITLOperationState string
 
 // HITLOperationState values: durable lifecycle states for async-HITL
-// operations.
+// operations, plus HITLOperationStateApproved, which only ever
+// appears in HITLMessageUpdate: a sync_waiting prompt was approved
+// while the client was still connected, so the held request goes
+// upstream immediately and no retry grant exists. It is never stored
+// and never shown as a pending entry's operation_state.
 const (
 	HITLOperationStateSyncWaiting             HITLOperationState = "sync_waiting"
 	HITLOperationStatePendingApproval         HITLOperationState = "pending_approval"
+	HITLOperationStateApproved                HITLOperationState = "approved"
 	HITLOperationStateApprovedWaitingForRetry HITLOperationState = "approved_waiting_for_retry"
 	HITLOperationStateDenied                  HITLOperationState = "denied"
 	HITLOperationStateExpired                 HITLOperationState = "expired"
@@ -757,6 +767,10 @@ func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, up
 	switch state {
 	case HITLOperationStatePendingApproval:
 		return "The original synchronous wait ended and Claw Patrol returned an async polling response to the client.\nUpstream has not been called.\nApprove will not send the request upstream now.\nApprove will allow the client to retry the same request once."
+	case HITLOperationStateApproved:
+		// Stage-neutral on purpose: a later stage of an approve chain
+		// can still deny, so this must not promise the upstream call.
+		return "Approved.\nThe client was still connected, so the decision applies to the held request directly; no client retry is needed."
 	case HITLOperationStateApprovedWaitingForRetry:
 		return "Approved.\nWaiting for the client to retry the original request.\nUpstream has not been called yet."
 	case HITLOperationStateDenied:

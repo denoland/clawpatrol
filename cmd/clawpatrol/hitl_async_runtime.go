@@ -243,7 +243,11 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 	}
 }
 
-func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+// updatePendingHITLMessage edits the channel message behind a pending
+// sync HITL prompt once the entry reaches a terminal state. decidedBy
+// is the operator who approved or denied (empty for expiry / client
+// disconnect) and is rendered as "approved by ..." in the update.
+func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult, decidedBy string) {
 	if g == nil || ref == "" {
 		return
 	}
@@ -283,7 +287,17 @@ func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.
 	case runtime.HITLStateClientDisconnected:
 		state = runtime.HITLOperationStateClientDisconnected
 	case runtime.HITLStateApproved:
-		state = runtime.HITLOperationStateApprovedWaitingForRetry
+		// A pending entry whose approval only mints a retry grant is
+		// normally resolved through resolveAsyncHITLGrant and never
+		// reaches this path, but keep the retry wording for it. Every
+		// other approval executes upstream right away: the client is
+		// still holding the connection, so "waiting for retry" is
+		// wrong.
+		if pending.ApprovalEffect == runtime.HITLApprovalEffectCreateRetryGrant {
+			state = runtime.HITLOperationStateApprovedWaitingForRetry
+		} else {
+			state = runtime.HITLOperationStateApproved
+		}
 	case runtime.HITLStateDenied:
 		state = runtime.HITLOperationStateDenied
 	case runtime.HITLStateTimedOut:
@@ -302,6 +316,7 @@ func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.
 		Path:           path,
 		UpstreamCalled: pending.UpstreamCalled,
 		LastError:      result.Reason,
+		DecidedBy:      decidedBy,
 	}); err != nil {
 		log.Printf("hitl pending message update %s: %v", pending.ID, err)
 	}
