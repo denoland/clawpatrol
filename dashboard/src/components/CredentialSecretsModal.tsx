@@ -29,6 +29,9 @@ export function CredentialSecretsModal({
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // notice: saved, but the verification probe could not reach a
+  // verdict (provider unreachable). Not a failure — amber, not red.
+  const [notice, setNotice] = useState<string | null>(null);
 
   function update(name: string, v: string) {
     setValues((s) => ({ ...s, [name]: v }));
@@ -37,8 +40,30 @@ export function CredentialSecretsModal({
   async function save() {
     setSaving(true);
     setErr(null);
+    setNotice(null);
     try {
-      await setCredentialSlots(integration.id, values);
+      const result = await setCredentialSlots(integration.id, values);
+      // The secret is saved but the probe could not reach the
+      // provider, so nothing is known about the token yet. Keep the
+      // modal open: pressing Save again re-sends the same values and
+      // re-runs the probe.
+      if (result.unverified) {
+        onSaved();
+        setNotice(
+          `Saved, but ${result.error ?? "could not verify"}. Press Save again to retry verification.`,
+        );
+        return;
+      }
+      // Backend verification probe (Slack auth.test, Discord users/@me,
+      // …) failed: keep the modal open and show the upstream reason
+      // inline so the operator can fix the token without re-opening
+      // the form. Trigger a refresh too so the dashboard badge flips
+      // to the failed state.
+      if (result.verified === false) {
+        onSaved();
+        setErr(`Verification failed: ${result.error ?? "unknown error"}`);
+        return;
+      }
       onSaved();
       onClose();
     } catch (e) {
@@ -99,6 +124,7 @@ export function CredentialSecretsModal({
           </label>
         ))}
         {err && <div className="text-xs text-danger-500">{err}</div>}
+        {notice && <div className="text-xs text-amber-600">{notice}</div>}
       </div>
       <div className="flex justify-end gap-2 px-4 py-3">
         <Button variant="outline" onClick={onClose}>

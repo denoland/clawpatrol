@@ -58,6 +58,18 @@ type webMux struct {
 	stateCache   map[string]stateCacheEntry
 }
 
+// lockCredentialSave takes the per-credential mutation lock (set and
+// clear) and returns the unlock func. The lock lives on the Gateway,
+// not the mux, because the dashboard is served by one webMux per
+// listener (loopback, WireGuard, tsnet) and saves through different
+// listeners must still serialise.
+func (w *webMux) lockCredentialSave(id string) func() {
+	mu, _ := w.g.credSaveLocks.LoadOrStore(id, &sync.Mutex{})
+	m := mu.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
+}
+
 type authRequirement int
 
 const (
@@ -1205,6 +1217,33 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 //
 // Multi-slot credentials (mtls, slack tokens) pass multiple keys.
 // Empty values clear the slot.
+//
+// After persisting, if the credential plugin implements
+// runtime.CredentialVerifier the handler synchronously calls the
+// verification primitive (Slack auth.test, Discord users/@me, …) and
+// records the outcome in credential_verifications. The response body
+// surfaces the verification result so the connect form can show
+// "credential verified" or the inline failure inside one round-trip:
+//
+//	{ "ok": true, "verified": true }
+//	{ "ok": true, "verified": false, "error": "slack auth.test: invalid_auth" }
+//	{ "ok": true, "verified": false, "unverified": true,
+//	  "error": "could not verify: Post …: connection refused" }
+//	{ "ok": true }                       // plugin has no Verifier
+//
+// A save that changes the stored material drops the previous verdict
+// before probing, so no verdict ever describes bytes other than the
+// ones on disk. Only a *runtime.CredentialRejectedError (the provider
+// answered and rejected the token) is recorded as a failure. Any other
+// probe error — unreachable provider, timeout, 5xx, rate limit — is
+// reported as "unverified" and records nothing, so a provider outage
+// never flips a working credential to failed. A re-POST of the same
+// slots re-runs the probe; that is the retry path.
+//
+// Saves and disconnects are serialised per credential
+// (lockCredentialSave) so two overlapping saves cannot record their
+// verdicts out of order, and a disconnect cannot interleave with a
+// save's probe and leave a verdict behind for slots that are gone.
 func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -1233,6 +1272,19 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "credential is OAuth-flow, use /api/oauth/start", 400)
 		return
 	}
+	defer w.lockCredentialSave(body.ID)()
+	verifier, hasVerifier := ent.Body.(runtime.CredentialVerifier)
+	// Snapshot the material before the write so an inconclusive probe
+	// can tell whether the stored verdict still describes what is now
+	// on disk.
+	var before runtime.Secret
+	if hasVerifier {
+		var err error
+		if before, _, err = readCredentialSecrets(w.g.db, body.ID); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+	}
 	valid := map[string]bool{}
 	for _, s := range sp.SecretSlots() {
 		valid[s.Name] = true
@@ -1258,7 +1310,104 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(rw, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if hasVerifier {
+		sec, found, err := readCredentialSecrets(w.g.db, body.ID)
+		if err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+		if !found {
+			// Every slot was cleared: there is nothing to probe, and a
+			// stale "failed" row would otherwise keep reporting the
+			// previous outcome (or "no token to verify") for a
+			// credential that is simply empty.
+			if err := clearCredentialVerification(w.g.db, body.ID); err != nil {
+				log.Printf("credentials: clear verification for %s: %v", body.ID, err)
+			}
+			w.bustStateCache()
+			writeJSON(rw, resp)
+			return
+		}
+		if !secretsEqual(before, sec) {
+			// The stored verdict described bytes that are gone. Drop it
+			// before probing so a crash or an inconclusive probe cannot
+			// leave an old "ok" attached to never-verified material;
+			// /api/state falls back to slot presence meanwhile.
+			if err := clearCredentialVerification(w.g.db, body.ID); err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		verifyErr := verifier.VerifyCredential(ctx, sec)
+		var rejected *runtime.CredentialRejectedError
+		switch {
+		case verifyErr == nil:
+			if err := w.recordVerification(rw, body.ID, "ok", ""); err != nil {
+				return
+			}
+			resp["verified"] = true
+		case errors.As(verifyErr, &rejected):
+			reason := truncateVerifyReason(rejected.Reason)
+			if err := w.recordVerification(rw, body.ID, "failed", reason); err != nil {
+				return
+			}
+			resp["verified"] = false
+			resp["error"] = reason
+		default:
+			// No verdict, so an outage is not mistaken for a bad
+			// token. Unchanged material keeps its last verdict; changed
+			// material had its verdict dropped above.
+			log.Printf("credentials: could not verify %s: %v", body.ID, verifyErr)
+			resp["verified"] = false
+			resp["unverified"] = true
+			resp["error"] = truncateVerifyReason("could not verify: " + verifyErr.Error())
+		}
+	}
+	w.bustStateCache()
+	writeJSON(rw, resp)
+}
+
+// secretsEqual reports whether two dashboard-slot snapshots carry the
+// same material (main slot bytes and every named slot).
+func secretsEqual(a, b runtime.Secret) bool {
+	if !bytes.Equal(a.Bytes, b.Bytes) || len(a.Extras) != len(b.Extras) {
+		return false
+	}
+	for k, v := range a.Extras {
+		if bv, ok := b.Extras[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+// recordVerification persists a verification verdict. On a write
+// failure it answers the request with a 500 (the slots are saved but
+// the outcome is not; without a row /api/state would fall back to
+// slot presence and report a rejected token as connected) and returns
+// the error so the caller stops.
+func (w *webMux) recordVerification(rw http.ResponseWriter, id, status, reason string) error {
+	err := setCredentialVerification(w.g.db, id, status, reason)
+	if err != nil {
+		log.Printf("credentials: persist verification for %s: %v", id, err)
+		w.bustStateCache()
+		http.Error(rw, "credential saved but verification result could not be recorded: "+err.Error(), 500)
+	}
+	return err
+}
+
+// bustStateCache forces the next /api/state request to recompute from
+// fresh data instead of returning the 1s TTL'd memo. Called from
+// handlers that mutate the data the state slice reads — credentials,
+// disconnect, etc. — so an operator action shows up on the dashboard
+// without waiting for the cache window to elapse.
+func (w *webMux) bustStateCache() {
+	w.stateCacheMu.Lock()
+	w.stateCache = nil
+	w.stateCacheMu.Unlock()
 }
 
 // apiCredentialsClear drops every slot for the credential. Disconnect
@@ -1279,10 +1428,22 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing id", 400)
 		return
 	}
+	// Validate against the policy before taking the keyed lock: the
+	// lock map is never pruned, so an unknown id must not create an
+	// entry.
+	if policy := w.g.policy.Load(); policy == nil || policy.Credentials[body.ID] == nil {
+		http.Error(rw, "unknown credential: "+body.ID, 404)
+		return
+	}
+	defer w.lockCredentialSave(body.ID)()
 	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
+	if err := clearCredentialVerification(w.g.db, body.ID); err != nil {
+		log.Printf("credentials: clear verification for %s: %v", body.ID, err)
+	}
+	w.bustStateCache()
 	writeJSON(rw, map[string]any{"ok": true})
 }
 

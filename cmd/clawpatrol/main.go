@@ -355,6 +355,15 @@ type gatewayDialer interface {
 }
 
 type Gateway struct {
+	// credSaveLocks serialises /api/credentials/set and /clear per
+	// credential id (value: *sync.Mutex). The save handler snapshots
+	// the stored slots, probes the provider and records the outcome;
+	// overlapping mutations of the same credential would otherwise
+	// race on the single credential_verifications row and could
+	// commit a stale verdict last. Entries are never removed — the
+	// set is bounded by the number of declared credentials.
+	credSaveLocks sync.Map
+
 	// cfg is the live operational *config.Gateway. Stored as an
 	// atomic pointer because dashboard handlers and the reload loop
 	// read it without holding configMu; configMu only serialises

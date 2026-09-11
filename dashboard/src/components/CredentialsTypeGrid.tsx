@@ -405,8 +405,11 @@ function DetailsRow({
   const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
   const canReset = i.has_tailscale_auth && (i.tailscale_auth?.has_state ?? false);
+  // A failed verification probe means rejected slot bytes are still
+  // stored: offer disconnect so they can be dropped, not only replaced.
+  const verifyFailed = !!i.verify_error;
   const canConnect = !connected && (i.has_oauth || hasSlots || i.has_tailscale_auth);
-  const canDisconnect = connected || canReset;
+  const canDisconnect = connected || canReset || verifyFailed;
   const status = rowStatus(i, connected, hasSlots);
   const subtitle = rowSubtitle(i, connected);
   const profiles = i.profiles ?? [];
@@ -485,6 +488,7 @@ function rowStatus(i: Integration, connected: boolean, hasSlots: boolean): strin
   if (connected) {
     return i.expires_at ? "expires " + fmtExpiry(i.expires_at) : "connected";
   }
+  if (i.verify_error) return "verification failed: " + i.verify_error;
   if (i.has_tailscale_auth) {
     return tailscaleStatusLabel(i.tailscale_auth?.state);
   }

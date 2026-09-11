@@ -10,11 +10,25 @@ package credentials
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+)
+
+var (
+	discordUsersMeURL = "https://discord.com/api/v10/users/@me"
+	discordHTTPClient = &http.Client{
+		Timeout: 5 * time.Second,
+		// Never follow a redirect with the bot token attached; a 3xx
+		// from discord.com is "unreachable", not a verdict.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 )
 
 // phDiscord is intentionally token-shaped enough for Discord SDKs and
@@ -74,10 +88,61 @@ func (*DiscordBotToken) EnvVars() []config.EnvVar {
 	}
 }
 
+// VerifyCredential confirms the bot token is live by calling
+// Discord's GET /users/@me. Returns nil only when Discord answered
+// with its user object (non-empty id). A 401/403 carrying Discord's
+// JSON error shape ({"message": …}) comes back as
+// *runtime.CredentialRejectedError; anything else — transport
+// errors, rate limits, 5xx, an HTML challenge page from a CDN in
+// front of the API, a 2xx that is not the user object — is a plain
+// error, i.e. no verdict on the token.
+func (*DiscordBotToken) VerifyCredential(ctx context.Context, sec runtime.Secret) error {
+	tok := discordBotTokenSecret(sec)
+	if tok == "" {
+		return &runtime.CredentialRejectedError{Reason: "no bot token to verify"}
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", discordUsersMeURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bot "+tok)
+	req.Header.Set("User-Agent", "clawpatrol/verify")
+	resp, err := discordHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var user struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(body, &user) != nil || user.ID == "" {
+			return fmt.Errorf("discord users/@me: HTTP %d without a user object", resp.StatusCode)
+		}
+		return nil
+	}
+	var parsed struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	if parsed.Message == "" {
+		// Not Discord's error shape: a proxy/CDN answered, not the
+		// API. No verdict.
+		return fmt.Errorf("discord users/@me: HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &runtime.CredentialRejectedError{Reason: "discord users/@me: " + parsed.Message}
+	}
+	return fmt.Errorf("discord users/@me: %s", parsed.Message)
+}
+
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ runtime.WebSocketCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ config.EnvPushdownProvider = (*DiscordBotToken)(nil)
+	var _ runtime.CredentialVerifier = (*DiscordBotToken)(nil)
 	config.Register(&config.Plugin{
 		Kind:           config.KindCredential,
 		Type:           "discord_bot_token",

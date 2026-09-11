@@ -250,18 +250,24 @@ function Card({
   // path. Without this the operator had to bounce the gateway to
   // recover from a stuck registration.
   const canReset = i.has_tailscale_auth && (i.tailscale_auth?.has_state ?? false);
-  const showDisconnect = connected || canReset;
+  // A credential whose last verification probe failed still has slot
+  // bytes stored; keep the disconnect affordance so the operator can
+  // drop the rejected material instead of only overwriting it.
+  const verifyFailed = !!i.verify_error;
+  const showDisconnect = connected || canReset || verifyFailed;
   const status = connected
     ? i.expires_at
       ? "expires " + fmtExpiry(i.expires_at)
       : "connected"
-    : i.has_tailscale_auth
-      ? tailscaleStatusLabel(i.tailscale_auth?.state)
-      : i.has_oauth
-        ? "click to connect"
-        : hasSlots
-          ? "paste secret"
-          : "api key only";
+    : verifyFailed
+      ? "verification failed: " + i.verify_error
+      : i.has_tailscale_auth
+        ? tailscaleStatusLabel(i.tailscale_auth?.state)
+        : i.has_oauth
+          ? "click to connect"
+          : hasSlots
+            ? "paste secret"
+            : "api key only";
   // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
   // raw HCL type key for unrecognised plugins.
   const label = credentialTypeLabel(i.type, i.type);
@@ -299,7 +305,7 @@ function Card({
                 onDisconnect();
               }}
               className="opacity-0 group-hover:opacity-100 text-xs leading-none text-text hover:text-danger-500 transition-opacity cursor-pointer"
-              title={connected ? "disconnect" : "reset stored identity"}
+              title={connected || verifyFailed ? "disconnect" : "reset stored identity"}
             >
               ✕
             </span>

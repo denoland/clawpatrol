@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,6 +43,7 @@ type SlackTokens struct{}
 var (
 	slackPostMessageURL     = "https://slack.com/api/chat.postMessage"
 	slackUpdateMessageURL   = "https://slack.com/api/chat.update"
+	slackAuthTestURL        = "https://slack.com/api/auth.test"
 	slackHTTPClient         = &http.Client{Timeout: 5 * time.Second}
 	slackNotifyRetryBackoff = 500 * time.Millisecond
 )
@@ -948,11 +950,109 @@ func slackFormDecode(s string) (string, error) {
 	return sb.String(), nil
 }
 
+// VerifyCredential calls Slack's auth.test with every token the
+// runtime may inject — the bot token and, when set, the app-level
+// token (InjectHTTP routes admin.*/apps.*/auth.test to the app token,
+// so a revoked app token would break those calls even with a valid
+// bot). Returns nil when every populated token passes. A Slack
+// authentication verdict (an allowlisted error code such as
+// invalid_auth, on a 200 or a 401/403) comes back as
+// *runtime.CredentialRejectedError; transport errors, timeouts, rate
+// limits, 5xx, non-JSON bodies and any other error code are plain
+// errors so the gateway does not record a failure it cannot
+// attribute to the token.
+func (s *SlackTokens) VerifyCredential(ctx context.Context, sec runtime.Secret) error {
+	type probe struct{ label, tok string }
+	var probes []probe
+	if bot := sec.Extras["bot"]; bot != "" {
+		probes = append(probes, probe{"bot", bot})
+	} else if len(sec.Bytes) > 0 {
+		probes = append(probes, probe{"bot", string(sec.Bytes)})
+	}
+	if app := sec.Extras["app"]; app != "" {
+		probes = append(probes, probe{"app", app})
+	}
+	if len(probes) == 0 {
+		// Definitive, not transient: a Slack credential with no bot or
+		// app token cannot be used, whatever else is stored.
+		return &runtime.CredentialRejectedError{Reason: "no bot token to verify"}
+	}
+	for _, p := range probes {
+		if err := slackAuthTest(ctx, p.tok); err != nil {
+			var rejected *runtime.CredentialRejectedError
+			if errors.As(err, &rejected) {
+				return &runtime.CredentialRejectedError{Reason: p.label + " token: " + rejected.Reason}
+			}
+			return fmt.Errorf("%s token: %w", p.label, err)
+		}
+	}
+	return nil
+}
+
+// slackAuthTest probes one token against auth.test.
+func slackAuthTest(ctx context.Context, tok string) error {
+	req, err := http.NewRequestWithContext(ctx, "POST", slackAuthTestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := slackHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var parsed struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+		return fmt.Errorf("slack auth.test: HTTP %d", resp.StatusCode)
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		if !slackErrorRejectsToken(parsed.Error) {
+			// Not Slack's auth verdict (empty body, CDN page, or an
+			// unrelated code). No verdict.
+			if parsed.Error != "" {
+				return fmt.Errorf("slack auth.test: %s", parsed.Error)
+			}
+			return fmt.Errorf("slack auth.test: HTTP %d", resp.StatusCode)
+		}
+		return &runtime.CredentialRejectedError{Reason: "slack auth.test: " + parsed.Error}
+	case resp.StatusCode >= 400:
+		return fmt.Errorf("slack auth.test: HTTP %d", resp.StatusCode)
+	case !parsed.OK:
+		if parsed.Error == "" {
+			return fmt.Errorf("slack auth.test: HTTP %d with ok=false", resp.StatusCode)
+		}
+		if slackErrorRejectsToken(parsed.Error) {
+			return &runtime.CredentialRejectedError{Reason: "slack auth.test: " + parsed.Error}
+		}
+		return fmt.Errorf("slack auth.test: %s", parsed.Error)
+	}
+	return nil
+}
+
+// slackErrorRejectsToken reports whether an auth.test error code is
+// Slack's verdict on the token itself. Anything not listed
+// (ratelimited, internal_error, org_login_required during a
+// workspace migration, …) is inconclusive and must not be recorded
+// as a failed credential.
+func slackErrorRejectsToken(code string) bool {
+	switch code {
+	case "invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired", "not_allowed_token_type":
+		return true
+	}
+	return false
+}
+
 func init() {
 	var (
 		_ runtime.HTTPCredentialRuntime = (*SlackTokens)(nil)
 		_ runtime.HITLNotifier          = (*SlackTokens)(nil)
 		_ runtime.WebhookProvider       = (*SlackTokens)(nil)
+		_ runtime.CredentialVerifier    = (*SlackTokens)(nil)
 	)
 	config.Register(&config.Plugin{
 		Kind:           config.KindCredential,

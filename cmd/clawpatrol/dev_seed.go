@@ -667,6 +667,7 @@ func devSeedWipe(g *Gateway) error {
 		`DELETE FROM devices`,
 		`DELETE FROM credentials`,
 		`DELETE FROM credential_secrets`,
+		`DELETE FROM credential_verifications`,
 		`DELETE FROM wg_peers`,
 		`DELETE FROM peer_api_tokens`,
 	} {
