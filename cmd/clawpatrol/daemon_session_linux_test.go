@@ -47,9 +47,10 @@ func (f *fakeTransport) Dial(_ context.Context, network, addr string) (net.Conn,
 	f.mu.Unlock()
 	return f.dial(network, addr)
 }
-func (f *fakeTransport) LocalAddr() netip.Addr { return netip.MustParseAddr("100.64.0.5") }
-func (f *fakeTransport) BootWarning() string   { return "" }
-func (f *fakeTransport) Close() error          { return nil }
+func (f *fakeTransport) LocalAddr() netip.Addr           { return netip.MustParseAddr("100.64.0.5") }
+func (f *fakeTransport) BootWarning() string             { return "" }
+func (f *fakeTransport) WaitReady(context.Context) error { return nil }
+func (f *fakeTransport) Close() error                    { return nil }
 
 func (f *fakeTransport) dialedAddrs() []string {
 	f.mu.Lock()
