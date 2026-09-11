@@ -583,7 +583,8 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 		}
 		pgWriteDeny(ch.Conn, reason)
 		emit(ch, runtime.ConnEvent{
-			Action: "deny", Reason: reason, Summary: summary, Facets: facets,
+			Credential: credName,
+			Action:     "deny", Reason: reason, Summary: summary, Facets: facets,
 		})
 		log.Printf("pg-deny-truncated %s: %s", ch.PeerIP, reason)
 		return rest, true
@@ -598,7 +599,8 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 		}
 	}
 	emit(ch, runtime.ConnEvent{
-		Action: "allow-overflow", Summary: summary, Facets: facets,
+		Credential: credName,
+		Action:     "allow-overflow", Summary: summary, Facets: facets,
 	})
 	return rest, true
 }
@@ -678,7 +680,8 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 		// recorded).
 		if !shadow {
 			emit(ch, runtime.ConnEvent{
-				Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+				Credential: credName,
+				Action:     "allow", Verb: info.Verb, Summary: summary, Facets: facets,
 			})
 		}
 		return "", ""
@@ -694,7 +697,8 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
 			emit(ch, runtime.ConnEvent{
-				Action: "deny", Reason: "HITL not configured",
+				Credential: credName,
+				Action:     "deny", Reason: "HITL not configured",
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", "approval required but HITL is not configured"
@@ -709,7 +713,8 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 				reason = "denied by approver"
 			}
 			emit(ch, runtime.ConnEvent{
-				Action: "denied", Reason: reason,
+				Credential: credName,
+				Action:     "denied", Reason: reason,
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
@@ -717,7 +722,8 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 		}
 		if !shadow {
 			emit(ch, runtime.ConnEvent{
-				Action: "approved", Reason: v.Reason,
+				Credential: credName,
+				Action:     "approved", Reason: v.Reason,
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
@@ -731,14 +737,16 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 			reason = "denied by policy"
 		}
 		emit(ch, runtime.ConnEvent{
-			Action: "deny", Reason: reason,
+			Credential: credName,
+			Action:     "deny", Reason: reason,
 			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "deny", reason
 	}
 	if !shadow {
 		emit(ch, runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+			Credential: credName,
+			Action:     "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 	}
 	return "", ""

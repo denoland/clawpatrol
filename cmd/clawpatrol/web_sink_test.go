@@ -96,6 +96,7 @@ func TestSinkPersistsBodyCaptureState(t *testing.T) {
 		ID: "body-state", Phase: "end", Mode: "mitm", Host: "api.example.com",
 		ReqBody: "partial request", ReqBodyState: bodyCaptureIncomplete,
 		RespBody: "complete response", RespBodyState: bodyCaptureComplete,
+		Endpoint: "api", Rule: "writes", Credential: "writer",
 	})
 
 	select {
@@ -114,6 +115,16 @@ func TestSinkPersistsBodyCaptureState(t *testing.T) {
 	}
 	if got.RespBodyState != bodyCaptureComplete {
 		t.Fatalf("response body state = %q, want %q", got.RespBodyState, bodyCaptureComplete)
+	}
+	if got.Credential != "writer" {
+		t.Fatalf("credential = %q, want writer", got.Credential)
+	}
+	tail, err := readTailEvents(db, 1)
+	if err != nil {
+		t.Fatalf("readTailEvents: %v", err)
+	}
+	if len(tail) != 1 || tail[0].Credential != "writer" {
+		t.Fatalf("tail credential = %+v, want one event with credential writer", tail)
 	}
 }
 

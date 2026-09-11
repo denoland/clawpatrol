@@ -1766,6 +1766,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		extra          sql.NullString
 		endpoint       sql.NullString
 		rule           sql.NullString
+		credential     sql.NullString
 		approver       sql.NullString
 		approverType   sql.NullString
 		approverBy     sql.NullString
@@ -1776,7 +1777,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 		       req_headers, resp_headers, extra,
-		       endpoint, rule,
+		       endpoint, rule, credential,
 		       approver, approver_type, approver_by
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
@@ -1785,7 +1786,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 		&action, &reason, &reqSha, &respSha,
 		&reqBody, &respBody, &reqBodyState, &respBodyState, &reqTransformed,
 		&reqHeaders, &respHeaders, &extra,
-		&endpoint, &rule,
+		&endpoint, &rule, &credential,
 		&approver, &approverType, &approverBy,
 	)
 	if err != nil {
@@ -1818,6 +1819,7 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 	}
 	e.Endpoint = endpoint.String
 	e.Rule = rule.String
+	e.Credential = credential.String
 	e.Approver = approver.String
 	e.ApproverType = approverType.String
 	e.ApproverBy = approverBy.String
@@ -1877,7 +1879,11 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	// the bare DB-recorded name; the policy supplies the type.
 	m.Endpoint = endpointRef(ep)
 
-	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
+	// Credential is the bare name the dispatch site resolved before
+	// matching. Without it a fixture for a request whose rule pinned
+	// one of several credentials bound to the endpoint replays with an
+	// empty credential and never reaches that rule.
+	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP, Credential: ev.Credential}}
 	switch ep.Family {
 	case "http":
 		if err := validateHTTPFixtureBodyCapture(ev); err != nil {
@@ -2532,6 +2538,14 @@ type Event struct {
 	// the rule that produced its verdict (site/doc/clawpatrol-test.md).
 	Endpoint string `json:"endpoint,omitempty"`
 	Rule     string `json:"rule,omitempty"`
+
+	// Credential is the bare name of the credential the dispatch site
+	// resolved for this request (what it set on
+	// match.Request.Credential before matching), "" when none was
+	// resolved. The fixture exporter stamps it into action.credential
+	// so a replay reaches the same credential-pinned rules the gateway
+	// evaluated.
+	Credential string `json:"credential,omitempty"`
 }
 
 // eventPacket carries an event plus its marshaled JSON bytes. drain()
@@ -2598,7 +2612,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		       method, path, status, bytes_in, bytes_out,
 		       ms, action, reason, req_sha, resp_sha,
 		       req_body_state, resp_body_state, req_transformed, extra,
-		       endpoint, rule,
+		       endpoint, rule, credential,
 		       approver, approver_type, approver_by
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
@@ -2629,6 +2643,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			extra          sql.NullString
 			endpoint       sql.NullString
 			rule           sql.NullString
+			credential     sql.NullString
 			approver       sql.NullString
 			approverType   sql.NullString
 			approverBy     sql.NullString
@@ -2638,7 +2653,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha,
 			&reqBodyState, &respBodyState, &reqTransformed, &extra,
-			&endpoint, &rule,
+			&endpoint, &rule, &credential,
 			&approver, &approverType, &approverBy,
 		); err != nil {
 			return nil, err
@@ -2649,6 +2664,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Family = family.String
 		e.Endpoint = endpoint.String
 		e.Rule = rule.String
+		e.Credential = credential.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -2768,9 +2784,9 @@ func (s *Sink) drain() {
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body, req_body_state, resp_body_state, req_transformed,
 				  req_headers, resp_headers, extra,
-				  endpoint, rule,
+				  endpoint, rule, credential,
 				  approver, approver_type, approver_by)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
@@ -2778,7 +2794,7 @@ func (s *Sink) drain() {
 				e.ReqBody, e.RespBody, e.ReqBodyState, e.RespBodyState, e.ReqTransformed,
 				string(rqhJSON), string(rshJSON),
 				string(extraJSON),
-				e.Endpoint, e.Rule,
+				e.Endpoint, e.Rule, e.Credential,
 				e.Approver, e.ApproverType, e.ApproverBy)
 		}
 

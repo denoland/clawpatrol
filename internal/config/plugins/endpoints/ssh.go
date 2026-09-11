@@ -234,8 +234,13 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	}
 	defer func() { _ = clientConn.Close() }()
 
+	// Every event on this connection ran under the credential picked
+	// above; stamp it here so the gate's per-action events don't have
+	// to repeat it.
+	credName := cc.Credential.Symbol.Name
 	emit := func(ev runtime.ConnEvent) {
 		if ch.Emit != nil {
+			ev.Credential = credName
 			ch.Emit(ev)
 		}
 	}
@@ -251,7 +256,7 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// mirrors the postgres per-statement path: build a match.Request,
 	// run MatchRequest, honor an approve chain through ch.Approve, and
 	// default-deny an approve-gated action when HITL isn't wired.
-	gate := rt.makeGate(ch, emit, agentUser, cc.Credential.Symbol.Name)
+	gate := rt.makeGate(ch, emit, agentUser, credName)
 	agentHooks := sshHooks{emit: emit, gate: gate}
 
 	// Step 6: bidirectional pump. Two waitgroups — `dispatch` covers

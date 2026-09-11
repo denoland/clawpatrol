@@ -655,3 +655,115 @@ func TestRunnerRejectsPassthrough(t *testing.T) {
 		t.Fatalf("err=%v, want passthrough rejection", err)
 	}
 }
+
+// The exporter stamps the credential the dispatch site resolved into
+// action.credential. With two credentials bound to one endpoint and a
+// rule pinned to one of them, the fixture only reaches the pinned rule
+// when it carries that credential — the same fixture with the field
+// removed falls through to the default rule, which is the verdict drift
+// the field exists to prevent.
+func TestExporterRecordsResolvedCredentialRoundTrip(t *testing.T) {
+	const hcl = `
+
+endpoint "https" "api" {
+  hosts = ["api.example.com"]
+}
+credential "bearer_token" "reader" { endpoint = https.api }
+credential "bearer_token" "writer" { endpoint = https.api }
+rule "writer-mutations" {
+  endpoint   = https.api
+  credential = bearer_token.writer
+  priority   = 100
+  condition  = "http.method != 'GET'"
+  verdict    = "allow"
+}
+rule "api-default" {
+  endpoint = https.api
+  priority = -100
+  verdict  = "deny"
+}
+profile "default" {
+  credentials = [
+    { placeholder = "PH_reader", credential = bearer_token.reader },
+    { placeholder = "PH_writer", credential = bearer_token.writer },
+  ]
+}
+`
+	gw := gatewayWithPolicy(t, hcl)
+	w := &webMux{g: gw}
+	ev := &Event{
+		ID: "evt-cred", Mode: "mitm", Family: "https",
+		Host: "api.example.com", Method: "POST", Path: "/repos",
+		AgentIP: "100.64.0.7", Action: "allow",
+		Endpoint: "api", Rule: "writer-mutations", Credential: "writer",
+		ReqBodyState: bodyCaptureComplete,
+		ReqHeaders:   map[string]string{"Authorization": "***"},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("export status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.Credential != "writer" {
+		t.Fatalf("action.credential=%q want writer", f.Action.Credential)
+	}
+
+	dir := t.TempDir()
+	withCred := filepath.Join(dir, "with-credential.json")
+	if err := os.WriteFile(withCred, rw.Body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, msg, err := runOneFixture(gw.Policy(), withCred)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !ok {
+		t.Fatalf("fixture with credential should match the pinned rule:\n%s", msg)
+	}
+
+	// Same fixture, credential stripped (what the exporter produced
+	// before the field was recorded): the pinned rule is unreachable
+	// and the replay lands on the default deny.
+	f.Action.Credential = ""
+	stripped, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutCred := filepath.Join(dir, "without-credential.json")
+	if err := os.WriteFile(withoutCred, stripped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, msg, err = runOneFixture(gw.Policy(), withoutCred)
+	if err != nil {
+		t.Fatalf("run without credential: %v", err)
+	}
+	if ok {
+		t.Fatal("fixture without credential must not reach the credential-pinned rule")
+	}
+	if !strings.Contains(msg, "api-default") {
+		t.Fatalf("mismatch should land on api-default, got:\n%s", msg)
+	}
+}
+
+// Events that resolved no credential export without the field, so
+// fixtures for single-credential endpoints are unchanged.
+func TestExporterOmitsCredentialWhenUnresolved(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, fixtureHCL)}
+	ev := &Event{
+		ID: "evt-nocred", Mode: "mitm", Family: "https",
+		Host: "api.github.com", Method: "GET", Path: "/user",
+		Action: "allow", Endpoint: "github", ReqBodyState: bodyCaptureComplete,
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	if strings.Contains(rw.Body.String(), `"credential"`) {
+		t.Fatalf("expected no credential key in export:\n%s", rw.Body.String())
+	}
+}

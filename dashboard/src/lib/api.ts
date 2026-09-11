@@ -555,6 +555,9 @@ export type EventRecord = {
   // Download action button (site/doc/clawpatrol-test.md).
   endpoint?: string;
   rule?: string;
+  // credential is the bare name of the credential the gateway resolved
+  // for the request before matching; absent when none was resolved.
+  credential?: string;
   // approver/* are populated when action is "approved" or "denied":
   // the approver entity's HCL block name, plugin type
   // (human_approver / llm_approver / dashboard) and the per-approver

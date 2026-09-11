@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -99,10 +100,22 @@ profile "default" {
 		if end.ReqBody != "" {
 			t.Fatalf("recorded request body = %q, want empty", end.ReqBody)
 		}
+		// The resolved credential rides on the event and into the
+		// exported fixture so a replay reaches the same pinned rule.
+		if end.Credential != "pat" {
+			t.Fatalf("event credential = %q, want pat", end.Credential)
+		}
 		rw := httptest.NewRecorder()
 		(&webMux{g: h.gateway}).writeActionFixture(rw, &end)
 		if rw.Code != http.StatusOK {
 			t.Fatalf("fixture export status = %d, want 200; body=%s", rw.Code, rw.Body.String())
+		}
+		var f Fixture
+		if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+			t.Fatalf("reparse fixture: %v\nbody=%s", err, rw.Body.String())
+		}
+		if f.Action.Credential != "pat" {
+			t.Fatalf("fixture action.credential = %q, want pat", f.Action.Credential)
 		}
 	})
 }

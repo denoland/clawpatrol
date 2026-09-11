@@ -1916,6 +1916,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
 				Endpoint: ep.Name, Rule: ev.Rule,
+				Credential:   ev.Credential,
 				Approver:     ev.Approver,
 				ApproverType: ev.ApproverType,
 				ApproverBy:   ev.ApproverBy,
@@ -2087,6 +2088,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
 				Endpoint: ep.Name, Rule: ev.Rule,
+				Credential:   ev.Credential,
 				Approver:     ev.Approver,
 				ApproverType: ev.ApproverType,
 				ApproverBy:   ev.ApproverBy,
@@ -2530,8 +2532,9 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			Family: ep.Family,
 			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
-			AgentIP:  agentAddr,
-			Endpoint: ep.Name,
+			AgentIP:    agentAddr,
+			Endpoint:   ep.Name,
+			Credential: mreq.Credential,
 		}
 		if fac != nil {
 			ev.Facets = fac.Report(mreq)

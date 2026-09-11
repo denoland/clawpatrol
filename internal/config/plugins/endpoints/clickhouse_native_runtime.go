@@ -193,6 +193,16 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	}
 	if cc := runtime.ResolveCredential(ch.Policy, ch.Profile, ch.Endpoint, credReq); cc != nil {
 		credName = cc.Credential.Symbol.Name
+		// Every event this connection emits from here on — connect,
+		// query, data, and error events alike — ran under the resolved
+		// credential. Wrap Emit once (the same way ch.Conn is swapped
+		// above) instead of threading credName into each emitter.
+		if inner := ch.Emit; inner != nil {
+			ch.Emit = func(ev runtime.ConnEvent) {
+				ev.Credential = credName
+				inner(ev)
+			}
+		}
 		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
 		if !ok {
 			chEmitError(ch, "credential-not-clickhouse-auth", cc.Credential.Symbol.Name)

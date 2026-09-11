@@ -311,6 +311,12 @@ type ConnEvent struct {
 	// the action-fixture exporter can pin a downloaded action to a
 	// specific rule (site/doc/clawpatrol-test.md).
 	Rule string
+	// Credential is the bare name of the credential the runtime
+	// resolved for this connection (the value it put on
+	// match.Request.Credential), "" when none was resolved. Copied
+	// onto the dashboard Event so the fixture exporter can replay
+	// the action against the same credential-pinned rules.
+	Credential string
 	// Approver* mirror ApproveVerdict — set for Action=="approved" /
 	// "denied" so the dashboard can show which approver (and what
 	// kind: human / llm / dashboard) produced the verdict.
