@@ -413,7 +413,10 @@ an ambiguous answer denies. Anything that points at the gateway's own
 configuration always denies regardless of the setting: no model, a
 credential that is not declared or has no secret pasted, unknown
 model family, and any other 4xx such as 401 or 403 from a revoked
-judge key.
+judge key. One caveat: a provider that reports an exhausted billing
+quota as 429 looks like an outage, so under `"open"` an unpaid judge
+account allows everything until it is topped up. Watch the journal
+line.
 
 For `human_approver`, [set `timeout` to the maximum time Claw Patrol
 should wait for a human decision](/docs/config-reference/#approver-human_approver-name).

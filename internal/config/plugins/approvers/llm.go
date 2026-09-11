@@ -102,8 +102,7 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
 	}
 	discardHTTPRedactions(injector, hreq)
-	c := &http.Client{Timeout: 30 * time.Second}
-	resp, err := c.Do(hreq)
+	resp, err := llmJudgeClient.Do(hreq)
 	if err != nil {
 		return llmUndecided("llm call: " + err.Error()), nil
 	}
@@ -138,6 +137,10 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 // no model, credential not declared, unknown model family, a
 // credential whose secret cannot be fetched or injected, and any
 // other 4xx (revoked key, unknown model, malformed request).
+// llmJudgeClient issues the judge and summarizer requests. A variable
+// so tests can swap the transport for a canned judge.
+var llmJudgeClient = &http.Client{Timeout: 30 * time.Second}
+
 func llmUndecided(reason string) runtime.ApproveVerdict {
 	return runtime.ApproveVerdict{Decision: "", Reason: reason}
 }
@@ -346,8 +349,7 @@ func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest)
 		return nil, fmt.Errorf("credential inject: %w", err)
 	}
 	discardHTTPRedactions(injector, hreq)
-	c := &http.Client{Timeout: 30 * time.Second}
-	resp, err := c.Do(hreq)
+	resp, err := llmJudgeClient.Do(hreq)
 	if err != nil {
 		return nil, fmt.Errorf("llm call: %w", err)
 	}
