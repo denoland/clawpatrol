@@ -693,6 +693,13 @@ func teeGatewayLog(path string) error {
 	// file should have the line by then.
 	log.SetOutput(logTee{f, os.Stderr})
 	log.Printf("log: also writing to %s", path)
+	// 0600 applies only when the file is created; an existing file
+	// keeps its mode, and the log carries denied request paths. Said
+	// after the tee is installed so the warning lands in the file,
+	// which is the sink an operator who set log_path actually reads.
+	if fi, err := f.Stat(); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o077 != 0 {
+		log.Printf("warning: %s has mode %#o (want 0600); tighten with: chmod 0600 %s", path, fi.Mode().Perm(), path)
+	}
 	return nil
 }
 
@@ -3199,6 +3206,12 @@ func resolveUndecidedVerdict(policy *config.CompiledPolicy, name, approverType s
 		if v.By == "" {
 			v.By = "gateway"
 		}
+		// The HTTPS path logs "approved ..." without the reason and
+		// the other families log nothing for allowed requests, so a
+		// fail-open gets its own journal line: an ongoing judge outage
+		// should be visible without reading per-action reasons. The
+		// reason may carry a proxy's error page; keep it to one line.
+		log.Printf("approver %s: %q", name, truncate(v.Reason, 200))
 		return v
 	}
 	v.Decision = "deny"

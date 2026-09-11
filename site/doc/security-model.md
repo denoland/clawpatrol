@@ -71,7 +71,10 @@ Per protocol:
   agent. The agent never participates in auth and never sees the
   credential.
 - **Non-credentialled traffic** (public web, DNS) — forwarded
-  unchanged.
+  unchanged, with one exception: UDP/443 (QUIC) is dropped for every
+  destination, because HTTP/3 cannot be inspected and would carry an
+  intercepted host's traffic past its rules; clients fall back to
+  TCP/443.
 
 Non-credentialled traffic is outside the security surface. If the
 agent bypasses the tunnel, it gets the same internet it would have

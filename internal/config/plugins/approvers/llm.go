@@ -95,22 +95,29 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	}
 	sec, err := req.Secrets.Get(a.Credential)
 	if err != nil {
-		return llmUndecided("secret fetch: " + err.Error()), nil
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
 	}
 	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
 		discardHTTPRedactions(injector, hreq)
-		return llmUndecided("credential inject: " + err.Error()), nil
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
 	}
 	discardHTTPRedactions(injector, hreq)
-	c := &http.Client{Timeout: 30 * time.Second}
-	resp, err := c.Do(hreq)
+	resp, err := llmJudgeClient.Do(hreq)
 	if err != nil {
 		return llmUndecided("llm call: " + err.Error()), nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return llmUndecided(fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))), nil
+		reason := fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))
+		if llmStatusIsOutage(resp.StatusCode) {
+			return llmUndecided(reason), nil
+		}
+		// 4xx other than 429 is the judge rejecting our request: a
+		// revoked key, a bad model name, a malformed body. That is a
+		// persistent condition, not an outage, and must not be allowed
+		// through by llm_fail_mode = "open".
+		return runtime.ApproveVerdict{Decision: "deny", Reason: reason}, nil
 	}
 	text, err := decode(resp.Body)
 	if err != nil {
@@ -122,13 +129,27 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 }
 
 // llmUndecided is the verdict for a model call that could not
-// complete: credential fetch/inject failure, transport error, non-200
-// status, or an undecodable body. Decision is left empty so the
-// approve chain applies defaults.llm_fail_mode ("closed" denies,
-// "open" allows). Misconfiguration (no model, undeclared credential,
-// unknown model family) is not a call failure and always denies.
+// complete because the judge is unavailable: transport error or
+// timeout, 429 or 5xx status, or an undecodable body. Decision is
+// left empty so the approve chain applies defaults.llm_fail_mode
+// ("closed" denies, "open" allows). Everything that points at the
+// gateway's own configuration rather than an outage always denies:
+// no model, credential not declared, unknown model family, a
+// credential whose secret cannot be fetched or injected, and any
+// other 4xx (revoked key, unknown model, malformed request).
+// llmJudgeClient issues the judge and summarizer requests. A variable
+// so tests can swap the transport for a canned judge.
+var llmJudgeClient = &http.Client{Timeout: 30 * time.Second}
+
 func llmUndecided(reason string) runtime.ApproveVerdict {
 	return runtime.ApproveVerdict{Decision: "", Reason: reason}
+}
+
+// llmStatusIsOutage reports whether a non-200 status from the judge
+// means the judge is unavailable (retry later) rather than that it
+// rejected the request.
+func llmStatusIsOutage(status int) bool {
+	return status == 429 || status >= 500
 }
 
 func discardHTTPRedactions(injector runtime.HTTPCredentialRuntime, req *http.Request) {
@@ -328,8 +349,7 @@ func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest)
 		return nil, fmt.Errorf("credential inject: %w", err)
 	}
 	discardHTTPRedactions(injector, hreq)
-	c := &http.Client{Timeout: 30 * time.Second}
-	resp, err := c.Do(hreq)
+	resp, err := llmJudgeClient.Do(hreq)
 	if err != nil {
 		return nil, fmt.Errorf("llm call: %w", err)
 	}
