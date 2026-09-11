@@ -381,9 +381,10 @@ an HTTPS SNI doesn’t match any configured endpoint — splice it
 unchanged or close it.
 
 UDP dispatch is a three-way split on both transports: `:53` goes to
-the DNS-VIP responder; `:443` is dropped for every destination, since
-that is QUIC / HTTP-3, which the gateway never inspects and which
-would otherwise carry an intercepted host's HTTPS past its rules
-(clients fall back to TCP/443); any other UDP from an onboarded peer
+the DNS-VIP responder; `:443` is refused for every destination with
+an ICMP port unreachable, since that is QUIC / HTTP-3, which the
+gateway never inspects and which would otherwise carry an intercepted
+host's HTTPS past its rules (clients see a connection refused and
+fall back to TCP/443 at once); any other UDP from an onboarded peer
 (NTP, a custom protocol) is relayed to the real destination without
 policy evaluation. UDP is not part of the policy surface.

@@ -195,6 +195,20 @@ func newRunUDPProtocolHandler(s *stack.Stack, handler udp.ForwarderHandler) func
 
 func newTransportUDPProtocolHandler(ctx context.Context, s *stack.Stack, transport daemonTransport, idleTimeout time.Duration, slots chan struct{}) func(stack.TransportEndpointID, *stack.PacketBuffer) bool {
 	return newRunUDPProtocolHandler(s, func(req *udp.ForwarderRequest) bool {
+		if refuseUDPPort(req.ID().LocalPort) {
+			// UDP/443 (QUIC) is refused here, on the child's own
+			// stack, not just at the gateway: the datagram relay
+			// below carries payloads, not ICMP, so the gateway's
+			// port unreachable would never reach the wrapped
+			// process. Returning false before CreateEndpoint makes
+			// gVisor answer the unreachable itself and the child's
+			// connected socket fails with ECONNREFUSED at once
+			// instead of waiting out its QUIC handshake timer. The
+			// gateway refuses the same port independently, so
+			// nothing on UDP/443 is relayed even by an older
+			// daemon. See udpPortDisposition.
+			return false
+		}
 		select {
 		case slots <- struct{}{}:
 		default:

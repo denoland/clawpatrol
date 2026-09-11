@@ -103,3 +103,56 @@ func TestTsnetUDPDisposition(t *testing.T) {
 		t.Errorf("443 w/o dnsvip from onboarded: disposition = %d, want drop", got)
 	}
 }
+
+// udpPortDisposition is the one port decision both transports consume:
+// the tsnet catch-all through tsnetUDPDisposition, the WireGuard
+// forwarder and the Linux run daemon through refuseUDPPort (their
+// pre-endpoint gate) plus the udpDNS check in runGateway's udpDispatch.
+// Pin the table, then check every consumer agrees with it port by port
+// so the QUIC refusal can never hold on one transport and not the other.
+func TestUDPPortDisposition(t *testing.T) {
+	want := map[uint16]udpDisposition{
+		53:    udpDNS,
+		443:   udpDrop,
+		0:     udpRelay,
+		123:   udpRelay, // NTP
+		853:   udpRelay, // DoQ is not QUIC-on-443; it relays like any UDP
+		4433:  udpRelay, // alternate QUIC ports are not refused (documented)
+		8443:  udpRelay, // https authority on :8443 is MITM'd on TCP only
+		5353:  udpRelay, // mDNS
+		65535: udpRelay,
+	}
+	for port, d := range want {
+		if got := udpPortDisposition(port); got != d {
+			t.Errorf("udpPortDisposition(%d) = %d, want %d", port, got, d)
+		}
+	}
+
+	r := newOnboardRegistry()
+	r.knownDeviceIPs["100.64.0.2"] = true
+	g := &Gateway{onboard: r, dnsvip: newTestDNSVIP(t)}
+	onboarded := netip.MustParseAddr("100.64.0.2")
+	stranger := netip.MustParseAddr("100.99.99.99")
+	for _, dst := range []netip.Addr{
+		netip.MustParseAddr("10.78.1.2"), // VIP
+		netip.MustParseAddr("8.8.8.8"),   // public
+		netip.MustParseAddr("2001:db8::1"),
+	} {
+		for port := range want {
+			refused := refuseUDPPort(port)
+			if refused != (udpPortDisposition(port) == udpDrop) {
+				t.Errorf("refuseUDPPort(%d) = %v disagrees with udpPortDisposition", port, refused)
+			}
+			for _, src := range []netip.Addr{onboarded, stranger} {
+				got := g.tsnetUDPDisposition(netip.AddrPortFrom(dst, port), src)
+				if (got == udpDrop) != refused {
+					t.Errorf("tsnetUDPDisposition(%s:%d from %s) = %d but refuseUDPPort = %v: transports disagree",
+						dst, port, src, got, refused)
+				}
+				if udpPortDisposition(port) == udpDNS && got != udpDNS {
+					t.Errorf("tsnetUDPDisposition(%s:%d from %s) = %d, want udpDNS", dst, port, src, got)
+				}
+			}
+		}
+	}
+}

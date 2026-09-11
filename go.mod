@@ -189,16 +189,19 @@ require (
 	rsc.io/qr v0.2.0 // indirect
 )
 
-// VENDORED PATCH — remove once tailscale/tailscale#20064 is fixed upstream.
+// VENDORED PATCHES — see third_party/tailscale/PATCH.md.
 //
 // third_party/tailscale is a pruned copy of tailscale.com v1.96.5 (only the
-// packages clawpatrol builds) with a single change in net/tstun/wrap.go:
-// injectedRead now runs the outbound filter (RunOut) on netstack-originated
-// packets so their reverse-flow state is recorded. Without it, a
-// userspace/netstack exit-node client drops inbound UDP replies (TCP is
-// unaffected), which breaks native UDP relay through the gateway. See
-// third_party/tailscale/PATCH.md.
+// packages clawpatrol builds) with two local changes:
 //
-// When upstream ships the fix, delete third_party/tailscale, drop this
-// replace, and bump the tailscale.com require above to the fixed version.
+//   - net/tstun/wrap.go: injectedRead runs the outbound filter (RunOut) on
+//     netstack-originated packets so their reverse-flow state is recorded.
+//     Without it, a userspace/netstack exit-node client drops inbound UDP
+//     replies (TCP is unaffected), which breaks native UDP relay through
+//     the gateway. Remove once tailscale/tailscale#20064 is fixed upstream.
+//   - wgengine/netstack/netstack.go: a RejectUDPFlow hook consulted before
+//     a UDP endpoint is created, so the gateway can refuse UDP/443 (QUIC)
+//     with an ICMP port unreachable instead of a silent drop. Has no
+//     upstream counterpart; needs re-applying (or an upstream equivalent)
+//     before this replace can go.
 replace tailscale.com => ./third_party/tailscale

@@ -433,17 +433,26 @@ func wg6FromV4(v4 netip.Addr) netip.Addr {
 // TransportEndpointID. Mirrors unclaw/smoltcp's set_any_ip + dynamic
 // listener pool model.
 //
-// udpHandler is consulted before the default UDP relay: it may take
-// over a flow (return true) — used for DNS interception so the
-// gateway can answer A queries with VIPs for SSH-able hostnames —
-// or pass (return false) to fall through to relayUDP, which shuttles
-// datagrams to the real upstream over the host's network. Pass nil
-// for the all-relay default.
+// udpRefuse is consulted first, before any endpoint exists for the
+// flow: returning true rejects it and gVisor answers with ICMP port
+// unreachable sourced from the original destination (the stack runs
+// with spoofing on, so it can source from any address), which a
+// connected UDP socket on the peer surfaces as ECONNREFUSED. Used to
+// refuse UDP/443 (QUIC) so HTTP/3 clients fall back to TCP/443 at once.
+// Pass nil to refuse nothing.
+//
+// udpHandler is consulted next, on the accepted flow: it may take
+// over (return true) — used for DNS interception so the gateway can
+// answer A queries with VIPs for SSH-able hostnames — or pass (return
+// false) to fall through to relayUDP, which shuttles datagrams to the
+// real upstream over the host's network. Pass nil for the all-relay
+// default.
 //
 // Caller dispatches TCP by dstPort (e.g. 443 → MITM, dash port → mux,
 // else → transparent relay to the real upstream IP).
 func (s *WGServer) EnablePromiscuousForwarder(
 	tcpHandler func(c net.Conn, dstIP string, dstPort uint16),
+	udpRefuse func(dstPort uint16) bool,
 	udpHandler func(c net.Conn, dstIP string, dstPort uint16) bool,
 ) error {
 	st := s.tun.stack
@@ -473,10 +482,17 @@ func (s *WGServer) EnablePromiscuousForwarder(
 	})
 	st.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 
-	// UDP forwarder — DNS interception (when udpHandler claims the
-	// flow) or transparent relay (default).
+	// UDP forwarder — refusal (ICMP unreachable, before an endpoint
+	// exists), DNS interception (when udpHandler claims the flow) or
+	// transparent relay (default).
 	udpFwd := udp.NewForwarder(st, func(req *udp.ForwarderRequest) bool {
 		id := req.ID()
+		if udpRefuse != nil && udpRefuse(id.LocalPort) {
+			// Returning false before CreateEndpoint is what makes
+			// gVisor emit the port unreachable; closing an endpoint
+			// afterwards would be a silent black hole instead.
+			return false
+		}
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)
 		if err != nil {

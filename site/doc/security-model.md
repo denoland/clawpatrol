@@ -71,10 +71,17 @@ Per protocol:
   agent. The agent never participates in auth and never sees the
   credential.
 - **Non-credentialled traffic** (public web, DNS) — forwarded
-  unchanged, with one exception: UDP/443 (QUIC) is dropped for every
+  unchanged, with one exception: UDP/443 (QUIC) is refused for every
   destination, because HTTP/3 cannot be inspected and would carry an
-  intercepted host's traffic past its rules; clients fall back to
-  TCP/443.
+  intercepted host's traffic past its rules. The refusal is an ICMP
+  port unreachable, so clients see a connection refused and fall back
+  to TCP/443 immediately. The refusal is keyed on port 443 only: an
+  `https` endpoint whose authority names another port (`host:8443`)
+  is intercepted on TCP/8443, but UDP to that port is relayed like
+  any other UDP, so an origin that advertises HTTP/3 on the same
+  alternate port (an HTTPS DNS record with `alpn=h3`, or `Alt-Svc`
+  on a connection the gateway does not terminate) could be reached
+  over QUIC there without inspection.
 
 Non-credentialled traffic is outside the security surface. If the
 agent bypasses the tunnel, it gets the same internet it would have

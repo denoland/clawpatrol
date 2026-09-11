@@ -3669,27 +3669,29 @@ func runGateway(args []string) {
 				g.wgRelay(c, dstIP, int(dstPort))
 			}
 		}
+		// UDP: the port decision is udpPortDisposition, shared with the
+		// tsnet catch-all. UDP/443 (QUIC) is refused by refuseUDPPort
+		// before an endpoint exists, so the netstack answers ICMP port
+		// unreachable and the client falls back to TCP/443 at once;
+		// UDP/53 is answered by dnsvip; the rest relays.
 		udpDispatch := func(c net.Conn, dstIP string, dstPort uint16) bool {
-			if dstPort == 53 {
+			switch udpPortDisposition(dstPort) {
+			case udpDNS:
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
-			}
-			if dstPort == 443 {
-				// QUIC / HTTP-3, for every destination. The gateway never
-				// inspects HTTP/3, and plain https endpoints are dispatched
-				// by SNI on TCP/443 without a VIP, so relaying UDP/443
-				// would carry an intercepted host's traffic past every
-				// rule and past unknown_host = deny (TCP only). Drop it;
-				// the client falls back to TCP/443, where policy applies.
+			case udpDrop:
+				// Already refused by refuseUDPPort before an endpoint
+				// existed; kept so the flow is closed rather than
+				// relayed should the two hooks ever disagree.
 				_ = c.Close()
 				return true
 			}
 			return false
 		}
-		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
+		if err := wg.EnablePromiscuousForwarder(tcpDispatch, refuseUDPPort, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, UDP/443→drop(quic), :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, UDP/443→refuse(quic, icmp unreachable), :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	tsnetServer, ln, err := openListener(cfg, stateDir)
@@ -3829,15 +3831,17 @@ func runGateway(args []string) {
 				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
 				serveTsnetDNSUDP(pc, g.dnsvip)
 			}()
-			// Layer a UDP catch-all onto tsnet's underlying netstack so
-			// exit-node clients' UDP reaches clawpatrol: UDP/53 to any
-			// resolver IP reaches dnsvip (the IP-bound listener above only
-			// catches packets aimed at the gateway's own tailnet IP), and
-			// other UDP from onboarded peers is relayed. tsnet has no public
-			// UDP fallback hook, so this reaches through Sys().Netstack (see
-			// installTsnetUDPCatchAll).
-			g.installTsnetUDPCatchAll(tsnetServer)
 		}
+		// Layer a UDP catch-all onto tsnet's underlying netstack so
+		// exit-node clients' UDP reaches clawpatrol: UDP/53 to any
+		// resolver IP reaches dnsvip (the IP-bound listener above only
+		// catches packets aimed at the gateway's own tailnet IP), UDP/443
+		// is refused, and other UDP from onboarded peers is relayed. tsnet
+		// has no public UDP fallback hook, so this reaches through
+		// Sys().Netstack (see installTsnetUDPCatchAll). Installed
+		// unconditionally: without it tsnet's default forwarder would
+		// relay UDP/443 unchecked, dnsvip or not.
+		g.installTsnetUDPCatchAll(tsnetServer)
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
 		// as the per-process PROXY-header path and the WG promiscuous forwarder.

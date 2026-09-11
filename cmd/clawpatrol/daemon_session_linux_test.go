@@ -150,6 +150,143 @@ func TestRunUDPProtocolHandlerFlowLimitRejectionDoesNotClonePacket(t *testing.T)
 	}
 }
 
+// UDP/443 (QUIC) is refused on the daemon's own stack, before an
+// endpoint or a transport dial exists, so gVisor answers the child with
+// ICMP port unreachable (the relay could not carry the gateway's). The
+// packet must not be cloned or dialed, exactly like the flow-limit
+// rejection above.
+func TestRunUDPProtocolHandlerRefusesQUICWithoutDialing(t *testing.T) {
+	s := stack.New(stack.Options{})
+	t.Cleanup(s.Close)
+	ft := &fakeTransport{dial: func(string, string) (net.Conn, error) {
+		t.Fatal("UDP/443 must be refused without dialing the transport")
+		return nil, context.Canceled
+	}}
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{})
+	slots := make(chan struct{}, 1)
+	handler := newTransportUDPProtocolHandler(context.Background(), s, ft, time.Minute, slots)
+
+	id := stack.TransportEndpointID{LocalPort: 443, RemotePort: 40000}
+	if handler(id, pkt) {
+		t.Fatal("handler accepted a UDP/443 flow")
+	}
+	if got := pkt.ReadRefs(); got != 1 {
+		t.Fatalf("PacketBuffer refs after QUIC refusal = %d, want original caller ref only", got)
+	}
+	pkt.DecRef()
+	if len(slots) != 0 {
+		t.Fatalf("refusal consumed a flow slot: %d in use", len(slots))
+	}
+}
+
+// End to end on the run stack: a datagram to *:443 from the child side
+// is answered with an ICMP port unreachable sourced from the destination
+// (what the kernel turns into ECONNREFUSED on the child's connected
+// socket), promptly and without the daemon dialing the transport; the
+// same host on another port is relayed as usual.
+func TestRunStackUDPForwarderRefusesQUICWithICMP(t *testing.T) {
+	for _, dst := range []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("fd78::53")} {
+		t.Run(dst.String(), func(t *testing.T) {
+			echo := startUDPEcho(t)
+			ft := &fakeTransport{dial: func(network, _ string) (net.Conn, error) { return net.DialUDP(network, nil, echo) }}
+			h := newUDPForwarderHarness(t, ft, time.Minute)
+
+			quic := dialUDPThroughHarness(t, h.cli, dst, 443)
+			if _, err := quic.Write([]byte("initial")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			start := time.Now()
+			var raw []byte
+			select {
+			case raw = <-h.responses:
+			case <-time.After(3 * time.Second):
+				t.Fatal("no reply to the UDP/443 datagram within 3s; the refusal was a silent drop, not ICMP unreachable")
+			}
+			if took := time.Since(start); took > time.Second {
+				t.Fatalf("ICMP unreachable took %s", took)
+			}
+			assertPortUnreachable(t, raw, dst, 443)
+			if got := ft.dialedAddrs(); len(got) != 0 {
+				t.Fatalf("transport dialed %v for a UDP/443 flow; nothing on UDP/443 may be relayed", got)
+			}
+
+			// Same host, another port: relayed normally.
+			other := dialUDPThroughHarness(t, h.cli, dst, 4433)
+			_ = other.SetDeadline(time.Now().Add(3 * time.Second))
+			payload := []byte("not quic")
+			if _, err := other.Write(payload); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			buf := make([]byte, 64)
+			n, err := other.Read(buf)
+			if err != nil || !slices.Equal(buf[:n], payload) {
+				t.Fatalf("read = %q, %v; want %q", buf[:n], err, payload)
+			}
+			if want := []string{"udp|" + net.JoinHostPort(dst.String(), "4433")}; !slices.Equal(ft.dialedAddrs(), want) {
+				t.Fatalf("dialed = %v, want %v", ft.dialedAddrs(), want)
+			}
+		})
+	}
+}
+
+// assertPortUnreachable checks raw is an ICMP(v6) destination/port
+// unreachable sourced from dst that quotes the original datagram to
+// dst:dstPort — the exact packet the child's kernel maps to ECONNREFUSED.
+func assertPortUnreachable(t *testing.T, raw []byte, dst netip.Addr, dstPort uint16) {
+	t.Helper()
+	if len(raw) == 0 {
+		t.Fatal("empty packet")
+	}
+	switch raw[0] >> 4 {
+	case 4:
+		if !dst.Is4() {
+			t.Fatalf("got an IPv4 packet for %s", dst)
+		}
+		ihl := int(raw[0]&0xf) * 4
+		if len(raw) < ihl+8 || raw[9] != 1 {
+			t.Fatalf("not ICMPv4: proto=%d len=%d", raw[9], len(raw))
+		}
+		if got := netip.AddrFrom4([4]byte(raw[12:16])); got != dst {
+			t.Fatalf("ICMP source = %s, want the original destination %s", got, dst)
+		}
+		icmp := raw[ihl:]
+		if icmp[0] != 3 || icmp[1] != 3 {
+			t.Fatalf("ICMPv4 type/code = %d/%d, want 3/3 (port unreachable)", icmp[0], icmp[1])
+		}
+		inner := icmp[8:]
+		if len(inner) < 28 {
+			t.Fatalf("quoted datagram too short: %d", len(inner))
+		}
+		iihl := int(inner[0]&0xf) * 4
+		if got := binary.BigEndian.Uint16(inner[iihl+2 : iihl+4]); got != dstPort {
+			t.Fatalf("quoted dst port = %d, want %d", got, dstPort)
+		}
+	case 6:
+		if !dst.Is6() {
+			t.Fatalf("got an IPv6 packet for %s", dst)
+		}
+		if len(raw) < 48 || raw[6] != 58 {
+			t.Fatalf("not ICMPv6: next header=%d len=%d", raw[6], len(raw))
+		}
+		if got := netip.AddrFrom16([16]byte(raw[8:24])); got != dst {
+			t.Fatalf("ICMPv6 source = %s, want the original destination %s", got, dst)
+		}
+		icmp := raw[40:]
+		if icmp[0] != 1 || icmp[1] != 4 {
+			t.Fatalf("ICMPv6 type/code = %d/%d, want 1/4 (port unreachable)", icmp[0], icmp[1])
+		}
+		inner := icmp[8:]
+		if len(inner) < 48 {
+			t.Fatalf("quoted datagram too short: %d", len(inner))
+		}
+		if got := binary.BigEndian.Uint16(inner[42:44]); got != dstPort {
+			t.Fatalf("quoted dst port = %d, want %d", got, dstPort)
+		}
+	default:
+		t.Fatalf("unknown IP version in reply: %#x", raw[0])
+	}
+}
+
 // pump copies outbound packets from src's channel endpoint into dst's
 // inbound path until ctx is done.
 func pump(ctx context.Context, src, dst *channel.Endpoint) {

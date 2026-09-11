@@ -34,14 +34,22 @@ no subnet allocation — Tailscale's control plane handles all of that.
    and relays other UDP from onboarded peers via `relayUDP` — so a
    tsnet-mode `clawpatrol run` child gets arbitrary UDP (NTP, custom
    protocols) without a UDP-over-TCP shim, since the userspace exit node
-   already receives the datagrams. **QUIC / HTTP-3 (UDP/443) is dropped for every
+   already receives the datagrams. **QUIC / HTTP-3 (UDP/443) is refused for every
    destination** in both modes, so HTTPS can't ride UDP past the
-   TCP/443 SNI-peek MITM; the client falls back to interceptable TCP.
-   The drop is unconditional because plain `https` endpoints are
-   dispatched by SNI and carry no VIP, so a per-destination rule would
-   miss exactly the hosts that have rules. Pass-through hosts lose
-   HTTP/3 too (and anything else on UDP/443, such as DTLS or TURN on
-   that port). For the hosts it MITMs, the gateway also strips the
+   TCP/443 SNI-peek MITM. The refusal is an ICMP port unreachable
+   sourced from the original destination (the flow is rejected before
+   a netstack endpoint exists), so the client's connected UDP socket
+   fails with `ECONNREFUSED` and it falls back to interceptable TCP at
+   once rather than after its own handshake timeout. The refusal is
+   unconditional because plain `https` endpoints are dispatched by SNI
+   and carry no VIP, so a per-destination rule would miss exactly the
+   hosts that have rules. Pass-through hosts lose HTTP/3 too (and
+   anything else on UDP/443, such as DTLS or TURN on that port). The
+   port decision itself is one helper, `udpPortDisposition`, consumed
+   by the WireGuard forwarder, the tsnet catch-all and the Linux
+   `clawpatrol run` daemon (which refuses UDP/443 locally, since its
+   datagram relay cannot carry the gateway's ICMP back to the wrapped
+   process). For the hosts it MITMs, the gateway also strips the
    `Alt-Svc` response header so agents don't try h3 in the first
    place; VIP'd names return no SVCB/HTTPS DNS record, other names'
    HTTPS records are relayed as-is, which only costs h3-capable

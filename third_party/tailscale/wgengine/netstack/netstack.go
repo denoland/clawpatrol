@@ -166,6 +166,20 @@ type Impl struct {
 	// over the UDP flow.
 	GetUDPHandlerForFlow func(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool)
 
+	// RejectUDPFlow, if non-nil, is consulted for every incoming UDP flow
+	// before a netstack endpoint is created for it. Returning true
+	// rejects the flow: the packet is reported as unhandled so netstack
+	// answers with an ICMP port unreachable sourced from the flow's
+	// destination, and GetUDPHandlerForFlow is not consulted. Returning
+	// false (or a nil value) leaves the flow to GetUDPHandlerForFlow and
+	// the default forwarding behavior.
+	//
+	// clawpatrol-local addition (see third_party/tailscale/PATCH.md):
+	// GetUDPHandlerForFlow runs after CreateEndpoint, by which point the
+	// only way to refuse a flow is to close the endpoint, which the
+	// sender cannot distinguish from packet loss.
+	RejectUDPFlow func(src, dst netip.AddrPort) bool
+
 	// CheckLocalTransportEndpoints, if true, causes netstack to check if gVisor
 	// has a registered endpoint for incoming packets to local IPs. This is used
 	// by tsnet to intercept packets for registered listeners and outbound
@@ -1801,7 +1815,26 @@ func (ns *Impl) ListenTCP(network, address string) (*gonet.TCPListener, error) {
 // was no such distinction and all packets were implicitly treated as
 // handled. Always returning true preserves the old behavior of silently
 // dropping packets we don't service rather than sending ICMP errors.
+//
+// clawpatrol-local patch: flows the RejectUDPFlow hook refuses are the
+// one exception. They are reported unhandled before CreateEndpoint so
+// netstack does send the port unreachable. The wrapping protocol
+// handler has already registered the destination as a subnet address
+// (wrapUDPProtocolHandler), which is what lets netstack source the
+// ICMP from it; that registration is not undone, matching what
+// acceptUDP itself does for every intercepted or rejected flow.
 func (ns *Impl) acceptUDPNoICMP(r *udp.ForwarderRequest) bool {
+	if reject := ns.RejectUDPFlow; reject != nil {
+		sess := r.ID()
+		dstAddr, dok := ipPortOfNetstackAddr(sess.LocalAddress, sess.LocalPort)
+		srcAddr, sok := ipPortOfNetstackAddr(sess.RemoteAddress, sess.RemotePort)
+		if dok && sok && reject(srcAddr, dstAddr) {
+			if debugNetstack() {
+				ns.logf("[v2] UDP ForwarderRequest rejected: %v", stringifyTEI(sess))
+			}
+			return false
+		}
+	}
 	ns.acceptUDP(r)
 	return true
 }

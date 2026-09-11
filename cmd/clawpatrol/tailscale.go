@@ -309,33 +309,43 @@ func advertiseExitRoutes(s *tsnet.Server, vipCIDRs ...netip.Prefix) {
 // node.
 //
 // tsnet exposes RegisterFallbackTCPHandler for catch-all TCP but has no
-// UDP equivalent (ListenPacket requires a concrete bind IP). The hook is
-// GetUDPHandlerForFlow on the underlying *netstack.Impl, reached via
-// tsnet.Server.Sys().Netstack. The Sys() doc warns "not a stable API" —
-// pinned via go.mod; type-assert + nil checks log-and-no-op rather than
-// crash if a Tailscale upgrade renames the field.
+// UDP equivalent (ListenPacket requires a concrete bind IP). The hooks
+// are RejectUDPFlow and GetUDPHandlerForFlow on the underlying
+// *netstack.Impl, reached via tsnet.Server.Sys().Netstack. The Sys()
+// doc warns "not a stable API" — pinned via go.mod (and vendored under
+// third_party/tailscale, which is where RejectUDPFlow is added).
+//
+// This installer fails closed. Without the hooks tsnet's default
+// forwardUDP relays every datagram, UDP/443 included, which is exactly
+// the HTTPS-past-the-rules path the drop exists to shut; so a nil
+// server, an unregistered netstack subsystem or a renamed type is a
+// fatal misconfiguration, not a degraded mode.
 //
 // Must be called after the tsnet.Server has been started (Start()
 // triggered by an earlier Listen/ListenPacket); only then is the
 // netstack subsystem registered.
 func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 	if s == nil {
-		return
+		log.Fatalf("tsnet: UDP catch-all: no tsnet server — refusing to run with tsnet's default UDP relay (would forward UDP/443 unchecked)")
 	}
 	sys := s.Sys()
 	if sys == nil {
-		log.Printf("tsnet: UDP catch-all skipped — Sys() returned nil")
-		return
+		log.Fatalf("tsnet: UDP catch-all: Sys() returned nil — refusing to run with tsnet's default UDP relay (would forward UDP/443 unchecked)")
 	}
 	impl, ok := sys.Netstack.GetOK()
 	if !ok {
-		log.Printf("tsnet: UDP catch-all skipped — netstack subsystem not registered yet")
-		return
+		log.Fatalf("tsnet: UDP catch-all: netstack subsystem not registered — refusing to run with tsnet's default UDP relay (would forward UDP/443 unchecked)")
 	}
 	ns, ok := impl.(*netstack.Impl)
 	if !ok {
-		log.Printf("tsnet: UDP catch-all skipped — Sys().Netstack is %T not *netstack.Impl", impl)
-		return
+		log.Fatalf("tsnet: UDP catch-all: Sys().Netstack is %T, not *netstack.Impl — refusing to run with tsnet's default UDP relay (would forward UDP/443 unchecked)", impl)
+	}
+	// Refused flows never get an endpoint: netstack answers ICMP port
+	// unreachable from the original destination, so a QUIC client's
+	// connected socket fails with ECONNREFUSED at once and it falls
+	// back to TCP/443 without waiting out its own timer.
+	ns.RejectUDPFlow = func(src, dst netip.AddrPort) bool {
+		return g.tsnetUDPDisposition(dst, src.Addr()) == udpDrop
 	}
 	orig := ns.GetUDPHandlerForFlow
 	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) {
@@ -343,6 +353,9 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 		case udpDNS:
 			return g.serveTsnetUDPDNSFlow, true
 		case udpDrop:
+			// Already refused by RejectUDPFlow before an endpoint
+			// existed; kept so the flow is closed rather than relayed
+			// should the two hooks ever disagree.
 			return func(c nettype.ConnPacketConn) { _ = c.Close() }, true
 		case udpRelay:
 			return func(c nettype.ConnPacketConn) {
@@ -355,39 +368,26 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			return nil, false
 		}
 	}
-	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped, other → relay for onboarded peers)")
+	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC refused with ICMP unreachable, other → relay for onboarded peers)")
 }
 
-// udpDisposition is what the gateway does with a forwarded UDP flow.
-type udpDisposition int
-
-const (
-	udpPassthrough udpDisposition = iota // leave it to tsnet's default handler
-	udpDNS                               // intercept via dnsvip
-	udpDrop                              // black-hole (force a TCP fallback)
-	udpRelay                             // transparently relay to the upstream
-)
-
-// tsnetUDPDisposition decides how an exit-node UDP flow is handled.
+// tsnetUDPDisposition decides how an exit-node UDP flow is handled. The
+// port decision is udpPortDisposition (shared with the WireGuard
+// forwarder); this adds the tsnet-specific parts:
 //
-//   - UDP/53 → dnsvip (resolve via clawpatrol regardless of resolver IP).
-//   - UDP/443 → drop, for every destination. That is QUIC / HTTP-3,
-//     which the gateway never inspects. Plain https endpoints are
-//     dispatched by SNI on TCP/443 and carry no VIP, so relaying
-//     UDP/443 would let an intercepted host's HTTPS ride straight
-//     past its rules (and past unknown_host = deny, which is TCP
-//     only). Dropping makes every HTTP/3 client fall back to TCP/443.
-//     (WG mode's udpDispatch does the same.)
+//   - UDP/53 → dnsvip, only when a dnsvip allocator exists.
+//   - UDP/443 → drop, for every destination and every source (see
+//     udpPortDisposition).
 //   - other UDP from an onboarded peer → relay (e.g. NTP or a custom
 //     protocol).
 //   - everything else → tsnet's default handler.
 func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDisposition {
-	switch dst.Port() {
-	case 53:
+	switch udpPortDisposition(dst.Port()) {
+	case udpDNS:
 		if g.dnsvip != nil {
 			return udpDNS
 		}
-	case 443:
+	case udpDrop:
 		return udpDrop
 	}
 	if g.tsnetUDPPeerOnboarded(src) {
