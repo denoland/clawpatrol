@@ -3658,12 +3658,13 @@ func runGateway(args []string) {
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
 			}
-			if dstPort == 443 && g.dnsvip.IsVIP(dstIP) {
-				// QUIC / HTTP-3 to an intercepted (VIP'd) host: drop so
-				// the client falls back to TCP/443, which we MITM.
-				// Relaying it would let that host's HTTPS bypass
-				// interception. UDP/443 to a passed-through host falls
-				// through to relayUDP — we don't intercept it.
+			if dstPort == 443 {
+				// QUIC / HTTP-3, for every destination. The gateway never
+				// inspects HTTP/3, and plain https endpoints are dispatched
+				// by SNI on TCP/443 without a VIP, so relaying UDP/443
+				// would carry an intercepted host's traffic past every
+				// rule and past unknown_host = deny (TCP only). Drop it;
+				// the client falls back to TCP/443, where policy applies.
 				_ = c.Close()
 				return true
 			}
@@ -3672,7 +3673,7 @@ func runGateway(args []string) {
 		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, UDP/443→drop(quic) for VIPs, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, UDP/443→drop(quic), :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	tsnetServer, ln, err := openListener(cfg, stateDir)

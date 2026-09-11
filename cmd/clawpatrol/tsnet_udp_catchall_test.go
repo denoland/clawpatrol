@@ -60,10 +60,10 @@ func newTestDNSVIP(t *testing.T) *dnsvip.Allocator {
 	return a
 }
 
-// tsnetUDPDisposition: UDP/53 → dnsvip; UDP/443 to an intercepted (VIP'd)
-// host → drop (force HTTPS to the TCP MITM); UDP/443 to a pass-through
-// host is NOT dropped (we don't intercept it); other UDP from an
-// onboarded peer → relay; the rest → tsnet's default handler.
+// tsnetUDPDisposition: UDP/53 → dnsvip; UDP/443 → drop for every
+// destination (QUIC is never inspected, so HTTPS must take the TCP
+// MITM path); other UDP from an onboarded peer → relay; the rest →
+// tsnet's default handler.
 func TestTsnetUDPDisposition(t *testing.T) {
 	r := newOnboardRegistry()
 	r.knownDeviceIPs["100.64.0.2"] = true
@@ -85,8 +85,8 @@ func TestTsnetUDPDisposition(t *testing.T) {
 		{"dns stranger", mk(pub, 53), stranger, udpDNS},
 		{"quic to intercepted VIP dropped", mk(vip, 443), onboarded, udpDrop},
 		{"quic to intercepted VIP dropped (stranger)", mk(vip, 443), stranger, udpDrop},
-		{"quic to pass-through relayed", mk(pub, 443), onboarded, udpRelay},
-		{"quic to pass-through not relayed for stranger", mk(pub, 443), stranger, udpPassthrough},
+		{"quic to pass-through dropped too", mk(pub, 443), onboarded, udpDrop},
+		{"quic to pass-through dropped for stranger", mk(pub, 443), stranger, udpDrop},
 		{"ntp onboarded relayed", mk(pub, 123), onboarded, udpRelay},
 		{"ntp stranger passthrough", mk(pub, 123), stranger, udpPassthrough},
 	}
@@ -96,10 +96,10 @@ func TestTsnetUDPDisposition(t *testing.T) {
 		}
 	}
 
-	// Without a dnsvip there's no VIP table, so UDP/443 isn't dropped —
-	// it relays for onboarded peers like any other UDP.
+	// The QUIC drop does not depend on the VIP table: it holds with
+	// no dnsvip at all.
 	g2 := &Gateway{onboard: r}
-	if got := g2.tsnetUDPDisposition(mk(vip, 443), onboarded); got != udpRelay {
-		t.Errorf("443 w/o dnsvip from onboarded: disposition = %d, want relay", got)
+	if got := g2.tsnetUDPDisposition(mk(vip, 443), onboarded); got != udpDrop {
+		t.Errorf("443 w/o dnsvip from onboarded: disposition = %d, want drop", got)
 	}
 }

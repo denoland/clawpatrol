@@ -355,7 +355,7 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			return nil, false
 		}
 	}
-	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped for VIPs, other → relay for onboarded peers)")
+	log.Printf("tsnet: UDP catch-all installed (:53 → dnsvip, :443 QUIC dropped, other → relay for onboarded peers)")
 }
 
 // udpDisposition is what the gateway does with a forwarded UDP flow.
@@ -371,19 +371,15 @@ const (
 // tsnetUDPDisposition decides how an exit-node UDP flow is handled.
 //
 //   - UDP/53 → dnsvip (resolve via clawpatrol regardless of resolver IP).
-//   - UDP/443 to an intercepted (VIP'd) host → drop. That's QUIC / HTTP-3
-//     to a host we MITM; relaying it would let HTTPS ride UDP straight
-//     past the TCP/443 SNI-peek MITM. Dropping makes the client fall back
-//     to TCP/443, which the gateway intercepts. UDP/443 to a host we
-//     pass through (no VIP) is *not* dropped — we don't intercept that
-//     host's HTTPS either, so there's nothing to bypass, and breaking its
-//     HTTP/3 would be gratuitous. (WG mode's udpDispatch does the same.)
-//     Limitation: an https-mitm endpoint bound to an IP literal isn't
-//     VIP'd, so its UDP/443 isn't dropped here — rare (those are dialled
-//     by IP, e.g. kubectl, and over TCP), and Alt-Svc stripping still
-//     suppresses h3 discovery for it on the MITM'd TCP path.
-//   - other UDP from an onboarded peer → relay (e.g. NTP, a custom
-//     protocol, or QUIC to a passed-through host).
+//   - UDP/443 → drop, for every destination. That is QUIC / HTTP-3,
+//     which the gateway never inspects. Plain https endpoints are
+//     dispatched by SNI on TCP/443 and carry no VIP, so relaying
+//     UDP/443 would let an intercepted host's HTTPS ride straight
+//     past its rules (and past unknown_host = deny, which is TCP
+//     only). Dropping makes every HTTP/3 client fall back to TCP/443.
+//     (WG mode's udpDispatch does the same.)
+//   - other UDP from an onboarded peer → relay (e.g. NTP or a custom
+//     protocol).
 //   - everything else → tsnet's default handler.
 func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDisposition {
 	switch dst.Port() {
@@ -392,9 +388,7 @@ func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDis
 			return udpDNS
 		}
 	case 443:
-		if g.dnsvip != nil && g.dnsvip.IsVIP(dst.Addr().String()) {
-			return udpDrop
-		}
+		return udpDrop
 	}
 	if g.tsnetUDPPeerOnboarded(src) {
 		return udpRelay
