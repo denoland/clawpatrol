@@ -223,24 +223,22 @@ log "checking tunnel route and a relayed TCP request"
 agent_exec sh -lc "ip route get '${HTTP_CLUSTER_IP}' | grep -q 'dev clawpatrol0'"
 agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
 
-log "checking the gateway path is pinned off the tunnel"
-# The sidecar pins the gateway API (+ WG endpoint) to the pod's original
-# default route before flipping the default to clawpatrol0, so enroll /
-# env-pushdown / deregister don't loop back through the tunnel. The API
-# ClusterIP must therefore NOT route via clawpatrol0.
+log "checking that only the sidecar's marked traffic uses the underlay"
+# The sidecar marks its own sockets (fwmark 0x6f). Two policy rules send
+# marked packets to routing table 111, which holds the pod's original default
+# route. Unmarked traffic, which is all workload traffic, uses the tunnel.
+agent_exec sh -lc "ip rule show | grep -q 'fwmark 0x6f lookup main suppress_prefixlength 0'"
+agent_exec sh -lc "ip rule show | grep -q 'fwmark 0x6f lookup 111'"
+agent_exec sh -lc "ip route show table 111 | grep -q '^default '"
 API_CLUSTER_IP="$("${KUBECTL[@]}" -n "${GATEWAY_NS}" get svc clawpatrol-api -o jsonpath='{.spec.clusterIP}')"
 [[ -n "${API_CLUSTER_IP}" ]] || fail "could not resolve clawpatrol-api ClusterIP"
-agent_exec sh -lc "! ip route get '${API_CLUSTER_IP}' | grep -q 'dev clawpatrol0'"
-# The control-plane pins carry the clawpatrol route protocol (111) so an
-# in-process reconnect (or a genuine restart) can recover the underlay gateway
-# from them when there is no default route. The gateway API pin must show that tag.
-agent_exec sh -lc "ip route show proto 111 | grep -q '${API_CLUSTER_IP}'"
-# The pod's resolver is pinned to the underlay with the same tag, so DNS keeps
-# working across a reconnect (the gateway is resolved by name; SNI/Host stay
-# correct). Read the agent's actual nameserver and require it be pinned.
+agent_exec sh -lc "! ip route get '${API_CLUSTER_IP}' mark 0x6f | grep -q 'dev clawpatrol0'"
+agent_exec sh -lc "ip route get '${API_CLUSTER_IP}' | grep -q 'dev clawpatrol0'"
+# The workload's DNS goes through the tunnel, and the gateway answers it.
 AGENT_DNS_IP="$(agent_exec sh -lc "awk '/^nameserver/{print \$2; exit}' /etc/resolv.conf" | tr -d '[:space:]')"
 [[ -n "${AGENT_DNS_IP}" ]] || fail "agent has no resolv.conf nameserver"
-agent_exec sh -lc "ip route show proto 111 | grep -q '${AGENT_DNS_IP}'"
+agent_exec sh -lc "ip route get '${AGENT_DNS_IP}' | grep -q 'dev clawpatrol0'"
+agent_exec sh -lc "test \"\$(curl -sS --max-time 20 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
 
 log "checking enrolled peer row and WireGuard peer tables"
 gateway_exec sh -lc 'command -v sqlite3 >/dev/null'
@@ -269,8 +267,8 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   # container (a native-sidecar restart lands in the same pod sandbox and buys
   # nothing a device rebuild doesn't). While the gateway is down it stays
   # fail-closed: clawpatrol0 is gone, so there is no default route (general
-  # egress is blocked, not leaking untunnelled) while the tagged control-plane
-  # pins survive on the underlay. When the gateway returns it re-enrolls in
+  # egress is blocked, not leaking untunnelled) while the underlay copy in
+  # routing table 111 survives. When the gateway returns it re-enrolls in
   # place with a fresh key, reusing its peer IP — and the container restart
   # count never moves.
   sidecar_restarts() {
@@ -289,12 +287,12 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   # The sidecar escalates to an in-process reconnect: it tears clawpatrol0 down
   # (so the default route disappears) and cannot re-enroll while the gateway is
   # down, so it holds fail-closed. Wait for that torn-down state, then assert
-  # the control-plane pins survive and — crucially — the container has NOT
+  # the underlay table survives and — crucially — the container has NOT
   # restarted (recovery is in-process, not a kubelet restart).
   wait_until "sidecar tore the tunnel down and failed closed (no default route)" 150 \
     agent_exec sh -lc '! ip route show default | grep -q .'
-  log "checking fail-closed gap: no default route, control-plane pins intact, no container restart"
-  agent_exec sh -lc "ip route show proto 111 | grep -q '${API_CLUSTER_IP}'"
+  log "checking fail-closed gap: no default route, underlay table intact, no container restart"
+  agent_exec sh -lc "ip route show table 111 | grep -q '^default '"
   [[ "$(sidecar_restarts)" == "${BEFORE_RESTARTS}" ]] ||
     fail "sidecar container restarted during the gap (was ${BEFORE_RESTARTS}); recovery must be in-process"
 
