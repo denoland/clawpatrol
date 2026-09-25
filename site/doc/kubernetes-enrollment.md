@@ -204,8 +204,10 @@ On startup, the bridge:
 1. authenticates the Pod through the configured enrollment authorizer,
 2. receives its WireGuard peer configuration,
 3. brings up the tunnel and routes Pod traffic through it,
-4. fetches the environment and CA handoff, and
-5. writes `/clawpatrol/ready`.
+4. waits for a WireGuard handshake and a reply from the gateway's tunnel
+   address (up to 20 seconds, then it retries the whole bring-up),
+5. fetches the environment and CA handoff, and
+6. writes `/clawpatrol/ready`.
 
 When tunnel connectivity is lost, the bridge first attempts a local tunnel
 rebuild. If connectivity remains unavailable, it re-enrolls without exiting

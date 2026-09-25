@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -321,5 +322,45 @@ func TestBridgeWatchdogProbeUnavailableStaleHandshake(t *testing.T) {
 func TestBridgeHandshakeStaleAfter(t *testing.T) {
 	if got := bridgeHandshakeStaleAfter(25 * time.Second); got != 295*time.Second {
 		t.Fatalf("bridgeHandshakeStaleAfter(25s) = %s, want 295s", got)
+	}
+}
+
+func TestWaitForTunnel(t *testing.T) {
+	now := time.Now()
+	noHandshake := func() time.Time { return time.Time{} }
+	handshake := func() time.Time { return now }
+	var calls atomic.Int32
+	handshakeLater := func() time.Time {
+		if calls.Add(1) < 3 {
+			return time.Time{}
+		}
+		return now
+	}
+	cases := []struct {
+		name          string
+		lastHandshake func() time.Time
+		probe         func() error
+		wantErr       string
+	}{
+		{name: "handshake and reply", lastHandshake: handshake, probe: func() error { return nil }},
+		{name: "handshake after a few polls", lastHandshake: handshakeLater},
+		{name: "no probe", lastHandshake: handshake},
+		{name: "probe unavailable", lastHandshake: handshake, probe: func() error { return errProbeUnavailable }},
+		{name: "no handshake", lastHandshake: noHandshake, wantErr: "no WireGuard handshake"},
+		{name: "probe fails", lastHandshake: handshake, probe: func() error { return errors.New("timeout") }, wantErr: "no reply from the gateway tunnel address"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := waitForTunnel(context.Background(), tc.lastHandshake, tc.probe, time.Millisecond, 50*time.Millisecond)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }

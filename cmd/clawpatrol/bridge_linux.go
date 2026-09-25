@@ -249,6 +249,26 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 			_ = prober.Close()
 		}
 	}()
+	var probe func() error
+	if prober != nil {
+		probe = func() error { return prober.Probe(wgProbeTimeout) }
+	}
+	lastHandshake := func() time.Time {
+		uapi, err := dev.IpcGet()
+		if err != nil {
+			return time.Time{}
+		}
+		if s := parsePeerStats(uapi); s != nil {
+			return s.lastHandshake
+		}
+		return time.Time{}
+	}
+
+	// Readiness needs a working data path, not only a reachable API: a
+	// blocked or wrong WireGuard endpoint must not let the workload start.
+	if err := waitForTunnel(ctx, lastHandshake, probe, bridgeTunnelReadyPoll, bridgeTunnelReadyTimeout); err != nil {
+		return nil, fmt.Errorf("tunnel to %s is not ready: %w", endpointAddr, err)
+	}
 
 	// env + CA handoff only on the first successful bring-up: the workload reads
 	// it once, and it does not change across reconnects for the same subject.
@@ -279,20 +299,6 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		apiToken:     registerResp.APIToken,
 		stopWatchdog: stopWatchdog,
 		reconnect:    make(chan struct{}, 1),
-	}
-	var probe func() error
-	if prober != nil {
-		probe = func() error { return prober.Probe(wgProbeTimeout) }
-	}
-	lastHandshake := func() time.Time {
-		uapi, err := dev.IpcGet()
-		if err != nil {
-			return time.Time{}
-		}
-		if s := parsePeerStats(uapi); s != nil {
-			return s.lastHandshake
-		}
-		return time.Time{}
 	}
 	ticker := time.NewTicker(bridgeWatchdogPoll)
 	go func() {
