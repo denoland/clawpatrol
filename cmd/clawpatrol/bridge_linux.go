@@ -655,7 +655,9 @@ func writeTunFiles(opt bridgeOptions, vars []pushdownEnvVar, caPEM string) error
 			return fmt.Errorf("write ca: %w", err)
 		}
 	}
-	vars = append(caPathPushdownVars(opt.CAOut), vars...)
+	// Drop gateway-sent CA vars: the local bundle must win, and the last
+	// export of a name wins in a shell.
+	vars = append(caPathPushdownVars(opt.CAOut), dropClawpatrolCAVars(vars)...)
 	var buf bytes.Buffer
 	for _, ev := range vars {
 		if ev.Name == "" {
