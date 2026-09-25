@@ -185,6 +185,131 @@ func TestRegisterEnrolledPeerPublicKeyConflict(t *testing.T) {
 	}
 }
 
+// seedDurablePeer installs an onboarded (non-enrolled) peer and its device
+// row, the way MintKey and the claim flow leave them.
+func seedDurablePeer(t *testing.T, g *Gateway, wg *WGServer, ip, pub string) {
+	t.Helper()
+	if err := wg.AddPeer(pub, ip); err != nil {
+		t.Fatalf("add durable peer: %v", err)
+	}
+	g.onboard.AssignProfile(ip, "default")
+	g.onboard.SetHostname(ip, "laptop")
+	if !g.onboard.HasDevice(ip) {
+		t.Fatalf("durable device row for %s not created", ip)
+	}
+}
+
+// allowedIPsForKey returns the allowed_ip entries the live device holds for
+// pub.
+func allowedIPsForKey(t *testing.T, wg *WGServer, pub string) []string {
+	t.Helper()
+	uapi, err := wg.dev.IpcGet()
+	if err != nil {
+		t.Fatalf("IpcGet: %v", err)
+	}
+	var out []string
+	inPeer := false
+	for _, line := range strings.Split(uapi, "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		switch k {
+		case "public_key":
+			inPeer = v == pub
+		case "allowed_ip":
+			if inPeer {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// assertDurablePeerIntact checks that the durable row, the live device entry,
+// and the device row are unchanged.
+func assertDurablePeerIntact(t *testing.T, g *Gateway, wg *WGServer, ip, pub string) {
+	t.Helper()
+	var gotIP string
+	var enrolled int
+	if err := g.db.QueryRow(`SELECT ip, enrolled FROM wg_peers WHERE pubkey = ?`, pub).Scan(&gotIP, &enrolled); err != nil {
+		t.Fatalf("durable wg_peers row: %v", err)
+	}
+	if gotIP != ip || enrolled != 0 {
+		t.Fatalf("durable row = (%s, enrolled=%d), want (%s, enrolled=0)", gotIP, enrolled, ip)
+	}
+	if got := allowedIPsForKey(t, wg, pub); len(got) == 0 || got[0] != ip+"/32" {
+		t.Fatalf("durable allowed IPs = %v, want %s/32 first", got, ip)
+	}
+	if !g.onboard.HasDevice(ip) {
+		t.Fatalf("durable device row for %s is gone", ip)
+	}
+}
+
+// A pod must not take over an onboarded device by presenting its public key.
+func TestRegisterEnrolledPeerRejectsDurablePublicKey(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+
+	_, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA)
+	if !errors.Is(err, errEnrollmentConflict) {
+		t.Fatalf("err = %v, want conflict", err)
+	}
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
+	var tokens int
+	if err := g.db.QueryRow(`SELECT count(*) FROM peer_api_tokens`).Scan(&tokens); err != nil {
+		t.Fatalf("count tokens: %v", err)
+	}
+	if tokens != 0 {
+		t.Fatalf("peer api tokens = %d, want 0", tokens)
+	}
+}
+
+// The same-subject reuse path must refuse a durable key too: an enrolled pod
+// re-registering with the device's key would move it through AddPeer.
+func TestRegisterEnrolledPeerSameSubjectRejectsDurablePublicKey(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+	pod, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyB)
+	if err != nil {
+		t.Fatalf("seed register: %v", err)
+	}
+
+	_, err = registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA)
+	if !errors.Is(err, errEnrollmentConflict) {
+		t.Fatalf("err = %v, want conflict", err)
+	}
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
+	p, err := g.enrolledPeerByIP(pod.PeerIP)
+	if err != nil {
+		t.Fatalf("pod enrollment lookup: %v", err)
+	}
+	if p.PubKeyHex != keyB {
+		t.Fatalf("pod key = %q, want unchanged %q", p.PubKeyHex, keyB)
+	}
+	if peerIPForAPIToken(g.db, pod.APIToken) != pod.PeerIP {
+		t.Fatal("pod api token should survive a refused re-registration")
+	}
+}
+
+// The guarded WGServer entry points refuse a durable key even when the caller
+// skipped the registration pre-check.
+func TestWGServerEnrolledPeerGuards(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+
+	if _, err := wg.allocateEnrolledPeer(JoinConfig{WGSubnetCIDR: "10.55.0.0/24"}, keyA); !errors.Is(err, errWGKeyHeldByDurablePeer) {
+		t.Fatalf("allocateEnrolledPeer err = %v, want errWGKeyHeldByDurablePeer", err)
+	}
+	if err := wg.addEnrolledPeer(keyA, "10.55.0.20"); !errors.Is(err, errWGKeyHeldByDurablePeer) {
+		t.Fatalf("addEnrolledPeer err = %v, want errWGKeyHeldByDurablePeer", err)
+	}
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
+}
+
 // A pod recreated under the same name (new UID) retires the prior instance.
 // The old instance is torn down before the new one is provisioned, so its
 // freed IP may be handed straight back — the takeover is observable in the
@@ -531,6 +656,31 @@ func TestApiEnrollmentRegisterGuards(t *testing.T) {
 	if rec := doRegister(w, http.MethodPost, "tok", validBody); rec.Code != http.StatusNotFound {
 		t.Fatalf("disabled -> %d, want 404", rec.Code)
 	}
+}
+
+// The register endpoint answers a durable-key takeover attempt with 409.
+func TestApiEnrollmentRegisterDurableKeyConflict(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+	g.k8sVerifier = fakeK8sVerifier(func(_ context.Context, _ string, claims k8sEnrollmentClaims, _ *config.CompiledK8sEnrollment) (k8sVerifiedPod, error) {
+		return k8sVerifiedPod{
+			Namespace:      claims.PodNamespace,
+			Name:           claims.PodName,
+			UID:            claims.PodUID,
+			ServiceAccount: "agent-runner",
+			Profile:        "default",
+		}, nil
+	})
+	w := &webMux{g: g}
+	body := `{"transport":"wireguard","authorizer":"agents","wireguard_public_key":"` + keyA + `","claims":{"pod_name":"a","pod_namespace":"agents","pod_uid":"u"}}`
+	if rec := doRegister(w, http.MethodPost, "tok", body); rec.Code != http.StatusConflict {
+		t.Fatalf("durable key -> %d (%s), want 409", rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
 }
 
 // A regular onboarded peer carrying a peer API token must not be able to

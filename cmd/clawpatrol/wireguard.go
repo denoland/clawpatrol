@@ -443,6 +443,10 @@ func peerKeysForIPExcept(db *sql.DB, peerIP, exceptPubkey string) ([]string, err
 func (s *WGServer) allocatePeer(ts JoinConfig, pubkeyHex string) (string, error) {
 	allocateWGPeerMu.Lock()
 	defer allocateWGPeerMu.Unlock()
+	return s.allocatePeerLocked(ts, pubkeyHex)
+}
+
+func (s *WGServer) allocatePeerLocked(ts JoinConfig, pubkeyHex string) (string, error) {
 	ip, err := allocateWGPeerIPLocked(s.db, ts)
 	if err != nil {
 		return "", err
@@ -451,6 +455,63 @@ func (s *WGServer) allocatePeer(ts JoinConfig, pubkeyHex string) (string, error)
 		return "", fmt.Errorf("add peer %s: %w", ip, err)
 	}
 	return ip, nil
+}
+
+// errWGKeyHeldByDurablePeer is returned when an enrollment presents the
+// public key of a non-enrolled (durable) peer.
+var errWGKeyHeldByDurablePeer = errors.New("wireguard public key belongs to a non-enrolled peer")
+
+// wgKeyHeldByDurablePeer reports whether pubkeyHex is on a wg_peers row that
+// is not an enrollment.
+func wgKeyHeldByDurablePeer(db *sql.DB, pubkeyHex string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	var enrolled int
+	err := db.QueryRow(`SELECT enrolled FROM wg_peers WHERE pubkey = ?`, pubkeyHex).Scan(&enrolled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up wireguard peer key: %w", err)
+	}
+	return enrolled == 0, nil
+}
+
+// refuseDurableKeyLocked must run before addPeerLocked: its IpcSet moves the
+// key's allowed IPs on the live device before the database is written.
+// Caller holds allocateWGPeerMu.
+func (s *WGServer) refuseDurableKeyLocked(pubkeyHex string) error {
+	held, err := wgKeyHeldByDurablePeer(s.db, pubkeyHex)
+	if err != nil {
+		return err
+	}
+	if held {
+		return errWGKeyHeldByDurablePeer
+	}
+	return nil
+}
+
+// allocateEnrolledPeer is allocatePeer for workload enrollment. It refuses a
+// public key that a durable peer holds.
+func (s *WGServer) allocateEnrolledPeer(ts JoinConfig, pubkeyHex string) (string, error) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	if err := s.refuseDurableKeyLocked(pubkeyHex); err != nil {
+		return "", err
+	}
+	return s.allocatePeerLocked(ts, pubkeyHex)
+}
+
+// addEnrolledPeer is AddPeer for workload enrollment. It refuses a public key
+// that a durable peer holds.
+func (s *WGServer) addEnrolledPeer(pubkeyHex, peerIP string) error {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	if err := s.refuseDurableKeyLocked(pubkeyHex); err != nil {
+		return err
+	}
+	return s.addPeerLocked(pubkeyHex, peerIP)
 }
 
 // allocateWGPeerIPLocked returns the next free client /32 from WGSubnetCIDR.
