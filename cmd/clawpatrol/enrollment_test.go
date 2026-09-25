@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -169,6 +171,38 @@ func TestRegisterEnrolledPeerSameSubjectNewKey(t *testing.T) {
 	}
 	if got := wgPeerRowsForIP(t, g, second.PeerIP); got != 1 {
 		t.Fatalf("wg_peers rows for reused IP = %d, want 1", got)
+	}
+}
+
+// Replacing a live key for the same subject is allowed but logged.
+func TestRegisterEnrolledPeerSameSubjectLiveKeyWarns(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	startEnrollmentTestWGServer(t, g)
+	if _, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	if _, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyB); err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if !strings.Contains(buf.String(), "registered a new key while key "+keyA[:8]) {
+		t.Fatalf("no live-key eviction warning in log:\n%s", buf.String())
+	}
+
+	// A key that went quiet past its window is replaced without a warning.
+	buf.Reset()
+	backdateEnrolledPeer(g, keyB)
+	if _, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA); err != nil {
+		t.Fatalf("third register: %v", err)
+	}
+	if strings.Contains(buf.String(), "WARNING") {
+		t.Fatalf("stale key replacement warned:\n%s", buf.String())
 	}
 }
 

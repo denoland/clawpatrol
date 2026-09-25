@@ -460,6 +460,12 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 			// Same authenticated subject (e.g. a sidecar that restarted with
 			// a fresh key): reuse its IP, let AddPeer swap the key.
 			reuseIP = p.PeerIP
+			if p.PubKeyHex != pubHex && g.enrolledPeerLiveLocked(p) {
+				// Normal after a sidecar restart, but two live sidecars for
+				// one subject (or a replayed token) flap the key each time.
+				log.Printf("enrollment: WARNING: subject %s registered a new key while key %s… was live on %s; replacing it",
+					identity.SubjectKey, p.PubKeyHex[:8], p.PeerIP)
+			}
 		case p.ReplacementKey == identity.ReplacementKey:
 			// Same logical workload, new instance (pod recreated under the
 			// same name with a new UID): retire the old instance.
@@ -682,6 +688,17 @@ func (g *Gateway) cleanupEnrolledPeerLocked(_ context.Context, peerIP string) er
 }
 
 // --- liveness reaper ---------------------------------------------------
+
+// enrolledPeerLiveLocked reports whether p's WireGuard rx moved within its
+// liveness window. Caller holds enrollmentMu.
+func (g *Gateway) enrolledPeerLiveLocked(p enrolledPeer) bool {
+	live, ok := g.enrollLive[p.PubKeyHex]
+	if !ok {
+		return false
+	}
+	window := enrollmentLivenessTimeout(g.Policy(), p.AuthorizerName)
+	return window <= 0 || time.Since(live.lastProgress) <= window
+}
 
 func (g *Gateway) noteEnrolledLiveLocked(pubHex string) {
 	if g.enrollLive == nil {
