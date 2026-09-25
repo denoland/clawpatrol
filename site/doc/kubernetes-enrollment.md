@@ -10,7 +10,7 @@ This mode is for same-cluster deployments where:
 - the gateway runs in Kubernetes,
 - agent pods are created on demand,
 - the agent container must remain restricted, and
-- a privileged networking sidecar is acceptable outside the agent container.
+- a networking sidecar with `NET_ADMIN` is acceptable outside the agent container.
 
 ## Architecture
 
