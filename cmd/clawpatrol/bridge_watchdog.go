@@ -14,6 +14,11 @@ package main
 // gateway's tunnel address with an ICMP echo to disambiguate "healthy but
 // idle" from "actually broken" — a round-trip reply proves both directions.
 //
+// When no ICMP socket can be opened (errProbeUnavailable), the watchdog uses
+// the age of the last WireGuard handshake instead. The bridge sends
+// keepalives, so a healthy tunnel re-handshakes at least every
+// RejectAfterTime. This detects a dead tunnel more slowly than the probe.
+//
 // On sustained probe failure it escalates:
 //
 //   - at rekeyAfterFails consecutive failures: rebuild the peer in place
@@ -24,6 +29,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -39,14 +46,32 @@ const (
 	bridgeWatchdogDefaultResetMisses = 2
 )
 
+// errProbeUnavailable means the bridge cannot send ICMP probes (no
+// ping_group_range for its GID and no CAP_NET_RAW). It is not a liveness
+// failure.
+var errProbeUnavailable = errors.New("icmp probe unavailable")
+
+// bridgeHandshakeStaleAfter is the handshake age that counts as a failed
+// check when the probe is unavailable. wireguard-go starts a new handshake on
+// send once the key is RejectAfterTime (180s) old; allow one keepalive
+// interval for that send and RekeyAttemptTime (90s) of retries.
+func bridgeHandshakeStaleAfter(keepalive time.Duration) time.Duration {
+	return 180*time.Second + keepalive + 90*time.Second
+}
+
 // bridgeWatchdogConfig captures the runBridgeWatchdogLoop dependencies so the
 // loop is testable without a real wireguard-go device or a real network.
 type bridgeWatchdogConfig struct {
 	// rx returns the peer's current WireGuard rx_bytes (0 if unavailable).
 	rx func() uint64
 	// probe sends one liveness probe (ICMP echo to the gateway tunnel IP) and
-	// returns nil on a reply, an error on failure/timeout.
+	// returns nil on a reply, an error on failure/timeout. nil, or a probe that
+	// returns errProbeUnavailable, selects the handshake-age fallback.
 	probe func() error
+	// lastHandshake returns the peer's last WireGuard handshake time (zero if
+	// none). handshakeStaleAfter is the fallback threshold.
+	lastHandshake       func() time.Time
+	handshakeStaleAfter time.Duration
 	// rekey rebuilds the peer in place (IpcSet) — the cheap first escalation.
 	rekey func() error
 	// reconnect triggers a full in-process teardown + re-enroll. After it is
@@ -87,13 +112,14 @@ func runBridgeWatchdogLoop(ctx context.Context, c bridgeWatchdogConfig) {
 		return
 	}
 	var (
-		tracking  bool
-		lastRx    uint64
-		lastLive  time.Time
-		lastProbe time.Time
-		fails     int
-		rekeyed   bool
-		rekeys    int
+		tracking       bool
+		lastRx         uint64
+		lastLive       time.Time
+		lastProbe      time.Time
+		fails          int
+		rekeyed        bool
+		rekeys         int
+		fallbackLogged bool
 	)
 	for {
 		select {
@@ -125,7 +151,17 @@ func runBridgeWatchdogLoop(ctx context.Context, c bridgeWatchdogConfig) {
 		}
 
 		lastProbe = now
-		err := c.probe()
+		err := errProbeUnavailable
+		if c.probe != nil {
+			err = c.probe()
+		}
+		if errors.Is(err, errProbeUnavailable) {
+			if !fallbackLogged {
+				logf("bridge watchdog: %v; checking WireGuard handshake age instead", err)
+				fallbackLogged = true
+			}
+			err = c.handshakeFresh(now)
+		}
 		if err == nil {
 			// Healthy but idle. The reply also advances rx (handled next tick),
 			// but count the success as liveness now.
@@ -155,4 +191,19 @@ func runBridgeWatchdogLoop(ctx context.Context, c bridgeWatchdogConfig) {
 			}
 		}
 	}
+}
+
+// handshakeFresh is the liveness check used when the probe is unavailable.
+func (c bridgeWatchdogConfig) handshakeFresh(now time.Time) error {
+	if c.lastHandshake == nil || c.handshakeStaleAfter <= 0 {
+		return nil
+	}
+	hs := c.lastHandshake()
+	if hs.IsZero() {
+		return fmt.Errorf("no WireGuard handshake yet")
+	}
+	if age := now.Sub(hs); age > c.handshakeStaleAfter {
+		return fmt.Errorf("last WireGuard handshake %s ago (> %s)", age.Round(time.Second), c.handshakeStaleAfter)
+	}
+	return nil
 }

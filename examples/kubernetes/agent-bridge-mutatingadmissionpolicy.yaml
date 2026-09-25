@@ -34,6 +34,8 @@
 #     `/dev/net/tun`. If changed, update every matching argument, mount, and
 #     probe below together.
 #   - Nodes must expose `/dev/net/tun`; the bridge receives `NET_ADMIN`.
+#   - The Pod gets the safe sysctl `net.ipv4.ping_group_range: "0 2147483647"`
+#     so the bridge can send its ICMP liveness probe without `NET_RAW`.
 #
 # The policy mounts the `/clawpatrol` handoff volume read-only into every
 # application container. The bridge startup probe delays application startup
@@ -89,6 +91,32 @@ spec:
                 value: {"clawpatrol.dev/profile": "default"}
               }]
           )
+
+    # Let the bridge open an unprivileged ICMP socket for its liveness probe.
+    # Kubernetes treats this sysctl as safe. Sysctls that the Pod already sets
+    # are kept.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: |
+          !has(object.spec.securityContext)
+          ? [JSONPatch{
+              op: "add",
+              path: "/spec/securityContext",
+              value: {"sysctls": dyn([{"name": "net.ipv4.ping_group_range", "value": "0 2147483647"}])}
+            }]
+          : !has(object.spec.securityContext.sysctls)
+          ? [JSONPatch{
+              op: "add",
+              path: "/spec/securityContext/sysctls",
+              value: [{"name": "net.ipv4.ping_group_range", "value": "0 2147483647"}]
+            }]
+          : object.spec.securityContext.sysctls.exists(s, s.name == "net.ipv4.ping_group_range")
+          ? []
+          : [JSONPatch{
+              op: "add",
+              path: "/spec/securityContext/sysctls/-",
+              value: {"name": "net.ipv4.ping_group_range", "value": "0 2147483647"}
+            }]
 
     # Add the handoff, projected-token, and TUN volumes without replacing
     # unrelated volumes already declared by the workload.

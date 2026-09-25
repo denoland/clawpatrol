@@ -21,6 +21,12 @@ spec:
   serviceAccountName: agent-runner
   automountServiceAccountToken: false
   restartPolicy: Never
+  securityContext:
+    # Lets the bridge open an unprivileged ICMP socket for its liveness
+    # probe. Kubernetes treats this sysctl as safe.
+    sysctls:
+      - name: net.ipv4.ping_group_range
+        value: "0 2147483647"
   volumes:
     - name: clawpatrol
       emptyDir: {}
