@@ -133,6 +133,7 @@ func TestEnrollmentConfigValidation(t *testing.T) {
 `
 	valid := `gateway {
   state_dir = "/opt/clawpatrol"
+  dashboard_listen = "0.0.0.0:8080"
   wireguard {
     subnet_cidr = "10.55.0.0/24"
     endpoint = "clawpatrol-wg.clawpatrol.svc:51820"
@@ -261,6 +262,27 @@ profile "default" { credentials = [] }
   }
 `, "", 1),
 			want: "enrollment requires a wireguard block",
+		},
+		{
+			name: "no dashboard listener",
+			body: strings.Replace(valid, `  dashboard_listen = "0.0.0.0:8080"
+`, "", 1),
+			want: "enrollment requires a routable dashboard_listen",
+		},
+		{
+			name: "loopback dashboard listener",
+			body: strings.Replace(valid, `"0.0.0.0:8080"`, `"127.0.0.1:8080"`, 1),
+			want: "loopback-only",
+		},
+		{
+			name: "localhost dashboard listener",
+			body: strings.Replace(valid, `"0.0.0.0:8080"`, `"localhost:8080"`, 1),
+			want: "loopback-only",
+		},
+		{
+			name: "IPv6 loopback dashboard listener",
+			body: strings.Replace(valid, `"0.0.0.0:8080"`, `"[::1]:8080"`, 1),
+			want: "loopback-only",
 		},
 		{
 			name: "duplicate enrollment",
@@ -870,6 +892,7 @@ func TestEnrollmentLivenessDerivation(t *testing.T) {
 	base := func(knobs string) string {
 		return `gateway {
   state_dir = "/opt/clawpatrol"
+  dashboard_listen = "0.0.0.0:8080"
   wireguard {
     subnet_cidr = "10.55.0.0/24"
     endpoint    = "clawpatrol-wg.clawpatrol.svc:51820"
