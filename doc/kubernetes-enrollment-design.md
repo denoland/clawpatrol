@@ -151,6 +151,13 @@ The gateway reaper:
 4. revokes an enrolled peer once receive progress has been quiet longer than
    its authorizer's derived liveness window.
 
+Known edge case: wireguard-go also resets the keepalive timer on received
+traffic. A bridge that only receives data for longer than the liveness window,
+for example a one-way UDP stream with no reply traffic, sends no keepalives, so
+the gateway sees flat receive progress and reaps a working peer. The bridge
+watchdog then re-enrolls it. TCP flows send acknowledgements and are not
+affected.
+
 The in-memory tracker is keyed by WireGuard public key. Reap count 0 produces
 a zero window and is never reaped. If a persisted peer's authorizer no longer
 exists in the compiled policy, the reaper uses a 75-second fallback so
