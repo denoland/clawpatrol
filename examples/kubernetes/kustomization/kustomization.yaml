@@ -37,6 +37,10 @@
 # not part of the runnable base:
 #   - ../agent-bridge-mutatingadmissionpolicy.yaml
 #   - ../agent-egress-networkpolicy.yaml
+#   - ../gateway-ingress-networkpolicy.yaml
+#
+# Set the dashboard password before applying; see "Deploy the example" in
+# site/doc/kubernetes-enrollment.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
