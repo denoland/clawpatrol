@@ -77,3 +77,19 @@ patches:
         path: /spec/initContainers/0/args/1
         value: --gateway-url=http://clawpatrol-api.clawpatrol-e2e.svc:8080
       - { op: replace, path: /spec/containers/0/image, value: ghcr.io/denoland/clawpatrol:latest }
+      # An HTTP listener in the agent container and a kubelet readiness probe
+      # on it: replies to inbound connections must leave the pod even though
+      # its default route is the tunnel.
+      - op: replace
+        path: /spec/containers/0/args/0
+        value: |
+          while [ ! -f /clawpatrol/ready ]; do sleep 0.2; done
+          . /clawpatrol/env
+          (while true; do printf 'HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n' | nc -l -p 8082 -q 1; done) &
+          exec sleep infinity
+      - op: add
+        path: /spec/containers/0/readinessProbe
+        value:
+          httpGet: { path: /, port: 8082 }
+          periodSeconds: 2
+          failureThreshold: 3

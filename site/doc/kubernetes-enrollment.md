@@ -400,3 +400,10 @@ in-process recovery, and verifies cleanup.
 - Peer capacity is bounded by the configured WireGuard IPv4 subnet.
 - The bridge needs Pod-network privileges; the agent container should remain
   restricted.
+- Replies to inbound connections (kubelet `httpGet` and `tcpSocket` probes,
+  Services that point at agent Pods) follow the Pod's routes. They leave on
+  the underlay only when the client address matches a CNI route that is more
+  specific than the default route; otherwise they go into the tunnel and are
+  lost. This depends on the CNI. Where it fails, for example when kubelet
+  probes come from the node IP and the Pod has only a link route to its
+  gateway, use exec probes.
