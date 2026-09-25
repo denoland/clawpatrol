@@ -46,6 +46,14 @@ const (
 	bridgeWatchdogDefaultResetMisses = 2
 )
 
+const (
+	// bridgeTunnelReadyTimeout bounds how long bring-up waits for the first
+	// handshake and probe reply. Bring-up retries after it, and the example
+	// startup probe allows 120s.
+	bridgeTunnelReadyTimeout = 20 * time.Second
+	bridgeTunnelReadyPoll    = 200 * time.Millisecond
+)
+
 // errProbeUnavailable means the bridge cannot send ICMP probes (no
 // ping_group_range for its GID and no CAP_NET_RAW). It is not a liveness
 // failure.
@@ -206,4 +214,35 @@ func (c bridgeWatchdogConfig) handshakeFresh(now time.Time) error {
 		return fmt.Errorf("last WireGuard handshake %s ago (> %s)", age.Round(time.Second), c.handshakeStaleAfter)
 	}
 	return nil
+}
+
+// waitForTunnel returns once the tunnel carries traffic: a WireGuard handshake
+// has completed and, when probe is set, one probe got a reply. An unavailable
+// probe counts as a reply, because the handshake already proved the path.
+func waitForTunnel(ctx context.Context, lastHandshake func() time.Time, probe func() error, poll, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for lastHandshake().IsZero() {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("no WireGuard handshake within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+	if probe == nil {
+		return nil
+	}
+	for {
+		err := probe()
+		if err == nil || errors.Is(err, errProbeUnavailable) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("no reply from the gateway tunnel address within %s: %w", timeout, err)
+		case <-ticker.C:
+		}
+	}
 }
