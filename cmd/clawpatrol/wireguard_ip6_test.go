@@ -146,3 +146,58 @@ func TestAllocatePeerIPv6UniqueInWideSubnet(t *testing.T) {
 		t.Fatalf("IPv6 allowed IPs = %d, want 300", v6)
 	}
 }
+
+// seedWGPeerRows inserts wg_peers rows in order, each newer than the last.
+func seedWGPeerRows(t *testing.T, g *Gateway, ips ...string) {
+	t.Helper()
+	for i, ip := range ips {
+		pub := hex.EncodeToString([]byte(strings.Repeat(string(rune('a'+i)), 32)))
+		if _, err := g.db.Exec(`INSERT INTO wg_peers (pubkey, ip, added_ns) VALUES (?, ?, ?)`, pub, ip, int64(i+1)); err != nil {
+			t.Fatalf("seed wg_peers %s: %v", ip, err)
+		}
+	}
+}
+
+func TestAllocateWGPeerIPNextFit(t *testing.T) {
+	cases := []struct {
+		name    string
+		subnet  string
+		rows    []string
+		release []string
+		want    string
+	}{
+		{name: "empty table", subnet: "10.55.0.0/24", want: "10.55.0.2"},
+		{name: "after the newest row", subnet: "10.55.0.0/24", rows: []string{"10.55.0.3"}, want: "10.55.0.4"},
+		{name: "released address not reused first", subnet: "10.55.0.0/24", rows: []string{"10.55.0.2", "10.55.0.3"}, release: []string{"10.55.0.2"}, want: "10.55.0.4"},
+		{name: "wraps at the end", subnet: "10.55.0.0/24", rows: []string{"10.55.0.254"}, want: "10.55.0.2"},
+		{name: "wraps past used addresses", subnet: "10.55.0.0/24", rows: []string{"10.55.0.2", "10.55.0.254"}, want: "10.55.0.3"},
+		{name: "newest outside subnet", subnet: "10.55.0.0/24", rows: []string{"10.99.0.9"}, want: "10.55.0.2"},
+		{name: "crosses a /24 boundary", subnet: "10.55.0.0/16", rows: []string{"10.55.0.255"}, want: "10.55.1.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newEnrollmentTestGateway(t)
+			seedWGPeerRows(t, g, tc.rows...)
+			for _, ip := range tc.release {
+				if _, err := g.db.Exec(`DELETE FROM wg_peers WHERE ip = ?`, ip); err != nil {
+					t.Fatalf("release %s: %v", ip, err)
+				}
+			}
+			got, err := allocateWGPeerIPLocked(g.db, JoinConfig{WGSubnetCIDR: tc.subnet})
+			if err != nil {
+				t.Fatalf("allocate: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("allocated %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAllocateWGPeerIPExhausted(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	seedWGPeerRows(t, g, "10.55.0.2", "10.55.0.3", "10.55.0.4", "10.55.0.5", "10.55.0.6")
+	if ip, err := allocateWGPeerIPLocked(g.db, JoinConfig{WGSubnetCIDR: "10.55.0.0/29"}); err == nil {
+		t.Fatalf("allocated %s from a full /29, want an exhausted error", ip)
+	}
+}

@@ -324,6 +324,10 @@ devices. Their device page shows:
 The profile is read-only because it comes from the Pod label. Manual deletion
 is hidden because enrolled peers are managed by deregistration and the reaper.
 
+Request history is keyed by peer IP. The gateway assigns addresses next-fit,
+so an address that a Pod releases is reused only after the rest of the subnet.
+A new Pod that gets a reused address can still see the earlier Pod's history.
+
 ## Deployment hardening
 
 ### Admission-based injection
