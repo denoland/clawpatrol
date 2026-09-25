@@ -393,6 +393,8 @@ type Gateway struct {
 	// enrollLive tracks per-peer WireGuard rx_bytes progress for the
 	// enrollment liveness reaper. Guarded by enrollmentMu.
 	enrollLive map[string]enrollmentLiveness
+	// peerStats overrides globalWG.PeerStats for the reaper. Tests only.
+	peerStats func() map[string]wgDevPeerStat
 	// k8sVerifier lets tests inject a fake Kubernetes verifier. In
 	// production it stays nil and each register request builds a
 	// short-lived in-cluster client, which re-reads the rotating

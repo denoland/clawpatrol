@@ -681,7 +681,11 @@ func (g *Gateway) reapStaleEnrolledPeers(_ context.Context) {
 	// data, so reading a slightly stale snapshot outside the lock is safe —
 	// at worst it delays a reap by one tick, and a peer that's new since the
 	// snapshot is seeded fresh below rather than mis-reaped.
-	stats := globalWG.PeerStats()
+	statsFn := globalWG.PeerStats
+	if g.peerStats != nil {
+		statsFn = g.peerStats
+	}
+	stats := statsFn()
 
 	g.enrollmentMu.Lock()
 	defer g.enrollmentMu.Unlock()
