@@ -145,6 +145,10 @@ The agent container should:
 - mount `/clawpatrol` read-only, and
 - source `/clawpatrol/env` before starting the workload.
 
+Do not run the bridge in a Pod with `hostNetwork: true`. The Pod then shares
+the node's network namespace, and the bridge replaces the node's default
+route. The admission policy example skips host-network Pods.
+
 ```yaml
 initContainers:
   - name: clawpatrol-bridge
