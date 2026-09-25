@@ -477,6 +477,145 @@ func TestReapStaleEnrolledPeers(t *testing.T) {
 	}
 }
 
+// backdateEnrolledPeer makes pub look quiet for an hour to the reaper.
+func backdateEnrolledPeer(g *Gateway, pub string) {
+	g.enrollmentMu.Lock()
+	defer g.enrollmentMu.Unlock()
+	if g.enrollLive == nil {
+		g.enrollLive = map[string]enrollmentLiveness{}
+	}
+	g.enrollLive[pub] = enrollmentLiveness{lastRx: 1 << 40, lastProgress: time.Now().Add(-time.Hour)}
+}
+
+func assertEnrolledPeerLive(t *testing.T, g *Gateway, resp enrollmentRegisterResponse) {
+	t.Helper()
+	if _, err := g.enrolledPeerByIP(resp.PeerIP); err != nil {
+		t.Fatalf("enrolled peer %s was reaped: %v", resp.PeerIP, err)
+	}
+	if peerIPForAPIToken(g.db, resp.APIToken) != resp.PeerIP {
+		t.Fatalf("api token for %s was revoked", resp.PeerIP)
+	}
+	if !g.onboard.HasDevice(resp.PeerIP) {
+		t.Fatalf("device row for %s was forgotten", resp.PeerIP)
+	}
+}
+
+// One sweep reaps the quiet peer and keeps the peer inside its window.
+func TestReapStaleEnrolledPeersHoldsLivePeer(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	startEnrollmentTestWGServer(t, g)
+	stale, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA)
+	if err != nil {
+		t.Fatalf("register stale: %v", err)
+	}
+	live, err := registerFor(t, g, "kubernetes:agents:uid-2", "kubernetes:agents:agent-2", keyB)
+	if err != nil {
+		t.Fatalf("register live: %v", err)
+	}
+	backdateEnrolledPeer(g, keyA)
+
+	g.reapStaleEnrolledPeers(context.Background())
+
+	if _, err := g.enrolledPeerByIP(stale.PeerIP); err == nil {
+		t.Fatal("stale enrolled peer should have been reaped")
+	}
+	assertEnrolledPeerLive(t, g, live)
+}
+
+// rx progress since the last sample resets the window, even for a peer whose
+// last progress is old.
+func TestReapStaleEnrolledPeersHoldsPeerWithRxProgress(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	startEnrollmentTestWGServer(t, g)
+	resp, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	g.enrollmentMu.Lock()
+	g.enrollLive[keyA] = enrollmentLiveness{lastRx: 100, lastProgress: time.Now().Add(-time.Hour)}
+	g.enrollmentMu.Unlock()
+	g.peerStats = func() map[string]wgDevPeerStat {
+		return map[string]wgDevPeerStat{keyA: {rxBytes: 200}}
+	}
+
+	g.reapStaleEnrolledPeers(context.Background())
+
+	assertEnrolledPeerLive(t, g, resp)
+	g.enrollmentMu.Lock()
+	live := g.enrollLive[keyA]
+	g.enrollmentMu.Unlock()
+	if live.lastRx != 200 || time.Since(live.lastProgress) > time.Minute {
+		t.Fatalf("liveness = %+v, want lastRx 200 and a fresh lastProgress", live)
+	}
+}
+
+// The reaper manages enrolled peers only. A durable peer survives even with a
+// stale liveness entry for its key.
+func TestReapStaleEnrolledPeersSkipsNonEnrolledPeer(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+	backdateEnrolledPeer(g, keyA)
+
+	g.reapStaleEnrolledPeers(context.Background())
+
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
+}
+
+// A refused takeover of a durable key leaves nothing for the reaper to remove.
+func TestReapStaleEnrolledPeersAfterRefusedTakeover(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	wg := startEnrollmentTestWGServer(t, g)
+	const durableIP = "10.55.0.10"
+	seedDurablePeer(t, g, wg, durableIP, keyA)
+	if _, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA); !errors.Is(err, errEnrollmentConflict) {
+		t.Fatalf("takeover err = %v, want conflict", err)
+	}
+	backdateEnrolledPeer(g, keyA)
+
+	g.reapStaleEnrolledPeers(context.Background())
+
+	assertDurablePeerIntact(t, g, wg, durableIP, keyA)
+}
+
+// keepalive_reap_count = 0 disables reaping for the authorizer.
+func TestReapStaleEnrolledPeersDisabledByReapCountZero(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	hcl := strings.Replace(enabledEnrollmentHCL, `audience = "clawpatrol"`, "audience = \"clawpatrol\"\n  keepalive_reap_count = 0", 1)
+	gw, diags := config.LoadBytes([]byte(hcl), "reap-disabled.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %s", diags.Error())
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if w := cp.EnrollmentsByName["agents"].Liveness.LivenessWindow(); w != 0 {
+		t.Fatalf("liveness window = %s, want 0", w)
+	}
+	g.policy.Store(cp)
+	startEnrollmentTestWGServer(t, g)
+	resp, err := registerFor(t, g, "kubernetes:agents:uid-1", "kubernetes:agents:agent-1", keyA)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	backdateEnrolledPeer(g, keyA)
+
+	g.reapStaleEnrolledPeers(context.Background())
+
+	assertEnrolledPeerLive(t, g, resp)
+}
+
 func TestReconcileEnrolledPeersRestoresRuntimeState(t *testing.T) {
 	g := newEnrollmentTestGateway(t)
 	const ip = "10.55.0.22"
