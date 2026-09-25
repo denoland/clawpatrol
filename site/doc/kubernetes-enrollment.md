@@ -277,6 +277,13 @@ application heartbeat.
 - Only self-enrolled peers are reaped. Devices added through normal onboarding
   are never reaped.
 
+One case can reap a working peer. WireGuard resets the keepalive timer on
+received traffic too, so a Pod that only receives data for longer than the
+liveness window (for example a one-way UDP stream from the gateway, with no
+reply traffic) sends no keepalives. The gateway then sees no receive progress
+and reaps the peer, and the bridge re-enrolls. TCP flows are not affected,
+because the Pod sends acknowledgements.
+
 ### Tuning
 
 | Setting | Default | Behavior |
