@@ -406,3 +406,78 @@ func TestApiEnrollmentRegisterConcurrencyLimit(t *testing.T) {
 		t.Fatalf("request after release -> %d, want 403 from the verifier", rec.Code)
 	}
 }
+
+// fakePodAPIServer answers a bound-token TokenReview and a Pod read for
+// agents/agent-1 scheduled on node.
+func fakePodAPIServer(t *testing.T, extra map[string][]string, node string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/authentication.k8s.io/v1/tokenreviews":
+			_ = json.NewEncoder(rw).Encode(map[string]any{"status": map[string]any{
+				"authenticated": true,
+				"audiences":     []string{"clawpatrol"},
+				"user": map[string]any{
+					"username": "system:serviceaccount:agents:agent-runner",
+					"extra":    extra,
+				},
+			}})
+		case "/api/v1/namespaces/agents/pods/agent-1":
+			_ = json.NewEncoder(rw).Encode(map[string]any{
+				"metadata": map[string]any{
+					"uid":    "uid-1",
+					"labels": map[string]string{config.K8sDefaultProfileLabel: "default"},
+				},
+				"spec": map[string]string{"serviceAccountName": "agent-runner", "nodeName": node},
+			})
+		default:
+			http.NotFound(rw, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestInClusterK8sClientChecksNodeName(t *testing.T) {
+	withNode := func(node string) map[string][]string {
+		extra := boundPodTokenExtra("agent-1", "uid-1")
+		extra["authentication.kubernetes.io/node-name"] = []string{node}
+		return extra
+	}
+	tests := []struct {
+		name       string
+		claimNode  string
+		extra      map[string][]string
+		wantErrSub string
+	}{
+		{name: "claim and token match", claimNode: "node-a", extra: withNode("node-a")},
+		{name: "no claim, no token node", extra: boundPodTokenExtra("agent-1", "uid-1")},
+		{name: "claim only", claimNode: "node-a", extra: boundPodTokenExtra("agent-1", "uid-1")},
+		{name: "claim mismatch", claimNode: "node-b", extra: boundPodTokenExtra("agent-1", "uid-1"), wantErrSub: "node_name does not match"},
+		{name: "token node mismatch", claimNode: "node-a", extra: withNode("node-b"), wantErrSub: "token node binding does not match"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakePodAPIServer(t, tc.extra, "node-a")
+			client := &inClusterK8sClient{baseURL: srv.URL, tokenPath: writeGatewayToken(t, t.TempDir(), "gateway-token"), client: srv.Client()}
+			pod, err := client.VerifyPod(context.Background(), "pod-token", k8sEnrollmentClaims{
+				PodName:      "agent-1",
+				PodNamespace: "agents",
+				PodUID:       "uid-1",
+				NodeName:     tc.claimNode,
+			}, testCompiledK8sEnrollment())
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("VerifyPod: %v", err)
+				}
+				if pod.NodeName != "node-a" {
+					t.Fatalf("NodeName = %q, want node-a", pod.NodeName)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("VerifyPod error = %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}

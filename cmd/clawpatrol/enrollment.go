@@ -1059,6 +1059,15 @@ func (c *inClusterK8sClient) VerifyPod(ctx context.Context, token string, claims
 	if pod.ServiceAccountName != sa {
 		return k8sVerifiedPod{}, fmt.Errorf("token serviceaccount does not match pod serviceaccount")
 	}
+	// The node name is optional in both places: older bridges do not send
+	// it, and only newer clusters put it in bound tokens. When present it
+	// must name the pod's node.
+	if claims.NodeName != "" && claims.NodeName != pod.NodeName {
+		return k8sVerifiedPod{}, fmt.Errorf("node_name does not match the pod's node")
+	}
+	if tokenNode, ok := singleTokenReviewExtra(user.Extra, "authentication.kubernetes.io/node-name"); ok && tokenNode != pod.NodeName {
+		return k8sVerifiedPod{}, fmt.Errorf("token node binding does not match the pod's node")
+	}
 	profile, err := k8sResolveProfile(enr, ns, sa, pod.Labels)
 	if err != nil {
 		return k8sVerifiedPod{}, err
