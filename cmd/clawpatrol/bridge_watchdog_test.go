@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -216,5 +217,109 @@ func TestBridgeWatchdogResetMisses(t *testing.T) {
 		if got := bridgeWatchdogResetMisses(c.configured, c.reconnectAfter); got != c.want {
 			t.Errorf("bridgeWatchdogResetMisses(%d, %d) = %d, want %d", c.configured, c.reconnectAfter, got, c.want)
 		}
+	}
+}
+
+// fallbackWatchdog runs the loop with a flat rx and the given probe and
+// handshake source. step advances the clock and waits until the loop has read
+// it, so each tick sees the intended time.
+type fallbackWatchdog struct {
+	clk        *fakeClock
+	tick       chan time.Time
+	nowRead    chan struct{}
+	rekeys     chan struct{}
+	reconnects chan struct{}
+	stop       func()
+}
+
+func runFallbackWatchdog(t *testing.T, t0 time.Time, probe func() error, lastHandshake func() time.Time) *fallbackWatchdog {
+	t.Helper()
+	w := &fallbackWatchdog{
+		clk:        &fakeClock{},
+		tick:       make(chan time.Time),
+		nowRead:    make(chan struct{}, 1),
+		rekeys:     make(chan struct{}, 8),
+		reconnects: make(chan struct{}, 1),
+	}
+	w.clk.Set(t0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runBridgeWatchdogLoop(ctx, bridgeWatchdogConfig{
+			rx:                  func() uint64 { return 1000 },
+			probe:               probe,
+			lastHandshake:       lastHandshake,
+			handshakeStaleAfter: bridgeHandshakeStaleAfter(25 * time.Second),
+			rekey:               func() error { w.rekeys <- struct{}{}; return nil },
+			reconnect: func() {
+				select {
+				case w.reconnects <- struct{}{}:
+				default:
+				}
+			},
+			logf: discardBridgeWatchdogLog, tick: w.tick,
+			now: func() time.Time {
+				now := w.clk.Now()
+				w.nowRead <- struct{}{}
+				return now
+			},
+			probeAfter: 25 * time.Second, probeInterval: 25 * time.Second,
+			rekeyAfterFails: 2, reconnectAfterFails: 3,
+		})
+		close(done)
+	}()
+	w.stop = func() { cancel(); <-done }
+	t.Cleanup(w.stop)
+	return w
+}
+
+func (w *fallbackWatchdog) step(t *testing.T, at time.Time) {
+	t.Helper()
+	w.clk.Set(at)
+	w.tick <- at
+	waitSignal(t, w.nowRead, "watchdog tick")
+}
+
+// A missing ICMP permission is not a liveness failure. With a fresh
+// handshake the watchdog never escalates.
+func TestBridgeWatchdogProbeUnavailableFreshHandshake(t *testing.T) {
+	t0 := time.Unix(9_000_000, 0)
+	var w *fallbackWatchdog
+	probe := func() error { return fmt.Errorf("%w: operation not permitted", errProbeUnavailable) }
+	fresh := func() time.Time { return w.clk.Now().Add(-10 * time.Second) }
+	w = runFallbackWatchdog(t, t0, probe, fresh)
+
+	for i := 0; i <= 10; i++ {
+		w.step(t, t0.Add(time.Duration(i)*25*time.Second))
+	}
+	assertNoSignal(t, w.rekeys, "rekey with a fresh handshake")
+	assertNoSignal(t, w.reconnects, "reconnect with a fresh handshake")
+}
+
+// Without a probe, a stale handshake still escalates to rekey and reconnect.
+func TestBridgeWatchdogProbeUnavailableStaleHandshake(t *testing.T) {
+	for name, probe := range map[string]func() error{
+		"unavailable": func() error { return errProbeUnavailable },
+		"nil":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t0 := time.Unix(9_500_000, 0)
+			stale := func() time.Time { return t0.Add(-time.Hour) }
+			w := runFallbackWatchdog(t, t0, probe, stale)
+
+			w.step(t, t0) // seed
+			w.step(t, t0.Add(25*time.Second))
+			assertNoSignal(t, w.rekeys, "rekey after one failure")
+			w.step(t, t0.Add(50*time.Second))
+			waitSignal(t, w.rekeys, "rekey at 2 stale checks")
+			w.step(t, t0.Add(75*time.Second))
+			waitSignal(t, w.reconnects, "reconnect at 3 stale checks")
+		})
+	}
+}
+
+func TestBridgeHandshakeStaleAfter(t *testing.T) {
+	if got := bridgeHandshakeStaleAfter(25 * time.Second); got != 295*time.Second {
+		t.Fatalf("bridgeHandshakeStaleAfter(25s) = %s, want 295s", got)
 	}
 }

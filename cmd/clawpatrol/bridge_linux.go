@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -32,10 +33,12 @@ type bridgeState struct {
 }
 
 // bridgeSession is one live tunnel: the userspace WireGuard device, its TUN,
-// and the peer API token for deregister.
+// the liveness prober (nil when unavailable), and the peer API token for
+// deregister.
 type bridgeSession struct {
 	dev          *device.Device
 	tun          wgtun.Device
+	prober       *icmpProber
 	apiToken     string
 	stopWatchdog context.CancelFunc
 	reconnect    chan struct{}
@@ -45,6 +48,7 @@ func (s *bridgeSession) close() {
 	if s.stopWatchdog != nil {
 		s.stopWatchdog()
 	}
+	_ = s.prober.Close()
 	if s.dev != nil {
 		s.dev.Close()
 	}
@@ -232,6 +236,19 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	if err := replaceDefaultRoutes(ifaceName, have6); err != nil {
 		return nil, err
 	}
+	prober, err := openICMPProber(gwTunIP)
+	if err != nil {
+		if !errors.Is(err, errProbeUnavailable) {
+			return nil, err
+		}
+		log.Printf("bridge: WARNING: %v. Set the pod sysctl net.ipv4.ping_group_range=\"0 2147483647\" or keep NET_RAW on the bridge container. Until then the watchdog uses WireGuard handshake age, which detects a dead tunnel more slowly.", err)
+		prober = nil
+	}
+	defer func() {
+		if !ok {
+			_ = prober.Close()
+		}
+	}()
 
 	// env + CA handoff only on the first successful bring-up: the workload reads
 	// it once, and it does not change across reconnects for the same subject.
@@ -258,9 +275,24 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	sess := &bridgeSession{
 		dev:          dev,
 		tun:          tunDev,
+		prober:       prober,
 		apiToken:     registerResp.APIToken,
 		stopWatchdog: stopWatchdog,
 		reconnect:    make(chan struct{}, 1),
+	}
+	var probe func() error
+	if prober != nil {
+		probe = func() error { return prober.Probe(wgProbeTimeout) }
+	}
+	lastHandshake := func() time.Time {
+		uapi, err := dev.IpcGet()
+		if err != nil {
+			return time.Time{}
+		}
+		if s := parsePeerStats(uapi); s != nil {
+			return s.lastHandshake
+		}
+		return time.Time{}
 	}
 	ticker := time.NewTicker(bridgeWatchdogPoll)
 	go func() {
@@ -276,8 +308,10 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 				}
 				return 0
 			},
-			probe: func() error { return pingGatewayTunnel(gwTunIP, wgProbeTimeout) },
-			rekey: func() error { return dev.IpcSet(ipc) },
+			probe:               probe,
+			lastHandshake:       lastHandshake,
+			handshakeStaleAfter: bridgeHandshakeStaleAfter(keepalive),
+			rekey:               func() error { return dev.IpcSet(ipc) },
 			reconnect: func() {
 				select {
 				case sess.reconnect <- struct{}{}:

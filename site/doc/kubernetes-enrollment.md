@@ -215,6 +215,23 @@ re-enrolling bridge keeps its peer IP when it represents the same subject.
 Recovery does not increment the container restart count. Use the bridge
 lifecycle logs to observe local rebuilds and re-enrollment.
 
+### Liveness probe permissions
+
+The bridge checks the tunnel with an ICMP echo to the gateway's tunnel
+address. It opens the probe socket once per session:
+
+1. It first tries an unprivileged ICMP socket. This needs the Pod sysctl
+   `net.ipv4.ping_group_range` to include the bridge's GID. The example Pod
+   and the admission policy set it to `"0 2147483647"`. Kubernetes treats this
+   sysctl as safe. containerd 2.0 and later set it by default; earlier
+   containerd versions and some CRI-O setups do not.
+2. If that is not allowed, it tries a raw ICMP socket, which needs the
+   `NET_RAW` capability on the bridge container.
+3. If neither is allowed, the bridge logs a warning and checks the age of the
+   last WireGuard handshake instead. A healthy tunnel re-handshakes at least
+   every three minutes, so this mode detects a dead tunnel in about five
+   minutes instead of about one.
+
 ## Reaper
 
 Kubernetes Pod peers are transient. The bridge sends WireGuard keepalives, and
