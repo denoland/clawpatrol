@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,7 +41,14 @@ const (
 	// (e.g. removed from the policy on reload) — orphaned peers still get
 	// reaped.
 	enrollmentDefaultLiveness = 75 * time.Second
+	// enrollmentRegisterConcurrency bounds concurrent register requests past
+	// the cheap request checks.
+	enrollmentRegisterConcurrency = 4
 )
+
+// enrollmentRegisterWait is how long a register request waits for a slot
+// before it gets 429. A variable so tests can shorten it.
+var enrollmentRegisterWait = 2 * time.Second
 
 type enrollmentRegisterRequest struct {
 	Transport          string          `json:"transport"`
@@ -172,6 +180,15 @@ func (w *webMux) apiEnrollmentRegister(rw http.ResponseWriter, r *http.Request) 
 		http.Error(rw, err.Error(), http.StatusForbidden)
 		return
 	}
+	// Each Authorize can call the apiserver with the gateway's identity, and
+	// this path needs no dashboard auth. Bound the concurrent calls.
+	release, ok := w.g.acquireRegisterSlot(r.Context())
+	if !ok {
+		rw.Header().Set("Retry-After", "1")
+		http.Error(rw, "enrollment registration is busy, retry", http.StatusTooManyRequests)
+		return
+	}
+	defer release()
 	identity, err := authorizer.Authorize(r.Context(), token, req.Claims)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusForbidden)
@@ -323,14 +340,54 @@ func (g *Gateway) enrollmentAuthorizerFor(cfg *config.Gateway, transport, name s
 		if !ok {
 			return nil, fmt.Errorf("enrollment authorizer %q has unexpected compiled body %T", name, enrollment.Body)
 		}
+		verifier, err := g.k8sRegistrationVerifier()
+		if err != nil {
+			return nil, err
+		}
 		return &kubernetesTokenReviewAuthorizer{
 			name:     enrollment.Name,
 			enr:      enr,
-			verifier: g.k8sVerifier,
+			verifier: verifier,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported enrollment authorizer type %q", enrollment.Type)
 	}
+}
+
+// k8sRegistrationVerifier returns the test verifier when one is set, or the
+// gateway's cached in-cluster client. A failed build is not cached.
+func (g *Gateway) k8sRegistrationVerifier() (k8sRegistrationVerifier, error) {
+	if g.k8sVerifier != nil {
+		return g.k8sVerifier, nil
+	}
+	g.k8sClientMu.Lock()
+	defer g.k8sClientMu.Unlock()
+	if g.k8sClient == nil {
+		c, err := newInClusterK8sClient()
+		if err != nil {
+			return nil, err
+		}
+		g.k8sClient = c
+	}
+	return g.k8sClient, nil
+}
+
+// acquireRegisterSlot takes one of the enrollmentRegisterConcurrency slots,
+// waiting at most enrollmentRegisterWait. The slots are on Gateway because
+// every listener has its own webMux.
+func (g *Gateway) acquireRegisterSlot(ctx context.Context) (release func(), ok bool) {
+	g.enrollRegisterOnce.Do(func() {
+		g.enrollRegisterSem = make(chan struct{}, enrollmentRegisterConcurrency)
+	})
+	timer := time.NewTimer(enrollmentRegisterWait)
+	defer timer.Stop()
+	select {
+	case g.enrollRegisterSem <- struct{}{}:
+		return func() { <-g.enrollRegisterSem }, true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	return nil, false
 }
 
 func (g *Gateway) enrollmentProfileExists(profile string) error {
@@ -855,15 +912,10 @@ func (a *kubernetesTokenReviewAuthorizer) Authorize(ctx context.Context, token s
 	if parsed.PodName == "" || parsed.PodNamespace == "" || parsed.PodUID == "" {
 		return enrollmentIdentity{}, fmt.Errorf("pod_name, pod_namespace, and pod_uid are required")
 	}
-	verifier := a.verifier
-	if verifier == nil {
-		v, err := newInClusterK8sClient()
-		if err != nil {
-			return enrollmentIdentity{}, err
-		}
-		verifier = v
+	if a.verifier == nil {
+		return enrollmentIdentity{}, fmt.Errorf("kubernetes verifier is not configured")
 	}
-	pod, err := verifier.VerifyPod(ctx, token, parsed, a.enr)
+	pod, err := a.verifier.VerifyPod(ctx, token, parsed, a.enr)
 	if err != nil {
 		return enrollmentIdentity{}, err
 	}
@@ -885,39 +937,60 @@ func (a *kubernetesTokenReviewAuthorizer) Authorize(ctx context.Context, token s
 	}, nil
 }
 
+// k8sServiceAccountDir holds the gateway's own ServiceAccount token and the
+// cluster CA. A variable so tests can point it at a temp dir.
+var k8sServiceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+
 type inClusterK8sClient struct {
 	baseURL string
-	token   string
-	client  *http.Client
+	// tokenPath is read on every request, so kubelet token rotation applies
+	// without rebuilding the client.
+	tokenPath string
+	client    *http.Client
 }
 
+// newInClusterK8sClient builds the client once per gateway. The transport and
+// root pool are reused for every request. The cluster CA is read only here, so
+// a CA rotation needs a gateway restart.
 func newInClusterK8sClient() (*inClusterK8sClient, error) {
 	host := os.Getenv("KUBERNETES_SERVICE_HOST")
 	port := os.Getenv("KUBERNETES_SERVICE_PORT")
 	if host == "" || port == "" {
 		return nil, fmt.Errorf("kubernetes service environment is not available")
 	}
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err != nil {
-		return nil, fmt.Errorf("read gateway serviceaccount token: %w", err)
+	c := &inClusterK8sClient{
+		baseURL:   "https://" + net.JoinHostPort(host, port),
+		tokenPath: filepath.Join(k8sServiceAccountDir, "token"),
+	}
+	if _, err := c.bearer(); err != nil {
+		return nil, err
 	}
 	roots, _ := x509.SystemCertPool()
 	if roots == nil {
 		roots = x509.NewCertPool()
 	}
-	if ca, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); err == nil {
+	if ca, err := os.ReadFile(filepath.Join(k8sServiceAccountDir, "ca.crt")); err == nil {
 		roots.AppendCertsFromPEM(ca)
 	}
-	return &inClusterK8sClient{
-		baseURL: "https://" + net.JoinHostPort(host, port),
-		token:   strings.TrimSpace(string(token)),
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: roots},
-			},
+	c.client = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{RootCAs: roots},
+			ForceAttemptHTTP2:   true,
+			TLSHandshakeTimeout: 5 * time.Second,
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     90 * time.Second,
 		},
-	}, nil
+	}
+	return c, nil
+}
+
+func (c *inClusterK8sClient) bearer() (string, error) {
+	b, err := os.ReadFile(c.tokenPath)
+	if err != nil {
+		return "", fmt.Errorf("read gateway serviceaccount token: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 func (c *inClusterK8sClient) VerifyPod(ctx context.Context, token string, claims k8sEnrollmentClaims, enr *config.CompiledK8sEnrollment) (k8sVerifiedPod, error) {
@@ -991,11 +1064,15 @@ func (c *inClusterK8sClient) tokenReview(ctx context.Context, podToken, audience
 	if err := json.NewEncoder(&buf).Encode(body); err != nil {
 		return tokenReviewUser{}, err
 	}
+	gatewayToken, err := c.bearer()
+	if err != nil {
+		return tokenReviewUser{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/apis/authentication.k8s.io/v1/tokenreviews", &buf)
 	if err != nil {
 		return tokenReviewUser{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+gatewayToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -1051,11 +1128,15 @@ type k8sPodInfo struct {
 
 func (c *inClusterK8sClient) getPod(ctx context.Context, namespace, name string) (k8sPodInfo, error) {
 	url := c.baseURL + "/api/v1/namespaces/" + pathEscape(namespace) + "/pods/" + pathEscape(name)
+	gatewayToken, err := c.bearer()
+	if err != nil {
+		return k8sPodInfo{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return k8sPodInfo{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+gatewayToken)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return k8sPodInfo{}, fmt.Errorf("get pod: %w", err)
