@@ -3350,11 +3350,11 @@ func peerIP(c net.Conn) string {
 	return canonicalPeerIP(host)
 }
 
-// canonicalPeerIP collapses a wg-side v6 source (fd77::<n>) into its
-// v4 equivalent (<wg-subnet-prefix>.<n>) so the agent registry,
-// onboard registry, and dashboard track one device per peer
-// regardless of which IP family the inbound flow used. Non-wg
-// addresses pass through unchanged.
+// canonicalPeerIP collapses a wg-side v6 source (fd77::<host-bits>) into
+// its v4 equivalent in the wg subnet so the agent registry, onboard
+// registry, and dashboard track one device per peer regardless of which
+// IP family the inbound flow used. Non-wg addresses pass through
+// unchanged.
 func canonicalPeerIP(ip string) string {
 	if !strings.Contains(ip, ":") {
 		return ip
@@ -3363,27 +3363,22 @@ func canonicalPeerIP(ip string) string {
 	if err != nil || !a.Is6() {
 		return ip
 	}
-	b := a.As16()
-	if b[0] != 0xfd || b[1] != 0x77 {
-		return ip
+	// Use the configured wg subnet to reconstruct the v4. Fall back to the
+	// example config's subnet when nothing's loaded yet (early-boot).
+	prefix := defaultWGPrefix
+	if globalWG != nil && globalWG.prefix.IsValid() {
+		prefix = globalWG.prefix
 	}
-	last := b[15]
-	// Use the configured wg subnet prefix to reconstruct the v4. Fall
-	// back to 10.55.0.0/24 — same default the example config uses —
-	// when nothing's loaded yet (early-boot).
-	prefixV4 := defaultWGV4Prefix
-	if globalWG != nil && globalWG.serverIP.Is4() {
-		s := globalWG.serverIP.As4()
-		prefixV4 = [3]byte{s[0], s[1], s[2]}
+	if v4, ok := wgV4FromV6(prefix, a); ok {
+		return v4.String()
 	}
-	v4 := netip.AddrFrom4([4]byte{prefixV4[0], prefixV4[1], prefixV4[2], last})
-	return v4.String()
+	return ip
 }
 
-// defaultWGV4Prefix matches the example config's wg_subnet_cidr
+// defaultWGPrefix matches the example config's wg_subnet_cidr
 // (10.55.0.0/24). Lets canonicalPeerIP work before the WGServer is
 // up.
-var defaultWGV4Prefix = [3]byte{10, 55, 0}
+var defaultWGPrefix = netip.MustParsePrefix("10.55.0.0/24")
 
 func printVersion() {
 	v := buildVersion
