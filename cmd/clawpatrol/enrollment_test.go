@@ -704,6 +704,7 @@ func TestApiEnrollmentList(t *testing.T) {
 // what IsEnrollmentEnabled and the runtime lookups read).
 const enabledEnrollmentHCL = `gateway {
   public_url = "https://gateway.example.com"
+  dashboard_listen = "0.0.0.0:8080"
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 

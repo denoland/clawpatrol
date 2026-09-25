@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -188,11 +190,12 @@ func emitK8sEnrollment(body any, _ string, b *hclwrite.Body) {
 	}
 }
 
-// validateEnrollmentGateway enforces the cross-block invariant that
-// workload enrollment provisions WireGuard peers, so a `wireguard { ... }`
-// data-plane block must be declared whenever any enrollment is configured.
-// Mirrors how the OIDC enrollment plugin validates gateway-level
-// preconditions after per-block decode.
+// validateEnrollmentGateway enforces the cross-block invariants of workload
+// enrollment: it provisions WireGuard peers, so a `wireguard { ... }`
+// data-plane block must be declared, and an unenrolled workload registers
+// over the dashboard listener, so `dashboard_listen` must not be unset or
+// loopback-only. Mirrors how the OIDC enrollment plugin validates
+// gateway-level preconditions after per-block decode.
 func validateEnrollmentGateway(gw *Gateway) hcl.Diagnostics {
 	if gw == nil || gw.Policy == nil || len(gw.Policy.Enrollments) == 0 {
 		return nil
@@ -204,5 +207,32 @@ func validateEnrollmentGateway(gw *Gateway) hcl.Diagnostics {
 			Detail:   "`enrollment` provisions WireGuard peers; declare a `wireguard { ... }` block for the data plane.",
 		}}
 	}
+	if reason := enrollmentListenerProblem(gw.Settings.DashboardListen); reason != "" {
+		return hcl.Diagnostics{&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "enrollment requires a routable dashboard_listen",
+			Detail:   fmt.Sprintf("Workloads register over the dashboard listener before they have a tunnel, but %s. Set `dashboard_listen` to an address they can reach, for example \"0.0.0.0:8080\".", reason),
+		}}
+	}
 	return nil
+}
+
+// enrollmentListenerProblem returns why listen cannot accept registrations
+// from workloads, or "" when it can. A hostname other than localhost is
+// accepted; it resolves at startup.
+func enrollmentListenerProblem(listen string) string {
+	if strings.TrimSpace(listen) == "" {
+		return "`dashboard_listen` is not set"
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Sprintf("`dashboard_listen` %q is not a host:port address", listen)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Sprintf("`dashboard_listen` %q is loopback-only", listen)
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return fmt.Sprintf("`dashboard_listen` %q is loopback-only", listen)
+	}
+	return ""
 }
