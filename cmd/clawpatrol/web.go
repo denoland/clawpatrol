@@ -137,9 +137,14 @@ func (w *webMux) dashboardPasswordPrincipal() principal {
 	return principal{Kind: principalDashboardPassword, Owner: dashboardRootUsername}
 }
 
+// routeAuthIndex maps each path to its auth requirement. Auth is per path, so
+// rows that share a path (one per method) must agree on it.
 func routeAuthIndex(routes []webRoute) map[string]authRequirement {
 	out := make(map[string]authRequirement, len(routes))
 	for _, route := range routes {
+		if prev, ok := out[route.Path]; ok && prev != route.Auth {
+			panic("web route " + route.Path + " has conflicting auth requirements")
+		}
 		out[route.Path] = route.Auth
 	}
 	return out
@@ -212,10 +217,17 @@ func (w *webMux) handler() http.Handler {
 	mux := http.NewServeMux()
 	routes := w.routes()
 	w.routeAuth = routeAuthIndex(routes)
+	registered := map[string]bool{}
 	for _, route := range routes {
 		if route.Method == "" {
 			panic("web route missing method: " + route.Path)
 		}
+		// A handler that serves several methods has one row per method;
+		// the mux dispatches on path only.
+		if registered[route.Path] {
+			continue
+		}
+		registered[route.Path] = true
 		mux.HandleFunc(route.Path, route.Handler)
 	}
 	w.mountCredentialWebhooks(mux)
@@ -269,6 +281,8 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiPeerTsnetRegister},
 		{Method: http.MethodPost, Path: enrollmentRegisterPath, Auth: authSelfAuthenticating, Handler: w.apiEnrollmentRegister},
+		// DELETE deregisters; the handler checks the peer API token.
+		{Method: http.MethodDelete, Path: enrollmentRegisterPath, Auth: authSelfAuthenticating, Handler: w.apiEnrollmentRegister},
 		{Method: http.MethodGet, Path: "/api/enrollment/peers", Auth: authDashboard, Handler: w.apiEnrollmentList},
 		// /__login is the auth point itself — it MUST be reachable
 		// without a credential. The handler dispatches on r.Method
