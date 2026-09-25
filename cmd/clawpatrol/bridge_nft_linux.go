@@ -107,7 +107,7 @@ func installEgressFilter(iface string, mark int) error {
 		err = applyEgressFilter(c, iface, uint32(mark))
 	}
 	if err != nil {
-		return fmt.Errorf("load the nftables egress filter (run with --egress-filter=off to start without it): %w", err)
+		return fmt.Errorf("load the nftables egress filter (run with --egress-filter=off to start without it; see \"Runtime compatibility\" in the Kubernetes enrollment docs): %w", err)
 	}
 	return nil
 }

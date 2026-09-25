@@ -184,7 +184,7 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 
 	tunDev, err := wgtun.CreateTUN(opt.Iface, opt.MTU)
 	if err != nil {
-		return nil, fmt.Errorf("create tun: %w", err)
+		return nil, fmt.Errorf("create tun %s: %w (the bridge needs the /dev/net/tun device and NET_ADMIN; see \"Runtime compatibility\" in the Kubernetes enrollment docs)", opt.Iface, err)
 	}
 	ok := false
 	defer func() {
