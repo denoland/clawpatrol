@@ -118,6 +118,48 @@ The agent container receives only:
 The WireGuard private key and peer API token are never written to the shared
 volume.
 
+### Transport security for enrollment
+
+The bridge sends the projected ServiceAccount token to the gateway when it
+registers, and the peer API token when it fetches the environment. The gateway
+returns the CA that the workload will trust. The example `--gateway-url` is the
+in-cluster Service over plain HTTP, which is for development and tests: anyone
+on the network path can read the tokens, replay the ServiceAccount token
+within its lifetime, or replace the CA.
+
+For production, set `--gateway-url` to the gateway's `public_url` behind a TLS
+ingress or load balancer that you operate:
+
+- The ingress must pass the `Authorization` header, POST and DELETE requests,
+  and request bodies to the gateway's `dashboard_listen` port.
+- The bridge sends this traffic on the underlay, not through the tunnel, so
+  the Pod network must reach the ingress address (an in-cluster ingress
+  controller Service, or a load balancer that allows hairpin traffic). Allow
+  that path in any egress or ingress NetworkPolicy.
+- The WireGuard endpoint is separate (UDP). When `wireguard.endpoint` is not
+  set, the gateway advertises the host of `public_url`.
+- If the ingress certificate comes from a private CA, set `SSL_CERT_FILE` (or
+  `SSL_CERT_DIR`) on the bridge container to a bundle that contains it, for
+  example from a mounted ConfigMap. The bundle replaces the system roots for
+  the bridge.
+
+```yaml
+# Overlay patch for the bridge container in agent.yaml.
+args:
+  - bridge
+  - --gateway-url=https://clawpatrol.example.com
+  # ... other bridge arguments unchanged
+env:
+  - name: SSL_CERT_FILE
+    value: /etc/clawpatrol-ca/ca.crt
+volumeMounts:
+  - name: clawpatrol-ingress-ca
+    mountPath: /etc/clawpatrol-ca
+    readOnly: true
+```
+
+The bridge logs a warning at startup when `--gateway-url` uses `http://`.
+
 ## Gateway RBAC
 
 The gateway ServiceAccount needs:

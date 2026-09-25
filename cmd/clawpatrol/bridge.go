@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -122,6 +123,9 @@ func runBridge(args []string) {
 	default:
 		fail("clawpatrol bridge: --egress-filter must be on or off, got %q", *egressFilter)
 	}
+	if gatewayURLIsPlaintext(opt.GatewayURL) {
+		log.Printf("bridge: WARNING: --gateway-url %s is plain HTTP; the ServiceAccount token and the peer API token cross the network unencrypted. Use the gateway's public_url behind TLS.", opt.GatewayURL)
+	}
 	typ, name, err := parseBridgeAuthorizer(authorizer)
 	if err != nil {
 		fail("%v", err)
@@ -163,6 +167,13 @@ func validateRouteProto(p string) error {
 		return fmt.Errorf("--route-proto %q must be in 1..255 (or an rt_protos name)", p)
 	}
 	return nil
+}
+
+// gatewayURLIsPlaintext reports whether the bridge would send its credentials
+// to the gateway without TLS.
+func gatewayURLIsPlaintext(gatewayURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(gatewayURL))
+	return err == nil && strings.EqualFold(u.Scheme, "http")
 }
 
 // parseBridgeAuthorizer splits the `--authorizer <type>/<name>` value,
