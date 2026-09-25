@@ -186,6 +186,33 @@ The Kustomize example creates:
 - TokenReview and Pod-read RBAC, and
 - a restricted sample agent Pod with the bridge sidecar.
 
+Set the dashboard password before you apply the example. The gateway listens
+on `0.0.0.0:8080` for the enrollment API and the dashboard, and until a
+password exists the dashboard serves an open first-run form. The gateway sets
+the password at startup from `--set-dashboard-password`, so pass it from a
+Secret in your overlay:
+
+```bash
+kubectl -n clawpatrol create secret generic clawpatrol-dashboard \
+  --from-literal=password="$(openssl rand -base64 24)"
+```
+
+```yaml
+# Overlay patch for the gateway container in gateway-statefulset.yaml.
+args:
+  - gateway
+  - --set-dashboard-password=$(DASHBOARD_PASSWORD)
+  - /etc/clawpatrol/gateway.hcl
+env:
+  - name: DASHBOARD_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: clawpatrol-dashboard
+        key: password
+```
+
+Then apply the example:
+
 ```bash
 kubectl apply -k examples/kubernetes/kustomization
 ```
@@ -322,6 +349,15 @@ A ready-to-adapt example is
 [`examples/kubernetes/agent-egress-networkpolicy.yaml`](https://github.com/denoland/clawpatrol/blob/main/examples/kubernetes/agent-egress-networkpolicy.yaml).
 It is optional defense-in-depth and only takes effect on a CNI that enforces
 NetworkPolicy.
+
+### Restrict gateway ingress (recommended)
+
+Limit who can reach the gateway with a NetworkPolicy that permits only the
+agent namespace on the gateway API (TCP 8080) and the WireGuard endpoint
+(UDP 51820). A ready-to-adapt example is
+[`examples/kubernetes/gateway-ingress-networkpolicy.yaml`](https://github.com/denoland/clawpatrol/blob/main/examples/kubernetes/gateway-ingress-networkpolicy.yaml).
+Agent pods still reach the dashboard on the same port, so keep the dashboard
+password set.
 
 ## Local e2e
 
