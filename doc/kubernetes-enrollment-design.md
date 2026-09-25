@@ -175,13 +175,20 @@ The Linux implementation is in
 Before replacing the Pod's default route, the bridge:
 
 - discovers the original IPv4 route and optional IPv6 route,
-- resolves the gateway API and WireGuard endpoint,
-- reads the current DNS resolvers, and
-- pins those control-plane destinations to the underlay using route protocol
-  111 by default.
+- copies them into routing table 111 (`--fwmark`), tagged with route
+  protocol 111 (`--route-proto`), and
+- adds two policy rules for packets with firewall mark 0x6f:
+  `lookup main suppress_prefixlength 0` (the CNI's specific routes, but not
+  the tunnel default) and `lookup 111` (the original default route).
 
-The pinned routes keep enrollment, DNS, and the WireGuard handshake reachable
-after all normal Pod traffic is default-routed through the TUN device.
+The bridge sets that mark on its own sockets only: the WireGuard UDP socket
+(`fwmark` in the device configuration), the HTTP client for enrollment and
+env pushdown, and the resolver it uses for the gateway and endpoint names. So
+enrollment, its DNS lookups, and the WireGuard handshake use the underlay,
+while all workload traffic, DNS included, is default-routed through the TUN
+device. The gateway answers DNS that arrives through the tunnel. A workload
+container can set the mark only with `CAP_NET_ADMIN` or `CAP_NET_RAW`, so
+workload containers must drop both.
 
 The bridge watchdog samples its receive counter every 5 seconds. Because an
 idle tunnel may have no inbound traffic, receive silence alone is not treated
@@ -195,8 +202,9 @@ gateway's tunnel address:
   trigger in-process re-enrollment.
 
 Re-enrollment creates a new keypair and registration but keeps the IP for the
-same authenticated subject. The bridge re-reads resolver and underlay state on
-each attempt and reconciles its tagged routes.
+same authenticated subject. On each attempt the bridge re-discovers the
+underlay route, from the main table or, when the tunnel default is gone, from
+table 111, and reinstalls the table and rules.
 
 The process does not exit during recovery. Closing the TUN removes the Pod's
 default route, so general egress fails closed until the next session is ready.

@@ -141,7 +141,9 @@ The bridge needs:
 The agent container should:
 
 - omit the Kubernetes token and `/dev/net/tun`,
-- add no Linux capabilities,
+- drop all Linux capabilities (`drop: ["ALL"]`). With `NET_ADMIN` or
+  `NET_RAW` it could set the bridge's socket mark and send traffic around the
+  tunnel,
 - mount `/clawpatrol` read-only, and
 - source `/clawpatrol/env` before starting the workload.
 

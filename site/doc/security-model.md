@@ -134,9 +134,11 @@ The pod has two different trust zones:
   token, the WireGuard private key in memory, and the peer API token
   used for env pushdown.
 - The **agent container** is the sandboxed execution environment. It
-  should have no added capabilities, no Kubernetes API token, no
+  should drop all capabilities, and have no Kubernetes API token, no
   `/dev/net/tun`, and only a read-only mount of the shared handoff
-  volume.
+  volume. The sidecar sends its own control-plane traffic around the
+  tunnel with a socket mark; `NET_ADMIN` or `NET_RAW` would let the
+  agent set that mark too.
 
 The shared volume is intentionally narrow. The sidecar writes the CA
 bundle, env exports, and `/clawpatrol/ready`; it must not write the

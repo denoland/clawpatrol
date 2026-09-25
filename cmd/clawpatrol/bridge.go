@@ -54,16 +54,21 @@ type bridgeOptions struct {
 	// Capped below the reconnect horizon; 0 disables the local rebuild.
 	LocalResetMisses int
 
-	// RouteProto is the rt_proto tag stamped on the control-plane host routes
-	// the bridge pins to the underlay, and the filter used to recover them on
-	// an in-process reconnect. Escape hatch: override only if the default collides
-	// with a route protocol another component already uses in the netns.
+	// RouteProto is the rt_proto tag stamped on the underlay routes the bridge
+	// installs in its routing table. Escape hatch: override only if the
+	// default collides with a route protocol another component already uses
+	// in the netns.
 	RouteProto string
+
+	// FWMark is the socket mark on the bridge's own control-plane traffic, and
+	// the ID of the routing table that holds the underlay default route (see
+	// bridge_route.go).
+	FWMark int
 }
 
-// defaultRouteProto is the rt_proto the bridge tags its underlay pins with by
-// default (overridable via --route-proto). Arbitrary and unregistered; it only
-// has to be stable and unlikely to collide with the CNI's own routes.
+// defaultRouteProto is the rt_proto the bridge tags its underlay routes with
+// by default (overridable via --route-proto). Arbitrary and unregistered; it
+// only has to be stable and unlikely to collide with the CNI's own routes.
 const defaultRouteProto = "111"
 
 // runBridge parses the `clawpatrol bridge` flags and dispatches to the
@@ -87,7 +92,9 @@ func runBridge(args []string) {
 	fs.IntVar(&opt.LocalResetMisses, "local-reset-missed", bridgeWatchdogDefaultResetMisses,
 		"missed keepalives before an in-place tunnel rebuild; 0 disables it, and a value at or above the gateway's reconnect threshold skips directly to re-enrollment")
 	fs.StringVar(&opt.RouteProto, "route-proto", defaultRouteProto,
-		"rt_proto tag for the underlay control-plane pins (gateway + DNS); override only if it collides with another component's routes")
+		"rt_proto tag for the underlay routes in the bridge's routing table; override only if it collides with another component's routes")
+	fs.IntVar(&opt.FWMark, "fwmark", defaultBridgeFwmark,
+		"socket mark for the bridge's own gateway, DNS, and WireGuard traffic, and the ID of the routing table that sends it to the underlay")
 	_ = fs.Parse(args)
 
 	if len(fs.Args()) > 0 {
@@ -97,6 +104,9 @@ func runBridge(args []string) {
 		fail("clawpatrol bridge: --gateway-url is required")
 	}
 	if err := validateRouteProto(opt.RouteProto); err != nil {
+		fail("clawpatrol bridge: %v", err)
+	}
+	if err := validateBridgeFwmark(opt.FWMark); err != nil {
 		fail("clawpatrol bridge: %v", err)
 	}
 	typ, name, err := parseBridgeAuthorizer(authorizer)
@@ -112,11 +122,9 @@ func runBridge(args []string) {
 }
 
 // preferV4 returns the first IPv4 address (unmapped), falling back to the
-// first address of any family when there is no IPv4. The agent pins IPv4
-// host routes by default and the gateway WireGuard endpoint is reached over
-// IPv4 in typical clusters; dialing an IPv6 endpoint while only IPv4 is
-// route-pinned would blackhole the handshake once the default route flips
-// to the tunnel.
+// first address of any family when there is no IPv4. The IPv4 underlay route
+// is always present, and the gateway WireGuard endpoint is reached over IPv4
+// in typical clusters; the IPv6 underlay is optional.
 func preferV4(ips []netip.Addr) (netip.Addr, bool) {
 	if len(ips) == 0 {
 		return netip.Addr{}, false

@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -61,6 +60,10 @@ func (s *bridgeSession) close() {
 func bridgeRun(ctx context.Context, opt bridgeOptions) error {
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The bridge's own traffic to the gateway and DNS carries the mark, so it
+	// uses the underlay routes while workload traffic uses the tunnel.
+	bridgeResolver, enrollmentHTTPClient = newMarkedNet(opt.FWMark)
 
 	st := &bridgeState{}
 	backoff := time.Second
@@ -118,38 +121,24 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		return nil, fmt.Errorf("generate wireguard keypair: %w", err)
 	}
 
-	// Underlay route: the pod's pre-tunnel default on first boot, or a surviving
-	// tagged pin after an in-process reconnect / genuine restart (clawpatrol0 is
-	// gone, so there is no default route).
-	route4, src4, ok4 := discoverUnderlayRoute("-4", opt.RouteProto)
+	// Underlay route: the pod's pre-tunnel default on first boot, or the copy
+	// in the bridge's table after an in-process reconnect or a restart
+	// (clawpatrol0 is gone, so the main table has no default route).
+	route4, src4, ok4 := discoverUnderlayRoute("-4", opt.FWMark, opt.Iface)
 	if !ok4 {
-		return nil, fmt.Errorf("no usable underlay route: neither a default route nor a tagged clawpatrol pin was found")
+		return nil, fmt.Errorf("no usable underlay route: neither a default route nor the bridge's routing table %d has one", opt.FWMark)
 	}
 	// IPv6 is optional: present only when the pod already has a v6 underlay route.
-	route6, _, have6 := discoverUnderlayRoute("-6", opt.RouteProto)
+	route6, _, have6 := discoverUnderlayRoute("-6", opt.FWMark, opt.Iface)
 
 	if st.reconnects == 0 && st.bringUpFails == 0 {
-		if src4 == "pin" {
-			log.Printf("bridge: no default route at start — recovered underlay gateway via %s dev %s from tagged pins (proto %s); recovery boot, re-enrolling", route4.Via, route4.Dev, opt.RouteProto)
+		if src4 == "table" {
+			log.Printf("bridge: no default route at start — recovered underlay gateway via %s dev %s from routing table %d; recovery boot, re-enrolling", route4.Via, route4.Dev, opt.FWMark)
 		} else {
 			log.Printf("bridge: starting; underlay gateway via %s dev %s, enrolling with %s", route4.Via, route4.Dev, opt.AuthorizerName)
 		}
 	}
-
-	// Re-read resolv.conf every bring-up (it may have swapped).
-	resolverIPs := resolvConfNameservers()
-	_ = pinHosts(resolverIPs, route4, route6, have6, opt.RouteProto, false)
-
-	apiURL, err := url.Parse(opt.GatewayURL)
-	if err != nil {
-		return nil, fmt.Errorf("gateway-url: %w", err)
-	}
-
-	apiIPs, err := lookupHostIPs(apiURL.Hostname())
-	if err != nil {
-		return nil, fmt.Errorf("resolve gateway api host %q: %w", apiURL.Hostname(), err)
-	}
-	if err := pinHosts(apiIPs, route4, route6, have6, opt.RouteProto, true); err != nil {
+	if err := installUnderlayRouting(route4, route6, have6, opt.FWMark, opt.FWMark, opt.RouteProto); err != nil {
 		return nil, err
 	}
 
@@ -176,18 +165,9 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	if err != nil {
 		return nil, err
 	}
-	if err := pinHosts([]netip.Addr{endpointIP}, route4, route6, have6, opt.RouteProto, true); err != nil {
-		return nil, fmt.Errorf("pin wg endpoint: %w", err)
+	if endpointIP.Is6() && !have6 {
+		return nil, fmt.Errorf("wireguard endpoint %s is IPv6 but the pod has no IPv6 underlay route", endpointAddr)
 	}
-	// Now that the full desired set is known, prune any tagged pin no longer needed
-	want := map[netip.Addr]bool{endpointIP: true}
-	for _, ip := range resolverIPs {
-		want[ip] = true
-	}
-	for _, ip := range apiIPs {
-		want[ip] = true
-	}
-	pruneStalePins(want, opt.RouteProto)
 
 	gwTunIP, err := netip.ParseAddr(strings.TrimSpace(registerResp.GatewayTunnelIP))
 	if err != nil {
@@ -223,7 +203,7 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	if keepaliveSecs <= 0 {
 		keepaliveSecs = 25
 	}
-	ipc, err := buildTunWGIpc(clientPrivB64, registerResp.ServerPublicKey, endpointAddr, keepaliveSecs)
+	ipc, err := buildTunWGIpc(clientPrivB64, registerResp.ServerPublicKey, endpointAddr, keepaliveSecs, opt.FWMark)
 	if err != nil {
 		return nil, err
 	}
@@ -337,64 +317,6 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	return sess, nil
 }
 
-// pinHosts pins each host to its family's underlay route, tagged with proto.
-// When fatal, the first pin error aborts (an unpinned control-plane host
-// blackholes the path); otherwise pins are best-effort. Hosts of a family with
-// no underlay route are skipped.
-func pinHosts(hosts []netip.Addr, route4, route6 linuxDefaultRoute, have6 bool, proto string, fatal bool) error {
-	for _, ip := range hosts {
-		if !ip.Is4() && !have6 {
-			continue
-		}
-		if err := pinHostRoute(ip, route4, route6, have6, proto); err != nil {
-			if fatal {
-				return fmt.Errorf("pin host route %s: %w", ip, err)
-			}
-			log.Printf("bridge: pin route %s: %v — continuing", ip, err)
-		}
-	}
-	return nil
-}
-
-// pruneStalePins deletes every proto-tagged route whose destination host is
-// not in want. The proto tag makes the pinned set self-identifying, so the
-// bridge can rebuild its control-plane routes without ever touching CNI ones.
-func pruneStalePins(want map[netip.Addr]bool, proto string) {
-	for _, fam := range []string{"-4", "-6"} {
-		for _, ip := range listPinnedHosts(fam, proto) {
-			if want[ip] {
-				continue
-			}
-			dst := ip.String() + "/32"
-			if ip.Is6() {
-				dst = ip.String() + "/128"
-			}
-			_ = runIP("ip", fam, "route", "del", dst, "proto", proto)
-		}
-	}
-}
-
-// listPinnedHosts returns the destination host of every proto-tagged route in
-// the given family ("-4"/"-6") — the bridge's own control-plane pins.
-func listPinnedHosts(family, proto string) []netip.Addr {
-	out, err := exec.Command("ip", family, "route", "show", "proto", proto).Output()
-	if err != nil {
-		return nil
-	}
-	var hosts []netip.Addr
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		dst, _, _ := strings.Cut(fields[0], "/")
-		if ip, err := netip.ParseAddr(dst); err == nil {
-			hosts = append(hosts, ip)
-		}
-	}
-	return hosts
-}
-
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
 		return a
@@ -402,7 +324,7 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-func buildTunWGIpc(privateKeyB64, serverPublicKeyB64, endpoint string, keepaliveSeconds int) (string, error) {
+func buildTunWGIpc(privateKeyB64, serverPublicKeyB64, endpoint string, keepaliveSeconds, fwmark int) (string, error) {
 	privHex, err := base64DecodeToHex(privateKeyB64)
 	if err != nil {
 		return "", fmt.Errorf("private key: %w", err)
@@ -413,6 +335,8 @@ func buildTunWGIpc(privateKeyB64, serverPublicKeyB64, endpoint string, keepalive
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", privHex)
+	// Mark the tunnel's UDP socket so its packets use the underlay routes.
+	fmt.Fprintf(&b, "fwmark=%d\n", fwmark)
 	fmt.Fprintf(&b, "replace_peers=true\n")
 	fmt.Fprintf(&b, "public_key=%s\n", pubRaw)
 	fmt.Fprintf(&b, "endpoint=%s\n", endpoint)
@@ -449,73 +373,27 @@ func setupTunDevice(iface string, mtu int, peerIP, peerIPv6 string) error {
 	return nil
 }
 
-// discoverUnderlayRoute resolves the pod's pre-tunnel route for a family
-// ("-4" / "-6"). It prefers the live default route (the normal first-boot
-// case) and falls back to a surviving tagged clawpatrol pin, which is how an
-// in-process reconnect recovers the underlay gateway when there is no default
-// route left. The middle return value is the source: "default" when it came
-// from the live default route (normal first boot) or "pin" when it was
-// recovered from a tagged pin (an in-process reconnect). Source "" with ok=false
-// means neither was available — for v4 that's fatal to bring-up; for v6 it
-// just means "no IPv6 underlay", same as before.
-func discoverUnderlayRoute(family, proto string) (linuxDefaultRoute, string, bool) {
+// discoverUnderlayRoute resolves the pod's pre-tunnel default route for a
+// family ("-4" / "-6"). It prefers the live default route in the main table
+// (the normal first boot) and falls back to the copy in the bridge's routing
+// table, which is how a reconnect or a restarted bridge recovers the underlay
+// when clawpatrol0 and its default route are gone. The middle return value is
+// the source: "default" or "table". ok=false means neither has a route; for v4
+// that's fatal to bring-up, for v6 it just means "no IPv6 underlay".
+func discoverUnderlayRoute(family string, table int, iface string) (linuxDefaultRoute, string, bool) {
 	if out, err := exec.Command("ip", family, "route", "show", "default").Output(); err == nil {
-		if r, err := parseDefaultRoute(out); err == nil && r.Dev != "" {
+		if r, err := parseDefaultRoute(out); err == nil && r.Dev != "" && r.Dev != iface {
 			return r, "default", true
 		}
 	}
-	// No usable default during reconnect. Recover via/dev from a pin we
-	// tagged on first boot; they live on the underlay device and survive.
-	out, err := exec.Command("ip", family, "route", "show", "proto", proto).Output()
+	out, err := exec.Command("ip", family, "route", "show", "default", "table", strconv.Itoa(table)).Output()
 	if err != nil {
 		return linuxDefaultRoute{}, "", false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if r, err := parsePinnedRoute(line); err == nil && r.Dev != "" {
-			return r, "pin", true
-		}
+	if r, err := parseDefaultRoute(out); err == nil && r.Dev != "" {
+		return r, "table", true
 	}
 	return linuxDefaultRoute{}, "", false
-}
-
-// parsePinnedRoute extracts the via/dev from one `ip route show proto` line
-// (e.g. "10.96.0.1 via 10.244.0.1 dev eth0 proto 111"). Unlike a default
-// route, the leading token is the pinned host, so we only read via/dev.
-func parsePinnedRoute(line string) (linuxDefaultRoute, error) {
-	fields := strings.Fields(line)
-	var r linuxDefaultRoute
-	for i := 0; i < len(fields)-1; i++ {
-		switch fields[i] {
-		case "via":
-			r.Via = fields[i+1]
-		case "dev":
-			r.Dev = fields[i+1]
-		}
-	}
-	if r.Dev == "" {
-		return linuxDefaultRoute{}, fmt.Errorf("no dev in route line %q", line)
-	}
-	return r, nil
-}
-
-// resolvConfNameservers returns the nameserver IPs from /etc/resolv.conf.
-// resolv.conf nameservers are always IP literals, so each parses cleanly; a
-// missing or nameserver-less file yields nil (DNS pinning is best-effort).
-func resolvConfNameservers() []netip.Addr {
-	data, err := os.ReadFile("/etc/resolv.conf")
-	if err != nil {
-		return nil
-	}
-	var out []netip.Addr
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "nameserver" {
-			if ip, err := netip.ParseAddr(fields[1]); err == nil {
-				out = append(out, ip)
-			}
-		}
-	}
-	return out
 }
 
 func replaceDefaultRoutes(iface string, replace6 bool) error {
@@ -530,67 +408,9 @@ func replaceDefaultRoutes(iface string, replace6 bool) error {
 	return nil
 }
 
-type linuxDefaultRoute struct {
-	Dev string
-	Via string
-}
-
-func parseDefaultRoute(out []byte) (linuxDefaultRoute, error) {
-	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
-		return linuxDefaultRoute{}, fmt.Errorf("no default route")
-	}
-	var r linuxDefaultRoute
-	for i := 0; i < len(fields)-1; i++ {
-		switch fields[i] {
-		case "via":
-			r.Via = fields[i+1]
-		case "dev":
-			r.Dev = fields[i+1]
-		}
-	}
-	if r.Dev == "" {
-		return linuxDefaultRoute{}, fmt.Errorf("default route has no dev: %s", strings.TrimSpace(string(out)))
-	}
-	return r, nil
-}
-
-func pinHostRoute4(ip netip.Addr, route linuxDefaultRoute, proto string) error {
-	dst := ip.String() + "/32"
-	args := []string{"ip", "route", "replace", dst}
-	if route.Via != "" {
-		args = append(args, "via", route.Via)
-	}
-	args = append(args, "dev", route.Dev, "proto", proto)
-	return runIP(args...)
-}
-
-func pinHostRoute6(ip netip.Addr, route linuxDefaultRoute, proto string) error {
-	dst := ip.String() + "/128"
-	args := []string{"ip", "-6", "route", "replace", dst}
-	if route.Via != "" {
-		args = append(args, "via", route.Via)
-	}
-	args = append(args, "dev", route.Dev, "proto", proto)
-	return runIP(args...)
-}
-
-// pinHostRoute pins ip to its family's pre-tunnel default route, tagged with
-// proto so it can be recovered during an in-process reconnect.
-func pinHostRoute(ip netip.Addr, route4, route6 linuxDefaultRoute, have6 bool, proto string) error {
-	if ip.Is4() {
-		return pinHostRoute4(ip, route4, proto)
-	}
-	if !have6 {
-		return fmt.Errorf("no IPv6 default route to pin %s", ip)
-	}
-	return pinHostRoute6(ip, route6, proto)
-}
-
 // resolveWGEndpoint resolves the WireGuard endpoint host:port to a concrete
 // ip:port, preferring IPv4 (see preferV4). Returns the chosen IP so the
-// caller can pin a host route to it before the default route flips to the
-// tunnel.
+// caller can check that its family has an underlay route.
 func resolveWGEndpoint(endpoint string) (netip.Addr, string, error) {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
@@ -614,16 +434,16 @@ func lookupHostIPs(host string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{ip.Unmap()}, nil
 	}
-	ips, err := net.LookupIP(host)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	addrs, err := bridgeResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]netip.Addr, 0, len(ips))
-	for _, ip := range ips {
-		if addr, ok := netip.AddrFromSlice(ip); ok {
-			// Unmap 4-in-6 so Is4()/family checks and route pinning behave.
-			out = append(out, addr.Unmap())
-		}
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, addr := range addrs {
+		// Unmap 4-in-6 so Is4()/family checks behave.
+		out = append(out, addr.Unmap())
 	}
 	return out, nil
 }
