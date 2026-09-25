@@ -244,6 +244,10 @@ re-enrolling bridge keeps its peer IP when it represents the same subject.
 Recovery does not increment the container restart count. Use the bridge
 lifecycle logs to observe local rebuilds and re-enrollment.
 
+When the gateway refuses a registration, the bridge log shows
+`enrollment denied (ref <id>)`. The reply does not say which check failed.
+Find the gateway log line `enrollment: denied ref=<id>` for the reason.
+
 ### Liveness probe permissions
 
 The bridge checks the tunnel with an ICMP echo to the gateway's tunnel

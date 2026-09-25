@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -177,7 +178,7 @@ func (w *webMux) apiEnrollmentRegister(rw http.ResponseWriter, r *http.Request) 
 	}
 	authorizer, err := w.g.enrollmentAuthorizerFor(cfg, req.Transport, req.Authorizer)
 	if err != nil {
-		http.Error(rw, err.Error(), http.StatusForbidden)
+		denyEnrollment(rw, r, err)
 		return
 	}
 	// Each Authorize can call the apiserver with the gateway's identity, and
@@ -191,11 +192,11 @@ func (w *webMux) apiEnrollmentRegister(rw http.ResponseWriter, r *http.Request) 
 	defer release()
 	identity, err := authorizer.Authorize(r.Context(), token, req.Claims)
 	if err != nil {
-		http.Error(rw, err.Error(), http.StatusForbidden)
+		denyEnrollment(rw, r, err)
 		return
 	}
 	if err := w.g.enrollmentProfileExists(identity.Profile); err != nil {
-		http.Error(rw, err.Error(), http.StatusForbidden)
+		denyEnrollment(rw, r, err)
 		return
 	}
 	resp, err := w.g.registerEnrolledPeer(r.Context(), cfg, authorizer, identity, req)
@@ -208,6 +209,18 @@ func (w *webMux) apiEnrollmentRegister(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(rw, resp)
+}
+
+// denyEnrollment logs why a registration was refused and answers with a
+// generic 403. The detail (for example "pod UID mismatch") would tell a caller
+// which pod or ServiceAccount check failed. The reference ID links the reply
+// to the log line.
+func denyEnrollment(rw http.ResponseWriter, r *http.Request, err error) {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	ref := hex.EncodeToString(b[:])
+	log.Printf("enrollment: denied ref=%s remote=%s: %v", ref, r.RemoteAddr, err)
+	http.Error(rw, "enrollment denied (ref "+ref+")", http.StatusForbidden)
 }
 
 func (w *webMux) apiEnrollmentDelete(rw http.ResponseWriter, r *http.Request) {

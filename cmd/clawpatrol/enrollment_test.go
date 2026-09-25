@@ -832,6 +832,41 @@ func TestApiEnrollmentRegisterGuards(t *testing.T) {
 	}
 }
 
+// A refused registration gets a generic 403. The detail and a reference ID go
+// to the gateway log only.
+func TestApiEnrollmentRegisterDeniesGenerically(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	g.k8sVerifier = fakeK8sVerifier(func(context.Context, string, k8sEnrollmentClaims, *config.CompiledK8sEnrollment) (k8sVerifiedPod, error) {
+		return k8sVerifiedPod{}, errors.New("pod UID mismatch")
+	})
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+	w := &webMux{g: g}
+	body := `{"transport":"wireguard","authorizer":"agents","wireguard_public_key":"` + keyA + `","claims":{"pod_name":"a","pod_namespace":"agents","pod_uid":"u"}}`
+	rec := doRegister(w, http.MethodPost, "tok", body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	reply := strings.TrimSpace(rec.Body.String())
+	if strings.Contains(reply, "UID") {
+		t.Fatalf("403 body reveals the failed check: %q", reply)
+	}
+	ref, ok := strings.CutPrefix(reply, "enrollment denied (ref ")
+	ref = strings.TrimSuffix(ref, ")")
+	if !ok || len(ref) != 8 {
+		t.Fatalf("403 body = %q, want a generic denial with a reference ID", reply)
+	}
+	if !strings.Contains(buf.String(), "ref="+ref) || !strings.Contains(buf.String(), "pod UID mismatch") {
+		t.Fatalf("log does not have the reference and the detail:\n%s", buf.String())
+	}
+}
+
 // The register endpoint answers a durable-key takeover attempt with 409.
 func TestApiEnrollmentRegisterDurableKeyConflict(t *testing.T) {
 	g := newEnrollmentTestGateway(t)
