@@ -128,10 +128,11 @@ Kubernetes TokenReview plus the gateway's enrollment allowlist.
 
 The pod has two different trust zones:
 
-- The **WireGuard sidecar init container** is privileged for pod
-  networking. It has `NET_ADMIN`, `/dev/net/tun`, the projected
-  ServiceAccount token, the WireGuard private key in memory, and the
-  peer API token used for env pushdown.
+- The **WireGuard sidecar init container** holds the pod networking
+  grants: `NET_ADMIN` and `/dev/net/tun`. It does not run as a
+  privileged container. It also holds the projected ServiceAccount
+  token, the WireGuard private key in memory, and the peer API token
+  used for env pushdown.
 - The **agent container** is the sandboxed execution environment. It
   should have no added capabilities, no Kubernetes API token, no
   `/dev/net/tun`, and only a read-only mount of the shared handoff
