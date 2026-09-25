@@ -10,7 +10,8 @@
 #   - Workload namespace: `agents`. The binding selects this namespace by its
 #     standard `kubernetes.io/metadata.name` label.
 #   - Pod scope: every Pod CREATE in that namespace is injected unless the Pod
-#     has `clawpatrol.dev/inject: "false"`.
+#     has `clawpatrol.dev/inject: "false"` or sets `hostNetwork: true`. A
+#     bridge in a host-network Pod would rewrite the node's routes.
 #   - Profile label: `clawpatrol.dev/profile`.
 #   - Default profile: `default`, added only when the profile label is absent.
 #   - Target Pods must use a ServiceAccount allowed by the `agents` enrollment
@@ -65,6 +66,9 @@ spec:
       expression: >-
         !(has(object.spec.initContainers) &&
           object.spec.initContainers.exists(c, c.name == "clawpatrol-bridge"))
+    - name: not-host-network
+      expression: >-
+        !(has(object.spec.hostNetwork) && object.spec.hostNetwork)
   mutations:
     # Add the default profile only when the Pod does not already select one.
     - patchType: JSONPatch
