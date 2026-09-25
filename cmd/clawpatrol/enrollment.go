@@ -389,6 +389,13 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 	if err != nil {
 		return enrollmentRegisterResponse{}, err
 	}
+	// Durable device keys are visible on the dashboard. Refuse them before
+	// the replacement cleanup below, so a refused request changes nothing.
+	if held, err := wgKeyHeldByDurablePeer(g.db, pubHex); err != nil {
+		return enrollmentRegisterResponse{}, err
+	} else if held {
+		return enrollmentRegisterResponse{}, fmt.Errorf("%w: %w", errEnrollmentConflict, errWGKeyHeldByDurablePeer)
+	}
 	var reuseIP string
 	for _, p := range existing {
 		switch {
@@ -410,12 +417,12 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 
 	peerIP := reuseIP
 	if peerIP == "" {
-		peerIP, err = globalWG.allocatePeer(join, pubHex)
+		peerIP, err = globalWG.allocateEnrolledPeer(join, pubHex)
 		if err != nil {
-			return enrollmentRegisterResponse{}, fmt.Errorf("wg allocate peer: %w", err)
+			return enrollmentRegisterResponse{}, enrollmentPeerError("wg allocate peer", err)
 		}
-	} else if err := globalWG.AddPeer(pubHex, peerIP); err != nil {
-		return enrollmentRegisterResponse{}, fmt.Errorf("wg add peer: %w", err)
+	} else if err := globalWG.addEnrolledPeer(pubHex, peerIP); err != nil {
+		return enrollmentRegisterResponse{}, enrollmentPeerError("wg add peer", err)
 	}
 	peerAddr, err := netip.ParseAddr(peerIP)
 	if err != nil {
@@ -499,6 +506,15 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 	return resp, nil
 }
 
+// enrollmentPeerError maps a durable-key refusal from the WireGuard server to
+// an enrollment conflict (HTTP 409).
+func enrollmentPeerError(op string, err error) error {
+	if errors.Is(err, errWGKeyHeldByDurablePeer) {
+		return fmt.Errorf("%w: %w", errEnrollmentConflict, err)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
 // --- enrollment store (wg_peers, enrolled=1) ---------------------------
 
 const enrolledPeerCols = `pubkey, ip, subject_key, replacement_key, display_name, owner, profile, authorizer_type, authorizer_name, metadata_json, added_ns`
@@ -567,9 +583,9 @@ func markEnrolledPeer(db *sql.DB, p enrolledPeer) error {
 	res, err := db.Exec(`UPDATE wg_peers SET
 		enrolled = 1, subject_key = ?, replacement_key = ?, display_name = ?,
 		owner = ?, profile = ?, authorizer_type = ?, authorizer_name = ?, metadata_json = ?
-		WHERE pubkey = ?`,
+		WHERE pubkey = ? AND ip = ?`,
 		p.SubjectKey, p.ReplacementKey, p.DisplayName, p.Owner, p.Profile,
-		p.AuthorizerType, p.AuthorizerName, p.MetadataJSON, p.PubKeyHex)
+		p.AuthorizerType, p.AuthorizerName, p.MetadataJSON, p.PubKeyHex, p.PeerIP)
 	if err != nil {
 		return err
 	}
