@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/denoland/clawpatrol/internal/config"
 )
@@ -160,7 +164,7 @@ func TestInClusterK8sClientVerifiesBoundPodToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &inClusterK8sClient{baseURL: srv.URL, token: "gateway-token", client: srv.Client()}
+	client := &inClusterK8sClient{baseURL: srv.URL, tokenPath: writeGatewayToken(t, t.TempDir(), "gateway-token"), client: srv.Client()}
 	pod, err := client.VerifyPod(context.Background(), "pod-token", k8sEnrollmentClaims{
 		PodName:      "agent-1",
 		PodNamespace: "agents",
@@ -215,7 +219,7 @@ func TestInClusterK8sClientRejectsUnboundTokenReview(t *testing.T) {
 				}})
 			}))
 			defer srv.Close()
-			client := &inClusterK8sClient{baseURL: srv.URL, token: "gateway-token", client: srv.Client()}
+			client := &inClusterK8sClient{baseURL: srv.URL, tokenPath: writeGatewayToken(t, t.TempDir(), "gateway-token"), client: srv.Client()}
 			_, err := client.VerifyPod(context.Background(), "pod-token", k8sEnrollmentClaims{
 				PodName:      "agent-1",
 				PodNamespace: "agents",
@@ -279,5 +283,126 @@ func TestCleanupEnrolledPeer(t *testing.T) {
 	}
 	if g.onboard.HasDevice(resp.PeerIP) {
 		t.Fatal("device row still present after cleanup")
+	}
+}
+
+// writeGatewayToken writes the gateway ServiceAccount token file into dir and
+// returns its path.
+func writeGatewayToken(t *testing.T, dir, token string) string {
+	t.Helper()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	return path
+}
+
+// The client re-reads the gateway token for each request, so kubelet token
+// rotation needs no client rebuild.
+func TestInClusterK8sClientRereadsGatewayToken(t *testing.T) {
+	var mu sync.Mutex
+	var bearers []string
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		bearers = append(bearers, r.Header.Get("Authorization"))
+		mu.Unlock()
+		_ = json.NewEncoder(rw).Encode(map[string]any{"status": map[string]any{
+			"authenticated": true,
+			"audiences":     []string{"clawpatrol"},
+			"user":          map[string]any{"username": "system:serviceaccount:agents:agent-runner"},
+		}})
+	}))
+	defer srv.Close()
+	tokenPath := writeGatewayToken(t, t.TempDir(), "token-1")
+	client := &inClusterK8sClient{baseURL: srv.URL, tokenPath: tokenPath, client: srv.Client()}
+
+	if _, err := client.tokenReview(context.Background(), "pod-token", "clawpatrol"); err != nil {
+		t.Fatalf("first tokenReview: %v", err)
+	}
+	writeGatewayToken(t, filepath.Dir(tokenPath), "token-2")
+	if _, err := client.tokenReview(context.Background(), "pod-token", "clawpatrol"); err != nil {
+		t.Fatalf("second tokenReview: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bearers) != 2 || bearers[0] != "Bearer token-1" || bearers[1] != "Bearer token-2" {
+		t.Fatalf("bearers = %q, want [Bearer token-1 Bearer token-2]", bearers)
+	}
+}
+
+// The gateway builds the in-cluster client once and reuses it. A failed build
+// is retried on the next request.
+func TestK8sRegistrationVerifierIsCached(t *testing.T) {
+	dir := t.TempDir()
+	prev := k8sServiceAccountDir
+	k8sServiceAccountDir = dir
+	t.Cleanup(func() { k8sServiceAccountDir = prev })
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	g := &Gateway{}
+
+	if _, err := g.k8sRegistrationVerifier(); err == nil {
+		t.Fatal("verifier built without the kubernetes service environment")
+	}
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	writeGatewayToken(t, dir, "gateway-token")
+
+	first, err := g.k8sRegistrationVerifier()
+	if err != nil {
+		t.Fatalf("first build: %v", err)
+	}
+	second, err := g.k8sRegistrationVerifier()
+	if err != nil {
+		t.Fatalf("second build: %v", err)
+	}
+	if first != second {
+		t.Fatal("verifier was rebuilt; want one cached client")
+	}
+	if c := first.(*inClusterK8sClient); c.tokenPath != filepath.Join(dir, "token") {
+		t.Fatalf("tokenPath = %q", c.tokenPath)
+	}
+}
+
+// Register requests past the cheap checks share a small number of slots.
+// A request that cannot get a slot in time gets 429.
+func TestApiEnrollmentRegisterConcurrencyLimit(t *testing.T) {
+	prevWait := enrollmentRegisterWait
+	enrollmentRegisterWait = 50 * time.Millisecond
+	t.Cleanup(func() { enrollmentRegisterWait = prevWait })
+
+	g := newEnrollmentTestGateway(t)
+	g.cfg.Store(enabledEnrollmentCfg())
+	g.policy.Store(enabledEnrollmentPolicy(t))
+	entered := make(chan struct{}, enrollmentRegisterConcurrency)
+	unblock := make(chan struct{})
+	g.k8sVerifier = fakeK8sVerifier(func(context.Context, string, k8sEnrollmentClaims, *config.CompiledK8sEnrollment) (k8sVerifiedPod, error) {
+		entered <- struct{}{}
+		<-unblock
+		return k8sVerifiedPod{}, context.Canceled
+	})
+	w := &webMux{g: g}
+	body := `{"transport":"wireguard","authorizer":"agents","wireguard_public_key":"` + keyA + `","claims":{"pod_name":"a","pod_namespace":"agents","pod_uid":"u"}}`
+
+	var wg sync.WaitGroup
+	for range enrollmentRegisterConcurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			doRegister(w, http.MethodPost, "tok", body)
+		}()
+	}
+	for range enrollmentRegisterConcurrency {
+		<-entered
+	}
+	if rec := doRegister(w, http.MethodPost, "tok", body); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("request over the limit -> %d, want 429", rec.Code)
+	} else if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	close(unblock)
+	wg.Wait()
+	if rec := doRegister(w, http.MethodPost, "tok", body); rec.Code != http.StatusForbidden {
+		t.Fatalf("request after release -> %d, want 403 from the verifier", rec.Code)
 	}
 }

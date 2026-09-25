@@ -396,10 +396,15 @@ type Gateway struct {
 	// peerStats overrides globalWG.PeerStats for the reaper. Tests only.
 	peerStats func() map[string]wgDevPeerStat
 	// k8sVerifier lets tests inject a fake Kubernetes verifier. In
-	// production it stays nil and each register request builds a
-	// short-lived in-cluster client, which re-reads the rotating
-	// ServiceAccount token, so there is nothing to cache here.
+	// production it stays nil and k8sRegistrationVerifier builds k8sClient
+	// once, guarded by k8sClientMu.
 	k8sVerifier k8sRegistrationVerifier
+	k8sClientMu sync.Mutex
+	k8sClient   *inClusterK8sClient
+	// enrollRegisterSem bounds concurrent enrollment registrations across
+	// every listener. Created once by acquireRegisterSlot.
+	enrollRegisterOnce sync.Once
+	enrollRegisterSem  chan struct{}
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),

@@ -81,6 +81,13 @@ The enrollment configuration follows these rules:
   allowlist. The client cannot select its own profile.
 - **Additional identities:** Add more `match` blocks to authorize other
   namespace and ServiceAccount pairings.
+- **Capacity:** Each live Pod holds one address from `subnet_cidr`. A `/24`
+  gives 253 peer addresses (`.2` to `.254`; `.1` is the gateway), shared with
+  onboarded devices. A replaced Pod releases its address at once. A Pod that
+  stops sending releases it after the liveness window.
+- **Registration load:** The gateway runs at most 4 registrations at a time
+  past the request checks. Each one sends a TokenReview and a Pod read to the
+  apiserver. Extra requests get HTTP 429, and the bridge retries with backoff.
 
 The complete standalone example is
 [`examples/wireguard-enrollment-kubernetes.hcl`](https://github.com/denoland/clawpatrol/blob/main/examples/wireguard-enrollment-kubernetes.hcl).
