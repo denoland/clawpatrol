@@ -220,6 +220,40 @@ initContainers:
 The complete Pod spec is in
 [`examples/kubernetes/kustomization`](https://github.com/denoland/clawpatrol/tree/main/examples/kubernetes/kustomization).
 
+## Runtime compatibility
+
+The bridge needs a network namespace that it can change with `NET_ADMIN` and
+a TUN device from the hostPath `/dev/net/tun`.
+
+| Runtime | Status |
+|---------|--------|
+| runc (containerd, CRI-O) | Tested by the kind e2e |
+| Kata Containers | Not tested yet |
+| gVisor | Not tested yet |
+
+Kata runs the Pod in a guest kernel, and gVisor has its own network stack, so
+check these before you rely on either:
+
+- the bridge can open `/dev/net/tun` and create `clawpatrol0`,
+- `NET_ADMIN` lets it change routes and policy rules in the Pod, and
+- the ICMP liveness probe can open a socket (see "Liveness probe
+  permissions").
+
+The bridge's error message for a missing TUN device points to this section.
+
+### Pod Security
+
+The Pod Security "baseline" and "restricted" levels do not allow `hostPath`
+volumes or the `NET_ADMIN` capability, so the workload namespace needs the
+"privileged" level:
+
+```bash
+kubectl label namespace agents pod-security.kubernetes.io/enforce=privileged
+```
+
+The agent container itself stays restricted: no capabilities, no token, and a
+read-only handoff volume.
+
 ## Deploy the example
 
 The Kustomize example creates:
