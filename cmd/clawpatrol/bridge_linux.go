@@ -64,6 +64,9 @@ func bridgeRun(ctx context.Context, opt bridgeOptions) error {
 	// The bridge's own traffic to the gateway and DNS carries the mark, so it
 	// uses the underlay routes while workload traffic uses the tunnel.
 	bridgeResolver, enrollmentHTTPClient = newMarkedNet(opt.FWMark)
+	if !opt.EgressFilter {
+		log.Printf("bridge: WARNING: --egress-filter=off; pod traffic can leave outside the tunnel through CNI link and subnet routes")
+	}
 
 	st := &bridgeState{}
 	backoff := time.Second
@@ -140,6 +143,11 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	}
 	if err := installUnderlayRouting(route4, route6, have6, opt.FWMark, opt.FWMark, opt.RouteProto); err != nil {
 		return nil, err
+	}
+	if opt.EgressFilter {
+		if err := installEgressFilter(opt.Iface, opt.FWMark); err != nil {
+			return nil, err
+		}
 	}
 
 	registerResp, err := enrollmentRegister(ctx, opt.GatewayURL, credential, enrollmentRegisterRequest{

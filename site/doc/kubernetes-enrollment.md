@@ -356,8 +356,12 @@ volume assumptions that must be reviewed before applying it.
 
 ### Restrict Pod egress (recommended)
 
-The bridge already fails closed at the routing layer. For a second,
-cluster-enforced layer, use a NetworkPolicy that permits only:
+The bridge already fails closed at the routing layer, and its nftables filter
+drops Pod traffic that would leave outside the tunnel through CNI link or
+subnet routes. The filter needs `nf_tables` in the node kernel and the
+runtime; start the bridge with `--egress-filter=off` where it is not
+available. For a cluster-enforced layer as well, use a NetworkPolicy that
+permits only:
 
 - the gateway API and WireGuard endpoint, and
 - cluster DNS.

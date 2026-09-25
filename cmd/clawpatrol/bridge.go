@@ -64,6 +64,10 @@ type bridgeOptions struct {
 	// the ID of the routing table that holds the underlay default route (see
 	// bridge_route.go).
 	FWMark int
+
+	// EgressFilter loads the nftables output filter (bridge_nft_linux.go).
+	// Off is an escape hatch for runtimes without nf_tables.
+	EgressFilter bool
 }
 
 // defaultRouteProto is the rt_proto the bridge tags its underlay routes with
@@ -93,6 +97,8 @@ func runBridge(args []string) {
 		"missed keepalives before an in-place tunnel rebuild; 0 disables it, and a value at or above the gateway's reconnect threshold skips directly to re-enrollment")
 	fs.StringVar(&opt.RouteProto, "route-proto", defaultRouteProto,
 		"rt_proto tag for the underlay routes in the bridge's routing table; override only if it collides with another component's routes")
+	egressFilter := fs.String("egress-filter", "on",
+		"on: load an nftables filter that lets pod traffic leave only through the tunnel, and bring-up fails if it cannot load; off: skip it")
 	fs.IntVar(&opt.FWMark, "fwmark", defaultBridgeFwmark,
 		"socket mark for the bridge's own gateway, DNS, and WireGuard traffic, and the ID of the routing table that sends it to the underlay")
 	_ = fs.Parse(args)
@@ -108,6 +114,13 @@ func runBridge(args []string) {
 	}
 	if err := validateBridgeFwmark(opt.FWMark); err != nil {
 		fail("clawpatrol bridge: %v", err)
+	}
+	switch *egressFilter {
+	case "on":
+		opt.EgressFilter = true
+	case "off":
+	default:
+		fail("clawpatrol bridge: --egress-filter must be on or off, got %q", *egressFilter)
 	}
 	typ, name, err := parseBridgeAuthorizer(authorizer)
 	if err != nil {

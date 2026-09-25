@@ -240,6 +240,16 @@ AGENT_DNS_IP="$(agent_exec sh -lc "awk '/^nameserver/{print \$2; exit}' /etc/res
 agent_exec sh -lc "ip route get '${AGENT_DNS_IP}' | grep -q 'dev clawpatrol0'"
 agent_exec sh -lc "test \"\$(curl -sS --max-time 20 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
 
+log "checking the egress filter blocks CNI routes outside the tunnel"
+# A pod IP on a CNI subnet route (not the default route) would bypass the
+# tunnel without the bridge's nftables filter. Only check when the route
+# really avoids clawpatrol0, e.g. the echo pod on the same node.
+ECHO_POD_IP="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get pod -l "app=${E2E_HTTP}" -o jsonpath='{.items[0].status.podIP}')"
+[[ -n "${ECHO_POD_IP}" ]] || fail "could not resolve the echo pod IP"
+if agent_exec sh -lc "! ip route get '${ECHO_POD_IP}' | grep -q 'dev clawpatrol0'"; then
+  agent_exec sh -lc "! curl -sS --max-time 5 'http://${ECHO_POD_IP}:8081/' >/dev/null 2>&1"
+fi
+
 log "checking enrolled peer row and WireGuard peer tables"
 gateway_exec sh -lc 'command -v sqlite3 >/dev/null'
 wait_until "enrolled peer row is present" 60 enrolled_present

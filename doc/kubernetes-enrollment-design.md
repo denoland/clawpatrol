@@ -190,6 +190,15 @@ device. The gateway answers DNS that arrives through the tunnel. A workload
 container can set the mark only with `CAP_NET_ADMIN` or `CAP_NET_RAW`, so
 workload containers must drop both.
 
+The CNI can also leave link and subnet routes in the main table, and
+unmarked traffic could use them to leave outside the tunnel. So the bridge
+loads its own nftables table (`inet clawpatrol`, from
+[`bridge_nft_linux.go`](../cmd/clawpatrol/bridge_nft_linux.go)) with an
+output chain whose policy is drop. It accepts loopback, `clawpatrol0`, marked
+packets, established and related connections, and IPv6 neighbor discovery.
+The filter does not reroute packets. Bring-up fails when it cannot load the
+table; `--egress-filter=off` skips it.
+
 The bridge watchdog samples its receive counter every 5 seconds. Because an
 idle tunnel may have no inbound traffic, receive silence alone is not treated
 as failure. After one keepalive interval of silence, the watchdog probes the
