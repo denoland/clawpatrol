@@ -518,15 +518,24 @@ func (s *WGServer) addEnrolledPeer(pubkeyHex, peerIP string) error {
 }
 
 // allocateWGPeerIPLocked returns the next free client /32 from WGSubnetCIDR.
+// It searches next-fit: from the address after the newest wg_peers row,
+// wrapping at the end of the subnet. A released address is then reused only
+// after the rest of the subnet, so a new peer rarely takes the address (and
+// the dashboard history) of a peer that just left.
 // Caller holds allocateWGPeerMu, and must persist the result before releasing
 // it so another caller cannot select the same address.
 func allocateWGPeerIPLocked(db *sql.DB, ts JoinConfig) (string, error) {
 	used := map[string]bool{}
+	var newest netip.Addr
 	if db != nil {
 		var err error
 		used, err = usedWGPeerIPs(db)
 		if err != nil {
 			return "", fmt.Errorf("read wireguard peer allocations: %w", err)
+		}
+		newest, err = newestWGPeerIP(db)
+		if err != nil {
+			return "", fmt.Errorf("read newest wireguard peer: %w", err)
 		}
 	}
 	_, cidr, err := net.ParseCIDR(ts.WGSubnetCIDR)
@@ -543,9 +552,19 @@ func allocateWGPeerIPLocked(db *sql.DB, ts JoinConfig) (string, error) {
 		return "", fmt.Errorf("wireguard subnet %s is too small", ts.WGSubnetCIDR)
 	}
 	network := binary.BigEndian.Uint32(base)
-	// Skip the network address (offset 0), the gateway's own .1 (offset 1),
-	// and the broadcast (offset size-1).
-	for off := uint32(2); off < size-1; off++ {
+	// Usable offsets are 2..size-2: skip the network address (offset 0), the
+	// gateway's own .1 (offset 1), and the broadcast (offset size-1).
+	const first = uint32(2)
+	span := size - 3
+	start := first
+	if newest.Is4() {
+		n := newest.As4()
+		if off := binary.BigEndian.Uint32(n[:]) - network; off >= first && off < size-1 {
+			start = off + 1
+		}
+	}
+	for i := uint32(0); i < span; i++ {
+		off := first + (start-first+i)%span
 		var b [4]byte
 		binary.BigEndian.PutUint32(b[:], network+off)
 		ip := net.IP(b[:]).String()
@@ -554,6 +573,22 @@ func allocateWGPeerIPLocked(db *sql.DB, ts JoinConfig) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("wireguard subnet %s exhausted", ts.WGSubnetCIDR)
+}
+
+// newestWGPeerIP returns the address of the most recently added wg_peers row,
+// or the zero Addr when there is none.
+func newestWGPeerIP(db *sql.DB) (netip.Addr, error) {
+	var ip string
+	err := db.QueryRow(`SELECT ip FROM wg_peers ORDER BY added_ns DESC LIMIT 1`).Scan(&ip)
+	if errors.Is(err, sql.ErrNoRows) {
+		return netip.Addr{}, nil
+	}
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	// A malformed row yields the zero Addr, and the search starts at .2.
+	addr, _ := netip.ParseAddr(ip)
+	return addr, nil
 }
 
 func usedWGPeerIPs(db *sql.DB) (map[string]bool, error) {
