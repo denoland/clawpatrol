@@ -48,3 +48,16 @@ func TestValidateRouteProto(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayURLIsPlaintext(t *testing.T) {
+	for u, want := range map[string]bool{
+		"http://clawpatrol-api.clawpatrol.svc:8080": true,
+		"HTTP://gateway.example.com":                true,
+		"https://gateway.example.com":               false,
+		"":                                          false,
+	} {
+		if got := gatewayURLIsPlaintext(u); got != want {
+			t.Errorf("gatewayURLIsPlaintext(%q) = %t, want %t", u, got, want)
+		}
+	}
+}

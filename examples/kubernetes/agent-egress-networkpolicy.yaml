@@ -20,6 +20,9 @@
 #   - Gateway Pod label: `app: clawpatrol-gateway`.
 #   - Gateway API: TCP 8080.
 #   - WireGuard endpoint: UDP 51820.
+#   - If the bridge enrolls through the gateway public_url behind a TLS
+#     ingress, allow egress to that ingress instead of (or as well as) the
+#     gateway API rule below.
 #
 # DNS path:
 #   - DNS namespace: `kube-system`.

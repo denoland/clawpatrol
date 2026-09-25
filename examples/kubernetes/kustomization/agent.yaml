@@ -47,6 +47,9 @@ spec:
       image: ghcr.io/denoland/clawpatrol:latest
       args:
         - bridge
+        # Plain HTTP for the example. In production, use the gateway
+        # public_url behind TLS; see "Transport security for enrollment" in
+        # site/doc/kubernetes-enrollment.md.
         - --gateway-url=http://clawpatrol-api.clawpatrol.svc:8080
         - --authorizer=kubernetes_token_review/agents
         - --kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token
