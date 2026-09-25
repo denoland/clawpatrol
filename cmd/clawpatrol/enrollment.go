@@ -519,7 +519,7 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 	resp := enrollmentRegisterResponse{
 		Transport:       enrollmentTransportWireGuard,
 		PeerIP:          peerIP,
-		PeerIPv6:        wg6FromV4(peerAddr).String(),
+		PeerIPv6:        globalWG.peerIP6(peerAddr).String(),
 		ServerPublicKey: serverPubB64,
 		Endpoint:        endpoint,
 		AllowedIPs:      []string{"0.0.0.0/0", "::/0"},

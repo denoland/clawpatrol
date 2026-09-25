@@ -294,9 +294,12 @@ func (t *netTun) Close() error {
 }
 
 type WGServer struct {
-	tun       *netTun
-	dev       *device.Device
-	serverIP  netip.Addr
+	tun      *netTun
+	dev      *device.Device
+	serverIP netip.Addr
+	// prefix is wireguard.subnet_cidr. It maps peer IPv4 addresses to their
+	// fd77:: IPv6 addresses and back.
+	prefix    netip.Prefix
 	publicKey string  // hex-encoded, derived from the private key at boot
 	db        *sql.DB // wg_peers row store
 }
@@ -338,7 +341,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 		return nil, fmt.Errorf("wg subnet: %w", err)
 	}
 	serverIP := prefix.Addr().Next() // x.x.x.1
-	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
+	serverIP6 := wg6FromV4(prefix, serverIP)
 
 	tun, err := newNetTUN(serverIP, serverIP6, 1420)
 	if err != nil {
@@ -356,7 +359,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive pub: %w", err)
 	}
-	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, db: globalDB}
+	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, prefix: prefix, publicKey: pub, db: globalDB}
 	// Replay persisted (pubkey → ip) pairs into the in-memory device
 	// so reboots don't strand existing clients.
 	//
@@ -367,7 +370,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	// allowed_ip → dropped → client thinks the gateway is unreachable
 	// after every restart, fixed only by re-joining.
 	for pubkey, ip := range srv.loadPeers() {
-		v6 := wg6FromV4(netip.MustParseAddr(ip))
+		v6 := wg6FromV4(prefix, netip.MustParseAddr(ip))
 		_ = dev.IpcSet(fmt.Sprintf(
 			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
 			pubkey, ip, v6.String()))
@@ -402,7 +405,7 @@ func (s *WGServer) addPeerLocked(pubkeyHex, peerIP string) error {
 			}
 		}
 	}
-	peerIP6 := wg6FromV4(netip.MustParseAddr(peerIP))
+	peerIP6 := s.peerIP6(netip.MustParseAddr(peerIP))
 	if err := s.dev.IpcSet(fmt.Sprintf(
 		"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
 		pubkeyHex, peerIP, peerIP6.String(),
@@ -570,10 +573,21 @@ func usedWGPeerIPs(db *sql.DB) (map[string]bool, error) {
 	return used, rows.Err()
 }
 
-// wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4
-// address: fd77::<last-octet>. ULA prefix; matches unclaw's scheme so
-// no extra HCL config is needed.
-func wg6FromV4(v4 netip.Addr) netip.Addr {
+// wgHostMask returns the IPv4 bits that the fd77:: address carries: the host
+// bits of prefix, and always the last octet. For a /24 or narrower prefix
+// that is the last octet only, so those peers keep fd77::<last-octet>.
+func wgHostMask(prefix netip.Prefix) uint32 {
+	var m uint32
+	if bits := prefix.Bits(); bits >= 0 && bits < 32 {
+		m = ^uint32(0) >> uint(bits)
+	}
+	return m | 0xff
+}
+
+// wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4 address:
+// fd77:: plus the address's host bits within prefix (see wgHostMask). ULA
+// prefix; matches unclaw's scheme so no extra HCL config is needed.
+func wg6FromV4(prefix netip.Prefix, v4 netip.Addr) netip.Addr {
 	if !v4.Is4() {
 		return netip.Addr{}
 	}
@@ -581,9 +595,39 @@ func wg6FromV4(v4 netip.Addr) netip.Addr {
 	var b [16]byte
 	b[0] = 0xfd
 	b[1] = 0x77
-	b[15] = o[3]
+	binary.BigEndian.PutUint32(b[12:], binary.BigEndian.Uint32(o[:])&wgHostMask(prefix))
 	return netip.AddrFrom16(b)
 }
+
+// wgV4FromV6 is the inverse of wg6FromV4. ok is false for an address that
+// wg6FromV4 cannot return for prefix.
+func wgV4FromV6(prefix netip.Prefix, v6 netip.Addr) (netip.Addr, bool) {
+	network := prefix.Masked().Addr()
+	if !v6.Is6() || v6.Is4In6() || !network.Is4() {
+		return netip.Addr{}, false
+	}
+	b := v6.As16()
+	if b[0] != 0xfd || b[1] != 0x77 {
+		return netip.Addr{}, false
+	}
+	for _, x := range b[2:12] {
+		if x != 0 {
+			return netip.Addr{}, false
+		}
+	}
+	mask := wgHostMask(prefix)
+	host := binary.BigEndian.Uint32(b[12:])
+	if host&^mask != 0 {
+		return netip.Addr{}, false
+	}
+	n := network.As4()
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], binary.BigEndian.Uint32(n[:])&^mask|host)
+	return netip.AddrFrom4(out), true
+}
+
+// peerIP6 returns the fd77:: address of a peer's IPv4 address.
+func (s *WGServer) peerIP6(v4 netip.Addr) netip.Addr { return wg6FromV4(s.prefix, v4) }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
 // SYNs to ANY destination IP/port reach `tcpHandler`; the wrapped
@@ -1059,7 +1103,7 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 	// Avoiding `DNS =` because wg-quick needs resolvconf/openresolv
 	// for that, which many minimal images lack. Backup-then-restore
 	// keeps system DNS sane after `wg-quick down`.
-	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
+	ip6 := globalWG.peerIP6(netip.MustParseAddr(ip)).String()
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32, %s/128
