@@ -238,7 +238,11 @@ agent_exec sh -lc "ip route get '${API_CLUSTER_IP}' | grep -q 'dev clawpatrol0'"
 AGENT_DNS_IP="$(agent_exec sh -lc "awk '/^nameserver/{print \$2; exit}' /etc/resolv.conf" | tr -d '[:space:]')"
 [[ -n "${AGENT_DNS_IP}" ]] || fail "agent has no resolv.conf nameserver"
 agent_exec sh -lc "ip route get '${AGENT_DNS_IP}' | grep -q 'dev clawpatrol0'"
-agent_exec sh -lc "test \"\$(curl -sS --max-time 20 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
+# The echo server serves one connection at a time, and the gateway accepts
+# the tunneled connection before it dials the echo pod, so a request inside
+# the echo server's restart gap gets an empty reply. Retry.
+wait_until "agent reaches the echo Service by DNS name through the tunnel" 30 \
+  agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
 
 log "checking inbound connections to the agent pod get replies"
 # The kubelet httpGet readiness probe (from the node) and a request from the
@@ -248,8 +252,12 @@ log "checking inbound connections to the agent pod get replies"
 "${KUBECTL[@]}" -n "${AGENTS_NS}" wait --for=condition=Ready "pod/${E2E_POD}" --timeout="${TIMEOUT}"
 AGENT_POD_IP="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" -o jsonpath='{.status.podIP}')"
 [[ -n "${AGENT_POD_IP}" ]] || fail "could not resolve the agent pod IP"
-"${KUBECTL[@]}" -n "${AGENTS_NS}" exec "${E2E_HTTP}" -- sh -c "printf 'GET / HTTP/1.0\r\n\r\n' | nc -w 5 '${AGENT_POD_IP}' 8082" | grep -q '^ok' ||
-  fail "no reply from the agent pod to an inbound request"
+# The agent's listener serves one connection at a time and the kubelet probe
+# uses it too, so retry.
+inbound_reply() {
+  "${KUBECTL[@]}" -n "${AGENTS_NS}" exec "${E2E_HTTP}" -- sh -c "printf 'GET / HTTP/1.0\r\n\r\n' | nc -w 5 '${AGENT_POD_IP}' 8082" | grep -q '^ok'
+}
+wait_until "reply from the agent pod to an inbound request" 30 inbound_reply
 
 log "checking enrolled peer row and WireGuard peer tables"
 gateway_exec sh -lc 'command -v sqlite3 >/dev/null'
