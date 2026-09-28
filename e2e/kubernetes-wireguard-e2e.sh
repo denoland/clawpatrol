@@ -285,7 +285,7 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   # rekeys, then tears the tunnel down and re-enrolls — all WITHOUT exiting the
   # container (a native-sidecar restart lands in the same pod sandbox and buys
   # nothing a device rebuild doesn't). While the gateway is down it stays
-  # fail-closed: clawpatrol0 is gone, so there is no default route (general
+  # fail-closed: clawpatrol0 is gone, so only the loopback fallback default is left (general
   # egress is blocked, not leaking untunnelled) while the underlay copy in
   # routing table 111 survives. When the gateway returns it re-enrolls in
   # place with a fresh key, reusing its peer IP — and the container restart
@@ -308,9 +308,11 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   # down, so it holds fail-closed. Wait for that torn-down state, then assert
   # the underlay table survives and — crucially — the container has NOT
   # restarted (recovery is in-process, not a kubelet restart).
+  # Only the bridge's loopback fallback default route is left in the gap.
   wait_until "sidecar tore the tunnel down and failed closed (no default route)" 150 \
-    agent_exec sh -lc '! ip route show default | grep -q .'
+    agent_exec sh -lc '! ip route show default | grep -v " dev lo " | grep -q .'
   log "checking fail-closed gap: no default route, underlay table intact, no container restart"
+  agent_exec sh -lc "ip route get '${HTTP_CLUSTER_IP}' | grep -q ' dev lo '"
   agent_exec sh -lc "ip route show table 111 | grep -q '^default '"
   [[ "$(sidecar_restarts)" == "${BEFORE_RESTARTS}" ]] ||
     fail "sidecar container restarted during the gap (was ${BEFORE_RESTARTS}); recovery must be in-process"

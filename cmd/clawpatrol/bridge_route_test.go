@@ -71,3 +71,19 @@ func TestValidateBridgeFwmark(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstDefaultRoute(t *testing.T) {
+	out := []byte("default dev clawpatrol0 scope link \n" +
+		"default via 10.244.0.1 dev eth0 \n" +
+		"default dev lo proto 111 scope link metric 4294967295 \n")
+	r, ok := firstDefaultRoute(out, "clawpatrol0", "lo")
+	if !ok || r.Dev != "eth0" || r.Via != "10.244.0.1" {
+		t.Fatalf("firstDefaultRoute = %+v, %t; want the eth0 route", r, ok)
+	}
+	if _, ok := firstDefaultRoute([]byte("default dev lo metric 4294967295\n"), "lo"); ok {
+		t.Fatal("only a skipped route, but got one")
+	}
+	if got := strings.Join(fallbackDefaultArgs("111"), " "); got != "ip -4 route replace default dev lo metric 4294967295 proto 111" {
+		t.Fatalf("fallbackDefaultArgs = %q", got)
+	}
+}

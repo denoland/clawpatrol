@@ -106,6 +106,7 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
 		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
+		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
 	})
 	underlay := linuxDefaultRoute{Via: "10.99.0.1", Dev: "under0"}
 
@@ -130,6 +131,16 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 		t.Fatalf("marked link-route destination = %q, want direct on under0", got)
 	}
 
+	// Tunnel down (the reconnect gap): unmarked traffic falls back to
+	// loopback, marked traffic still uses the underlay, and the underlay is
+	// recovered from the table rather than the fallback route.
+	run("ip", "link", "set", "tun0", "down")
+	if got := run("ip", "route", "get", "192.0.2.10"); !strings.Contains(got, "dev lo") {
+		t.Fatalf("unmarked route in the gap = %q, want dev lo", got)
+	}
+	if got := run("ip", "route", "get", "192.0.2.10", "mark", "0x6f"); !strings.Contains(got, "via 10.99.0.1 dev under0") {
+		t.Fatalf("marked route in the gap = %q, want via 10.99.0.1 dev under0", got)
+	}
 	route, src, ok := discoverUnderlayRoute("-4", 111, "tun0")
 	if !ok || src != "table" || route != underlay {
 		t.Fatalf("discoverUnderlayRoute = %+v, %q, %t; want the table copy", route, src, ok)

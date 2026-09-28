@@ -20,6 +20,14 @@ import (
 // the pod's original default route. Unmarked packets, which is all workload
 // traffic, use the main table and so the tunnel. A container that shares the
 // netns cannot set the mark without CAP_NET_ADMIN or CAP_NET_RAW.
+//
+// The main table also gets a last-resort IPv4 default route to loopback with
+// the highest metric. Reverse-path filtering drops a received packet whose
+// source has no route in the main table, and the pod's netns runs loose
+// rp_filter with a read-only /proc/sys. While the tunnel is down the main
+// table would have no default route, so replies from DNS and the gateway API
+// to the bridge would be dropped and it could not re-enroll. Unmarked packets
+// that use the loopback route are dropped, so the pod still fails closed.
 const (
 	bridgeRuleSuppressPref = "90"
 	bridgeRuleTablePref    = "91"
@@ -51,6 +59,37 @@ func parseDefaultRoute(out []byte) (linuxDefaultRoute, error) {
 		return linuxDefaultRoute{}, fmt.Errorf("default route has no dev: %s", strings.TrimSpace(string(out)))
 	}
 	return r, nil
+}
+
+// bridgeFallbackMetric is the metric of the loopback default route, so any
+// other default route wins.
+const bridgeFallbackMetric = "4294967295"
+
+// fallbackDefaultArgs adds the loopback default route to the main table.
+func fallbackDefaultArgs(proto string) []string {
+	return []string{"ip", "-4", "route", "replace", "default", "dev", "lo", "metric", bridgeFallbackMetric, "proto", proto}
+}
+
+// firstDefaultRoute returns the first route in `ip route show default` output
+// whose device is not in skip.
+func firstDefaultRoute(out []byte, skip ...string) (linuxDefaultRoute, bool) {
+	for _, line := range strings.Split(string(out), "\n") {
+		r, err := parseDefaultRoute([]byte(line))
+		if err != nil {
+			continue
+		}
+		skipped := false
+		for _, dev := range skip {
+			if r.Dev == dev {
+				skipped = true
+				break
+			}
+		}
+		if !skipped {
+			return r, true
+		}
+	}
+	return linuxDefaultRoute{}, false
 }
 
 // underlayTableArgs copies the pod's original default route into table,

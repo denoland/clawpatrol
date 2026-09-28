@@ -55,6 +55,9 @@ func installUnderlayRouting(route4, route6 linuxDefaultRoute, have6 bool, mark, 
 	if err := ensureMarkRules("-4", mark, table); err != nil {
 		return err
 	}
+	if err := runIP(fallbackDefaultArgs(proto)...); err != nil {
+		return fmt.Errorf("fallback default route: %w", err)
+	}
 	if !have6 {
 		return nil
 	}

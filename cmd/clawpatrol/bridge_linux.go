@@ -381,8 +381,9 @@ func setupTunDevice(iface string, mtu int, peerIP, peerIPv6 string) error {
 // the source: "default" or "table". ok=false means neither has a route; for v4
 // that's fatal to bring-up, for v6 it just means "no IPv6 underlay".
 func discoverUnderlayRoute(family string, table int, iface string) (linuxDefaultRoute, string, bool) {
+	// Skip the tunnel default and the bridge's loopback fallback route.
 	if out, err := exec.Command("ip", family, "route", "show", "default").Output(); err == nil {
-		if r, err := parseDefaultRoute(out); err == nil && r.Dev != "" && r.Dev != iface {
+		if r, ok := firstDefaultRoute(out, iface, "lo"); ok {
 			return r, "default", true
 		}
 	}
@@ -390,7 +391,7 @@ func discoverUnderlayRoute(family string, table int, iface string) (linuxDefault
 	if err != nil {
 		return linuxDefaultRoute{}, "", false
 	}
-	if r, err := parseDefaultRoute(out); err == nil && r.Dev != "" {
+	if r, ok := firstDefaultRoute(out); ok {
 		return r, "table", true
 	}
 	return linuxDefaultRoute{}, "", false
