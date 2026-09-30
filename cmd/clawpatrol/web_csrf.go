@@ -27,15 +27,15 @@ import (
 // third_party/tailscale/client/web/web.go — prefer Sec-Fetch-Site,
 // fall back to Origin — with two differences.
 //
-// First, Origin is checked against the set of names the gateway
-// answers for rather than against the request's own Host. Host is not
-// a trustworthy statement of where the browser thinks it is: a proxy
-// in front of the dashboard may rewrite it to a backend name, and a
-// DNS rebinding attack makes Origin and Host agree on a name the
-// attacker owns. Checking Origin against the allowlist decides both
-// correctly, which is also why Sec-Fetch-Site: same-origin is not
-// enough on its own — a rebound page *is* same-origin with the
-// dashboard, and says so.
+// First, the Origin/Host comparison is backed by two things upstream
+// does not need. A proxy in front of the dashboard may rewrite Host to
+// a backend name, so `public_url` — the operator's declaration of the
+// external URL — is accepted as an Origin outright. And the Host the
+// comparison falls back to must itself be a name the gateway answers
+// for, because a DNS rebinding attack makes Origin and Host agree on a
+// name the attacker owns. That is also why Sec-Fetch-Site:
+// same-origin is not enough on its own: a rebound page *is*
+// same-origin with the dashboard, and says so. See csrfOriginIsOwn.
 //
 // Second, requests carrying neither header are allowed through
 // unless they are shaped like a submitted form. Every browser sets
@@ -113,12 +113,73 @@ func (w *webMux) csrfProtect(next http.Handler) http.Handler {
 			http.Error(rw, fmt.Sprintf("CSRF request denied with no host in the Origin %q", origin), http.StatusForbidden)
 			return
 		}
-		if !w.csrfHostAllowed(parsed.Host) {
-			http.Error(rw, fmt.Sprintf("CSRF request denied with unrecognized Origin %q — set `public_url` to the URL the dashboard is reached on", origin), http.StatusForbidden)
+		if !w.csrfOriginIsOwn(parsed.Host, r.Host) {
+			http.Error(rw, fmt.Sprintf("CSRF request denied with Origin %q for Host %q — set `public_url` to the URL the dashboard is reached on", origin, r.Host), http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// csrfOriginIsOwn reports whether originHost — the authority of the
+// browser's Origin, "name" or "name:port" — identifies this
+// dashboard. Either of two things establishes that.
+//
+// The declared external URL. `public_url` is the operator's statement
+// of where the dashboard is reached, so it holds whatever a proxy in
+// front of the dashboard rewrote Host to.
+//
+// Otherwise the request's own Host, matched in full including the
+// port, with the name required to be one the gateway answers for. The
+// full match is what makes this tight: a page the agent serves on
+// another port of the same machine, or from an IP of its own, is a
+// different origin and says so. The name check is what catches a
+// rebound name, which agrees with Host by construction.
+//
+// Both halves compare an authority, never a bare hostname: dropping
+// the port would make every port on an allowed name equivalent to the
+// dashboard's own.
+func (w *webMux) csrfOriginIsOwn(originHost, requestHost string) bool {
+	if originHost == "" {
+		return false
+	}
+	origin := strings.ToLower(originHost)
+	if declared := csrfAuthorityOfURL(w.publicURL); declared != "" && declared == origin {
+		return true
+	}
+	if w.g != nil {
+		if cfg := w.g.cfg.Load(); cfg != nil {
+			// Read live too: in tsnet mode public_url is auto-derived
+			// from the Funnel cert domain after the node comes up, well
+			// after newWebMux ran.
+			if declared := csrfAuthorityOfURL(cfg.PublicURL()); declared != "" && declared == origin {
+				return true
+			}
+		}
+	}
+	if requestHost == "" {
+		return false
+	}
+	return origin == strings.ToLower(requestHost) && w.csrfHostAllowed(requestHost)
+}
+
+// csrfAuthorityOfURL returns the lowercased "host" or "host:port" of a
+// configured URL. public_url is stored either as a full URL or as a
+// bare hostname (the tsnet Funnel derivation sets the latter), so both
+// forms are accepted.
+func csrfAuthorityOfURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "//") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
 }
 
 // csrfRelevantMethod reports whether a method can change state and so
@@ -153,18 +214,21 @@ func csrfFormContentType(header string) string {
 	return ""
 }
 
-// csrfHostAllowed reports whether host ("name" or "name:port") is one
-// the gateway serves the dashboard on. It is the authority the
-// browser's Origin is checked against, which is what lets the check
-// see through both a proxy that rewrote Host and a rebound name that
-// agrees with it.
+// csrfHostAllowed reports whether host (the request's Host, "name" or
+// "name:port") names a destination the gateway serves the dashboard
+// on. It judges where the request was addressed, never where it came
+// from — csrfOriginIsOwn is what judges an Origin, and it compares
+// full authorities, because the rules here are deliberately loose
+// about the port and accept any IP literal.
+//
+// Its job is to reject a name that resolves to the gateway without
+// being one of the gateway's own: that is the rebinding case, where
+// Origin and Host agree and the comparison alone sees nothing wrong.
 //
 // The dashboard binds on several listeners — loopback, the WireGuard
 // netstack, the tsnet node, optionally a Funnel domain — so the set
 // is assembled from what the gateway knows about itself rather than
-// configured separately. `public_url` is the operator's declaration
-// of the externally-reachable hostname and so covers a deployment
-// fronted by a proxy, whatever Host that proxy forwards.
+// configured separately.
 func (w *webMux) csrfHostAllowed(host string) bool {
 	if host == "" {
 		return false

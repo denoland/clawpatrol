@@ -460,3 +460,103 @@ func TestCSRFRejectsRebindingReportingSameOrigin(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	csrfDenied(t, serveCSRF(w, req))
 }
+
+// The Origin is matched as a full authority, so a page the agent
+// serves from an address or a port of its own is a different origin
+// and is refused — even though csrfHostAllowed, which judges the
+// destination, is deliberately loose about ports and accepts any IP
+// literal. The agent runs on the operator's machine, so a local
+// listener on another port is the cheapest forgery available to it.
+func TestCSRFRejectsForeignOriginAuthorities(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestHost string
+		origin      string
+	}{
+		{name: "attacker IP literal", requestHost: "100.64.0.1:8080", origin: "http://203.0.113.5"},
+		{name: "attacker IP with port", requestHost: "100.64.0.1:8080", origin: "http://203.0.113.5:8080"},
+		{name: "other port on loopback", requestHost: "127.0.0.1:8080", origin: "http://127.0.0.1:9999"},
+		{name: "other port on localhost", requestHost: "localhost:8080", origin: "http://localhost:9999"},
+		{name: "other port on public_url host", requestHost: csrfTestHost, origin: "https://" + csrfTestHost + ":9999"},
+		{name: "other port on MagicDNS name", requestHost: "claw-gw:8080", origin: "http://claw-gw:9999"},
+		{name: "loopback page against tailnet host", requestHost: "100.64.0.1:8080", origin: "http://127.0.0.1:8080"},
+		{name: "foreign tailnet MagicDNS name", requestHost: "claw-gw:8080", origin: "http://claw-gw.other-tailnet.ts.net:8080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			w.g.tailscaleHostname = "claw-gw"
+			req := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
+			req.Host = tc.requestHost
+			req.Header.Set("Origin", tc.origin)
+			// Sec-Fetch-Site is absent, the plain-HTTP shape, so the
+			// Origin comparison is the only thing deciding.
+			csrfDenied(t, serveCSRF(w, req))
+		})
+	}
+}
+
+// The matching authorities those cases are varied from, so the
+// rejections above are attributable to the authority and not to the
+// harness.
+func TestCSRFAllowsMatchingOriginAuthorities(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestHost string
+		origin      string
+	}{
+		{name: "loopback with port", requestHost: "127.0.0.1:8080", origin: "http://127.0.0.1:8080"},
+		{name: "localhost with port", requestHost: "localhost:8080", origin: "http://localhost:8080"},
+		{name: "tailnet IP with port", requestHost: "100.64.0.1:8080", origin: "http://100.64.0.1:8080"},
+		{name: "MagicDNS name with port", requestHost: "claw-gw:8080", origin: "http://claw-gw:8080"},
+		{name: "public_url host", requestHost: csrfTestHost, origin: "https://" + csrfTestHost},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			w.g.tailscaleHostname = "claw-gw"
+			req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+			req.Host = tc.requestHost
+			req.Header.Set("Origin", tc.origin)
+			rr := serveCSRF(w, req)
+			csrfNotDenied(t, rr)
+			if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+				t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+			}
+		})
+	}
+}
+
+// public_url is an additional accepted origin, not a replacement for
+// the request's own: it is the join-link and OAuth-redirect URL, and
+// an operator who sets it still reaches the dashboard on loopback.
+func TestCSRFPublicURLDoesNotDisplaceLoopbackOrigin(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "localhost:8080"
+	req.Header.Set("Origin", "http://localhost:8080")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// A public_url carrying a port must match on that port too.
+func TestCSRFPublicURLPortIsPartOfTheMatch(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.publicURL = "http://gw.example.test:8080"
+	w.g.cfg.Load().Settings.PublicURL = "http://gw.example.test:8080"
+
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "backend:9090"
+	req.Header.Set("Origin", "http://gw.example.test:8080")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+
+	bad := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	bad.Host = "backend:9090"
+	bad.Header.Set("Origin", "http://gw.example.test:9999")
+	csrfDenied(t, serveCSRF(w, bad))
+}

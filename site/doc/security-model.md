@@ -232,19 +232,26 @@ outside them, and refuses every non-GET request that a browser
 reports as cross-site.
 
 `Sec-Fetch-Site` rejects outright anything a browser reports as other
-than same-origin. Beyond that, the request's `Origin` must name a host
-the gateway answers for: a loopback name, an IP literal, the
-`public_url` host, the bind hostname, or the tsnet node's MagicDNS
-name. `Origin` is checked against that set rather than against the
-request's own `Host`, because `Host` is not a trustworthy statement of
-where the browser thinks it is — a proxy in front of the dashboard may
-rewrite it to a backend name, and a DNS rebinding attack makes
-`Origin` and `Host` agree on a name the attacker owns. The same
-reasoning is why `Sec-Fetch-Site: same-origin` is not sufficient on
-its own: a rebound page genuinely is same-origin with the dashboard,
-and reports itself that way. A dashboard reached on some other
-hostname needs `public_url` set to it, which also covers a deployment
-fronted by a proxy whatever `Host` that proxy forwards.
+than same-origin. Beyond that, the request's `Origin` must identify
+this dashboard, which either `public_url` or the request's own `Host`
+can establish.
+
+`public_url` is the operator's declaration of where the dashboard is
+reached, so it holds for a deployment fronted by a proxy whatever
+`Host` that proxy forwards. Otherwise the `Origin` must equal the
+request's `Host` in full, port included, and that `Host` must name
+something the gateway serves the dashboard on: a loopback name, an IP
+literal, the `public_url` host, the bind hostname, or the tsnet node's
+MagicDNS name.
+
+Both halves of that are load-bearing. Matching the full authority is
+what refuses a page the agent serves on another port of the operator's
+own machine — the cheapest forgery available to it, and one a
+hostname-only comparison would accept. Requiring the `Host` to be one
+of the gateway's own is what refuses a rebound name, which agrees with
+`Origin` by construction; it is also why `Sec-Fetch-Site: same-origin`
+is not sufficient alone, since a rebound page genuinely is same-origin
+with the dashboard and reports itself that way.
 
 Endpoints whose callers are not browsers are exempt, because they
 send no origin headers and prove themselves per request instead:
