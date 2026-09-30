@@ -130,11 +130,11 @@ rule "k8s-no-secrets" {
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `k8s.verb` | `string` | HTTP-derived verb (`"list"`, `"get"`, `"create"`, …) |
+| `k8s.verb` | `string` | One of `"get"`, `"list"`, `"watch"`, `"create"`, `"update"`, `"patch"`, `"delete"`, `"proxy"`, `"meta"`. Derived from the HTTP method, except for the apiserver's path-prefix verbs (`/api/v1/watch/…`, `/api/v1/proxy/…`), which name themselves. |
 | `k8s.resource` | `string` | `<resource>` or `<resource>/<sub>` for subresources |
 | `k8s.namespace` | `string` | Kubernetes namespace |
 | `k8s.name` | `string` | Resource name |
-| `k8s.params` | `map<string, string>` | Query-string params (e.g. `kubectl exec --stdin`). Selecting a key the request doesn't carry is an evaluation error, which **fails closed** — guard with `'<key>' in k8s.params` (see "Unevaluable conditions fail closed" below). |
+| `k8s.params` | `map<string, string>` | Query-string params (e.g. `kubectl exec --stdin`). Selecting a key the request doesn't carry is an evaluation error, which **fails closed** — guard with `'<key>' in k8s.params` (see "Unevaluable conditions fail closed" below). Params the apiserver reads as booleans carry `"true"` / `"false"`, whatever spelling arrived on the wire (`?stdin=1`, `?watch=TRUE`, a bare `?watch`). |
 
 ```hcl
 condition = "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods'"
@@ -142,6 +142,18 @@ condition = "k8s.resource in ['pods/exec', 'pods/attach']"
 condition = "!k8s.name.startsWith('debug-')"
 condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach')"
 ```
+
+`proxy` is its own verb because those paths proxy an arbitrary HTTP
+request at a pod or — for `/api/v1/proxy/nodes/<node>/…` — at the
+node's kubelet. A reads allow-list written as
+`k8s.verb in ['get', 'list', 'watch']` does not cover them. The
+`<resource>/proxy` subresource form (`…/pods/<name>/proxy/<path>`)
+keeps the verb its HTTP method implies, so gate it on the resource.
+
+A path shape the gateway can't decompose into that tuple — including
+an HTTP method the apiserver derives no verb from — has no tuple at
+all, so every `k8s.*` condition on it is unevaluable and **fails
+closed**.
 
 A rule bound to `https` endpoints sees `http.*` only; a rule bound
 to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
@@ -346,7 +358,8 @@ accessed with dot notation. Common idioms:
 | `sql.statement`               | as on the wire (raw text, no case folding) |
 | `sql.database`                | as on the wire (StartupMessage / Hello / HTTP query+header) |
 | `k8s.verb`                    | lower-case (normalized) |
-| `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |
+| `k8s.resource`, `k8s.namespace`, `k8s.name` | as on the wire |
+| `k8s.params` | as on the wire, except boolean params (canonical `true` / `false`) |
 
 For SQL, the parser lower-cases an internal copy of the statement
 before extracting verbs, tables, and functions — so
