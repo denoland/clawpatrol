@@ -231,14 +231,20 @@ ask for one. A dedicated origin check therefore wraps both gates,
 outside them, and refuses every non-GET request that a browser
 reports as cross-site.
 
-The check prefers `Sec-Fetch-Site` and falls back to comparing
-`Origin` against `Host`. It also requires `Host` to be a name the
-gateway answers for — a loopback name, an IP literal, the
+`Sec-Fetch-Site` rejects outright anything a browser reports as other
+than same-origin. Beyond that, the request's `Origin` must name a host
+the gateway answers for: a loopback name, an IP literal, the
 `public_url` host, the bind hostname, or the tsnet node's MagicDNS
-name — because a name the attacker owns that resolves to the gateway
-would otherwise satisfy `Origin == Host` and read as same-origin to
-the browser. A dashboard reached on some other hostname needs
-`public_url` set to it.
+name. `Origin` is checked against that set rather than against the
+request's own `Host`, because `Host` is not a trustworthy statement of
+where the browser thinks it is — a proxy in front of the dashboard may
+rewrite it to a backend name, and a DNS rebinding attack makes
+`Origin` and `Host` agree on a name the attacker owns. The same
+reasoning is why `Sec-Fetch-Site: same-origin` is not sufficient on
+its own: a rebound page genuinely is same-origin with the dashboard,
+and reports itself that way. A dashboard reached on some other
+hostname needs `public_url` set to it, which also covers a deployment
+fronted by a proxy whatever `Host` that proxy forwards.
 
 Endpoints whose callers are not browsers are exempt, because they
 send no origin headers and prove themselves per request instead:

@@ -410,3 +410,53 @@ func TestActionByIDRejectsNonGET(t *testing.T) {
 		}
 	}
 }
+
+// A proxy in front of the dashboard may forward a backend Host —
+// nginx's `proxy_pass` default rewrites it — while the browser's
+// origin stays the external hostname. Checking Origin against the
+// names the gateway answers for, rather than against the request's
+// own Host, is what keeps those deployments working: `public_url` is
+// the operator's declaration of that external hostname.
+func TestCSRFAllowsProxiedRequestWithRewrittenHost(t *testing.T) {
+	for _, backendHost := range []string{"clawpatrol:8080", "127.0.0.1:8080", "10.0.0.7:8080"} {
+		t.Run(backendHost, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+			req.Host = backendHost
+			req.Header.Set("Origin", "https://"+csrfTestHost)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			rr := serveCSRF(w, req)
+			csrfNotDenied(t, rr)
+			if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+				t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+			}
+		})
+	}
+}
+
+// The same proxy shape without Sec-Fetch-Site — a plain-HTTP external
+// origin — must also survive, since Host cannot be compared against
+// Origin behind a proxy that rewrote it.
+func TestCSRFAllowsProxiedRequestWithoutSecFetchSite(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "clawpatrol:8080"
+	req.Header.Set("Origin", "http://"+csrfTestHost)
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// Sec-Fetch-Site: same-origin is not sufficient on its own. A rebound
+// page is genuinely same-origin with the dashboard and reports itself
+// that way, so the Origin it carries still has to name the gateway.
+func TestCSRFRejectsRebindingReportingSameOrigin(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
+	req.Host = "rebound.evil.example"
+	req.Header.Set("Origin", "https://rebound.evil.example")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	csrfDenied(t, serveCSRF(w, req))
+}
