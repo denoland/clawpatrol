@@ -62,6 +62,13 @@ func TestInstallTrustReinstallsOnCAChange(t *testing.T) {
 // TestInstallTrustRejectsFingerprintMismatch (round-8 #2): if the operator
 // confirmed a fingerprint, a ca.crt that was swapped between approval and
 // install (different fingerprint) must NOT be installed.
+//
+// installTrust reaches that verdict through requireApprovedCA, the same guard
+// commitApprovedCA applies on the deferred path every join takes — see
+// TestCommitApprovedCAKeepsStagedFingerprint and
+// TestDeviceFlowRejectsTamperedPollDeliveredCA for that path end to end. This
+// case covers the eager path, where the CA is read back off disk and the
+// fingerprint additionally closes a swap between approval and install.
 func TestInstallTrustRejectsFingerprintMismatch(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")

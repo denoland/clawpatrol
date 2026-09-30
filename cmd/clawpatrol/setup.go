@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -54,7 +55,10 @@ func reorderJoinArgsForFlagParse(args []string) []string {
 		name, _, hasValue := strings.Cut(name, "=")
 		flags = append(flags, arg)
 		switch name {
-		case "hostname", "profile", "name", "ca-dir":
+		// Every flag that takes a separate value belongs here, or the
+		// value is left behind as a positional and the gateway URL is
+		// consumed as the flag's value instead.
+		case "hostname", "profile", "name", "ca-dir", "ca-fingerprint":
 			if !hasValue && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
@@ -98,6 +102,7 @@ func runJoin(args []string) {
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet (only used with --whole-machine)")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
+	caPin := fs.String("ca-fingerprint", "", "SHA-256 fingerprint the gateway's CA must match before it is written or trusted (from the dashboard); pins a non-interactive join instead of relying on a visual comparison")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
@@ -110,6 +115,15 @@ func runJoin(args []string) {
 	gatewayURL, err := validateGatewayURL(rest[0])
 	if err != nil {
 		fail("%v", err)
+	}
+	// Normalize the pin up front: a malformed --ca-fingerprint is an operator
+	// error worth reporting now, not a pin that silently cannot match later.
+	pinnedCAFP := ""
+	if *caPin != "" {
+		pinnedCAFP, err = normalizeCAFingerprint(*caPin)
+		if err != nil {
+			fail("%v", err)
+		}
 	}
 	if *wholeMachine {
 		if local, reason := isLocalGateway(gatewayURL); local {
@@ -165,7 +179,7 @@ func runJoin(args []string) {
 		bootstrap = bs
 		joinHTTPCli = bs.Client()
 	}
-	setup, err := preJoinFetchCA(gatewayURL, *caOut, joinHTTPCli)
+	setup, err := preJoinFetchCA(gatewayURL, *caOut, pinnedCAFP, joinHTTPCli)
 	if err != nil && !isCaNotExposed(err) {
 		// Auto-fallback: a tailnet-shaped URL that's unreachable from
 		// this machine is exactly the case --login was added for. Try
@@ -179,7 +193,7 @@ func runJoin(args []string) {
 			}
 			bootstrap = bs
 			joinHTTPCli = bs.Client()
-			setup, err = preJoinFetchCA(gatewayURL, *caOut, joinHTTPCli)
+			setup, err = preJoinFetchCA(gatewayURL, *caOut, pinnedCAFP, joinHTTPCli)
 			if err != nil && !isCaNotExposed(err) {
 				fail("ca fetch: %v", err)
 			}
@@ -301,7 +315,49 @@ type joinSetup struct {
 	candidateCA   []byte // staged canonical CA awaiting approved join completion
 	caHint        string // manual-trust hint when caInstalled == false
 	caFingerprint string // SHA-256 of the fetched cert (operator-readable)
+	pinnedCAFP    string // --ca-fingerprint: the CA the operator authorised
 	shellRC       bool   // shell rc updated with `eval "$(clawpatrol env)"`
+}
+
+// caFingerprintHexDigits is the length of a SHA-256 digest written as hex —
+// the form --ca-fingerprint accepts once separators are stripped.
+const caFingerprintHexDigits = sha256.Size * 2
+
+// normalizeCAFingerprint folds an operator-typed fingerprint into the
+// colon-separated uppercase hex that caFingerprintFromCert emits, so a pin
+// pasted from the dashboard matches whether it arrives with colons or without,
+// in either case, or carrying an openssl-style "sha256:" prefix. Anything that
+// isn't a full SHA-256 digest is rejected here rather than becoming a pin that
+// can never match.
+func normalizeCAFingerprint(s string) (string, error) {
+	t := strings.TrimSpace(s)
+	if lower := strings.ToLower(t); strings.HasPrefix(lower, "sha256:") {
+		t = t[len("sha256:"):]
+	}
+	var digits strings.Builder
+	for _, r := range t {
+		switch {
+		case r == ':' || r == '-' || r == ' ':
+			// Separators operators paste along with the digest.
+		case (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F'):
+			digits.WriteRune(r)
+		default:
+			return "", fmt.Errorf("CA fingerprint %q contains a non-hex character %q", s, r)
+		}
+	}
+	hexDigits := strings.ToUpper(digits.String())
+	if len(hexDigits) != caFingerprintHexDigits {
+		return "", fmt.Errorf("CA fingerprint %q has %d hex digits, want %d (a SHA-256 digest)",
+			s, len(hexDigits), caFingerprintHexDigits)
+	}
+	var out strings.Builder
+	for i := 0; i < len(hexDigits); i += 2 {
+		if i > 0 {
+			out.WriteByte(':')
+		}
+		out.WriteString(hexDigits[i : i+2])
+	}
+	return out.String(), nil
 }
 
 // isCaNotExposed returns true when the gateway deliberately did not expose
@@ -325,8 +381,13 @@ func isCaNotExposed(err error) bool {
 // TOFU-permissive client. The tailnet-bootstrap path in runJoin
 // passes a tsnet-dialing client so the same code reaches a
 // tailnet-only gateway.
-func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) {
+func preJoinFetchCA(gateway, caDir, pinnedFP string, cli *http.Client) (joinSetup, error) {
 	var s joinSetup
+	// Recorded before the first fallible step so it survives on the joinSetup
+	// this returns alongside an error — a gateway that answers /ca.crt with a
+	// 404 defers the CA to the approval poll, where the pin is the only
+	// authenticity check there is.
+	s.pinnedCAFP = pinnedFP
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
@@ -346,6 +407,11 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 	canonicalCA, fp, err := fetchCAHTTP(gateway, cli)
 	if err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
+	}
+	// Checked before the CA is staged, so a pinned join rejects a substitute
+	// without it ever becoming the candidate the rest of the flow works from.
+	if err := s.requireApprovedCA(canonicalCA); err != nil {
+		return s, err
 	}
 	s.candidateCA = append([]byte(nil), canonicalCA...)
 	s.caFingerprint = fp
@@ -449,6 +515,140 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine, deferCA bool) {
 	}
 }
 
+// joinTLSVerified reports whether the join flow's pre-CA HTTP client
+// authenticates the gateway's certificate against the system trust store.
+//
+// Two certificate chains are in play and only one of them is unverifiable. The
+// gateway's MITM CA is the thing this flow is here to fetch, so nothing local
+// can vouch for a certificate it signed. The gateway's own ingress certificate
+// is separate and already anchored: a Funnel gateway answers :443 with the
+// Let's Encrypt certificate Tailscale provisions for its
+// <node>.<tailnet>.ts.net name, and a gateway behind an operator-supplied
+// public URL answers with that domain's certificate. Authenticating that chain
+// is what denies an on-path attacker the ability to substitute the CA this join
+// installs into the system trust store, so it stays on.
+//
+// Verification is waived for the two host shapes no public root can ever
+// match, where requiring it would only make the gateway unjoinable:
+//
+//   - An IP literal. A tsnet listener holds a certificate for its MagicDNS
+//     name, never for its 100.64.0.0/10 address.
+//   - A loopback name. A gateway reached on this host answers its TLS port
+//     with a leaf its own MITM CA minted, which is precisely the CA the join
+//     has not got yet.
+//
+// Those gateways keep the fingerprint comparison as their authenticity check —
+// see requireApprovedCA and --ca-fingerprint.
+//
+// An http:// gateway carries no TLS, so the answer is moot for it. That is the
+// shape a tailnet-side join takes: the gateway serves its dashboard and
+// /ca.crt as plain HTTP on :8080 and exposes neither through the Funnel, which
+// is why a tailnet join rests on the fingerprint rather than on the transport.
+// Both answers come from a positive classification, so a URL that cannot be
+// read lands in neither bucket and each decision fails closed: verification
+// stays on, and the transport is not credited with authenticating anything.
+func joinTLSVerified(gateway string) bool {
+	return classifyGatewayTLS(gateway) != gatewayTLSUnverifiable
+}
+
+// joinTransportAuthenticated reports whether the connection to gateway is
+// authenticated, which is what allows a CA delivered over it — rather than
+// compared against a fingerprint — to count as authenticated too. See
+// gatewayTLSPubliclyRooted for what that rests on, and for the rejoin case
+// where --ca-fingerprint is the stronger answer.
+func joinTransportAuthenticated(gateway string) bool {
+	return classifyGatewayTLS(gateway) == gatewayTLSPubliclyRooted
+}
+
+// gatewayTLSClass is what the public roots can say about a gateway URL.
+type gatewayTLSClass int
+
+const (
+	// gatewayTLSUnclassified is a URL classifyGatewayTLS cannot read. Neither
+	// security decision grants it anything.
+	gatewayTLSUnclassified gatewayTLSClass = iota
+	// gatewayTLSPubliclyRooted is an https host the system trust store can
+	// authenticate: a name that is neither a loopback name nor an IP literal.
+	//
+	// The bound is the trust store, not the public roots alone. A host that
+	// has joined before carries the previous gateway's CA in that store, so a
+	// certificate that CA minted for this name also passes — whoever holds
+	// that key can present one. --ca-fingerprint is what does not depend on
+	// the store, and is the stronger choice for a rejoin to a gateway whose
+	// predecessor is not trusted.
+	gatewayTLSPubliclyRooted
+	// gatewayTLSUnverifiable is a shape no public root could ever match:
+	// plain http, which carries no TLS at all; an IP literal; or a loopback
+	// name.
+	gatewayTLSUnverifiable
+)
+
+func classifyGatewayTLS(gateway string) gatewayTLSClass {
+	u, err := neturl.Parse(gateway)
+	if err != nil {
+		return gatewayTLSUnclassified
+	}
+	switch {
+	case strings.EqualFold(u.Scheme, "http"):
+		return gatewayTLSUnverifiable
+	case !strings.EqualFold(u.Scheme, "https"):
+		return gatewayTLSUnclassified
+	}
+	// A fully qualified name may carry the DNS root's trailing dot. It names
+	// the same host, so it is stripped before the host is classified.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return gatewayTLSUnclassified
+	}
+	// RFC 6761 reserves localhost — and anything under it — for the loopback.
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return gatewayTLSUnverifiable
+	}
+	// A host that parses as an address is an IP literal; a name is not.
+	if _, err := netip.ParseAddr(host); err == nil {
+		return gatewayTLSUnverifiable
+	}
+	return gatewayTLSPubliclyRooted
+}
+
+// refuseOffOriginRedirect is the redirect policy every join client carries.
+//
+// The join addresses exact endpoints on the gateway the operator named, so a
+// redirect that leaves that origin is refused rather than followed. Following
+// one would carry the exchange — including the CA the approval poll delivers —
+// onto a transport none of the decisions above judged: an https origin could
+// hand the flow to plain http, and everything after would arrive
+// unauthenticated while still being credited to the origin that was verified.
+func refuseOffOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	origin := via[0].URL
+	if !strings.EqualFold(origin.Scheme, req.URL.Scheme) ||
+		!strings.EqualFold(origin.Host, req.URL.Host) {
+		return fmt.Errorf("refusing redirect off the gateway's origin: %s → %s",
+			origin.Redacted(), req.URL.Redacted())
+	}
+	if len(via) > 5 {
+		return fmt.Errorf("too many redirects from %s", origin.Redacted())
+	}
+	return nil
+}
+
+// newJoinHTTPClient builds the client the join flow uses before the gateway's
+// CA is trusted, applying joinTLSVerified's policy to gateway.
+func newJoinHTTPClient(gateway string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: refuseOffOriginRedirect,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: !joinTLSVerified(gateway), //nolint:gosec
+			},
+		},
+	}
+}
+
 // fetchCAHTTP downloads the CA from gateway and returns the canonical
 // certificate and its SHA-256 fingerprint without making it active.
 // The fingerprint flows back to the CLI's stdout so the operator
@@ -458,19 +658,20 @@ func fetchCAHTTP(gateway string, cli *http.Client) ([]byte, string, error) {
 	url := strings.TrimRight(gateway, "/") + "/ca.crt"
 	c := cli
 	if c == nil {
-		// InsecureSkipVerify is intentional on this default client: we
-		// haven't yet fetched the CA that signed the gateway's cert,
-		// so we can't verify it. The admin confirms the fingerprint
-		// out-of-band (shown in the UI at join time) — TOFU.
-		c = &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-			},
-		}
+		c = newJoinHTTPClient(gateway, 10*time.Second)
 	}
 	resp, err := c.Get(url)
 	if err != nil {
+		// Name the cause and the way out. A gateway fronted by a certificate
+		// no public root signs is reachable over its tailnet URL, which is
+		// plain HTTP on the dashboard port and pins the CA by fingerprint.
+		var certErr *tls.CertificateVerificationError
+		if errors.As(err, &certErr) {
+			return nil, "", fmt.Errorf(
+				"fetch ca: %s presented a certificate no public root signs (%w) — "+
+					"join over the gateway's tailnet URL instead (http://<gateway-host>:8080)",
+				url, err)
+		}
 		return nil, "", fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -777,12 +978,10 @@ func (s *joinSetup) installTrust(skipTrust bool) {
 	if err != nil {
 		return
 	}
-	if s.caFingerprint != "" {
-		if fp, ferr := caFingerprintFromPEM(pemBytes); ferr != nil || fp != s.caFingerprint {
-			s.caHint = manualTrustHint(s.caPath)
-			fmt.Println("! CA on disk does not match the approved fingerprint — not installing")
-			return
-		}
+	if err := s.requireApprovedCA(pemBytes); err != nil {
+		s.caHint = manualTrustHint(s.caPath)
+		fmt.Println("! " + err.Error() + " — not installing")
+		return
 	}
 	// Trust install is best-effort — installTrustBytes surfaces its own manual
 	// hint on failure, so the discarded error is intentional.
@@ -870,13 +1069,47 @@ func (s *joinSetup) commitApprovedCA(canonicalCA []byte, skipTrust bool) error {
 	if len(canonicalCA) == 0 {
 		return fmt.Errorf("internal: no approved CA to commit")
 	}
+	// Held to the fingerprints the join committed to before anything is
+	// written: a mismatch here means the CA that arrived is not the CA the
+	// operator authorised, and the join fails rather than trusting it.
+	if err := s.requireApprovedCA(canonicalCA); err != nil {
+		return err
+	}
 	if err := atomicWriteFile(s.caPath, canonicalCA, 0o644); err != nil {
 		return fmt.Errorf("write ca.crt: %w", err)
 	}
-	if fp, err := caFingerprintFromPEM(canonicalCA); err == nil {
-		s.caFingerprint = fp
-	}
 	_ = s.installTrustBytes(canonicalCA, skipTrust)
+	return nil
+}
+
+// requireApprovedCA holds a candidate CA to every fingerprint this join is
+// already committed to, before the candidate reaches the disk or the system
+// trust store. Two independent sources can supply one:
+//
+//   - --ca-fingerprint, which the operator read off the dashboard or a
+//     configuration store out of band.
+//   - The CA staged by the pre-join /ca.crt fetch, which a gateway that
+//     delivers a second copy inline in the approval poll has to agree with.
+//
+// Each is optional and the check is only as strong as the ones present, so a
+// gateway that exposes no public /ca.crt and an operator who passed no pin
+// leave the printed fingerprint as the thing to compare against the dashboard.
+// Whichever are present must all match: disagreement means a substituted CA.
+func (s *joinSetup) requireApprovedCA(candidate []byte) error {
+	fp, err := caFingerprintFromPEM(candidate)
+	if err != nil {
+		return fmt.Errorf("fingerprint CA: %w", err)
+	}
+	for _, want := range []struct{ source, fingerprint string }{
+		{"--ca-fingerprint", s.pinnedCAFP},
+		{"the CA fetched from the gateway's /ca.crt", s.caFingerprint},
+	} {
+		if want.fingerprint == "" || strings.EqualFold(want.fingerprint, fp) {
+			continue
+		}
+		return fmt.Errorf("gateway CA fingerprint %s does not match %s (%s)",
+			fp, want.source, want.fingerprint)
+	}
 	return nil
 }
 
@@ -1094,17 +1327,12 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	gateway = strings.TrimRight(gateway, "/")
 	cli := httpCli
 	if cli == nil {
-		// CA is unverified until the admin confirms the fingerprint at
-		// approval time (TOFU). Use InsecureSkipVerify on the default
-		// client for the same reason as fetchCAHTTP — the bootstrap
-		// client dials over tsnet and inherits its TLS behaviour, so
-		// we don't second-guess its config here.
-		cli = &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-			},
-		}
+		// Same transport policy as fetchCAHTTP: the gateway's ingress
+		// certificate is authenticated wherever a public root can do it, which
+		// covers the Funnel URL that carries this flow's /start and /poll. A
+		// caller-supplied client dials over tsnet and owns its own TLS config,
+		// so we don't second-guess it here.
+		cli = newJoinHTTPClient(gateway, 30*time.Second)
 	}
 
 	hn := hostname
@@ -1244,15 +1472,18 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if !tailnetOnly {
 			tryOpen(start.VerifyURL)
 		}
-		// CA fingerprint with the why: this machine downloaded the CA
-		// over plain HTTP, so an on-path attacker could have swapped it.
-		// The dashboard shows the fingerprint the gateway actually has;
-		// matching them by eye before approving rules that swap out.
+		// CA fingerprint with the why: the staged CA came from a transport no
+		// public root vouches for — plain HTTP over the tailnet, or a
+		// loopback TLS port whose leaf this gateway's own CA minted — so an
+		// on-path attacker could have swapped it. The dashboard shows the
+		// fingerprint the gateway actually has; matching them before
+		// approving rules that swap out. --ca-fingerprint does the same
+		// comparison without needing the operator's eye.
 		if setup != nil && setup.caFingerprint != "" {
 			detail = append(detail,
 				"",
-				"  before approving, confirm this CA fingerprint matches the dashboard:",
-				"  "+setup.caFingerprint)
+				"  before approving, confirm this matches the dashboard:",
+				"  CA fingerprint: "+setup.caFingerprint)
 		}
 		finishApprove = beginStep("Approve this device on the dashboard — code "+start.UserCode, detail, true)
 	}
@@ -1327,9 +1558,40 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 		canonicalCA = append([]byte(nil), setup.candidateCA...)
 	}
-	// Approval click ⇒ operator visually confirmed the CA
-	// fingerprint on the dashboard matched what the CLI
-	// printed. Both control planes defer the CA write and trust install to
+	// Hold the CA to --ca-fingerprint and to whatever the pre-join /ca.crt
+	// fetch staged, before the join touches this machine. commitApprovedCA
+	// repeats the check as the guard on the write itself; failing here too
+	// spares the operator a platform setup that would have to be undone.
+	if setup != nil {
+		// Three things can authenticate a CA: the transport it arrived on, the
+		// CA staged from /ca.crt, and --ca-fingerprint. A poll-delivered CA
+		// with none of them has nothing that could detect a substitution, so
+		// the join stops instead of installing an unauthenticated root. The
+		// gateway shapes that reach here — a Funnel URL, whose certificate is
+		// verified, and a tailnet URL, which serves /ca.crt and so stages a
+		// fingerprint — each satisfy one.
+		if tsnetJoin && setup.pinnedCAFP == "" && setup.caFingerprint == "" &&
+			!joinTransportAuthenticated(gateway) {
+			return false, fmt.Errorf(
+				"refusing to trust the CA delivered by %s: nothing authenticates it — "+
+					"the connection's certificate is not publicly rooted, the gateway served no "+
+					"/ca.crt to compare against, and no --ca-fingerprint was given. "+
+					"Re-run with --ca-fingerprint <fingerprint from the dashboard>", gateway)
+		}
+		if err := setup.requireApprovedCA(canonicalCA); err != nil {
+			return false, err
+		}
+		// Print what arrived, so the fingerprint the dashboard shows has a
+		// counterpart to be compared against. On the tailnet path this is the
+		// only place it can be printed: the CA rides the approval poll, so it
+		// does not exist until the approval has already happened. A mismatch
+		// spotted here is recovered by rejoining with --ca-fingerprint, which
+		// refuses the substitute instead of relying on the operator's eye.
+		if fp, ferr := caFingerprintFromPEM(canonicalCA); ferr == nil {
+			fmt.Println("  CA fingerprint: " + fp)
+		}
+	}
+	// Both control planes defer the CA write and trust install to
 	// commitApprovedCA after their fatal setup has succeeded.
 	finishJoinSetup(setup, skipTrust, wholeMachine, true)
 	// Persist the per-peer bearer the gateway minted alongside the
