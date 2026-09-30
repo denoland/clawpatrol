@@ -145,6 +145,7 @@ func normalizeParserGaps(sql string) string {
 func analyseStmt(stmt nodes.Node, source string) analysedStmt {
 	info := pgInfo{Statement: source, Verb: verbFromNode(stmt)}
 	c := newAstCollector()
+	c.source = source
 	c.visit(stmt)
 	info.Tables = sortedKeys(c.tables)
 	info.Functions = sortedKeys(c.funcs)
@@ -217,9 +218,11 @@ func verbFromNode(stmt nodes.Node) string {
 	case *nodes.CallStmt:
 		return "call"
 	case *nodes.ExplainStmt:
-		// Behaviour parity with the previous extractor: the inner
-		// statement determines what runs, but the outer verb stays
+		// The inner statement is what runs, but the outer verb stays
 		// "explain" so a rule that bans EXPLAIN itself still fires.
+		// When ANALYZE is on, that inner statement also rides as a
+		// shadow sub-statement carrying its own verb — see
+		// astCollector.emitInner.
 		return "explain"
 	case *nodes.PrepareStmt:
 		return "prepare"
@@ -313,6 +316,10 @@ type astCollector struct {
 	tables map[string]struct{}
 	funcs  map[string]struct{}
 	inner  []pgInfo
+	// source is the statement text this walk came from, carried onto
+	// the shadow sub-statements emitInner produces. Sub-collectors
+	// (the ones that only harvest tables / functions) leave it empty.
+	source string
 }
 
 func newAstCollector() *astCollector {
@@ -402,6 +409,92 @@ func (c *astCollector) emitFunc(f *nodes.FuncCall) {
 	if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
 		c.funcs[name[i+1:]] = struct{}{}
 	}
+}
+
+// emitInner records stmt as a shadow sub-statement: a statement that
+// runs underneath an outer statement whose own verb names the wrapper
+// rather than the work. pgEvaluate walks every shadow through the
+// matcher and denies the whole wire query when one of them is denied,
+// so a mutation reached through `EXPLAIN ANALYZE` / `PREPARE` /
+// `DECLARE ... CURSOR FOR` is judged on `delete` / `update` / … and
+// not on the wrapper's verb.
+//
+// The shadow carries the wrapper's own statement text, so a rule keyed
+// on `sql.statement` sees the same bytes on the shadow as on the outer
+// statement; verb, tables and functions are the inner statement's. A
+// node type verbFromNode has no verb for still rides as a shadow with
+// an empty verb: a verb-keyed allow-list cannot match it, which leaves
+// it to the config's catch-all rather than to the wrapper's verb.
+func (c *astCollector) emitInner(stmt nodes.Node) {
+	if stmt == nil {
+		return
+	}
+	info := pgInfo{Verb: verbFromNode(stmt), Statement: c.source}
+	sub := newAstCollector()
+	sub.visit(stmt)
+	info.Tables = sortedKeys(sub.tables)
+	info.Functions = sortedKeys(sub.funcs)
+	c.inner = append(c.inner, info)
+}
+
+// explainAnalyzes reports whether an EXPLAIN option list turns ANALYZE
+// on, which is what makes EXPLAIN execute the statement it wraps
+// rather than only plan it. Reading the option nodes covers every
+// spelling the grammar accepts — `EXPLAIN ANALYZE`, `EXPLAIN
+// (ANALYZE)`, `EXPLAIN (ANALYZE true)`, `EXPLAIN (ANALYZE, WAL)` — all
+// of which parse to the same DefElem. A later occurrence wins, the way
+// postgres' own option loop resolves a repeated option.
+func explainAnalyzes(options *nodes.List) bool {
+	analyze := false
+	for _, it := range listItems(options) {
+		de, ok := it.(*nodes.DefElem)
+		if !ok || de == nil || !strings.EqualFold(de.Defname, "analyze") {
+			continue
+		}
+		analyze = defElemBool(de.Arg)
+	}
+	return analyze
+}
+
+// defElemBool reads an option argument the way postgres' defGetBoolean
+// does: an absent argument means the option is on, an integer is on
+// unless it is zero, and a string is off only when it spells one of
+// the values parse_bool reads as false. A value postgres would reject
+// outright reads as on — the statement errors before it runs, so
+// gating it costs nothing, while reading an unfamiliar spelling as off
+// is the one answer that could let a statement through ungated.
+func defElemBool(arg nodes.Node) bool {
+	switch a := arg.(type) {
+	case nil:
+		return true
+	case *nodes.Integer:
+		return a == nil || a.Ival != 0
+	case *nodes.Boolean:
+		return a == nil || a.Boolval
+	case *nodes.Float:
+		return a == nil || !isFalseValue(a.Fval)
+	case *nodes.String:
+		return a == nil || !isFalseValue(a.Str)
+	}
+	return true
+}
+
+// isFalseValue reports whether v is one of the values postgres'
+// parse_bool reads as false. parse_bool compares prefixes, so "f",
+// "fa" and "false" all count, as do "n" and "no"; the "off" family
+// needs two characters because "o" alone is ambiguous with "on".
+func isFalseValue(v string) bool {
+	l := strings.ToLower(v)
+	if l == "" {
+		return false
+	}
+	if l == "0" {
+		return true
+	}
+	if strings.HasPrefix("false", l) || strings.HasPrefix("no", l) {
+		return true
+	}
+	return len(l) >= 2 && strings.HasPrefix("off", l)
 }
 
 // visit is a hand-rolled walker over the pgplex AST. The package
@@ -552,13 +645,28 @@ func (c *astCollector) visit(node nodes.Node) {
 			}
 		}
 
-	// EXPLAIN <stmt>, PREPARE <name> AS <stmt>, etc. — recurse so
-	// the inner statement's tables surface on the outer pgInfo.
+	// EXPLAIN <stmt>, PREPARE <name> AS <stmt>, DECLARE <name>
+	// CURSOR FOR <stmt> — recurse so the inner statement's tables
+	// surface on the outer pgInfo, and surface the inner statement
+	// itself as a shadow sub-statement whenever it is one that runs.
+	//
+	// `EXPLAIN ANALYZE <stmt>` executes the statement it wraps; plain
+	// EXPLAIN only plans it, and gating a plan would block a
+	// legitimate read. PREPARE stores a plan whose statement runs on a
+	// later EXECUTE, and DECLARE ... CURSOR FOR runs its query as the
+	// portal is read. All three keep their own outer verb (`explain` /
+	// `prepare` / `declare`) so a rule that bans the wrapper itself
+	// still fires.
 	case *nodes.ExplainStmt:
+		if explainAnalyzes(n.Options) {
+			c.emitInner(n.Query)
+		}
 		c.visit(n.Query)
 	case *nodes.PrepareStmt:
+		c.emitInner(n.Query)
 		c.visit(n.Query)
 	case *nodes.DeclareCursorStmt:
+		c.emitInner(n.Query)
 		c.visit(n.Query)
 	case *nodes.CreateTableAsStmt:
 		if n.Into != nil {

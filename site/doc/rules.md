@@ -104,6 +104,16 @@ condition = "sql.database == 'prod'"
 lexer over a lower-cased copy of the statement — see
 [Case sensitivity](#case-sensitivity-by-variable) below.
 
+A statement that carries another statement inside it is evaluated
+twice: once on its own verb, and once per statement it runs. A
+`WITH x AS (DELETE …) SELECT …` is a `select` that also runs a
+`delete`; `EXPLAIN ANALYZE …`, `PREPARE … AS …`, `DECLARE … CURSOR
+FOR …` and a `DO` block body are the same shape. A deny on the inner
+statement denies the whole query, so a rule keyed on `sql.verb ==
+'delete'` fires on every one of those without being written for each
+wrapper. Plain `EXPLAIN` only plans its statement, so it carries no
+inner statement to judge.
+
 `tables` and `functions` are **multi-valued** facets: a single
 statement can name several tables (`SELECT ... FROM a JOIN b`) and
 call several functions. Use CEL's `in` operator for a single name
