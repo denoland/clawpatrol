@@ -116,7 +116,7 @@ func TestWireGuardCAStagePreservesActiveCAOnPreApprovalFailure(t *testing.T) {
 			if err := os.WriteFile(caPath, canonicalA, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			setup, err := preJoinFetchCA(h.server.URL, caDir, h.server.Client())
+			setup, err := preJoinFetchCA(h.server.URL, caDir, "", h.server.Client())
 			if err != nil {
 				t.Fatalf("preJoinFetchCA: %v", err)
 			}
@@ -198,7 +198,7 @@ func TestWireGuardCAStageFreshJoinCommitsApprovedSnapshot(t *testing.T) {
 	caDir := t.TempDir()
 	caPath := filepath.Join(caDir, "ca.crt")
 
-	setup, err := preJoinFetchCA(h.server.URL, caDir, h.server.Client())
+	setup, err := preJoinFetchCA(h.server.URL, caDir, "", h.server.Client())
 	if err != nil {
 		t.Fatalf("preJoinFetchCA: %v", err)
 	}

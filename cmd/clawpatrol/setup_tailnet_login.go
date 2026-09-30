@@ -240,6 +240,10 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 			// Cap it so a stalled request surfaces an error instead.
 			hc := s.HTTPClient()
 			hc.Timeout = 30 * time.Second
+			// Same redirect policy as the default join client: the gateway's
+			// endpoints are exact, and a redirect off its origin would move
+			// the exchange onto a transport the join never judged.
+			hc.CheckRedirect = refuseOffOriginRedirect
 			return &tailnetBootstrap{server: s, lc: lc, client: hc, dir: dir}, nil
 		}
 
