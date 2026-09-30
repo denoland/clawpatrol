@@ -1153,6 +1153,10 @@ func (w *webMux) apiPlugins(rw http.ResponseWriter, _ *http.Request) {
 // writes clawpatrol.lock.hcl, so committing that file still surfaces
 // the approval as a reviewable diff.
 func (w *webMux) apiPluginApprove(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, http.MethodPost, http.StatusMethodNotAllowed)
+		return
+	}
 	if w.g.pluginMgr == nil {
 		http.Error(rw, "plugins are not enabled", http.StatusServiceUnavailable)
 		return

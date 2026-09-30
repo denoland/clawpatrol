@@ -220,13 +220,75 @@ Why we cannot rely on network reachability:
   app-layer auth, "I’m on the tailnet" would silently equal "I am
   an operator." It must not.
 
+### Cross-site request forgery
+
+The session cookie is `SameSite=Lax`, so a cross-site request never
+carries it. That is not on its own a defense: without the cookie the
+request falls through to the tailnet path, which attributes an
+identity from the peer address of the connection — so stripping the
+cookie is what routes a forged request onto the gate that does not
+ask for one. A dedicated origin check therefore wraps both gates,
+outside them, and refuses every non-GET request that a browser
+reports as cross-site.
+
+`Sec-Fetch-Site` rejects outright anything a browser reports as other
+than same-origin. Beyond that, the request's `Origin` must identify
+this dashboard, which either `public_url` or the request's own `Host`
+can establish.
+
+`public_url` is the operator's declaration of where the dashboard is
+reached, so it holds for a deployment fronted by a proxy whatever
+`Host` that proxy forwards; it declares a scheme too, so the scheme is
+compared. Otherwise the `Origin` must equal the request's `Host` in
+full, port included, and that `Host` must name something the gateway
+serves the dashboard on: a loopback name, an IP literal, the
+`public_url` host, the bind hostname, or the tsnet node's MagicDNS
+name.
+
+Comparisons are between canonical origins — scheme, host, and the port
+with the scheme's default folded away — so `https://gw:443` and
+`https://gw` are one origin while `https://gw:9999` is not. Matching
+the port is what refuses a page the agent serves on another port of the
+operator's own machine, the cheapest forgery available to it and one a
+hostname-only comparison accepts. Requiring the `Host` to be one of the
+gateway's own is what refuses a rebound name, which agrees with
+`Origin` by construction; that is also why `Sec-Fetch-Site:
+same-origin` is not sufficient alone, since a rebound page genuinely is
+same-origin with the dashboard and reports itself that way.
+
+On the `Host` half the scheme is compared whenever something proves
+one. A TLS request cannot have been initiated by a plaintext page on
+the same name, so `http://` is refused there. Failing that, a
+`public_url` naming the same host is authoritative about that host's
+scheme, which is what covers a proxy that terminates TLS and preserves
+the external `Host` — the request reaches the gateway in plaintext, so
+it proves nothing on its own. Only the scheme is pinned that way; the
+same host on another port is still the dashboard.
+
+A host with neither of those keeps both schemes, since a plain-HTTP
+dashboard and a TLS-terminating proxy are indistinguishable at that
+point. Anyone able to forge a page on the gateway's own name over
+plaintext is already astride that same plaintext request and needs no
+forgery.
+
+`public_url` is read from the live configuration, so a hot reload that
+retires or replaces it retires the origin with it.
+
+Endpoints whose callers are not browsers are exempt, because they
+send no origin headers and prove themselves per request instead:
+credential webhooks under `/api/cred/` (a provider signature, such
+as Slack's v0 HMAC), the HITL operation-status paths (a per-operation
+token), and the device-flow handshakes `clawpatrol join` drives.
+
 ### First-run root password
 
 On a fresh install the dashboard has no operator yet. The first
 request — from anywhere — is redirected to a "set password" form;
 the chosen password becomes the bcrypt-hashed `root` row in
-`clawpatrol.db`. Subsequent requests must present that password
-(via the `cp_dash` cookie or the `X-Clawpatrol-Secret` header).
+`clawpatrol.db`. Logging in with that password mints an opaque
+session token, held in the `HttpOnly`, `SameSite=Lax` `cp_session`
+cookie and stored only as a SHA-256 in `dashboard_sessions`;
+subsequent requests are authenticated by that cookie.
 
 The first-run window is benign by construction: the dashboard is
 the only path that creates credentials / profile assignments /

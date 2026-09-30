@@ -220,7 +220,12 @@ func (w *webMux) handler() http.Handler {
 	}
 	w.mountCredentialWebhooks(mux)
 	mux.Handle("/", w.staticHandler())
-	return w.dashboardAuthGate(w.tailnetGate(mux))
+	// csrfProtect wraps the gates rather than sitting inside them:
+	// dashboardAuthGate hands cookieless requests to tailnetGate,
+	// which authenticates from the peer address, and that is exactly
+	// the path a cross-site request takes once SameSite=Lax withholds
+	// the cp_session cookie.
+	return w.csrfProtect(w.dashboardAuthGate(w.tailnetGate(mux)))
 }
 
 func (w *webMux) routes() []webRoute {
@@ -258,7 +263,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
 		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
 		{Method: http.MethodPost, Path: "/api/actions/rule-preview", Auth: authDashboard, Handler: w.apiActionRulePreview},
-		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
+		{Method: http.MethodGet, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
 		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
 		{Method: http.MethodGet, Path: "/api/facets", Auth: authDashboard, Handler: w.apiFacets},
 		{Method: http.MethodPost, Path: "/api/onboard/start", Auth: authPublic, Handler: w.apiOnboardStart},
@@ -287,8 +292,8 @@ func (w *webMux) routes() []webRoute {
 // dashboardAuthGate requires every non-public request to carry a
 // valid dashboard credential. Two methods are accepted:
 //
-//   - cookie `cp_dash` (or header `X-Clawpatrol-Secret`) holding the
-//     password, bcrypt-checked against the root row in dashboard_users;
+//   - cookie `cp_session` holding an opaque session token, looked up
+//     in dashboard_sessions and tied to a row in dashboard_users;
 //   - in tailscale-control mode, a tsnet whois login that matches an
 //     entry in cfg.DashboardOperators. The actual whois resolution
 //     happens downstream in tailnetGate; this gate only decides that
@@ -318,8 +323,9 @@ const (
 // cpSessionCookieName holds an opaque, server-issued session token —
 // random 256 bits, never derived from the password. The cookie is
 // HttpOnly + SameSite=Lax. The DB only stores its SHA-256, so a DB
-// leak doesn't grant access. Replaces the older cp_dash cookie that
-// stored the raw password.
+// leak doesn't grant access. SameSite=Lax withholds the cookie from
+// cross-site requests, which routes them onto tailnetGate's
+// address-based path instead — csrfProtect is what stops them there.
 const cpSessionCookieName = "cp_session"
 
 // dashboardSessionTTL resolves the configured session TTL or falls
@@ -1990,6 +1996,13 @@ func (w *webMux) loadAction(actionID string) (*Event, error) {
 func (w *webMux) apiActionByID(
 	rw http.ResponseWriter, r *http.Request,
 ) {
+	// Read-only: loads one action row and renders it. The dashboard
+	// fetches it with a plain GET and an operator can navigate to the
+	// URL directly, so anything else is a caller error.
+	if r.Method != http.MethodGet {
+		http.Error(rw, http.MethodGet, http.StatusMethodNotAllowed)
+		return
+	}
 	// Path: /api/actions/<uuid>
 	actionID := strings.TrimPrefix(r.URL.Path, "/api/actions/")
 	if actionID == "" {
