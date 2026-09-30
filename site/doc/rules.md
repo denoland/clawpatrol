@@ -108,7 +108,7 @@ A statement that carries another statement inside it is evaluated
 twice: once on its own verb, and once per statement it runs. A
 `WITH x AS (DELETE …) SELECT …` is a `select` that also runs a
 `delete`; `EXPLAIN ANALYZE …`, `PREPARE … AS …`, `DECLARE … CURSOR
-FOR …` and a `DO` block body are the same shape. A deny on the inner
+FOR …`, `COPY (…) TO …` and a `DO` block body are the same shape. A deny on the inner
 statement denies the whole query, so a rule keyed on `sql.verb ==
 'delete'` fires on every one of those without being written for each
 wrapper. Plain `EXPLAIN` only plans its statement, so it carries no

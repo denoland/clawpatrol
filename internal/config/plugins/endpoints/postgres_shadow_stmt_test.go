@@ -117,6 +117,18 @@ func TestAnalyseShadowStatements(t *testing.T) {
 			wantTables: []string{"users"},
 		},
 		{
+			name:     "COPY of a table carries no inner statement",
+			sql:      "COPY users FROM stdin",
+			wantVerb: "copy", wantInner: nil,
+			wantTables: []string{"users"},
+		},
+		{
+			name:     "COPY of a query runs that query",
+			sql:      "COPY (DELETE FROM users RETURNING *) TO stdout",
+			wantVerb: "copy", wantInner: []string{"delete"},
+			wantTables: []string{"users"},
+		},
+		{
 			name: "EXPLAIN ANALYZE surfaces its own inner and the CTE's",
 			sql: "EXPLAIN ANALYZE WITH x AS (DELETE FROM users RETURNING *) " +
 				"SELECT * FROM x",
@@ -188,7 +200,7 @@ profile "default" { credentials = [postgres_credential.db-cred] }
 
 rule "reads" {
   endpoint  = postgres.db
-  condition = "sql.verb in ['select', 'show', 'explain', 'prepare', 'declare', 'fetch', 'close']"
+  condition = "sql.verb in ['select', 'show', 'explain', 'prepare', 'declare', 'fetch', 'close', 'copy']"
   verdict   = "allow"
 }
 
@@ -215,6 +227,8 @@ rule "default-deny" {
 		{"PREPARE of a read", "PREPARE p AS SELECT * FROM users WHERE id = $1", false},
 		{"PREPARE of a delete", "PREPARE p AS DELETE FROM users WHERE id = $1", true},
 		{"DECLARE of a read", "DECLARE c CURSOR FOR SELECT * FROM users", false},
+		{"COPY of a read query", "COPY (SELECT * FROM users) TO stdout", false},
+		{"COPY of a delete query", "COPY (DELETE FROM users RETURNING *) TO stdout", true},
 	}
 
 	for _, tc := range cases {

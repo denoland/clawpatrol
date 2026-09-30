@@ -416,8 +416,8 @@ func (c *astCollector) emitFunc(f *nodes.FuncCall) {
 // rather than the work. pgEvaluate walks every shadow through the
 // matcher and denies the whole wire query when one of them is denied,
 // so a mutation reached through `EXPLAIN ANALYZE` / `PREPARE` /
-// `DECLARE ... CURSOR FOR` is judged on `delete` / `update` / … and
-// not on the wrapper's verb.
+// `DECLARE ... CURSOR FOR` / `COPY (...) TO` is judged on `delete` /
+// `update` / … and not on the wrapper's verb.
 //
 // The shadow carries the wrapper's own statement text, so a rule keyed
 // on `sql.statement` sees the same bytes on the shadow as on the outer
@@ -583,8 +583,12 @@ func (c *astCollector) visit(node nodes.Node) {
 		c.visit(n.Query)
 	case *nodes.AlterTableStmt:
 		c.emitRangeVar(n.Relation)
+	// COPY <table> FROM / TO carries no inner statement; COPY
+	// (<stmt>) TO runs the statement in its parentheses, which can be
+	// a DML with a RETURNING clause.
 	case *nodes.CopyStmt:
 		c.emitRangeVar(n.Relation)
+		c.emitInner(n.Query)
 		c.visit(n.Query)
 	case *nodes.RefreshMatViewStmt:
 		c.emitRangeVar(n.Relation)
