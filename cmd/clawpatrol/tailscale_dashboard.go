@@ -82,10 +82,22 @@ type tailscaleAuthResponse struct {
 // and then holds the manager ref past response so the operator's
 // browser side of the login can complete.
 func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost && r.Method != http.MethodGet {
-		http.Error(rw, "POST or GET", http.StatusMethodNotAllowed)
+	// POST only: the force-acquire path below starts a login and holds a
+	// tunnel open past the response, which is not something a GET may
+	// do — a cross-site GET is not covered by the origin check, because
+	// a GET is not supposed to change anything.
+	if r.Method != http.MethodPost {
+		http.Error(rw, http.MethodPost, http.StatusMethodNotAllowed)
 		return
 	}
+	w.writeTailscaleAuthState(rw, r, true)
+}
+
+// writeTailscaleAuthState reports the credential's tsnet auth state.
+// When drive is set and there is neither a live node nor a parked login
+// URL, it force-acquires a tunnel to make tsnet emit one; with drive
+// clear it reports what already exists and starts nothing.
+func (w *webMux) writeTailscaleAuthState(rw http.ResponseWriter, r *http.Request, drive bool) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		http.Error(rw, "missing id", http.StatusBadRequest)
@@ -113,10 +125,14 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 			resp.AuthURL = u
 			resp.PendingURL = u
 			resp.Status = "pending"
-		} else if u := w.driveTailscaleLogin(r.Context(), policy, id); u != "" {
-			resp.AuthURL = u
-			resp.PendingURL = u
-			resp.Status = "pending"
+		} else if u := ""; drive {
+			if u = w.driveTailscaleLogin(r.Context(), policy, id); u != "" {
+				resp.AuthURL = u
+				resp.PendingURL = u
+				resp.Status = "pending"
+			} else {
+				resp.Status = "awaiting_url"
+			}
 		} else {
 			resp.Status = "awaiting_url"
 		}
@@ -196,15 +212,18 @@ func firstTunnelByCredential(policy *config.CompiledPolicy, credName string) *co
 }
 
 // apiTailscaleStatus is the polling counterpart to /connect. Same
-// shape, GET-only, no side effects. The dashboard polls this while
-// the operator is mid-login on tailscale.com so the "Connect" card
-// flips to "Connected" the moment tsnet finishes joining.
+// shape, GET-only, and genuinely without side effects: it reports a
+// parked login URL but never force-acquires a tunnel to produce one,
+// which is /connect's job and needs /connect's POST. The dashboard
+// polls this while the operator is mid-login on tailscale.com so the
+// "Connect" card flips to "Connected" the moment tsnet finishes
+// joining.
 func (w *webMux) apiTailscaleStatus(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(rw, "GET", http.StatusMethodNotAllowed)
+		http.Error(rw, http.MethodGet, http.StatusMethodNotAllowed)
 		return
 	}
-	w.apiTailscaleConnect(rw, r)
+	w.writeTailscaleAuthState(rw, r, false)
 }
 
 // apiTailscaleDisconnect drops every stored slot for the credential
