@@ -113,7 +113,7 @@ func (w *webMux) csrfProtect(next http.Handler) http.Handler {
 			http.Error(rw, fmt.Sprintf("CSRF request denied with no host in the Origin %q", origin), http.StatusForbidden)
 			return
 		}
-		if !w.csrfOriginIsOwn(parsed.Host, r.Host) {
+		if !w.csrfOriginIsOwn(parsed, r) {
 			http.Error(rw, fmt.Sprintf("CSRF request denied with Origin %q for Host %q — set `public_url` to the URL the dashboard is reached on", origin, r.Host), http.StatusForbidden)
 			return
 		}
@@ -121,53 +121,90 @@ func (w *webMux) csrfProtect(next http.Handler) http.Handler {
 	})
 }
 
-// csrfOriginIsOwn reports whether originHost — the authority of the
-// browser's Origin, "name" or "name:port" — identifies this
+// csrfOriginIsOwn reports whether the browser's Origin identifies this
 // dashboard. Either of two things establishes that.
 //
 // The declared external URL. `public_url` is the operator's statement
 // of where the dashboard is reached, so it holds whatever a proxy in
-// front of the dashboard rewrote Host to.
+// front of the dashboard rewrote Host to. Its scheme is declared too,
+// so it is compared.
 //
 // Otherwise the request's own Host, matched in full including the
-// port, with the name required to be one the gateway answers for. The
-// full match is what makes this tight: a page the agent serves on
-// another port of the same machine, or from an IP of its own, is a
-// different origin and says so. The name check is what catches a
-// rebound name, which agrees with Host by construction.
+// port. That full match is what makes this tight: a page the agent
+// serves on another port of the operator's machine, or from an address
+// of its own, is a different origin and says so. The Host must also
+// name something the gateway answers for, which is what catches a
+// rebound name — that agrees with Origin by construction.
 //
-// Both halves compare an authority, never a bare hostname: dropping
-// the port would make every port on an allowed name equivalent to the
-// dashboard's own.
-func (w *webMux) csrfOriginIsOwn(originHost, requestHost string) bool {
-	if originHost == "" {
+// On the Host half the scheme is only compared when the request itself
+// proves one. A TLS request cannot have been initiated by a plaintext
+// page on the same name, so `http://` is refused there; a plaintext
+// request is either a plain-HTTP dashboard or a proxy that terminated
+// TLS upstream, and those are indistinguishable from here. Anyone able
+// to forge a page on the gateway's own name over plaintext is already
+// astride that same plaintext request and needs no forgery.
+//
+// Every comparison is between canonical origins — default port folded
+// away, lowercased — so `https://gw:443` and `https://gw` are one
+// origin, and `https://gw:9999` is not.
+func (w *webMux) csrfOriginIsOwn(origin *url.URL, r *http.Request) bool {
+	if origin == nil || origin.Host == "" {
 		return false
 	}
-	origin := strings.ToLower(originHost)
-	if declared := csrfAuthorityOfURL(w.publicURL); declared != "" && declared == origin {
-		return true
+	want := csrfCanonicalOrigin(origin.Scheme, origin.Host)
+	if want == "" {
+		return false
 	}
-	if w.g != nil {
-		if cfg := w.g.cfg.Load(); cfg != nil {
-			// Read live too: in tsnet mode public_url is auto-derived
-			// from the Funnel cert domain after the node comes up, well
-			// after newWebMux ran.
-			if declared := csrfAuthorityOfURL(cfg.PublicURL()); declared != "" && declared == origin {
-				return true
-			}
+	for _, declared := range w.csrfDeclaredOrigins() {
+		if declared == want {
+			return true
 		}
 	}
-	if requestHost == "" {
+	if r.Host == "" {
 		return false
 	}
-	return origin == strings.ToLower(requestHost) && w.csrfHostAllowed(requestHost)
+	// The request carries no scheme of its own, so compare the Origin's
+	// against whichever ones this request could have come from.
+	schemes := []string{"https", "http"}
+	if r.TLS != nil {
+		schemes = []string{"https"}
+	}
+	if !w.csrfHostAllowed(r.Host) {
+		return false
+	}
+	for _, scheme := range schemes {
+		if csrfCanonicalOrigin(scheme, r.Host) == want {
+			return true
+		}
+	}
+	return false
 }
 
-// csrfAuthorityOfURL returns the lowercased "host" or "host:port" of a
-// configured URL. public_url is stored either as a full URL or as a
-// bare hostname (the tsnet Funnel derivation sets the latter), so both
-// forms are accepted.
-func csrfAuthorityOfURL(raw string) string {
+// csrfDeclaredOrigins returns the canonical origin of `public_url`,
+// from the value captured at construction and from the live config —
+// in tsnet mode public_url is auto-derived from the Funnel cert domain
+// after the node comes up, well after newWebMux ran.
+func (w *webMux) csrfDeclaredOrigins() []string {
+	var out []string
+	add := func(raw string) {
+		if o := csrfOriginOfURL(raw); o != "" {
+			out = append(out, o)
+		}
+	}
+	add(w.publicURL)
+	if w.g != nil {
+		if cfg := w.g.cfg.Load(); cfg != nil {
+			add(cfg.PublicURL())
+		}
+	}
+	return out
+}
+
+// csrfOriginOfURL returns the canonical origin of a configured URL.
+// public_url is stored either as a full URL or as a bare hostname (the
+// tsnet Funnel derivation sets the latter, and Funnel is HTTPS-only),
+// so both forms are accepted.
+func csrfOriginOfURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -179,7 +216,33 @@ func csrfAuthorityOfURL(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(u.Host)
+	return csrfCanonicalOrigin(u.Scheme, u.Host)
+}
+
+// csrfCanonicalOrigin renders "scheme://host[:port]" with the scheme's
+// default port folded away, so the two spellings a browser and a
+// config file may use for one origin compare equal. An authority with
+// no host has no origin.
+func csrfCanonicalOrigin(scheme, authority string) string {
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme == "" || authority == "" {
+		return ""
+	}
+	host, port := authority, ""
+	if h, p, err := net.SplitHostPort(authority); err == nil {
+		host, port = h, p
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return ""
+	}
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port == "" {
+		return scheme + "://" + host
+	}
+	return scheme + "://" + host + ":" + port
 }
 
 // csrfRelevantMethod reports whether a method can change state and so

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -434,14 +435,14 @@ func TestCSRFAllowsProxiedRequestWithRewrittenHost(t *testing.T) {
 	}
 }
 
-// The same proxy shape without Sec-Fetch-Site — a plain-HTTP external
-// origin — must also survive, since Host cannot be compared against
-// Origin behind a proxy that rewrote it.
+// The same proxy shape without Sec-Fetch-Site must also survive, since
+// Host cannot be compared against Origin behind a proxy that rewrote
+// it. The scheme is the one public_url declares.
 func TestCSRFAllowsProxiedRequestWithoutSecFetchSite(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "clawpatrol:8080"
-	req.Header.Set("Origin", "http://"+csrfTestHost)
+	req.Header.Set("Origin", "https://"+csrfTestHost)
 	rr := serveCSRF(w, req)
 	csrfNotDenied(t, rr)
 	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
@@ -559,4 +560,110 @@ func TestCSRFPublicURLPortIsPartOfTheMatch(t *testing.T) {
 	bad.Host = "backend:9090"
 	bad.Header.Set("Origin", "http://gw.example.test:9999")
 	csrfDenied(t, serveCSRF(w, bad))
+}
+
+// The origin's scheme is part of it. An opposite-scheme page on the
+// gateway's own name is a different origin, and on a name the operator
+// declared over HTTPS a plaintext page is one an attacker astride the
+// network can serve without a certificate.
+func TestCSRFRejectsOppositeSchemeOnDeclaredOrigin(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
+	req.Host = "clawpatrol:8080"
+	req.Header.Set("Origin", "http://"+csrfTestHost)
+	csrfDenied(t, serveCSRF(w, req))
+}
+
+// A request that arrived over TLS proves its own scheme, so a
+// plaintext page on the same name cannot have initiated it.
+func TestCSRFRejectsPlaintextOriginOnTLSRequest(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "claw-gw.tailnet-abc.ts.net"
+	w.g.tailscaleHostname = "claw-gw"
+	req.TLS = &tls.ConnectionState{}
+	req.Header.Set("Origin", "http://claw-gw.tailnet-abc.ts.net")
+	csrfDenied(t, serveCSRF(w, req))
+
+	ok := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	ok.Host = "claw-gw.tailnet-abc.ts.net"
+	ok.TLS = &tls.ConnectionState{}
+	ok.Header.Set("Origin", "https://claw-gw.tailnet-abc.ts.net")
+	rr := serveCSRF(w, ok)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// A plaintext request cannot prove a scheme: it is either a plain-HTTP
+// dashboard or a proxy that terminated TLS upstream, and those look
+// identical from here. Both schemes are accepted on the Host half so
+// the TLS-terminating proxy that preserves Host keeps working without
+// public_url.
+func TestCSRFAllowsEitherSchemeOnPlaintextRequest(t *testing.T) {
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+			req.Host = "localhost:8080"
+			req.Header.Set("Origin", scheme+"://localhost:8080")
+			rr := serveCSRF(w, req)
+			csrfNotDenied(t, rr)
+			if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+				t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+			}
+		})
+	}
+}
+
+// A default port is folded away, so the two spellings a browser and a
+// config file may use for one origin compare equal.
+func TestCSRFCanonicalOriginFoldsDefaultPorts(t *testing.T) {
+	same := [][2]string{
+		{csrfCanonicalOrigin("https", "gw.example:443"), "https://gw.example"},
+		{csrfCanonicalOrigin("http", "gw.example:80"), "http://gw.example"},
+		{csrfCanonicalOrigin("HTTPS", "GW.Example."), "https://gw.example"},
+		{csrfOriginOfURL("https://gw.example:443"), "https://gw.example"},
+		{csrfOriginOfURL("gw.example"), "https://gw.example"},
+	}
+	for _, p := range same {
+		if p[0] != p[1] {
+			t.Errorf("got %q, want %q", p[0], p[1])
+		}
+	}
+	distinct := []string{
+		csrfCanonicalOrigin("https", "gw.example:9999"),
+		csrfCanonicalOrigin("http", "gw.example"),
+		csrfCanonicalOrigin("https", "gw.example"),
+	}
+	for i := range distinct {
+		for j := i + 1; j < len(distinct); j++ {
+			if distinct[i] == distinct[j] {
+				t.Errorf("%q and %q collapsed to one origin", distinct[i], distinct[j])
+			}
+		}
+	}
+	if got := csrfCanonicalOrigin("https", ""); got != "" {
+		t.Errorf("empty authority yielded %q", got)
+	}
+	if got := csrfCanonicalOrigin("", "gw.example"); got != "" {
+		t.Errorf("empty scheme yielded %q", got)
+	}
+}
+
+// A public_url written with its default port must still match the
+// Origin a browser serializes without one.
+func TestCSRFPublicURLWithDefaultPortMatches(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.publicURL = "https://gw.example.test:443"
+	w.g.cfg.Load().Settings.PublicURL = "https://gw.example.test:443"
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "backend:9090"
+	req.Header.Set("Origin", "https://gw.example.test")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
 }

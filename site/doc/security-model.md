@@ -238,20 +238,32 @@ can establish.
 
 `public_url` is the operator's declaration of where the dashboard is
 reached, so it holds for a deployment fronted by a proxy whatever
-`Host` that proxy forwards. Otherwise the `Origin` must equal the
-request's `Host` in full, port included, and that `Host` must name
-something the gateway serves the dashboard on: a loopback name, an IP
-literal, the `public_url` host, the bind hostname, or the tsnet node's
-MagicDNS name.
+`Host` that proxy forwards; it declares a scheme too, so the scheme is
+compared. Otherwise the `Origin` must equal the request's `Host` in
+full, port included, and that `Host` must name something the gateway
+serves the dashboard on: a loopback name, an IP literal, the
+`public_url` host, the bind hostname, or the tsnet node's MagicDNS
+name.
 
-Both halves of that are load-bearing. Matching the full authority is
-what refuses a page the agent serves on another port of the operator's
-own machine — the cheapest forgery available to it, and one a
-hostname-only comparison would accept. Requiring the `Host` to be one
-of the gateway's own is what refuses a rebound name, which agrees with
-`Origin` by construction; it is also why `Sec-Fetch-Site: same-origin`
-is not sufficient alone, since a rebound page genuinely is same-origin
-with the dashboard and reports itself that way.
+Comparisons are between canonical origins — scheme, host, and the port
+with the scheme's default folded away — so `https://gw:443` and
+`https://gw` are one origin while `https://gw:9999` is not. Matching
+the port is what refuses a page the agent serves on another port of the
+operator's own machine, the cheapest forgery available to it and one a
+hostname-only comparison accepts. Requiring the `Host` to be one of the
+gateway's own is what refuses a rebound name, which agrees with
+`Origin` by construction; that is also why `Sec-Fetch-Site:
+same-origin` is not sufficient alone, since a rebound page genuinely is
+same-origin with the dashboard and reports itself that way.
+
+On the `Host` half the scheme is only compared when the request proves
+one. A TLS request cannot have been initiated by a plaintext page on
+the same name, so `http://` is refused there. A plaintext request is
+either a plain-HTTP dashboard or a proxy that terminated TLS upstream,
+and those are indistinguishable at this point, so both schemes are
+accepted — anyone able to forge a page on the gateway's own name over
+plaintext is already astride that same plaintext request and needs no
+forgery.
 
 Endpoints whose callers are not browsers are exempt, because they
 send no origin headers and prove themselves per request instead:
