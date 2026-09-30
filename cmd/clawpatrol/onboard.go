@@ -833,6 +833,35 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// onboardApproveBody is the JSON body /api/onboard/approve accepts.
+// Both fields are optional: an absent field falls back to the query
+// parameter of the same name.
+type onboardApproveBody struct {
+	Code    string `json:"code"`
+	Profile string `json:"profile"`
+}
+
+// decodeOnboardApproveBody reads the approve request's JSON body. An
+// empty body is valid and yields the zero value — the CLI self-
+// approve posts no body at all.
+func decodeOnboardApproveBody(r *http.Request) (onboardApproveBody, error) {
+	var body onboardApproveBody
+	if r.Body == nil {
+		return body, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+	if err != nil {
+		return body, fmt.Errorf("read body: %w", err)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return body, nil
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return body, fmt.Errorf("body must be JSON: %w", err)
+	}
+	return body, nil
+}
+
 // apiOnboardApprove is hit by the dashboard "approve" button.
 // Approval is an operator action: dashboardAuthGate must authenticate
 // the request (root password or tailnet allowlist) before this handler
@@ -846,31 +875,53 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "approval requires an authenticated operator", http.StatusForbidden)
 		return
 	}
-	owner, _ := w.selectedProfileForRequest(r)
+	body, err := decodeOnboardApproveBody(r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// The body is the documented place for both parameters — a
+	// state-changing call whose inputs ride in the URL is reachable by
+	// navigation and lands in logs and history. The query string stays
+	// accepted for the `clawpatrol join --login` self-approve, which
+	// builds its URL that way.
+	code := body.Code
+	if code == "" {
+		code = r.URL.Query().Get("code")
+	}
+	requested := body.Profile
+	if requested == "" {
+		requested = r.URL.Query().Get("profile")
+	}
+	// An explicitly named profile is also the owner key, matching what
+	// selectedProfileForRequest resolves from the query parameter.
+	owner := requested
+	if owner == "" {
+		owner, _ = w.selectedProfileForRequest(r)
+	}
 	if owner == "" {
 		http.Error(rw, "approval requires a profile", http.StatusForbidden)
 		return
 	}
-	code := r.URL.Query().Get("code")
 	s := w.onboard.byUserCode(code)
 	if s == nil {
 		http.Error(rw, "unknown or expired code", 404)
 		return
 	}
 	// Operator picks which profile this device joins. Priority:
-	// dashboard query param → CLI suggestion stashed at /start time →
-	// profile named "default" → first profile in source order. An
-	// explicit query param naming a nonexistent profile is a hard
-	// error (a typo'd `join --profile` auto-approve should fall back
-	// to browser approval, not land the device in a ghost profile); a
+	// profile named on the request → CLI suggestion stashed at /start
+	// time → profile named "default" → first profile in source order.
+	// An explicitly named profile that does not exist is a hard error
+	// (a typo'd `join --profile` auto-approve should fall back to
+	// browser approval, not land the device in a ghost profile); a
 	// bogus stashed suggestion just degrades to the default.
 	profiles := orderedProfileNames(w.g.cfg.Load().Policy)
-	profile := r.URL.Query().Get("profile")
+	profile := requested
 	if profile != "" {
-		// An explicit query param naming a nonexistent profile is a
-		// hard error: a typo'd `join --profile` auto-approve should
-		// fall back to browser approval, not land the device in a
-		// ghost profile. (A policy with zero profiles has nothing to
+		// An explicitly named profile that does not exist is a hard
+		// error: a typo'd `join --profile` auto-approve should fall
+		// back to browser approval, not land the device in a ghost
+		// profile. (A policy with zero profiles has nothing to
 		// validate against — accept whatever the caller sent.)
 		if len(profiles) > 0 && !slices.Contains(profiles, profile) {
 			http.Error(rw, fmt.Sprintf("unknown profile %q", profile), http.StatusBadRequest)

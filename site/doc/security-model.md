@@ -220,13 +220,41 @@ Why we cannot rely on network reachability:
   app-layer auth, "I’m on the tailnet" would silently equal "I am
   an operator." It must not.
 
+### Cross-site request forgery
+
+The session cookie is `SameSite=Lax`, so a cross-site request never
+carries it. That is not on its own a defense: without the cookie the
+request falls through to the tailnet path, which attributes an
+identity from the peer address of the connection — so stripping the
+cookie is what routes a forged request onto the gate that does not
+ask for one. A dedicated origin check therefore wraps both gates,
+outside them, and refuses every non-GET request that a browser
+reports as cross-site.
+
+The check prefers `Sec-Fetch-Site` and falls back to comparing
+`Origin` against `Host`. It also requires `Host` to be a name the
+gateway answers for — a loopback name, an IP literal, the
+`public_url` host, the bind hostname, or the tsnet node's MagicDNS
+name — because a name the attacker owns that resolves to the gateway
+would otherwise satisfy `Origin == Host` and read as same-origin to
+the browser. A dashboard reached on some other hostname needs
+`public_url` set to it.
+
+Endpoints whose callers are not browsers are exempt, because they
+send no origin headers and prove themselves per request instead:
+credential webhooks under `/api/cred/` (a provider signature, such
+as Slack's v0 HMAC), the HITL operation-status paths (a per-operation
+token), and the device-flow handshakes `clawpatrol join` drives.
+
 ### First-run root password
 
 On a fresh install the dashboard has no operator yet. The first
 request — from anywhere — is redirected to a "set password" form;
 the chosen password becomes the bcrypt-hashed `root` row in
-`clawpatrol.db`. Subsequent requests must present that password
-(via the `cp_dash` cookie or the `X-Clawpatrol-Secret` header).
+`clawpatrol.db`. Logging in with that password mints an opaque
+session token, held in the `HttpOnly`, `SameSite=Lax` `cp_session`
+cookie and stored only as a SHA-256 in `dashboard_sessions`;
+subsequent requests are authenticated by that cookie.
 
 The first-run window is benign by construction: the dashboard is
 the only path that creates credentials / profile assignments /

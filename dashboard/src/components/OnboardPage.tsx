@@ -32,9 +32,11 @@ export function OnboardPage({ code }: { code: string }) {
   async function approve() {
     setStatus("approving");
     try {
-      let url = "/api/onboard/approve?code=" + encodeURIComponent(code);
-      if (profile) url += "&profile=" + encodeURIComponent(profile);
-      const r = await fetch(url, { method: "POST" });
+      const r = await fetch("/api/onboard/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile ? { code, profile } : { code }),
+      });
       if (!r.ok) {
         setErr(await r.text());
         setStatus("error");
