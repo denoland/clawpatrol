@@ -667,3 +667,139 @@ func TestCSRFPublicURLWithDefaultPortMatches(t *testing.T) {
 		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
 	}
 }
+
+// A hot reload that retires or replaces public_url must retire the
+// origin with it. The value captured at construction is only a
+// fallback for a config that carries none.
+func TestCSRFLiveConfigPublicURLWinsOverCaptured(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.publicURL = "https://old.example.test"
+	w.g.cfg.Load().Settings.PublicURL = "https://new.example.test"
+
+	retired := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	retired.Host = "backend:9090"
+	retired.Header.Set("Origin", "https://old.example.test")
+	csrfDenied(t, serveCSRF(w, retired))
+
+	live := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	live.Host = "backend:9090"
+	live.Header.Set("Origin", "https://new.example.test")
+	rr := serveCSRF(w, live)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+
+	// The retired hostname must also stop satisfying the Host half.
+	byHost := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	byHost.Host = "old.example.test"
+	byHost.Header.Set("Origin", "https://old.example.test")
+	csrfDenied(t, serveCSRF(w, byHost))
+}
+
+// The captured value still applies when the live config declares none.
+func TestCSRFCapturedPublicURLUsedWhenConfigHasNone(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.g.cfg.Load().Settings.PublicURL = ""
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "backend:9090"
+	req.Header.Set("Origin", "https://"+csrfTestHost)
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// Behind a proxy that terminates TLS but preserves the external Host,
+// r.TLS is nil, so the Host half would otherwise accept either scheme.
+// public_url names that host and declares HTTPS, so it binds: a
+// plaintext page on the name must not reach the dashboard.
+func TestCSRFDeclaredSchemeBindsHostFallback(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	bad := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
+	bad.Host = csrfTestHost
+	bad.Header.Set("Origin", "http://"+csrfTestHost)
+	csrfDenied(t, serveCSRF(w, bad))
+
+	ok := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	ok.Host = csrfTestHost
+	ok.Header.Set("Origin", "https://"+csrfTestHost)
+	rr := serveCSRF(w, ok)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// The declared scheme binds the host, not the port: a dashboard also
+// reachable on another port of the declared host keeps working.
+func TestCSRFDeclaredSchemeDoesNotPinThePort(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.g.cfg.Load().Settings.PublicURL = "https://" + csrfTestHost + ":8443"
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = csrfTestHost + ":9000"
+	req.Header.Set("Origin", "https://"+csrfTestHost+":9000")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// A host with no declared origin keeps both schemes, so the
+// TLS-terminating proxy that preserves Host works without public_url.
+func TestCSRFUndeclaredHostKeepsBothSchemes(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.publicURL = ""
+	w.g.cfg.Load().Settings.PublicURL = ""
+	w.g.cfg.Load().Settings.DashboardListen = "dash.internal:8080"
+	for _, scheme := range []string{"http", "https"} {
+		req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+		req.Host = "dash.internal:8080"
+		req.Header.Set("Origin", scheme+"://dash.internal:8080")
+		rr := serveCSRF(w, req)
+		csrfNotDenied(t, rr)
+		if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+			t.Fatalf("%s: body = %q, want the config handler's own answer", scheme, rr.Body.String())
+		}
+	}
+}
+
+// An IPv6 literal is bracketed in an origin whether or not a port
+// follows, so the two spellings of one origin must compare equal.
+func TestCSRFCanonicalOriginBracketsIPv6(t *testing.T) {
+	pairs := [][2]string{
+		{csrfCanonicalOrigin("https", "[::1]:443"), "https://[::1]"},
+		{csrfCanonicalOrigin("https", "[::1]"), "https://[::1]"},
+		{csrfCanonicalOrigin("http", "[::1]:80"), "http://[::1]"},
+		{csrfCanonicalOrigin("https", "[fd00::5]:9000"), "https://[fd00::5]:9000"},
+		{csrfOriginOfURL("https://[::1]:443"), "https://[::1]"},
+	}
+	for _, p := range pairs {
+		if p[0] != p[1] {
+			t.Errorf("got %q, want %q", p[0], p[1])
+		}
+	}
+	if got := csrfHostOfOrigin("https://[fd00::5]:9000"); got != "[fd00::5]" {
+		t.Errorf("csrfHostOfOrigin = %q, want %q", got, "[fd00::5]")
+	}
+	if got := csrfHostOfOrigin("https://gw.example:9000"); got != "gw.example" {
+		t.Errorf("csrfHostOfOrigin = %q, want %q", got, "gw.example")
+	}
+}
+
+// An IPv6 public_url written with its default port must match the
+// bracketed, port-less Origin a browser serializes.
+func TestCSRFPublicURLIPv6DefaultPortMatches(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.g.cfg.Load().Settings.PublicURL = "https://[::1]:443"
+	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
+	req.Host = "backend:9090"
+	req.Header.Set("Origin", "https://[::1]")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
+		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}

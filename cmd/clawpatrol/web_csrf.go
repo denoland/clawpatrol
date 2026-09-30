@@ -155,22 +155,30 @@ func (w *webMux) csrfOriginIsOwn(origin *url.URL, r *http.Request) bool {
 	if want == "" {
 		return false
 	}
-	for _, declared := range w.csrfDeclaredOrigins() {
-		if declared == want {
-			return true
-		}
+	declared := w.csrfDeclaredOrigin()
+	if declared != "" && declared == want {
+		return true
 	}
 	if r.Host == "" {
+		return false
+	}
+	if !w.csrfHostAllowed(r.Host) {
 		return false
 	}
 	// The request carries no scheme of its own, so compare the Origin's
 	// against whichever ones this request could have come from.
 	schemes := []string{"https", "http"}
-	if r.TLS != nil {
+	switch {
+	case r.TLS != nil:
+		// TLS proves it: a plaintext page on this name did not send this.
 		schemes = []string{"https"}
-	}
-	if !w.csrfHostAllowed(r.Host) {
-		return false
+	case declared != "" && csrfSameHost(declared, want):
+		// public_url names this host, so it is authoritative about the
+		// host's scheme. Accepting the other one here is what would let
+		// a plaintext page reach a dashboard the operator declared over
+		// HTTPS and a proxy terminates TLS for. Only the scheme is
+		// pinned — the same host on another port is still the dashboard.
+		schemes = []string{csrfSchemeOfOrigin(declared)}
 	}
 	for _, scheme := range schemes {
 		if csrfCanonicalOrigin(scheme, r.Host) == want {
@@ -180,24 +188,57 @@ func (w *webMux) csrfOriginIsOwn(origin *url.URL, r *http.Request) bool {
 	return false
 }
 
-// csrfDeclaredOrigins returns the canonical origin of `public_url`,
-// from the value captured at construction and from the live config —
-// in tsnet mode public_url is auto-derived from the Funnel cert domain
-// after the node comes up, well after newWebMux ran.
-func (w *webMux) csrfDeclaredOrigins() []string {
-	var out []string
-	add := func(raw string) {
-		if o := csrfOriginOfURL(raw); o != "" {
-			out = append(out, o)
-		}
+// csrfSameHost reports whether two canonical origins name the same
+// host, ignoring scheme and port.
+func csrfSameHost(a, b string) bool {
+	return csrfHostOfOrigin(a) == csrfHostOfOrigin(b) && csrfHostOfOrigin(a) != ""
+}
+
+// csrfSchemeOfOrigin pulls the scheme out of a canonical origin.
+func csrfSchemeOfOrigin(origin string) string {
+	scheme, _, _ := strings.Cut(origin, "://")
+	return scheme
+}
+
+// csrfHostOfOrigin pulls the host out of a canonical origin, keeping an
+// IPv6 literal's brackets so "[::1]" cannot collide with a name.
+func csrfHostOfOrigin(origin string) string {
+	_, rest, ok := strings.Cut(origin, "://")
+	if !ok {
+		return ""
 	}
-	add(w.publicURL)
+	if strings.HasPrefix(rest, "[") {
+		if i := strings.Index(rest, "]"); i >= 0 {
+			return rest[:i+1]
+		}
+		return ""
+	}
+	host, _, _ := strings.Cut(rest, ":")
+	return host
+}
+
+// csrfDeclaredPublicURL returns the operator's `public_url`. The live
+// config wins: a hot reload may retire or replace the value, and the
+// retired hostname must stop being trusted with it. The value captured
+// at construction is only a fallback for a config that carries none —
+// in tsnet mode public_url is auto-derived from the Funnel cert domain
+// after the node comes up, well after newWebMux ran, so the live one is
+// also the only one that ever has it.
+func (w *webMux) csrfDeclaredPublicURL() string {
 	if w.g != nil {
 		if cfg := w.g.cfg.Load(); cfg != nil {
-			add(cfg.PublicURL())
+			if live := strings.TrimSpace(cfg.PublicURL()); live != "" {
+				return live
+			}
 		}
 	}
-	return out
+	return strings.TrimSpace(w.publicURL)
+}
+
+// csrfDeclaredOrigin returns the canonical origin of `public_url`, or
+// "" when none is configured.
+func (w *webMux) csrfDeclaredOrigin() string {
+	return csrfOriginOfURL(w.csrfDeclaredPublicURL())
 }
 
 // csrfOriginOfURL returns the canonical origin of a configured URL.
@@ -232,12 +273,19 @@ func csrfCanonicalOrigin(scheme, authority string) string {
 	if h, p, err := net.SplitHostPort(authority); err == nil {
 		host, port = h, p
 	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if host == "" {
 		return ""
 	}
 	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
 		port = ""
+	}
+	// An IPv6 literal is bracketed in an origin whether or not a port
+	// follows it, so the brackets go back on after the port is folded
+	// away — otherwise "[::1]:443" and "[::1]" render differently.
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
 	}
 	if port == "" {
 		return scheme + "://" + host
@@ -315,19 +363,13 @@ func (w *webMux) csrfHostAllowed(host string) bool {
 	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
 		return true
 	}
-	if h := csrfHostOfURL(w.publicURL); h != "" && h == lower {
+	if h := csrfHostOfURL(w.csrfDeclaredPublicURL()); h != "" && h == lower {
 		return true
 	}
 	if w.g == nil {
 		return false
 	}
 	if cfg := w.g.cfg.Load(); cfg != nil {
-		// Read live as well as from the struct: in tsnet mode
-		// public_url is auto-derived from the Funnel cert domain after
-		// the node comes up, well after newWebMux ran.
-		if h := csrfHostOfURL(cfg.PublicURL()); h != "" && h == lower {
-			return true
-		}
 		if h := csrfHostOfListen(cfg.DashboardListen()); h != "" && h == lower {
 			return true
 		}

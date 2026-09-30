@@ -256,14 +256,23 @@ gateway's own is what refuses a rebound name, which agrees with
 same-origin` is not sufficient alone, since a rebound page genuinely is
 same-origin with the dashboard and reports itself that way.
 
-On the `Host` half the scheme is only compared when the request proves
+On the `Host` half the scheme is compared whenever something proves
 one. A TLS request cannot have been initiated by a plaintext page on
-the same name, so `http://` is refused there. A plaintext request is
-either a plain-HTTP dashboard or a proxy that terminated TLS upstream,
-and those are indistinguishable at this point, so both schemes are
-accepted — anyone able to forge a page on the gateway's own name over
+the same name, so `http://` is refused there. Failing that, a
+`public_url` naming the same host is authoritative about that host's
+scheme, which is what covers a proxy that terminates TLS and preserves
+the external `Host` — the request reaches the gateway in plaintext, so
+it proves nothing on its own. Only the scheme is pinned that way; the
+same host on another port is still the dashboard.
+
+A host with neither of those keeps both schemes, since a plain-HTTP
+dashboard and a TLS-terminating proxy are indistinguishable at that
+point. Anyone able to forge a page on the gateway's own name over
 plaintext is already astride that same plaintext request and needs no
 forgery.
+
+`public_url` is read from the live configuration, so a hot reload that
+retires or replaces it retires the origin with it.
 
 Endpoints whose callers are not browsers are exempt, because they
 send no origin headers and prove themselves per request instead:
