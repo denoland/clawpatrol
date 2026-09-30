@@ -280,6 +280,18 @@ credential webhooks under `/api/cred/` (a provider signature, such
 as Slack's v0 HMAC), the HITL operation-status paths (a per-operation
 token), and the device-flow handshakes `clawpatrol join` drives.
 
+The login form is not among them. Its `POST` sets the root password on
+a gateway that has none, so a cross-site submission would choose the
+operator's password for them, and `SameSite=Lax` does not help because
+first-run setup presents no cookie to withhold. `GET` still renders the
+form for anyone.
+
+Because the check does not apply to `GET`, a `GET` must not change
+anything: `/api/tailscale/connect`, which starts a login and holds a
+tunnel open past the response, is `POST`-only, and its polling
+counterpart `/api/tailscale/status` reports a parked login URL without
+force-acquiring anything.
+
 ### First-run root password
 
 On a fresh install the dashboard has no operator yet. The first
