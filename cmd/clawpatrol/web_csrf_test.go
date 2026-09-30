@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
 )
 
 // csrfTestHost is the hostname the test gateway answers for — it
@@ -27,6 +30,7 @@ func newCSRFTestWebMux(t *testing.T) *webMux {
 	t.Helper()
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
 	w.g.cfg.Load().Settings.Tailscale.Operators = []string{"*@example.com"}
+	w.g.cfg.Load().Settings.PublicURL = "https://" + csrfTestHost
 	withTailnetPeer(w, "operator@example.com")
 	w.g.hitl = newHITLRegistry(nil)
 	return w
@@ -697,18 +701,35 @@ func TestCSRFLiveConfigPublicURLWinsOverCaptured(t *testing.T) {
 	csrfDenied(t, serveCSRF(w, byHost))
 }
 
-// The captured value still applies when the live config declares none.
-func TestCSRFCapturedPublicURLUsedWhenConfigHasNone(t *testing.T) {
+// The captured value applies only to a mux with no config to read at
+// all. Checked below the handler, since a mux without a gateway cannot
+// serve a request.
+func TestCSRFCapturedPublicURLUsedWhenNoConfigIsReadable(t *testing.T) {
+	w := &webMux{publicURL: "https://" + csrfTestHost}
+	if got := w.csrfDeclaredPublicURL(); got != "https://"+csrfTestHost {
+		t.Fatalf("csrfDeclaredPublicURL = %q, want the captured value", got)
+	}
+	if !w.csrfHostAllowed(csrfTestHost) {
+		t.Error("captured public_url host was not allowed")
+	}
+}
+
+// A config that declares no public_url retires the captured one rather
+// than falling back to it.
+func TestCSRFEmptyLiveConfigRetiresCapturedPublicURL(t *testing.T) {
 	w := newCSRFTestWebMux(t)
+	w.publicURL = "https://old.example.test"
 	w.g.cfg.Load().Settings.PublicURL = ""
+	if got := w.csrfDeclaredPublicURL(); got != "" {
+		t.Fatalf("csrfDeclaredPublicURL = %q, want empty", got)
+	}
+	if w.csrfHostAllowed("old.example.test") {
+		t.Error("retired public_url host is still allowed")
+	}
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "backend:9090"
-	req.Header.Set("Origin", "https://"+csrfTestHost)
-	rr := serveCSRF(w, req)
-	csrfNotDenied(t, rr)
-	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
-		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
-	}
+	req.Header.Set("Origin", "https://old.example.test")
+	csrfDenied(t, serveCSRF(w, req))
 }
 
 // Behind a proxy that terminates TLS but preserves the external Host,
@@ -801,5 +822,111 @@ func TestCSRFPublicURLIPv6DefaultPortMatches(t *testing.T) {
 	csrfNotDenied(t, rr)
 	if !strings.Contains(rr.Body.String(), "append_hcl is required") {
 		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
+	}
+}
+
+// The login form's POST sets the root password on a gateway that has
+// none, so a cross-site submission would choose the operator's password
+// for them. SameSite=Lax is no help: first-run setup presents no cookie
+// to withhold.
+func TestCSRFProtectsLoginPost(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	if got := w.authRequirementForPath(dashboardLoginPath); got != authPublic {
+		t.Fatalf("authRequirementForPath(%q) = %v, want authPublic", dashboardLoginPath, got)
+	}
+
+	body := "password=" + authTestRootPassword + "&confirm=" + authTestRootPassword
+	crossSite := httptest.NewRequest(http.MethodPost, dashboardLoginPath, strings.NewReader(body))
+	crossSite.Host = csrfTestHost
+	crossSite.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	csrfDenied(t, serveCSRF(w, crossSite))
+
+	foreign := httptest.NewRequest(http.MethodPost, dashboardLoginPath, strings.NewReader(body))
+	foreign.Host = csrfTestHost
+	foreign.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	foreign.Header.Set("Origin", "https://evil.example")
+	csrfDenied(t, serveCSRF(w, foreign))
+}
+
+// The dashboard's own login form must still submit, and the form itself
+// must still render for a caller with no credential at all.
+func TestCSRFAllowsSameSiteLoginPostAndPublicGET(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	body := "password=" + authTestRootPassword
+	req := httptest.NewRequest(http.MethodPost, dashboardLoginPath+"?next=/", strings.NewReader(body))
+	req.Host = csrfTestHost
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://"+csrfTestHost)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if rr.Code != http.StatusFound {
+		t.Fatalf("login status = %d, want %d; body = %q", rr.Code, http.StatusFound, rr.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, dashboardLoginPath, nil)
+	get.Host = "anything.example"
+	get.Header.Set("Sec-Fetch-Site", "cross-site")
+	grr := serveCSRF(w, get)
+	csrfNotDenied(t, grr)
+	if grr.Code != http.StatusOK {
+		t.Fatalf("login GET status = %d, want %d", grr.Code, http.StatusOK)
+	}
+}
+
+// /api/tailscale/connect starts a login and holds a tunnel open past
+// the response. A GET may not do that: the origin check deliberately
+// lets GETs through, because a GET is not supposed to change anything.
+func TestTailscaleConnectRejectsNonPOST(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		req := csrfTestRequest(method, "/api/tailscale/connect?id=nope", "")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Origin", "https://"+csrfTestHost)
+		rr := serveCSRF(w, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s status = %d, want %d; body = %q", method, rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+		}
+	}
+}
+
+// The GET-only status endpoint stays a reader: it reports a parked
+// login URL, and rejects any method that could be mistaken for the
+// acquiring one.
+func TestTailscaleStatusReportsParkedURLAndRejectsNonGET(t *testing.T) {
+	const credName = "status-cred"
+	defer tailscaleproto.Default.Set(credName, "")
+	tailscaleproto.Default.Set(credName, "https://login.tailscale.example/a/parked")
+
+	w := newCSRFTestWebMux(t)
+	w.g.policy.Store(&config.CompiledPolicy{
+		Credentials: map[string]*config.Entity{credName: {
+			Plugin: &config.Plugin{Type: "tailscale_credential"},
+			Body:   stubTailscaleCred{},
+		}},
+	})
+
+	req := csrfTestRequest(http.MethodGet, "/api/tailscale/status?id="+credName, "")
+	rr := serveCSRF(w, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp tailscaleAuthResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.PendingURL != "https://login.tailscale.example/a/parked" {
+		t.Fatalf("PendingURL = %q, want the parked URL", resp.PendingURL)
+	}
+	if resp.Status != "pending" {
+		t.Fatalf("Status = %q, want pending", resp.Status)
+	}
+
+	bad := csrfTestRequest(http.MethodPost, "/api/tailscale/status?id="+credName, "")
+	bad.Header.Set("Sec-Fetch-Site", "same-origin")
+	bad.Header.Set("Origin", "https://"+csrfTestHost)
+	if brr := serveCSRF(w, bad); brr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want %d", brr.Code, http.StatusMethodNotAllowed)
 	}
 }

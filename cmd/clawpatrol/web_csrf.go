@@ -58,14 +58,27 @@ func (w *webMux) csrfProtect(next http.Handler) http.Handler {
 			return
 		}
 		// authPublic covers the device-flow handshakes `clawpatrol
-		// join` drives (/api/onboard/{start,poll,claim}) and the login
-		// form itself. authSelfAuthenticating covers /api/cred/* and
-		// the HITL operation-status paths, whose callers are external
-		// providers and peer daemons that prove themselves per
-		// request (Slack's v0 HMAC signature, a peer bearer token) and
-		// send no browser headers at all.
+		// join` drives (/api/onboard/{start,poll,claim}).
+		// authSelfAuthenticating covers /api/cred/* and the HITL
+		// operation-status paths, whose callers are external providers
+		// and peer daemons that prove themselves per request (Slack's
+		// v0 HMAC signature, a peer bearer token) and send no browser
+		// headers at all.
+		//
+		// The login form is the exception among the public routes. Its
+		// POST is only ever submitted by the dashboard's own page, and
+		// on a gateway that has no root row yet it *sets* the root
+		// password — so a cross-site submission to a fresh gateway
+		// would choose the operator's password for them. SameSite=Lax
+		// is no help there: first-run setup presents no cookie to
+		// withhold. GET still renders the form for anyone.
 		switch w.authRequirementForPath(r.URL.Path) {
-		case authPublic, authSelfAuthenticating:
+		case authPublic:
+			if r.URL.Path != dashboardLoginPath {
+				next.ServeHTTP(rw, r)
+				return
+			}
+		case authSelfAuthenticating:
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -217,19 +230,21 @@ func csrfHostOfOrigin(origin string) string {
 	return host
 }
 
-// csrfDeclaredPublicURL returns the operator's `public_url`. The live
-// config wins: a hot reload may retire or replace the value, and the
-// retired hostname must stop being trusted with it. The value captured
-// at construction is only a fallback for a config that carries none —
-// in tsnet mode public_url is auto-derived from the Funnel cert domain
-// after the node comes up, well after newWebMux ran, so the live one is
-// also the only one that ever has it.
+// csrfDeclaredPublicURL returns the operator's `public_url`, read from
+// the live config. A hot reload may retire or replace the value and the
+// retired hostname has to stop being trusted with it, so the live
+// config is authoritative even when it declares nothing. The value
+// captured at construction is a fallback only for a mux with no config
+// to read at all; in tsnet mode public_url is auto-derived from the
+// Funnel cert domain after the node comes up, well after newWebMux ran,
+// so the live one is also the only one that ever has it.
 func (w *webMux) csrfDeclaredPublicURL() string {
 	if w.g != nil {
 		if cfg := w.g.cfg.Load(); cfg != nil {
-			if live := strings.TrimSpace(cfg.PublicURL()); live != "" {
-				return live
-			}
+			// Whatever the live config says, including nothing: a reload
+			// that removes public_url has to retire the origin, so an
+			// empty live value must not fall through to the captured one.
+			return strings.TrimSpace(cfg.PublicURL())
 		}
 	}
 	return strings.TrimSpace(w.publicURL)
