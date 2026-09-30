@@ -15,6 +15,7 @@ package k8s
 import (
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -48,16 +49,24 @@ type Fields struct {
 }
 
 // Meta is the (verb, resource, namespace, name, params) tuple
-// derived from a Kubernetes API path. Empty fields when the request
-// isn't k8s-shaped.
+// derived from a Kubernetes API path. A request whose path shape the
+// parser can't decompose has no Meta at all (parsePath returns nil),
+// which fails the match closed — see parsePath.
 type Meta struct {
-	Verb      string // get | list | watch | create | update | patch | delete
+	// Verb is one of get | list | watch | create | update | patch |
+	// delete | proxy | meta. `proxy` and `watch` can come from a
+	// path-prefix segment; every other resource verb is derived from
+	// the HTTP method.
+	Verb      string
 	Resource  string // "pods", "secrets", or "<resource>/<subresource>"
 	Namespace string
 	Name      string
 	// Params carries flat string params from the URL query (e.g.
 	// `stdin = "true"` for `kubectl exec --stdin`). One value per
-	// key; multi-value query params collapse to the first.
+	// key; multi-value query params collapse to the first. The params
+	// the apiserver reads as booleans carry a canonical "true" /
+	// "false" (see normalizeBoolParams); every other param is the
+	// bytes that arrived.
 	Params map[string]string
 }
 
@@ -187,9 +196,26 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	return true
 }
 
-// parsePath best-effort decomposes a Kubernetes API request into the
-// (verb, resource, namespace, name, params) tuple the k8s matcher
-// walks. Returns nil when the URL isn't k8s-shaped.
+// specialVerbs are the verbs kube-apiserver takes from a path-prefix
+// segment instead of from the HTTP method, mirroring its
+// RequestInfoFactory. The segment names the verb and is not part of
+// the resource path: `/api/v1/watch/namespaces/<ns>/secrets` is a
+// watch of secrets, and `/api/v1/proxy/nodes/<node>/<path>` proxies
+// an arbitrary HTTP request at the node's kubelet.
+var specialVerbs = map[string]bool{"watch": true, "proxy": true}
+
+// specialVerbsNoSubresources lists the special verbs whose trailing
+// path segments are the proxied request's own path rather than a
+// subresource of the addressed object.
+var specialVerbsNoSubresources = map[string]bool{"proxy": true}
+
+// namespaceSubresources are the segments that can follow a namespace
+// name while still addressing the namespace object itself, so the
+// segment after them is not a resource inside the namespace.
+var namespaceSubresources = map[string]bool{"status": true, "finalize": true}
+
+// parsePath decomposes a Kubernetes API request into the (verb,
+// resource, namespace, name, params) tuple the k8s matcher walks.
 //
 // Supported shapes:
 //
@@ -198,6 +224,7 @@ func addActivation(req *match.Request, act map[string]any) bool {
 //	/api/v1/namespaces/<ns>/<resource>              → list in ns
 //	/api/v1/namespaces/<ns>/<resource>/<name>       → single resource
 //	/api/v1/namespaces/<ns>/<resource>/<name>/<sub> → subresource (exec / portforward / etc.)
+//	/api/v1/<special verb>/...                      → same shapes, verb from the path
 //	/apis/<group>/<v>/...                           → same shapes under named groups
 //
 // Non-resource URIs that kubectl / client-go probe reflexively
@@ -207,11 +234,26 @@ func addActivation(req *match.Request, act map[string]any) bool {
 // resource. Configs allow them with `k8s.verb == "meta"` rather than
 // folding them into `list` / `get`.
 //
-// Verb derives from the HTTP method (GET → list/get/watch, POST →
-// create, PUT → update, PATCH → patch, DELETE → delete). GET
-// requests with watch=true are normalized to watch. kubectl uses
-// POST to /api/v1/.../<name>/exec so the matcher relies on Resource
-// ending in "/exec" rather than special-casing the verb.
+// Verb comes from the path when the first segment after the API
+// group is one of specialVerbs, and otherwise from the HTTP method
+// (GET/HEAD → list/get/watch, POST → create, PUT → update, PATCH →
+// patch, DELETE → delete). A read carrying a true `watch` param is a
+// watch. kubectl uses POST to /api/v1/.../<name>/exec so the matcher
+// relies on Resource ending in "/exec" rather than special-casing the
+// verb. A nameless DELETE keeps the verb `delete` (the apiserver
+// reports it as `deletecollection`) so one `verb == 'delete'` rule
+// covers the single-object and whole-collection forms alike.
+//
+// Returns nil for anything it cannot decompose into that tuple: a
+// path that isn't k8s-shaped, a path-prefix verb addressing nothing,
+// or a method the apiserver derives no verb from. nil is the refusal
+// the rest of the facet is built on — addActivation declines to build
+// an activation without a Meta, so every k8s rule evaluates
+// Unevaluable and the dispatcher synthesizes a deny. Populating the
+// tuple with a guess instead would be worse than refusing: wrong-but-
+// present facts evaluate cleanly to false, a deny keyed on them
+// misses, and rules are first-match-wins with no deny precedence, so
+// nothing downstream catches the request.
 func parsePath(method, rawURL string) *Meta {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -239,37 +281,44 @@ func parsePath(method, rawURL string) *Meta {
 		return nil
 	}
 	m := &Meta{}
-	if parts[0] == "namespaces" && len(parts) >= 2 {
-		m.Namespace = parts[1]
-		parts = parts[2:]
-	}
-	if len(parts) == 0 {
-		return m
-	}
-	m.Resource = parts[0]
-	parts = parts[1:]
-	if len(parts) > 0 {
-		m.Name = parts[0]
+	if specialVerbs[parts[0]] {
+		// The apiserver rejects a bare path-prefix verb with nothing
+		// to address ("unable to determine kind and namespace").
+		if len(parts) < 2 {
+			return nil
+		}
+		m.Verb = parts[0]
 		parts = parts[1:]
 	}
-	if len(parts) > 0 {
-		m.Resource = m.Resource + "/" + parts[0]
-	}
-	switch strings.ToUpper(method) {
-	case "GET":
-		if m.Name == "" {
-			m.Verb = "list"
-		} else {
-			m.Verb = "get"
+	if parts[0] == "namespaces" && len(parts) > 1 {
+		m.Namespace = parts[1]
+		// A further segment addresses a resource inside the namespace
+		// unless it is one of the namespace object's own
+		// subresources, in which case the request still targets the
+		// namespace itself.
+		if len(parts) > 2 && !namespaceSubresources[parts[2]] {
+			parts = parts[2:]
 		}
-	case "POST":
-		m.Verb = "create"
-	case "PUT":
-		m.Verb = "update"
-	case "PATCH":
-		m.Verb = "patch"
-	case "DELETE":
-		m.Verb = "delete"
+	}
+	if parts[0] == "" {
+		// An empty segment means this isn't the path the apiserver's
+		// own splitter will route; refuse rather than emit a resource
+		// we're not sure of.
+		return nil
+	}
+	m.Resource = parts[0]
+	if len(parts) > 1 {
+		m.Name = parts[1]
+	}
+	if len(parts) > 2 && !specialVerbsNoSubresources[m.Verb] {
+		m.Resource = m.Resource + "/" + parts[2]
+	}
+	if m.Verb == "" {
+		verb, ok := verbFromMethod(method, m.Name)
+		if !ok {
+			return nil
+		}
+		m.Verb = verb
 	}
 	if q := u.Query(); len(q) > 0 {
 		m.Params = make(map[string]string, len(q))
@@ -278,11 +327,97 @@ func parsePath(method, rawURL string) *Meta {
 				m.Params[k] = v[0]
 			}
 		}
+		normalizeBoolParams(m.Params)
 	}
-	if strings.EqualFold(method, "GET") && strings.EqualFold(m.Params["watch"], "true") {
+	// A read with a truthy `watch` param streams a watch, so it is
+	// reported as one. This is deliberately broader than the
+	// apiserver's own labelling, which elevates only a nameless read
+	// and leaves a single-object watch as `get`: a rule banning
+	// `watch` should cover the single-object form too, and the
+	// direction of the difference over-gates rather than under-gates.
+	// A verb that came from the path stands as it is — `?watch=true`
+	// on a proxy does not make the proxy a watch.
+	if v, ok := m.Params["watch"]; ok && apiserverBool(v) &&
+		(m.Verb == "get" || m.Verb == "list") {
 		m.Verb = "watch"
 	}
 	return m
+}
+
+// verbFromMethod maps an HTTP method to the resource verb
+// kube-apiserver derives from it. A GET or HEAD without a name reads
+// a whole collection, which the apiserver reports as `list`. ok is
+// false for a method that yields no resource verb — parsePath refuses
+// such a request rather than handing the matcher a verb-less tuple.
+func verbFromMethod(method, name string) (string, bool) {
+	switch strings.ToUpper(method) {
+	case "GET", "HEAD":
+		if name == "" {
+			return "list", true
+		}
+		return "get", true
+	case "POST":
+		return "create", true
+	case "PUT":
+		return "update", true
+	case "PATCH":
+		return "patch", true
+	case "DELETE":
+		return "delete", true
+	}
+	return "", false
+}
+
+// boolParams are the query params kube-apiserver decodes into a bool
+// field of a request-options struct (ListOptions, DeleteOptions,
+// PatchOptions, PodExecOptions / PodAttachOptions, PodLogOptions).
+// Their values are canonicalised; see normalizeBoolParams.
+var boolParams = map[string]bool{
+	// ListOptions / WatchOptions.
+	"watch":               true,
+	"allowWatchBookmarks": true,
+	"sendInitialEvents":   true,
+	// DeleteOptions.
+	"orphanDependents": true,
+	"ignoreStoreReadErrorWithClusterBreakingPotential": true,
+	// PatchOptions / CreateOptions / UpdateOptions.
+	"force": true,
+	// PodExecOptions / PodAttachOptions.
+	"stdin":  true,
+	"stdout": true,
+	"stderr": true,
+	"tty":    true,
+	// PodLogOptions.
+	"follow":                       true,
+	"previous":                     true,
+	"timestamps":                   true,
+	"insecureSkipTLSVerifyBackend": true,
+}
+
+// normalizeBoolParams rewrites every boolParams entry in p to the
+// canonical "true" / "false" the apiserver will act on, so a rule can
+// be written against one spelling and still see the request the
+// apiserver sees. A param the apiserver reads as something other than
+// a bool (`limit=1`, `container=app`, `dryRun=All`) keeps the bytes
+// that arrived — canonicalising those would corrupt them.
+func normalizeBoolParams(p map[string]string) {
+	for k, v := range p {
+		if boolParams[k] {
+			p[k] = strconv.FormatBool(apiserverBool(v))
+		}
+	}
+}
+
+// apiserverBool reports how kube-apiserver reads a boolean query
+// param value. Its url.Values decoder
+// (runtime.Convert_Slice_string_To_bool) resolves exactly "0" and a
+// case-insensitive "false" to false, and every other value that is
+// present to true — "1", "t", "TRUE", "yes", "off", and the empty
+// value of a bare `?watch`. Reading only the literal "true" as true
+// would leave `?watch=1` parsed as a plain list, streaming a watch
+// past a rule that bans one.
+func apiserverBool(v string) bool {
+	return v != "0" && !strings.EqualFold(v, "false")
 }
 
 // isMetaPath reports whether p (URL path, leading/trailing slashes
