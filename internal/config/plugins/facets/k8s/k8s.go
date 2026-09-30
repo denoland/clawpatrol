@@ -329,6 +329,14 @@ func parsePath(method, rawURL string) *Meta {
 		}
 		normalizeBoolParams(m.Params)
 	}
+	// A read with a truthy `watch` param streams a watch, so it is
+	// reported as one. This is deliberately broader than the
+	// apiserver's own labelling, which elevates only a nameless read
+	// and leaves a single-object watch as `get`: a rule banning
+	// `watch` should cover the single-object form too, and the
+	// direction of the difference over-gates rather than under-gates.
+	// A verb that came from the path stands as it is — `?watch=true`
+	// on a proxy does not make the proxy a watch.
 	if v, ok := m.Params["watch"]; ok && apiserverBool(v) &&
 		(m.Verb == "get" || m.Verb == "list") {
 		m.Verb = "watch"

@@ -315,3 +315,46 @@ func TestParsePathBoolParams(t *testing.T) {
 		})
 	}
 }
+
+// TestParsePathNamedWatch pins the one place the parser is
+// deliberately broader than the apiserver's own labelling: a
+// single-object read with a truthy `watch` param is reported as a
+// watch, so a rule banning `watch` covers it. The apiserver keeps
+// such a request as `get` and elevates only a nameless read.
+func TestParsePathNamedWatch(t *testing.T) {
+	cases := []struct {
+		name     string
+		method   string
+		rawURL   string
+		wantVerb string
+	}{
+		{
+			"named read with watch", "GET",
+			"/api/v1/namespaces/team-a/secrets/db-password?watch=1", "watch",
+		},
+		{
+			"nameless read with watch", "GET",
+			"/api/v1/namespaces/team-a/secrets?watch=1", "watch",
+		},
+		{
+			"named read without watch", "GET",
+			"/api/v1/namespaces/team-a/secrets/db-password", "get",
+		},
+		{
+			"a path-prefix verb is not elevated", "GET",
+			"/api/v1/proxy/nodes/worker-1/runningpods?watch=true", "proxy",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parsePath(tc.method, tc.rawURL)
+			if got == nil {
+				t.Fatalf("parsePath(%q, %q) = nil", tc.method, tc.rawURL)
+			}
+			if got.Verb != tc.wantVerb {
+				t.Errorf("verb = %q, want %q", got.Verb, tc.wantVerb)
+			}
+		})
+	}
+}
