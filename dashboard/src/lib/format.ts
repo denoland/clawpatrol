@@ -78,6 +78,17 @@ export function fmtTime(t: string | number | Date): string {
   );
 }
 
+// expiryLabel renders a credential's token lifetime for a status line.
+// A token already past its expiry reads "expired" on its own rather than
+// "expires expired", which is what prefixing fmtExpiry unconditionally
+// produced; one with no stated expiry reads "connected", since there is
+// no lifetime to report.
+export function expiryLabel(i: { expires_at?: number }): string {
+  if (!i.expires_at) return "connected";
+  const text = fmtExpiry(i.expires_at);
+  return text === "expired" ? text : "expires " + text;
+}
+
 export function fmtExpiry(unix?: number): string {
   if (!unix) return "—";
   const sec = unix - Math.floor(Date.now() / 1000);

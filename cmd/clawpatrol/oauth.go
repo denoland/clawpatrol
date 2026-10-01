@@ -7,10 +7,13 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +39,169 @@ const oauthResponseLimit = 64 << 10
 // the registry mutex, in the refresh-source case — until the client
 // disconnects.
 const oauthUpstreamTimeout = 30 * time.Second
+
+// oauthReuseEarlyExpiry is how long before a token's stated expiry the
+// reuse source stops handing it out and refreshes. Every refresh in the
+// process funnels through that source, so it is also the window the
+// background refresher works in: a Token() call made outside it is
+// answered from the cache and renews nothing.
+const oauthReuseEarlyExpiry = 60 * time.Second
+
+// oauthRefreshInterval is how often the background refresher sweeps for
+// credentials inside the reuse source's early-expiry window. Well under
+// oauthReuseEarlyExpiry so a token entering that window is renewed with
+// time to spare rather than on the tick that expires it, and so the
+// status path reports a live expiry rather than one just gone by.
+const oauthRefreshInterval = 15 * time.Second
+
+// oauthRefreshBackoffBase / oauthRefreshBackoffMax bound the retry
+// schedule after a transient refresh failure. See refreshBackoff.
+const (
+	oauthRefreshBackoffBase = 30 * time.Second
+	oauthRefreshBackoffMax  = 15 * time.Minute
+)
+
+// errNoRefreshToken and errNoDynamicClientID are the two refresh
+// failures the gateway diagnoses itself. Both are terminal: without a
+// refresh token to present, or without the dynamically registered
+// client_id the provider issued it against, no retry can produce a
+// token and only a new authorisation flow can.
+var (
+	errNoRefreshToken    = errors.New("no refresh token is stored")
+	errNoDynamicClientID = errors.New("dynamic client registration was never persisted")
+)
+
+// knownOAuthErrorCodes is the set of token-endpoint error codes the
+// gateway recognises, mapped to whether the code is terminal — the
+// grant, the client registration or the requested scope was rejected
+// outright, so a retry presents the provider with the identical request
+// and earns the identical answer. A terminal code latches the credential
+// into "needs re-authorisation".
+//
+// `server_error`, `temporarily_unavailable` and `slow_down` are
+// transient because they say outright that a retry is the right move.
+// `invalid_request` is transient by judgement: a mangling proxy or a
+// provider bug produces it as readily as a genuinely malformed request,
+// and the cost of guessing wrong is asymmetric — a wrongly transient
+// verdict costs one more background attempt, a wrongly terminal one
+// parks a working credential until an operator re-authorises it.
+//
+// The map doubles as the allow-list for what reaches the dashboard. The
+// `error` member of a token-endpoint reply is provider-controlled free
+// text, so a code outside this set is dropped rather than rendered and
+// the HTTP status stands in for it.
+var knownOAuthErrorCodes = map[string]bool{
+	"invalid_grant":             true,
+	"invalid_client":            true,
+	"unauthorized_client":       true,
+	"unsupported_grant_type":    true,
+	"invalid_scope":             true,
+	"access_denied":             true,
+	"expired_token":             true,
+	"invalid_request":           false,
+	"unsupported_response_type": false,
+	"server_error":              false,
+	"temporarily_unavailable":   false,
+	"slow_down":                 false,
+	"authorization_pending":     false,
+}
+
+// classifyRefreshError turns a refresh failure into the verdict the
+// status path remembers and a reason string safe to render on the
+// dashboard.
+//
+// The reason never embeds the error text: a provider's token-endpoint
+// body is free-form and can echo the credentials it was sent. The one
+// provider-supplied fragment that survives is the error code, and only
+// when it is one knownOAuthErrorCodes lists — otherwise the HTTP status
+// stands in for it.
+func classifyRefreshError(err error) (refreshState, string) {
+	switch {
+	case errors.Is(err, errNoRefreshToken):
+		return refreshTerminal, errNoRefreshToken.Error()
+	case errors.Is(err, errNoDynamicClientID):
+		return refreshTerminal, errNoDynamicClientID.Error()
+	case errors.Is(err, context.DeadlineExceeded):
+		return refreshTransient, "refresh timed out"
+	case errors.Is(err, context.Canceled):
+		return refreshTransient, "refresh cancelled"
+	}
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) {
+		return refreshTransient, "refresh failed: could not reach the provider"
+	}
+	status := 0
+	if re.Response != nil {
+		status = re.Response.StatusCode
+	}
+	terminal, known := knownOAuthErrorCodes[re.ErrorCode]
+	if terminal && known && rejectionStatus(status) {
+		return refreshTerminal, "the provider rejected the refresh: " + re.ErrorCode
+	}
+	if known {
+		return refreshTransient, "refresh failed: " + re.ErrorCode
+	}
+	if status != 0 {
+		return refreshTransient, fmt.Sprintf("refresh failed: provider answered HTTP %d", status)
+	}
+	return refreshTransient, "refresh failed: unrecognised provider response"
+}
+
+// rejectionStatus reports whether a token endpoint used this status to
+// reject the request itself, which is the only place RFC 6749 §5.2 puts
+// a grant rejection. A 5xx, a 429 or a 408 carrying the same error code
+// is far more likely to be a proxy or an edge answering for the
+// provider, and latching on one would park a working credential for the
+// length of an outage.
+func rejectionStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	}
+	return false
+}
+
+// refreshLogDetail is what the refresh-failure log line carries
+// alongside the classified reason. A token-endpoint reply is
+// provider-controlled and can echo back the credentials it was sent,
+// error_description included, so a classified HTTP failure is logged as
+// its status and nothing more. A transport failure carries no provider
+// body, and its text — DNS, TLS, proxy — is the most useful thing in the
+// line, so that one is kept whole.
+func refreshLogDetail(err error) string {
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) {
+		return err.Error()
+	}
+	if re.Response != nil {
+		return fmt.Sprintf("HTTP %d", re.Response.StatusCode)
+	}
+	return "provider rejected the refresh"
+}
+
+// retrieveError wraps a non-200 token-endpoint reply in the stdlib's
+// structured form, so classifyRefreshError reads the RFC 6749 error
+// code out of one type whichever of the three refresh sources produced
+// the failure. The body rides along for the log; the classifier never
+// renders it.
+func retrieveError(resp *http.Response, body []byte) *oauth2.RetrieveError {
+	var e struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+		ErrorURI         string `json:"error_uri"`
+	}
+	// A provider that answers an error with something other than the
+	// RFC's JSON object leaves the codes empty, which classifies on the
+	// HTTP status alone.
+	_ = json.Unmarshal(body, &e)
+	return &oauth2.RetrieveError{
+		Response:         resp,
+		Body:             body,
+		ErrorCode:        e.Error,
+		ErrorDescription: e.ErrorDescription,
+		ErrorURI:         e.ErrorURI,
+	}
+}
 
 // OAuthConfig + OAuthIntegration moved to config/oauth.go so credential
 // plugins can ship their own OAuth flow data without import cycles.
@@ -64,7 +230,69 @@ type oauthState struct {
 	flow     string
 	db       *sql.DB
 	mu       sync.Mutex
+	// writeMu serialises this credential's own writes to the credentials
+	// table and orders them against the generation check that decides
+	// whether a write still applies. Separate from mu because the status
+	// path waits on mu, and the point of reporting from memory is that it
+	// waits on nothing slow.
+	writeMu sync.Mutex
+	// current is the token this credential last persisted — the one the
+	// reuse source was seeded with, or the one the most recent refresh
+	// produced. Status reports from it so rendering the credential list
+	// costs no provider round trips; the token source stays the only
+	// thing a request-path injection consults.
+	current *oauth2.Token
+	// refresh is the remembered outcome of the last refresh attempt on
+	// this credential, and refreshReason its operator-readable summary.
+	// refreshTerminal means the provider rejected the grant itself and
+	// only a new authorisation flow restores the credential, so neither
+	// the dashboard nor the background refresher asks the provider
+	// again.
+	refresh       refreshState
+	refreshReason string
+	// refreshing is true while a background refresh is in flight, so
+	// successive ticks hand off one attempt at a time instead of piling
+	// goroutines up behind the reuse source's mutex.
+	refreshing bool
+	// retryAfter is the earliest time the background refresher retries
+	// following a transient failure, and failures the consecutive count
+	// that sets the backoff step. A provider outage therefore costs one
+	// attempt per credential per step rather than one per tick.
+	retryAfter time.Time
+	failures   int
+	// gen counts the tokens this credential has held. setToken bumps it
+	// and stamps the new value on the source it installs, so a refresh
+	// still in flight against a superseded source is recognised when it
+	// settles: its verdict describes a token the credential no longer
+	// holds, and recording it would either re-latch a credential that
+	// was just re-authorised or persist the token it replaced. Revoke
+	// bumps it for the same reason, so a late refresh cannot resurrect
+	// a deleted credential's row.
+	gen uint64
 }
+
+// refreshState is the remembered verdict on a credential's last
+// refresh attempt. It is what lets the status path answer without a
+// network call: the expiry comes from the persisted token, the
+// re-authorisation prompt from this.
+type refreshState int
+
+const (
+	// refreshUnknown means no attempt has settled against the token
+	// currently held — the state a freshly stored or rehydrated
+	// credential starts in.
+	refreshUnknown refreshState = iota
+	// refreshOK means the last attempt produced a token.
+	refreshOK
+	// refreshTransient means the last attempt failed for a reason a
+	// retry can clear: a timeout, a transport error, a 5xx, a 429, or
+	// any response the provider did not shape as a grant rejection.
+	refreshTransient
+	// refreshTerminal means the provider rejected the grant, the client
+	// or the scope outright, or there is no refresh token to present.
+	// Nothing but a new authorisation flow changes the answer.
+	refreshTerminal
+)
 
 // OAuthRegistry holds all configured OAuth integrations and one token
 // state per integration. Keyed by integration_id.
@@ -120,10 +348,14 @@ func (r *OAuthRegistry) Inject(id string, req *http.Request) (bool, error) {
 		return false, nil
 	}
 	s := r.get(id)
-	if s == nil || s.source == nil {
+	if s == nil {
 		return false, nil
 	}
-	t, err := s.source.Token()
+	src := s.tokenSource()
+	if src == nil {
+		return false, nil
+	}
+	t, err := src.Token()
 	if err != nil {
 		return false, fmt.Errorf("oauth %q: token: %w", id, err)
 	}
@@ -146,10 +378,14 @@ func (r *OAuthRegistry) Token(id string) (string, error) {
 		return "", nil
 	}
 	s := r.get(id)
-	if s == nil || s.source == nil {
+	if s == nil {
 		return "", nil
 	}
-	t, err := s.source.Token()
+	src := s.tokenSource()
+	if src == nil {
+		return "", nil
+	}
+	t, err := src.Token()
 	if err != nil {
 		return "", fmt.Errorf("oauth %q: token: %w", id, err)
 	}
@@ -171,17 +407,215 @@ func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
 	r.integrations[id] = &def
 }
 
-// Status returns connected info for the named credential.
-func (r *OAuthRegistry) Status(id string) (connected bool, expiry time.Time) {
+// OAuthStatus is the dashboard-facing view of one OAuth credential.
+// Every field comes from state already in memory — the persisted token
+// and the remembered refresh verdict — so building it performs no I/O
+// and cannot block on a provider.
+//
+// NeedsReauth is the terminal verdict: the stored refresh token no
+// longer buys an access token and only re-running the OAuth flow
+// restores the credential. Connected is false whenever it is set.
+// Reason is an operator-readable summary of the last refresh failure —
+// an RFC 6749 error code or a transport class, never a provider
+// response body and never token material.
+type OAuthStatus struct {
+	Connected   bool
+	Expiry      time.Time
+	NeedsReauth bool
+	Reason      string
+}
+
+// Status reports the named credential's connection state from the
+// persisted token's expiry plus the remembered outcome of the last
+// refresh attempt. It never calls the token source: a dashboard load
+// that forced a refresh paid a provider round trip per stale
+// credential, and for one whose refresh token the provider had revoked
+// it paid that round trip on every load. The background refresher
+// (refreshExpiring) renews tokens ahead of expiry, and the request
+// path still refreshes on demand through Inject / Token.
+func (r *OAuthRegistry) Status(id string) OAuthStatus {
 	s := r.get(id)
-	if s == nil || s.source == nil {
-		return false, time.Time{}
+	if s == nil {
+		return OAuthStatus{}
 	}
-	t, err := s.source.Token()
-	if err != nil || t.AccessToken == "" {
-		return false, time.Time{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.source == nil || s.current == nil || s.current.AccessToken == "" {
+		return OAuthStatus{}
 	}
-	return true, t.Expiry
+	switch {
+	// An expired access token with no refresh token to trade is the one
+	// dead state readable without having asked the provider anything.
+	// Reporting it keeps the answer identical to the one the refreshing
+	// Status gave, which failed on exactly this case.
+	case tokenExpired(s.current, time.Now()) && s.current.RefreshToken == "":
+		return OAuthStatus{
+			Expiry:      s.current.Expiry,
+			NeedsReauth: true,
+			Reason:      "the access token has expired and " + errNoRefreshToken.Error(),
+		}
+	case s.refresh == refreshTerminal:
+		return OAuthStatus{
+			Expiry:      s.current.Expiry,
+			NeedsReauth: true,
+			Reason:      s.refreshReason,
+		}
+	// An expired token whose last refresh failed transiently authorises
+	// nothing right now, so it does not read connected — but the failure
+	// is not the grant's, so NeedsReauth stays clear and the reason names
+	// the outage. The next sweep flips it back without anyone touching
+	// the credential.
+	case s.refresh == refreshTransient && tokenExpired(s.current, time.Now()):
+		return OAuthStatus{Expiry: s.current.Expiry, Reason: s.refreshReason}
+	}
+	// A credential still inside its token's lifetime reads connected even
+	// when the last refresh failed, with the reason carried alongside: it
+	// can authorise requests until the token runs out, and the sweep has
+	// until then to succeed.
+	return OAuthStatus{
+		Connected: true,
+		Expiry:    s.current.Expiry,
+		Reason:    s.refreshReason,
+	}
+}
+
+// tokenExpired reports whether t's stated expiry has passed. A zero
+// Expiry means the provider issued a token with no stated lifetime, so
+// nothing is known to have expired.
+func tokenExpired(t *oauth2.Token, now time.Time) bool {
+	return !t.Expiry.IsZero() && !t.Expiry.After(now)
+}
+
+// RunRefresher renews access tokens ahead of expiry for the life of the
+// gateway. It is what keeps the non-blocking Status honest: the expiry
+// it reports is the one the credential actually holds, so a token has to
+// be renewed before anything can observe it stale. Runs until the
+// process exits.
+func (r *OAuthRegistry) RunRefresher() {
+	t := time.NewTicker(oauthRefreshInterval)
+	defer t.Stop()
+	// Sweep before the first tick: every credential rehydrated from the
+	// credentials table arrives with whatever expiry it had when the
+	// gateway last ran, so boot is exactly when the most tokens are
+	// stale and the reported expiry furthest from the truth.
+	for {
+		r.refreshExpiring(time.Now())
+		<-t.C
+	}
+}
+
+// refreshExpiring renews every credential that has entered the reuse
+// source's early-expiry window, one goroutine per credential so a
+// wedged provider delays only its own.
+//
+// The provider sees at most one in-flight refresh per credential: the
+// reuse source serialises concurrent callers behind its own mutex, and
+// the claim below keeps successive ticks from queueing goroutines there.
+// Credentials latched terminal, still inside their backoff, holding no
+// refresh token, or not yet near expiry are skipped — which is why a
+// revoked refresh token costs one provider call rather than one per
+// sweep.
+func (r *OAuthRegistry) refreshExpiring(now time.Time) {
+	r.mu.RLock()
+	states := make([]*oauthState, 0, len(r.states))
+	for _, s := range r.states {
+		states = append(states, s)
+	}
+	r.mu.RUnlock()
+	for _, s := range states {
+		src, ok := s.claimRefresh(now)
+		if !ok {
+			continue
+		}
+		go func() {
+			defer s.releaseRefresh()
+			// Errors are recorded by persistingSource; nothing here
+			// waits on the result.
+			_, _ = src.Token()
+		}()
+	}
+}
+
+// claimRefresh decides whether the background refresher should renew
+// this credential now and, if so, hands back the source to renew it
+// through while marking the attempt in flight.
+func (s *oauthState) claimRefresh(now time.Time) (oauth2.TokenSource, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.refreshing, s.source == nil, s.current == nil:
+		return nil, false
+	case s.refresh == refreshTerminal:
+		// Asking again would present the provider with the identical
+		// request. The two things that do change the answer clear the
+		// latch themselves: a new authorisation flow through setToken,
+		// and a request-path refresh that unexpectedly succeeds.
+		return nil, false
+	case s.current.RefreshToken == "":
+		return nil, false
+	case now.Before(s.retryAfter):
+		return nil, false
+	case s.current.Expiry.IsZero():
+		// No stated lifetime: nothing to renew ahead of.
+		return nil, false
+	case s.current.Expiry.After(now.Add(oauthReuseEarlyExpiry)):
+		// Outside the reuse source's window a Token() call is answered
+		// from its cache and would renew nothing.
+		return nil, false
+	}
+	s.refreshing = true
+	return s.source, true
+}
+
+func (s *oauthState) releaseRefresh() {
+	s.mu.Lock()
+	s.refreshing = false
+	s.mu.Unlock()
+}
+
+// retire supersedes whatever generation the state is on, so a refresh
+// still in flight against it settles into nothing: no verdict recorded,
+// no row written.
+func (s *oauthState) retire() {
+	s.mu.Lock()
+	s.gen++
+	s.mu.Unlock()
+}
+
+// sameFlowConfig reports whether two states resolve to the same OAuth
+// client and token endpoint. A remembered rejection of the client or the
+// scope says nothing about a credential whose operator has since
+// corrected one of them in the config.
+func sameFlowConfig(a, b *oauth2.Config) bool {
+	return a.ClientID == b.ClientID &&
+		a.ClientSecret == b.ClientSecret &&
+		a.Endpoint.TokenURL == b.Endpoint.TokenURL &&
+		slices.Equal(a.Scopes, b.Scopes)
+}
+
+// inheritRefreshState copies prev's remembered refresh verdict onto s,
+// but only when the verdict still describes what s will present to the
+// provider: the same access and refresh token, and the same client and
+// token endpoint to present them to. Anything else means the credential
+// was re-authorised, refreshed, or reconfigured since, and the old
+// verdict says nothing about the new attempt.
+func (s *oauthState) inheritRefreshState(prev *oauthState, tok *oauth2.Token) {
+	prev.mu.Lock()
+	same := prev.current != nil &&
+		prev.current.AccessToken == tok.AccessToken &&
+		prev.current.RefreshToken == tok.RefreshToken &&
+		sameFlowConfig(prev.cfg, s.cfg)
+	state, reason, retryAfter, failures := prev.refresh, prev.refreshReason, prev.retryAfter, prev.failures
+	prev.mu.Unlock()
+	if !same {
+		return
+	}
+	s.mu.Lock()
+	s.refresh = state
+	s.refreshReason = reason
+	s.retryAfter = retryAfter
+	s.failures = failures
+	s.mu.Unlock()
 }
 
 // Profile returns the (display_name, avatar_url) the dashboard
@@ -202,14 +636,25 @@ func (r *OAuthRegistry) Profile(id string) (displayName, avatarURL string) {
 // Revoke deletes the credential's token and its DB row.
 func (r *OAuthRegistry) Revoke(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.states[id]; !ok {
+	s, ok := r.states[id]
+	if !ok {
+		r.mu.Unlock()
 		return
 	}
+	delete(r.states, id)
+	r.mu.Unlock()
+
+	// Retire the generation before the DELETE, under the same lock the
+	// row writes take: a refresh already in flight either wrote before
+	// the DELETE removes its row, or finds its generation superseded and
+	// writes nothing. Either way it cannot re-insert the credential this
+	// call is removing.
+	s.retire()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if r.db != nil {
 		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=?", id)
 	}
-	delete(r.states, id)
 }
 
 // Set stores tokens captured externally (browser auth flow callback).
@@ -223,9 +668,10 @@ func (r *OAuthRegistry) Set(ctx context.Context, id string, tok *oauth2.Token) e
 // clientID is stamped onto the in-memory state and persisted alongside the tokens so
 // refresh continues to work after restart.
 //
-// The userinfo fetch (fetchOAuthProfile) runs OUTSIDE the registry lock
-// so a slow/hung provider can't block other OAuth operations (Status,
-// Inject, Revoke) for the duration of the round-trip.
+// The registry lock covers only the state lookup. Both slow steps — the
+// token write and the userinfo round-trip — run outside it, so a wedged
+// provider or a contended sqlite write cannot hold up Status, Inject or
+// Revoke on any other credential.
 func (r *OAuthRegistry) SetWithClient(ctx context.Context, id string, tok *oauth2.Token, clientID string) error {
 	r.mu.Lock()
 	it, ok := r.integrations[id]
@@ -238,19 +684,22 @@ func (r *OAuthRegistry) SetWithClient(ctx context.Context, id string, tok *oauth
 		s = newState(it, r.db)
 		r.states[id] = s
 	}
+	r.mu.Unlock()
+
 	if clientID != "" {
+		s.mu.Lock()
 		s.clientID = clientID
 		s.cfg.ClientID = clientID
+		s.mu.Unlock()
 	}
-	s.setToken(tok)
-	r.mu.Unlock()
+	gen := s.setToken(tok)
 
 	// Network call is best-effort and decorative; failure is logged
 	// inside fetchOAuthProfile and the credential row stays usable
 	// without display_name/avatar_url populated.
 	name, avatar := fetchOAuthProfile(ctx, id, tok.AccessToken)
 	if name != "" || avatar != "" {
-		s.persistProfile(name, avatar)
+		s.persistProfile(gen, name, avatar)
 	}
 	return nil
 }
@@ -341,30 +790,72 @@ func newState(it *OAuthIntegration, db *sql.DB) *oauthState {
 	}
 }
 
-func (s *oauthState) setToken(tok *oauth2.Token) {
+// setToken installs tok as the credential's current token, builds the
+// source that refreshes it, and returns the generation both belong to.
+func (s *oauthState) setToken(tok *oauth2.Token) uint64 {
+	// The sources below keep the config for the life of the source, and a
+	// connect on a dynamic-registration flow rewrites s.cfg.ClientID.
+	// s.mu guards that field, so the snapshot is taken under it, and the
+	// sources are handed the copy — neither this read nor a refresh
+	// already in flight can observe the field mid-write.
+	s.mu.Lock()
+	cfg := *s.cfg
+	s.mu.Unlock()
 	var base oauth2.TokenSource
 	switch {
-	case isAnthropicTokenURL(s.cfg.Endpoint.TokenURL):
+	case isAnthropicTokenURL(cfg.Endpoint.TokenURL):
 		// Anthropic's token endpoint requires a JSON body for refresh
 		// (returns "Invalid request format" otherwise). Stdlib oauth2
 		// only sends form-urlencoded.
-		base = &anthropicRefreshSource{cfg: s.cfg, current: tok}
+		base = &anthropicRefreshSource{cfg: &cfg, current: tok}
 	case s.flow == "dynamic_mcp" || s.flow == "notion_mcp":
 		// Hosted MCP token endpoints refresh via form-urlencoded body and
 		// expect the dynamically registered client_id (no static
 		// ClientSecret — PKCE-only public client). The flow, not the
 		// provider hostname, selects this behavior so external credential
 		// plugins can supply their own MCP OAuth endpoints.
-		base = &dynamicMCPRefreshSource{cfg: s.cfg, current: tok}
+		base = &dynamicMCPRefreshSource{cfg: &cfg, current: tok}
 	default:
-		base = s.cfg.TokenSource(context.Background(), tok)
+		// Bound the round trip the way the two sources above bound
+		// theirs. oauth2's own source takes its HTTP client from the
+		// context, and an unbounded one pins the reuse source's mutex —
+		// and every caller queued on it — for as long as a wedged
+		// provider holds the connection open.
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient,
+			&http.Client{Timeout: oauthUpstreamTimeout})
+		base = cfg.TokenSource(ctx, tok)
 	}
+	// A token arriving here is either freshly minted by a completed
+	// authorisation flow or rehydrated from the credentials table, so
+	// whatever the previous one's refreshes concluded no longer applies:
+	// this is the path that clears a remembered "needs re-authorisation"
+	// after an operator reconnects.
+	s.mu.Lock()
+	s.gen++
 	s.source = oauth2.ReuseTokenSourceWithExpiry(
 		tok,
-		&persistingSource{base: base, state: s},
-		60*time.Second,
+		&persistingSource{base: base, state: s, gen: s.gen},
+		oauthReuseEarlyExpiry,
 	)
-	s.persist(tok)
+	s.current = tok
+	s.refresh = refreshUnknown
+	s.refreshReason = ""
+	s.retryAfter = time.Time{}
+	s.failures = 0
+	gen := s.gen
+	s.mu.Unlock()
+	s.persist(gen, tok)
+	return gen
+}
+
+// tokenSource returns the credential's token source, or nil when no
+// token has been captured yet. Read under the state lock because
+// setToken replaces the source on every completed flow and on every
+// policy reload's rehydrate.
+func (s *oauthState) tokenSource() oauth2.TokenSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.source
 }
 
 // anthropicRefreshSource refreshes Anthropic OAuth tokens via JSON
@@ -383,7 +874,7 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 		return a.current, nil
 	}
 	if a.current.RefreshToken == "" {
-		return nil, fmt.Errorf("anthropic refresh: no refresh_token")
+		return nil, fmt.Errorf("anthropic refresh: %w", errNoRefreshToken)
 	}
 	body, _ := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
@@ -408,7 +899,7 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("anthropic refresh %d: %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("anthropic refresh %d: %w", resp.StatusCode, retrieveError(resp, respBytes))
 	}
 	var tr struct {
 		AccessToken  string `json:"access_token"`
@@ -418,6 +909,14 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 	}
 	if err := json.Unmarshal(respBytes, &tr); err != nil {
 		return nil, err
+	}
+	if tr.AccessToken == "" {
+		// A reply carrying no access_token is a failure whatever it was
+		// statused with. Without this the empty string became the
+		// credential's access token: every injection stamped a bearer
+		// with nothing behind it, and the refresh verdict read as a
+		// success.
+		return nil, fmt.Errorf("anthropic refresh %d: %w", resp.StatusCode, retrieveError(resp, respBytes))
 	}
 	t := &oauth2.Token{
 		AccessToken:  tr.AccessToken,
@@ -434,18 +933,108 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 	return t, nil
 }
 
+// persistingSource is the single funnel every refresh in the process
+// goes through — request-path injection, the SecretStore bridge and the
+// background refresher all reach the provider through it. It is
+// therefore also where the refresh verdict the status path reports is
+// recorded.
 type persistingSource struct {
 	base  oauth2.TokenSource
 	state *oauthState
+	// gen is the credential's token generation this source refreshes
+	// for. A result that settles after the credential moved on is
+	// reported to the caller but not recorded.
+	gen uint64
 }
 
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	t, err := p.base.Token()
 	if err != nil {
+		p.state.noteRefreshFailure(p.gen, err)
 		return nil, err
 	}
-	p.state.persist(t)
+	p.state.noteRefreshSuccess(p.gen, t)
 	return t, nil
+}
+
+// noteRefreshSuccess records a token the provider accepted us for and
+// persists it. It clears any remembered failure, including a terminal
+// one: a credential that hands back a token is connected whatever the
+// last attempt concluded.
+func (s *oauthState) noteRefreshSuccess(gen uint64, t *oauth2.Token) {
+	s.mu.Lock()
+	if gen != s.gen {
+		s.mu.Unlock()
+		return
+	}
+	changed := s.refresh != refreshOK
+	s.current = t
+	s.refresh = refreshOK
+	s.refreshReason = ""
+	s.retryAfter = time.Time{}
+	s.failures = 0
+	s.mu.Unlock()
+	if changed {
+		log.Printf("oauth %q: refresh ok, token valid until %s", s.id, expiryLabel(t))
+	}
+	s.persist(gen, t)
+}
+
+// noteRefreshFailure classifies err and remembers the verdict. Only a
+// grant-level rejection latches the credential into "needs
+// re-authorisation"; every other failure stays retryable and leaves the
+// credential reading connected on its still-persisted token, so a
+// provider blip cannot park a healthy credential.
+//
+// The failure is logged on a verdict change only, so a credential the
+// provider keeps rejecting costs one line rather than one per attempt.
+func (s *oauthState) noteRefreshFailure(gen uint64, err error) {
+	state, reason := classifyRefreshError(err)
+	s.mu.Lock()
+	if gen != s.gen {
+		s.mu.Unlock()
+		return
+	}
+	// A credential holding no refresh token cannot be retried into
+	// health whatever the provider answered, and the stdlib source
+	// reports that condition as an unstructured error, so the verdict is
+	// taken from the state rather than from the message.
+	if s.current != nil && s.current.RefreshToken == "" {
+		state, reason = refreshTerminal, errNoRefreshToken.Error()
+	}
+	changed := s.refresh != state || s.refreshReason != reason
+	s.refresh = state
+	s.refreshReason = reason
+	if state == refreshTransient {
+		s.failures++
+		s.retryAfter = time.Now().Add(refreshBackoff(s.failures))
+	}
+	s.mu.Unlock()
+	if changed {
+		log.Printf("oauth %q: refresh failed (%s): %s", s.id, reason, refreshLogDetail(err))
+	}
+}
+
+// expiryLabel renders a token's expiry for the log without touching the
+// token bytes. Tokens with no stated lifetime read as "never".
+func expiryLabel(t *oauth2.Token) string {
+	if t == nil || t.Expiry.IsZero() {
+		return "never"
+	}
+	return t.Expiry.UTC().Format(time.RFC3339)
+}
+
+// refreshBackoff is the delay before the background refresher retries a
+// credential whose refresh failed transiently, doubling per consecutive
+// failure up to a ceiling. Bounded so a provider outage across many
+// credentials settles into a slow heartbeat instead of one attempt per
+// credential per tick.
+func refreshBackoff(failures int) time.Duration {
+	d := oauthRefreshBackoffBase
+	for i := 1; i < failures && d < oauthRefreshBackoffMax; i++ {
+		d *= 2
+	}
+	return min(d, oauthRefreshBackoffMax)
 }
 
 // persistProfile updates the human-identity columns for this
@@ -453,32 +1042,58 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 // post-exchange. UPDATE-only — relies on persist() having INSERTed
 // the row first. Best-effort: a failed write surfaces only as
 // missing avatar on the dashboard.
-func (s *oauthState) persistProfile(displayName, avatarURL string) {
+//
+// Carries the generation for the same reason persist does: two
+// overlapping connect flows must not leave the row holding one
+// identity and memory the other, and a userinfo fetch that returns
+// after the credential was revoked or replaced must not write to the
+// row that took its place.
+func (s *oauthState) persistProfile(gen uint64, displayName, avatarURL string) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db == nil {
+	db, id, stale := s.db, s.id, gen != s.gen
+	if !stale {
+		s.displayName = displayName
+		s.avatarURL = avatarURL
+	}
+	s.mu.Unlock()
+	if db == nil || stale {
 		return
 	}
-	_, _ = s.db.Exec(`
+	_, _ = db.Exec(`
 		UPDATE credentials
 		   SET display_name = ?, avatar_url = ?
 		 WHERE id = ?
-	`, displayName, avatarURL, s.id)
-	s.displayName = displayName
-	s.avatarURL = avatarURL
+	`, displayName, avatarURL, id)
 }
 
-func (s *oauthState) persist(t *oauth2.Token) {
+// persist writes the token to the credentials table. The state lock is
+// held only long enough to read the fields the write needs, never across
+// the write itself: the status path waits on that lock, and the whole
+// point of reporting from memory is that it waits on nothing slow.
+//
+// A write for a superseded generation is dropped rather than applied,
+// so a refresh that settles after the credential was re-authorised or
+// revoked cannot overwrite the row with the token it replaced. The
+// generation is read inside writeMu, which is what makes that check
+// decide the outcome rather than merely narrow the window: a write that
+// passes it is already holding the lock the superseding write has to
+// take, so the later generation always lands last.
+func (s *oauthState) persist(gen uint64, t *oauth2.Token) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db == nil {
+	db, id, clientID, stale := s.db, s.id, s.clientID, gen != s.gen
+	s.mu.Unlock()
+	if db == nil || stale {
 		return
 	}
 	var expiryNs int64
 	if !t.Expiry.IsZero() {
 		expiryNs = t.Expiry.UnixNano()
 	}
-	_, _ = s.db.Exec(`
+	_, _ = db.Exec(`
 		INSERT INTO credentials (id, access_token, token_type, refresh_token, expiry_ns, updated_ns, client_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -488,7 +1103,7 @@ func (s *oauthState) persist(t *oauth2.Token) {
 			expiry_ns     = excluded.expiry_ns,
 			updated_ns    = excluded.updated_ns,
 			client_id     = excluded.client_id
-	`, s.id, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano(), nullableString(s.clientID))
+	`, id, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano(), nullableString(clientID))
 }
 
 // nullableString returns sql.NullString so that the empty-string case is
@@ -533,8 +1148,8 @@ func (r *OAuthRegistry) loadFromDB() error {
 		if err := rows.Scan(&id, &access, &typ, &refr, &expiryNs, &displayName, &avatar, &clientID); err != nil {
 			return fmt.Errorf("oauth registry: scan credential row: %w", err)
 		}
-		it, ok := r.integrations[id]
-		if !ok {
+		it := r.Integration(id)
+		if it == nil {
 			continue
 		}
 		s := newState(it, r.db)
@@ -552,15 +1167,46 @@ func (r *OAuthRegistry) loadFromDB() error {
 		if expiryNs.Valid && expiryNs.Int64 != 0 {
 			tok.Expiry = time.Unix(0, expiryNs.Int64)
 		}
+		// setToken writes through to the credentials table, so the state
+		// is built before the registry lock is taken: holding that lock
+		// across a DB write would put the status path behind sqlite,
+		// which is the latency this whole path exists to avoid.
 		s.setToken(tok)
+		// setToken starts the rebuilt state with no remembered refresh
+		// verdict. Carry the old one over when the row holds the same
+		// token the replaced state did, so a policy reload doesn't send
+		// the gateway back to the provider for every credential whose
+		// grant it already knows is revoked. A re-authorisation writes a
+		// new token, so it does not match and does not carry over.
+		if prev := r.get(id); prev != nil {
+			s.inheritRefreshState(prev, tok)
+		}
 		s.displayName = displayName.String
 		s.avatarURL = avatar.String
-		r.states[id] = s
+		r.putState(id, s)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("oauth registry: iterate credentials: %w", err)
 	}
 	return nil
+}
+
+// putState installs a rehydrated credential state. Every other reader
+// of r.states goes through the registry lock, and a policy reload runs
+// concurrently with live dashboard and request traffic, so the install
+// does too.
+func (r *OAuthRegistry) putState(id string, s *oauthState) {
+	r.mu.Lock()
+	prev := r.states[id]
+	r.states[id] = s
+	r.mu.Unlock()
+	// The displaced state may still have a refresh in flight. Retire it:
+	// the row is now the installed state's to write, and a late result
+	// from the state that no longer backs this credential must not land
+	// on it.
+	if prev != nil && prev != s {
+		prev.retire()
+	}
 }
 
 type oauthSession struct {
@@ -1256,10 +1902,10 @@ func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 		return d.current, nil
 	}
 	if d.current.RefreshToken == "" {
-		return nil, fmt.Errorf("dynamic_mcp refresh: no refresh_token")
+		return nil, fmt.Errorf("dynamic_mcp refresh: %w", errNoRefreshToken)
 	}
 	if d.cfg.ClientID == "" {
-		return nil, fmt.Errorf("dynamic_mcp refresh: no client_id (dynamic registration was never persisted)")
+		return nil, fmt.Errorf("dynamic_mcp refresh: %w", errNoDynamicClientID)
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -1283,7 +1929,7 @@ func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("dynamic_mcp refresh %d: %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("dynamic_mcp refresh %d: %w", resp.StatusCode, retrieveError(resp, respBytes))
 	}
 	var tr struct {
 		AccessToken  string `json:"access_token"`
@@ -1293,6 +1939,14 @@ func (d *dynamicMCPRefreshSource) Token() (*oauth2.Token, error) {
 	}
 	if err := json.Unmarshal(respBytes, &tr); err != nil {
 		return nil, err
+	}
+	if tr.AccessToken == "" {
+		// A reply carrying no access_token is a failure whatever it was
+		// statused with. Without this the empty string became the
+		// credential's access token: every injection stamped a bearer
+		// with nothing behind it, and the refresh verdict read as a
+		// success.
+		return nil, fmt.Errorf("dynamic_mcp refresh %d: %w", resp.StatusCode, retrieveError(resp, respBytes))
 	}
 	t := &oauth2.Token{
 		AccessToken:  tr.AccessToken,

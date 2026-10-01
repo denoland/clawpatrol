@@ -3589,6 +3589,11 @@ func runGateway(args []string) {
 	go g.sweepDashboardSessions()
 	go g.watchConfig(cfgPath)
 	go g.watchPluginUpdates()
+	// Renew OAuth access tokens ahead of expiry. The dashboard's status
+	// path reports from the persisted token and never refreshes, so this
+	// is what keeps a credential's reported expiry live — and what keeps
+	// the first request after an idle period from paying for a refresh.
+	go g.oauth.RunRefresher()
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}
