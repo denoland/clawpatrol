@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { Integration, TailscaleNodeState } from "../lib/api";
 import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
 import { credentialTypeLabel } from "../lib/credentialLabels";
-import { fmtExpiry } from "../lib/format";
+import { expiryLabel } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
 import { Modal } from "./Modal";
@@ -177,6 +177,35 @@ function isConnected(i: Integration) {
   return i.connected || (i.tailscale_auth?.connected ?? false);
 }
 
+// connectedStatusLabel renders the hint for a credential the gateway
+// reports connected. A transient refresh failure keeps it connected on
+// the token it still holds, so the reason rides alongside the expiry
+// rather than replacing it — only a grant-level rejection flips the
+// card out of the connected branch.
+function connectedStatusLabel(i: Integration): string {
+  const base = expiryLabel(i);
+  return i.refresh_error ? base + " · " + i.refresh_error : base;
+}
+
+// disconnectedStatusLabel renders the hint for a credential the gateway
+// does not report connected, in the order the operator needs: a rejected
+// grant asks for a new authorisation flow, a refresh that failed for any
+// other reason names itself (nothing to re-authorise — the next sweep may
+// well fix it), and only then come the no-credential-yet prompts.
+function disconnectedStatusLabel(i: Integration, hasSlots: boolean): string {
+  if (i.needs_reauth) {
+    return i.refresh_error
+      ? "needs re-authorisation: " + i.refresh_error
+      : "needs re-authorisation";
+  }
+  if (i.refresh_error) return i.refresh_error;
+  if (i.verify_error) return "verification failed: " + i.verify_error;
+  if (i.has_tailscale_auth) return tailscaleStatusLabel(i.tailscale_auth?.state);
+  if (i.has_oauth) return "click to connect";
+  if (hasSlots) return "paste secret";
+  return "api key only";
+}
+
 // tailscaleStatusLabel renders the credential card's bottom-row hint
 // when the credential is *not* connected — the connected branch is
 // handled directly by Card. Maps each NodeStateLabel onto the operator-
@@ -254,20 +283,12 @@ function Card({
   // bytes stored; keep the disconnect affordance so the operator can
   // drop the rejected material instead of only overwriting it.
   const verifyFailed = !!i.verify_error;
-  const showDisconnect = connected || canReset || verifyFailed;
-  const status = connected
-    ? i.expires_at
-      ? "expires " + fmtExpiry(i.expires_at)
-      : "connected"
-    : verifyFailed
-      ? "verification failed: " + i.verify_error
-      : i.has_tailscale_auth
-        ? tailscaleStatusLabel(i.tailscale_auth?.state)
-        : i.has_oauth
-          ? "click to connect"
-          : hasSlots
-            ? "paste secret"
-            : "api key only";
+  // A credential whose refresh token the provider revoked still has
+  // tokens stored: keep the disconnect affordance so they can be
+  // dropped, not only overwritten by a fresh flow.
+  const needsReauth = !!i.needs_reauth;
+  const showDisconnect = connected || canReset || verifyFailed || needsReauth || !!i.refresh_error;
+  const status = connected ? connectedStatusLabel(i) : disconnectedStatusLabel(i, hasSlots);
   // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
   // raw HCL type key for unrecognised plugins.
   const label = credentialTypeLabel(i.type, i.type);

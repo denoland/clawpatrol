@@ -17,7 +17,7 @@ import {
   credentialCategory,
   credentialTypeLabel,
 } from "../lib/credentialLabels";
-import { fmtExpiry } from "../lib/format";
+import { expiryLabel } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
 import { Tag } from "./Tag";
@@ -408,8 +408,12 @@ function DetailsRow({
   // A failed verification probe means rejected slot bytes are still
   // stored: offer disconnect so they can be dropped, not only replaced.
   const verifyFailed = !!i.verify_error;
+  // A credential whose refresh token the provider revoked still has
+  // tokens stored: keep the disconnect affordance so they can be
+  // dropped, not only overwritten by a fresh flow.
+  const needsReauth = !!i.needs_reauth;
   const canConnect = !connected && (i.has_oauth || hasSlots || i.has_tailscale_auth);
-  const canDisconnect = connected || canReset || verifyFailed;
+  const canDisconnect = connected || canReset || verifyFailed || needsReauth || !!i.refresh_error;
   const status = rowStatus(i, connected, hasSlots);
   const subtitle = rowSubtitle(i, connected);
   const profiles = i.profiles ?? [];
@@ -486,8 +490,21 @@ function CellList({ items }: { items: string[] }) {
 
 function rowStatus(i: Integration, connected: boolean, hasSlots: boolean): string {
   if (connected) {
-    return i.expires_at ? "expires " + fmtExpiry(i.expires_at) : "connected";
+    const base = expiryLabel(i);
+    // A transient refresh failure leaves the credential connected on
+    // the token it still holds; name the failure next to the expiry so
+    // a provider outage reads as one.
+    return i.refresh_error ? base + " · " + i.refresh_error : base;
   }
+  if (i.needs_reauth) {
+    return i.refresh_error
+      ? "needs re-authorisation: " + i.refresh_error
+      : "needs re-authorisation";
+  }
+  // An expired token the provider would not renew for a reason that is
+  // not the grant's: not connected right now, but nothing for the
+  // operator to re-authorise — the next sweep may well fix it.
+  if (i.refresh_error) return i.refresh_error;
   if (i.verify_error) return "verification failed: " + i.verify_error;
   if (i.has_tailscale_auth) {
     return tailscaleStatusLabel(i.tailscale_auth?.state);

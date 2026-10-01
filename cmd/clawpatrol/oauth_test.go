@@ -144,7 +144,7 @@ func TestSetWithClientRoundTripConcurrentWithStatus(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
-			if connected, _ := r.Status("custom"); !connected {
+			if !r.Status("custom").Connected {
 				t.Errorf("Status returned not-connected mid-race")
 				return
 			}

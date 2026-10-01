@@ -654,6 +654,18 @@ type IntegrationRow struct {
 	// recent probe failed; empty for verified-ok and for plugins
 	// without a verifier.
 	VerifyError string `json:"verify_error,omitempty"`
+	// NeedsReauth is true when the gateway's last refresh of this
+	// credential's OAuth token was rejected at the grant level — the
+	// stored refresh token no longer buys an access token, so the card
+	// asks for a new authorisation flow instead of reporting a
+	// connection that no longer works. Connected is false alongside it.
+	NeedsReauth bool `json:"needs_reauth,omitempty"`
+	// RefreshError is the operator-readable reason the last OAuth
+	// refresh failed: an RFC 6749 error code or a transport class.
+	// Present for transient failures too, where the credential stays
+	// connected on the token it still holds. Never carries a provider
+	// response body or token material.
+	RefreshError string `json:"refresh_error,omitempty"`
 }
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
@@ -729,11 +741,14 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 					OptionalScopes: flow.OptionalScopes,
 				}
 			}
-			if connected, exp := w.g.oauth.Status(name); connected {
+			st := w.g.oauth.Status(name)
+			if !st.Expiry.IsZero() {
+				row.ExpiresAt = st.Expiry.Unix()
+			}
+			row.NeedsReauth = st.NeedsReauth
+			row.RefreshError = st.Reason
+			if st.Connected {
 				row.Connected = true
-				if !exp.IsZero() {
-					row.ExpiresAt = exp.Unix()
-				}
 				row.DisplayName, row.AvatarURL = w.g.oauth.Profile(name)
 			}
 		}

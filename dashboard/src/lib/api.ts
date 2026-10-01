@@ -87,6 +87,16 @@ export type Integration = {
   // most recent probe failed; absent for verified-ok credentials and
   // for plugins without a verifier.
   verify_error?: string;
+  // True when the gateway's last OAuth refresh was rejected at the
+  // grant level: the stored refresh token no longer buys an access
+  // token, so the only way back is a new authorisation flow.
+  // `connected` is false alongside it.
+  needs_reauth?: boolean;
+  // Reason the last OAuth refresh failed — an RFC 6749 error code or a
+  // transport class. Also present for transient failures, where the
+  // credential stays connected on the token it still holds. Never
+  // carries a provider response body or token material.
+  refresh_error?: string;
 };
 
 // tailscaleConnect asks the gateway for the live tsnet login URL.
