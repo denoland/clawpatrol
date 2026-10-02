@@ -73,10 +73,45 @@ declaration.
 
 ### Policy defaults (top-level)
 
-Global fallbacks for fail-mode, cache TTL, unknown-host policy.
+Global fallbacks for fail-mode, cache TTL, unknown-host policy, and the
+destinations an agent may steer a relay dial at.
+
+`relay_destinations` bounds the three paths that dial an address the
+agent chose rather than one an endpoint declared: the transparent TCP
+relay, the UDP relay, and the SNI passthrough under `unknown_host =
+"passthrough"`. Those dials leave from the gateway host, which sits on
+networks the agent does not — the host's own loopback, the operator's
+LAN, and on a cloud instance a metadata service at `169.254.169.254`
+holding the gateway's own credentials.
+
+`"public"` (the default) refuses the unspecified address and the rest of
+`0.0.0.0/8`, loopback, link-local, multicast, the private ranges, the
+broadcast address, and an address scoped to one of this host's
+interfaces. Carrier-grade NAT (`100.64.0.0/10`) is also the whole of a
+tailnet's IPv4 space, so it is allowed — along with Tailscale's ULA —
+once a tailnet is actually running, and refused otherwise; the running
+transport decides, not the declared config, because a `tailscale {}`
+block only takes effect on restart. An address that encodes another one
+(4via6, NAT64, 6to4, the deprecated `::a.b.c.d` form) is judged on the
+address it encodes, and Teredo is refused outright because its encoding
+is obfuscated.
+
+A destination is classified after the name is resolved and the resolved
+address is what gets dialled, so there is no second lookup for a
+rebinding answer to land in. That is also why the dial cannot race the
+address families itself; each resolved address gets its own slice of the
+dial budget instead.
+
+`relay_allow_cidrs` is consulted ahead of every refused class: it is
+where an internal subnet an agent is meant to reach through the relay
+goes, instead of turning the policy off with `"any"`. Endpoints are
+unaffected either way — a declared endpoint dials its own `hosts`, not
+whatever the agent named.
 
 ```hcl
 unknown_host     = "passthrough"   # "passthrough" | "deny" | "inspect"
+relay_destinations = "public"      # "public" | "any"
+relay_allow_cidrs  = []            # exceptions to "public"
 llm_fail_mode    = "closed"        # "closed" | "open"
 llm_cache_ttl    = 300             # seconds
 human_timeout    = 600             # seconds

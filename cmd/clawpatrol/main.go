@@ -335,18 +335,41 @@ func wrapPeek(c net.Conn, prefix []byte) net.Conn {
 }
 
 func newUpstreamDialer(resolver string) *net.Dialer {
-	d := &net.Dialer{Timeout: 10 * time.Second}
+	return &net.Dialer{Timeout: 10 * time.Second, Resolver: newUpstreamResolver(resolver)}
+}
+
+// newUpstreamResolver builds the resolver upstream lookups go through,
+// or nil for the stdlib default. The relay paths resolve a name
+// themselves before dialling its address, so they need the same
+// resolver the dialer would have used — otherwise the address that is
+// classified and the address the operator's resolver would have handed
+// out are two different answers.
+func newUpstreamResolver(resolver string) *net.Resolver {
 	if resolver == "" {
-		return d
+		return nil
 	}
-	d.Resolver = &net.Resolver{
+	return explicitResolver(resolver)
+}
+
+// relayResolverFor returns the resolver as the interface the relay
+// paths hold. A typed nil *net.Resolver inside a non-nil interface
+// would defeat resolveRelayHost's nil check, so the empty case returns
+// an untyped nil.
+func relayResolverFor(resolver string) relayResolver {
+	if resolver == "" {
+		return nil
+	}
+	return explicitResolver(resolver)
+}
+
+func explicitResolver(resolver string) *net.Resolver {
+	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var dd net.Dialer
 			return dd.DialContext(ctx, network, resolver)
 		},
 	}
-	return d
 }
 
 type gatewayDialer interface {
@@ -376,6 +399,10 @@ type Gateway struct {
 	policy   atomic.Pointer[config.CompiledPolicy]
 	certs    *CertCache
 	dialer   gatewayDialer
+	// resolver is the name resolver the relay paths classify a
+	// destination with, the same one dialer resolves through. nil means
+	// the stdlib default.
+	resolver relayResolver
 	sink     *Sink
 	// blobs is the gateway-side plugin blob store (sqlite-backed).
 	// Used by endpoint plugins that need per-endpoint persistent
@@ -2186,12 +2213,29 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 	return nil
 }
 
+// splice pipes a TLS connection through to the name in its ClientHello
+// without terminating it, which is what defaults.unknown_host =
+// "passthrough" does with a destination no endpoint claims.
+//
+// The name is the agent's, and it is resolved here rather than inside
+// the dial so the address that is classified is the address the
+// connection lands on. A ClientHello naming an internal host reaches
+// the gateway as an ordinary TLS connection to any address on :443, so
+// without the classification the SNI is a way to ask the gateway to
+// dial a name only it can resolve.
 func (g *Gateway) splice(c net.Conn, host string) {
 	start := time.Now()
-	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
+	up, err := g.dialRelayHost(context.Background(), host, 443)
 	if err != nil {
 		log.Printf("dial %s: %v", host, err)
-		g.emit(Event{Mode: "splice", Host: host, AgentIP: g.onboard.AgentIPFor(peerIP(c)), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
+		// A refused destination is a decision; anything else is the
+		// network failing. The dashboard distinguishes the two.
+		action := "error"
+		var refusal *relayDestRefusal
+		if errors.As(err, &refusal) {
+			action = "deny"
+		}
+		g.emit(Event{Mode: "splice", Host: host, AgentIP: g.onboard.AgentIPFor(peerIP(c)), Action: action, Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
 		return
 	}
 	defer func() { _ = up.Close() }()
@@ -3537,6 +3581,7 @@ func runGateway(args []string) {
 		db:        db,
 		certs:     certs,
 		dialer:    newUpstreamDialer(cfg.Resolver()),
+		resolver:  relayResolverFor(cfg.Resolver()),
 		sink:      sink,
 		blobs:     blobs,
 		pluginMgr: pluginMgr,
@@ -3714,6 +3759,15 @@ func runGateway(args []string) {
 			case udpDNS:
 				g.dnsvip.ServeUDP(c, dstIP)
 				return true
+			case udpRelay:
+				// Claim the flow and drop it when the destination is
+				// one the relay may not dial. Returning false here
+				// would hand it to relayUDP, which is the dial.
+				if err := g.relayDestOK(dstIP); err != nil {
+					log.Printf("relay udp %s:%d: %v", dstIP, dstPort, err)
+					_ = c.Close()
+					return true
+				}
 			case udpDrop:
 				// Already refused by refuseUDPPort before an endpoint
 				// existed; kept so the flow is closed rather than
@@ -4105,7 +4159,20 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	known := g.onboard == nil || g.onboard.HasDevice(pip) || g.onboard.HasDevice(agentPip)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
 	start := time.Now()
-	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
+	// The dst is the agent's choice and the dial happens on the gateway
+	// host, which reaches networks the agent does not.
+	if err := g.relayDestOK(dstIP); err != nil {
+		log.Printf("relay %s: %v", host, err)
+		if known {
+			g.sink.Emit(Event{
+				Mode: "relay", AgentIP: agentPip, Agent: profile,
+				Host: host, Action: "deny", Reason: err.Error(),
+				Ms: time.Since(start).Milliseconds(),
+			})
+		}
+		return
+	}
+	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), relayDialTimeout)
 	if err != nil {
 		if known {
 			g.sink.Emit(Event{

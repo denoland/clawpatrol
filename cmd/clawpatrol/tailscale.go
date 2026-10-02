@@ -359,6 +359,14 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			return func(c nettype.ConnPacketConn) { _ = c.Close() }, true
 		case udpRelay:
 			return func(c nettype.ConnPacketConn) {
+				// relayUDP dials from the gateway host, which reaches
+				// networks the agent does not, so the dst the agent
+				// chose is classified first.
+				if err := g.relayDestOK(dst.Addr().String()); err != nil {
+					log.Printf("relay udp %s: %v", dst, err)
+					_ = c.Close()
+					return
+				}
 				relayUDP(c, dst.Addr().String(), dst.Port())
 			}, true
 		default: // udpPassthrough

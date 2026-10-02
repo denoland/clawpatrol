@@ -277,6 +277,12 @@ func emitDefaultsBlock(body *hclwrite.Body, d *Defaults) {
 	if d.UnknownHost != "" {
 		b.SetAttributeValue("unknown_host", cty.StringVal(d.UnknownHost))
 	}
+	if d.RelayDestinations != "" {
+		b.SetAttributeValue("relay_destinations", cty.StringVal(d.RelayDestinations))
+	}
+	if len(d.RelayAllowCIDRs) > 0 {
+		b.SetAttributeValue("relay_allow_cidrs", StringListVal(d.RelayAllowCIDRs))
+	}
 	if d.LLMFailMode != "" {
 		b.SetAttributeValue("llm_fail_mode", cty.StringVal(d.LLMFailMode))
 	}
