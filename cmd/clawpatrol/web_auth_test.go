@@ -35,6 +35,12 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 	return &http.Cookie{Name: cpSessionCookieName, Value: token}
 }
 
+// webTestGatewayHost is the name the test gateways declare as their
+// public_url. It is httptest.NewRequest's default Host, so a request
+// built without one is addressed to a name the gateway answers for —
+// which csrfProtect requires of every read of a gated route.
+const webTestGatewayHost = "example.com"
+
 // newOnboardAuthTestWebMux builds a webMux backed by a temporary
 // sqlite DB pre-seeded with the root password. Tests that hit
 // /api/* through the full handler need this because dashboardAuthGate
@@ -42,7 +48,7 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 	t.Helper()
 	db := openOnboardAuthTestDB(t)
-	settings := &config.GatewaySettings{}
+	settings := &config.GatewaySettings{PublicURL: "https://" + webTestGatewayHost}
 	switch control {
 	case "tailscale", "":
 		settings.Tailscale = &config.TailscaleBlock{AuthKey: "tskey-test"}
@@ -60,7 +66,7 @@ func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 		onboard: newOnboardRegistry(),
 	}
 	g.cfg.Store(cfg)
-	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://" + webTestGatewayHost, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	w.routeAuth = routeAuthIndex(w.routes())
 	return w
 }
@@ -390,12 +396,13 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 	cfg := &config.Gateway{
 		Settings: &config.GatewaySettings{
 			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+			PublicURL: "https://" + webTestGatewayHost,
 		},
 		Policy: &config.Policy{},
 	}
 	g := &Gateway{db: db, onboard: newOnboardRegistry()}
 	g.cfg.Store(cfg)
-	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://" + webTestGatewayHost, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	h := w.handler()
 
 	// API call: 401 with hint about set-dashboard-password.

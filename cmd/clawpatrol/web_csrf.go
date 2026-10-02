@@ -54,7 +54,7 @@ import (
 func (w *webMux) csrfProtect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if !csrfRelevantMethod(r.Method) {
-			next.ServeHTTP(rw, r)
+			w.csrfProtectRead(rw, r, next)
 			return
 		}
 		// authPublic covers the device-flow handshakes `clawpatrol
@@ -308,6 +308,95 @@ func csrfCanonicalOrigin(scheme, authority string) string {
 	return scheme + "://" + host + ":" + port
 }
 
+// csrfProtectRead holds a read of the JSON API to the name it was
+// addressed to, and to the browser's account of who asked for it.
+//
+// A read needs its own check because the one above it has nothing to
+// work with: a browser sends no Origin on a GET, so the Origin
+// comparison that carries a state-changing request is simply absent,
+// and a read of /api/state, /api/config, /api/events,
+// /api/hitl/pending or /api/onboard/lookup returns exactly the
+// internal state an attacker is after. The request arrives
+// authenticated, too — a rebound page holds no cp_session, because
+// that cookie belongs to the dashboard's real origin, and a cookieless
+// request is the one dashboardAuthGate hands to tailnetGate, which
+// takes its principal from the peer address: the operator's own
+// machine.
+//
+// So the Host must name something the gateway answers for. That is
+// what a rebound name fails: the page was served from a name the
+// attacker owns, and the browser addresses the request to it.
+//
+// Document paths are left to the Host check alone. The Sec-Fetch-Site
+// requirement would reject a top-level navigation into the dashboard
+// from a link elsewhere, which reports "cross-site", and from a page
+// on a sibling name, which reports "same-site" — both legitimate ways
+// to arrive at the dashboard, and neither able to read a response.
+//
+// The open surface is csrfGuardedRead's.
+func (w *webMux) csrfProtectRead(rw http.ResponseWriter, r *http.Request, next http.Handler) {
+	if !csrfGuardedRead(w.authRequirementForPath(r.URL.Path)) {
+		next.ServeHTTP(rw, r)
+		return
+	}
+	if !w.csrfHostAllowed(r.Host) {
+		http.Error(rw, fmt.Sprintf("read denied for unrecognized Host %q — set `public_url` or `dashboard_hosts` to the name the dashboard is reached on", r.Host), http.StatusForbidden)
+		return
+	}
+	// A browser that names another site as the initiator of an API read
+	// has told us so outright. CORS already keeps such a response from
+	// being read, so this is a second lock on the same door; the Host
+	// above is the one that holds rebinding shut, which is what makes
+	// the header's absence survivable.
+	//
+	// Absent, the header decides nothing. Fetch Metadata is only
+	// attached to a request whose URL is potentially trustworthy, so a
+	// dashboard served as plain HTTP on a tailnet address gets none of
+	// it — the lock engages on the Funnel, on a TLS-terminating proxy
+	// and on loopback. Non-browser callers send none either: the
+	// `clawpatrol` daemon polling /api/env-pushdown, an operator's
+	// curl. "none" is the user themself — a typed URL or a bookmark.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		switch site := r.Header.Get("Sec-Fetch-Site"); site {
+		case "", "same-origin", "none":
+		default:
+			http.Error(rw, fmt.Sprintf("cross-site read denied with Sec-Fetch-Site %q", site), http.StatusForbidden)
+			return
+		}
+	}
+	next.ServeHTTP(rw, r)
+}
+
+// csrfGuardedRead reports whether a read of a route in this auth class
+// has to name a Host the gateway answers for.
+//
+// Two classes are deliberately left open, because rebinding buys an
+// attacker nothing on either.
+//
+// authPublic is the surface a client with no credential at all reads:
+// /info, /ca.crt, the login form and the assets it loads. None of it
+// is gated, so none of it is anything the attacker could not fetch
+// directly, and holding it to the set would mean `clawpatrol join`
+// could only name the gateway the way the gateway names itself.
+//
+// authSelfAuthenticating routes carry their own proof per request — a
+// peer bearer token on /api/env-pushdown, an operation status token on
+// the HITL paths. A page cannot produce either, so the response is not
+// one a rebound name unlocks, and the callers are daemons addressing
+// the gateway by whatever URL they joined with.
+//
+// Every other class is gated by something a rebound page does get for
+// free: the dashboard session it does not need, because its absence is
+// what hands the request to tailnetGate, which reads the principal off
+// the peer address.
+func csrfGuardedRead(req authRequirement) bool {
+	switch req {
+	case authPublic, authSelfAuthenticating:
+		return false
+	}
+	return true
+}
+
 // csrfRelevantMethod reports whether a method can change state and so
 // needs the origin check. GET, HEAD and OPTIONS are the methods a
 // browser issues for navigation, subresource loads and preflights.
@@ -349,12 +438,15 @@ func csrfFormContentType(header string) string {
 //
 // Its job is to reject a name that resolves to the gateway without
 // being one of the gateway's own: that is the rebinding case, where
-// Origin and Host agree and the comparison alone sees nothing wrong.
+// Origin and Host agree and the comparison alone sees nothing wrong —
+// and, on a read, where there is no Origin to compare at all.
 //
 // The dashboard binds on several listeners — loopback, the WireGuard
-// netstack, the tsnet node, optionally a Funnel domain — so the set
-// is assembled from what the gateway knows about itself rather than
-// configured separately.
+// netstack, the tsnet node, optionally a Funnel domain — so the set is
+// assembled from what the gateway knows about itself. `dashboard_hosts`
+// extends it with names only the operator knows the gateway is reached
+// on: a proxy that rewrites Host to a backend name, or a CNAME in front
+// of the dashboard.
 func (w *webMux) csrfHostAllowed(host string) bool {
 	if host == "" {
 		return false
@@ -388,6 +480,11 @@ func (w *webMux) csrfHostAllowed(host string) bool {
 		if h := csrfHostOfListen(cfg.DashboardListen()); h != "" && h == lower {
 			return true
 		}
+		for _, declared := range cfg.DashboardHosts() {
+			if h := csrfDeclaredHostname(declared); h != "" && h == lower {
+				return true
+			}
+		}
 	}
 	// The tsnet node's MagicDNS label, reached either bare or as the
 	// full `<node>.<tailnet>.ts.net`. The suffix is required so the
@@ -401,6 +498,26 @@ func (w *webMux) csrfHostAllowed(host string) bool {
 		}
 	}
 	return false
+}
+
+// csrfDeclaredHostname normalises one `dashboard_hosts` entry to a
+// bare lowercased hostname. An entry may be written as a hostname, as
+// "host:port", or as a full URL; the port and scheme carry no meaning
+// here because the set judges the name alone.
+func csrfDeclaredHostname(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return ""
+	}
+	if strings.Contains(entry, "//") {
+		return csrfHostOfURL(entry)
+	}
+	host := entry
+	if h, _, err := net.SplitHostPort(entry); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
 // csrfHostOfURL extracts the lowercased hostname from a configured

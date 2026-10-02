@@ -28,6 +28,17 @@ gateway {
   state_dir        = "/opt/clawpatrol/state"
   public_url       = "http://gateway.internal:8080"
 
+  # Extra Host values the dashboard answers for, beyond the ones the
+  # gateway derives from itself (any IP literal, localhost,
+  # public_url's host, dashboard_listen's host, the tsnet node's
+  # MagicDNS name). Every read of a gated route is held to that set, so
+  # a CNAME in front of the dashboard — or a reverse proxy that
+  # rewrites Host to a backend name — has to be declared here. Such a
+  # proxy then owns the check: with the name the browser asked for
+  # gone, the gateway cannot tell one frontend name from another, so
+  # the proxy must refuse the frontend Host values it does not know.
+  dashboard_hosts = ["clawpatrol-backend"]
+
   # Transport block presence selects the transport. Both may be enabled.
   wireguard {
     subnet_cidr = "10.55.0.0/24"

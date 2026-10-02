@@ -41,6 +41,9 @@ func dumpSettings(s *GatewaySettings) map[string]any {
 		}
 	}
 	setStr("dashboard_listen", s.DashboardListen)
+	if len(s.DashboardHosts) > 0 {
+		out["dashboard_hosts"] = s.DashboardHosts
+	}
 	setStr("public_url", s.PublicURL)
 	setStr("state_dir", s.StateDir)
 	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
