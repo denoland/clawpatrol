@@ -50,6 +50,11 @@ type webMux struct {
 	onboard   *onboardRegistry
 	routeAuth map[string]authRequirement
 
+	// hostGateLog rate-limits the line hostGate writes for a refused
+	// request, so a rebound read is observable without the log being
+	// fillable through an attacker-chosen Host.
+	hostGateLog hostGateLog
+
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
 	// polls every 5s, but the cached entry only refreshes once per
@@ -224,8 +229,10 @@ func (w *webMux) handler() http.Handler {
 	// dashboardAuthGate hands cookieless requests to tailnetGate,
 	// which authenticates from the peer address, and that is exactly
 	// the path a cross-site request takes once SameSite=Lax withholds
-	// the cp_session cookie.
-	return w.csrfProtect(w.dashboardAuthGate(w.tailnetGate(mux)))
+	// the cp_session cookie. hostGate wraps csrfProtect in turn: it
+	// refuses a request addressed to a name that is not the gateway's
+	// own, which a rebound GET is, before anything attributes it.
+	return w.hostGate(w.csrfProtect(w.dashboardAuthGate(w.tailnetGate(mux))))
 }
 
 func (w *webMux) routes() []webRoute {

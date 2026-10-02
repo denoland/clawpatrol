@@ -70,6 +70,42 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 // is unset.
 const defaultHostLoopbackPort = 8443
 
+// defaultTsnetHostname is the node name the embedded tsnet node asks
+// control for when `tailscale.hostname` is unset.
+const defaultTsnetHostname = "clawpatrol-gateway"
+
+// tsnetIdentity is the embedded tsnet node's own identity as control
+// reported it. Published whole through Gateway.tsnetSelf.
+type tsnetIdentity struct {
+	// IP is the node's tailnet IPv4 (100.x.x.x). Included in onboard
+	// join responses so clients can write tailnet-url without a
+	// peer-name lookup.
+	IP string
+	// Hostname is the registered node name, the first label of DNSName
+	// (e.g. "clawpatrol-gateway-1"). It may differ from the configured
+	// hostname when tsnet resolved a conflict. Included in onboard join
+	// responses as gateway_host so clawpatrol-run peer lookups succeed.
+	Hostname string
+	// DNSName is the full MagicDNS name, lowercased, without the
+	// trailing dot (e.g. "clawpatrol-gateway-1.tail1234.ts.net"). Kept
+	// whole because a custom control plane (Headscale) hands out a base
+	// domain of its own, which a ".ts.net" rule cannot know.
+	DNSName string
+}
+
+// tsnetIdentity returns the node's identity as last published, or the
+// zero value before control has reported one — and always outside
+// Tailscale control mode. The IP may be known before the name is.
+func (g *Gateway) tsnetIdentity() tsnetIdentity {
+	if g == nil {
+		return tsnetIdentity{}
+	}
+	if id := g.tsnetSelf.Load(); id != nil {
+		return *id
+	}
+	return tsnetIdentity{}
+}
+
 // hostLoopbackPort resolves the loopback TCP port the gateway binds
 // for host-local clients, honoring wireguard.host_loopback_port and
 // falling back to defaultHostLoopbackPort when unset (0).
@@ -126,7 +162,7 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 
 	hn := ts.Hostname
 	if hn == "" {
-		hn = "clawpatrol-gateway"
+		hn = defaultTsnetHostname
 	}
 	dir, err := gatewayTsnetDir(stateDir)
 	if err != nil {

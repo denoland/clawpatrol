@@ -411,15 +411,13 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
-	// tailscaleIP is the gateway's own Tailscale IPv4 (100.x.x.x).
-	// Set at startup in Tailscale control mode; included in onboard join
-	// responses so clients can write tailnet-url without a peer-name lookup.
-	tailscaleIP string
-	// tailscaleHostname is the actual registered node name (e.g.
-	// "clawpatrol-gateway-1") — may differ from cfg.Hostname when tsnet
-	// resolves a conflict. Included in onboard join responses as
-	// gateway_host so clawpatrol-run peer lookups succeed.
-	tailscaleHostname string
+	// tsnetSelf is the embedded node's own identity — tailnet IPv4,
+	// registered name, full MagicDNS name — published whole as control
+	// reports it, so a reader never sees a name without its IP or a
+	// label without its FQDN. Nil until the first status arrives, and
+	// always outside Tailscale control mode; read it through
+	// tsnetIdentity().
+	tsnetSelf atomic.Pointer[tsnetIdentity]
 	// tsnetLC is the embedded tsnet's LocalClient. Used to resolve a
 	// peer's full address set (e.g. IPv4 → IPv6 ULA) when seeding
 	// profile mappings — tsnet whole-machine traffic arrives on the
@@ -2154,7 +2152,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 // answers, axfr-style retries, or simply `dig +tcp`) keep working.
 func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
 	defer otelTrackConn("dns_tcp")()
-	if dstIP == g.tailscaleIP {
+	if dstIP == g.tsnetIdentity().IP {
 		// Avoid self-relay loop: relayUpstream would dial ourselves.
 		dstIP = ""
 	}
@@ -3771,46 +3769,64 @@ func runGateway(args []string) {
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
 	tsnetDashPort := portOf(dashListen)
 	if tsnetServer != nil {
-		// Seed gateway tailscale IP for /api/join responses so clients
-		// know the tailnet-direct URL without a DNS lookup.
-		// Retry status query — DNSName populates after netmap arrives from
-		// control, which can lag Listen() by a second or two. Without retry
-		// we'd read empty DNSName and fall back to OS hostname, which is
-		// often wrong (tsnet may have registered under a different name
-		// from saved state). Retry for up to 15s.
+		// Seed the node's own identity for /api/join responses (the
+		// tailnet-direct URL, gateway_host) and the dashboard's Host
+		// allowlist. DNSName populates after the netmap arrives from
+		// control, which can lag Listen() by a second or two — or far
+		// longer when control is slow or unreachable. Without it the
+		// node name would fall back to the OS hostname, which is often
+		// wrong (tsnet may have registered under a different name from
+		// saved state), and hostGate refuses dashboard requests
+		// addressed by the registered name until it is known. So this
+		// never gives up: it polls with backoff until status reports a
+		// name, publishing the IP alone as soon as that much is known.
 		go func() {
 			lc2, err2 := tsnetServer.LocalClient()
 			if err2 != nil {
 				log.Printf("tsnet: LocalClient err: %v", err2)
 				return
 			}
-			deadline := time.Now().Add(15 * time.Second)
-			for time.Now().Before(deadline) {
+			started := time.Now()
+			warned := false
+			wait := 500 * time.Millisecond
+			for {
 				st, err3 := lc2.StatusWithoutPeers(context.Background())
-				if err3 != nil || st.Self == nil {
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
-				if g.tailscaleIP == "" {
-					for _, ip := range st.Self.TailscaleIPs {
-						if ip.Is4() {
-							g.tailscaleIP = ip.String()
-							break
+				if err3 == nil && st.Self != nil {
+					self := g.tsnetIdentity()
+					if self.IP == "" {
+						for _, ip := range st.Self.TailscaleIPs {
+							if ip.Is4() {
+								self.IP = ip.String()
+								break
+							}
 						}
 					}
+					hn := st.Self.DNSName
+					if i := strings.IndexByte(hn, '.'); i > 0 {
+						hn = hn[:i]
+					}
+					if hn != "" {
+						self.Hostname = hn
+						self.DNSName = strings.ToLower(strings.TrimSuffix(st.Self.DNSName, "."))
+						g.tsnetSelf.Store(&self)
+						log.Printf("tsnet: node name %q IP %s", hn, self.IP)
+						return
+					}
+					if self.IP != "" {
+						// The IP is assigned before the name: publish it so
+						// the dnsvip listener and join hints can use it.
+						g.tsnetSelf.Store(&self)
+					}
 				}
-				hn := st.Self.DNSName
-				if i := strings.IndexByte(hn, '.'); i > 0 {
-					hn = hn[:i]
+				if !warned && time.Since(started) > 15*time.Second {
+					warned = true
+					log.Printf("tsnet: no DNSName from status after 15s — dashboard requests addressed by the node's registered name are refused until it is known (the configured tailscale.hostname is accepted meanwhile); still waiting")
 				}
-				if hn != "" {
-					g.tailscaleHostname = hn
-					log.Printf("tsnet: node name %q IP %s", hn, g.tailscaleIP)
-					return
+				time.Sleep(wait)
+				if wait < 10*time.Second {
+					wait *= 2
 				}
-				time.Sleep(500 * time.Millisecond)
 			}
-			log.Printf("tsnet: never got DNSName from status — gateway_host may be wrong")
 		}()
 		// Replace the default system-tailscaled LocalClient with the tsnet
 		// one so that whois lookups (dashboard auth, identity derivation)
@@ -3851,19 +3867,20 @@ func runGateway(args []string) {
 		// for the tailnet IP to be assigned, then bind there.
 		if g.dnsvip != nil {
 			go func() {
-				for i := 0; i < 60 && g.tailscaleIP == ""; i++ {
+				for i := 0; i < 60 && g.tsnetIdentity().IP == ""; i++ {
 					time.Sleep(500 * time.Millisecond)
 				}
-				if g.tailscaleIP == "" {
+				ip := g.tsnetIdentity().IP
+				if ip == "" {
 					log.Printf("tsnet: dnsvip UDP listener skipped — no tailscale IP")
 					return
 				}
-				pc, err := tsnetServer.ListenPacket("udp", g.tailscaleIP+":53")
+				pc, err := tsnetServer.ListenPacket("udp", ip+":53")
 				if err != nil {
-					log.Printf("tsnet: udp %s:53 (dns): %v", g.tailscaleIP, err)
+					log.Printf("tsnet: udp %s:53 (dns): %v", ip, err)
 					return
 				}
-				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
+				log.Printf("tsnet: dnsvip UDP listener on %s:53", ip)
 				serveTsnetDNSUDP(pc, g.dnsvip)
 			}()
 		}

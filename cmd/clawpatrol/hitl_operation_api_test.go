@@ -157,6 +157,7 @@ func TestHITLOperationStatusRequiresPeerAPIToken(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Host = hitlOperationAPITestHost
 			h.handler.ServeHTTP(rr, req)
 
 			if rr.Code != http.StatusUnauthorized {
@@ -181,6 +182,7 @@ func TestHITLOperationStatusRequiresSameProfileAndPrincipal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Host = hitlOperationAPITestHost
 			req.Header.Set("Authorization", "Bearer "+tc.token)
 			h.handler.ServeHTTP(rr, req)
 
@@ -457,12 +459,18 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 	}
 }
 
+// hitlOperationAPITestHost is the public_url host the HITL test
+// configs declare. The status endpoint is reached on it — the status
+// URL handed out in a 202 is built from public_url — so requests
+// address it by that name to pass hostGate.
+const hitlOperationAPITestHost = "gateway.example.test"
+
 func loadHITLOperationAPITestConfig(t *testing.T) *config.Gateway {
 	t.Helper()
 	gw, diags := config.LoadBytes([]byte(`
 gateway {
   state_dir  = "/opt/clawpatrol"
-  public_url = "https://gateway.example.test"
+  public_url = "https://`+hitlOperationAPITestHost+`"
 
   wireguard {
     subnet_cidr = "10.55.0.0/24"
@@ -581,6 +589,7 @@ func (h hitlOperationAPITestHarness) poll(t *testing.T, operationID, token strin
 	t.Helper()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+operationID+"/status", nil)
+	req.Host = hitlOperationAPITestHost
 	req.Header.Set("Authorization", "Bearer "+token)
 	h.handler.ServeHTTP(rr, req)
 	return rr

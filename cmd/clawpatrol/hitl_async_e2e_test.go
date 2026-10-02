@@ -289,6 +289,7 @@ func (h *hitlAsyncE2EHarness) pollStatus(t *testing.T, operationID string) *http
 	t.Helper()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+operationID+"/status", nil)
+	req.Host = hitlOperationAPITestHost
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	h.handler.ServeHTTP(rr, req)
 	return rr

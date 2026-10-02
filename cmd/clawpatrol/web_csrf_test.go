@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,6 +78,73 @@ func csrfNotDenied(t *testing.T, rr *httptest.ResponseRecorder) {
 	if strings.Contains(rr.Body.String(), "CSRF request denied") {
 		t.Fatalf("status = %d body = %q: request was denied by csrfProtect, want pass-through", rr.Code, rr.Body.String())
 	}
+	hostNotRefused(t, rr)
+}
+
+// serveCSRFOnly runs req through csrfProtect alone, with a marker
+// handler behind it, so the origin check can be exercised on a Host
+// that hostGate — which sits outside it in the real chain — would
+// refuse first. The two layers overlap on a rebound name by design;
+// this keeps the inner one's own verdict observable.
+func serveCSRFOnly(w *webMux, req *http.Request) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	w.csrfProtect(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		_, _ = rw.Write([]byte(csrfMarkerBody))
+	})).ServeHTTP(rr, req)
+	return rr
+}
+
+const csrfMarkerBody = "reached the handler"
+
+// hostRefused asserts the response is hostGate's refusal and nothing
+// else: a 421 whose body is the one-line notice, with no output from
+// anything behind the gate.
+func hostRefused(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusMisdirectedRequest, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.HasPrefix(body, "Request refused: Host ") {
+		t.Fatalf("body = %q, want the host gate's refusal", body)
+	}
+	if strings.Count(body, "\n") != 1 || !strings.HasSuffix(body, "\n") {
+		t.Fatalf("body = %q, want a single line and nothing from behind the gate", body)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("Content-Type = %q, want text/plain", ct)
+	}
+}
+
+// hostNotRefused asserts hostGate let the request through, whatever
+// the stack behind it then decided.
+func hostNotRefused(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code == http.StatusMisdirectedRequest || strings.HasPrefix(rr.Body.String(), "Request refused: Host ") {
+		t.Fatalf("status = %d body = %q: request was refused by hostGate, want pass-through", rr.Code, rr.Body.String())
+	}
+}
+
+// setTsnetSelf publishes the node identity control would have
+// reported: the registered name and its full MagicDNS form.
+func setTsnetSelf(w *webMux, hostname, dnsName string) {
+	w.g.tsnetSelf.Store(&tsnetIdentity{Hostname: hostname, DNSName: dnsName})
+}
+
+// onboardSessionCount reports how many device-flow sessions the
+// registry holds, by either code.
+func onboardSessionCount(r *onboardRegistry) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byDevice) + len(r.byUser)
+}
+
+// csrfBindAs declares host as the dashboard's bind address, the way a
+// deployment whose proxy rewrites Host to a backend name has to: the
+// gateway only answers for names it knows are its own, and a bind
+// hostname is one of them.
+func csrfBindAs(w *webMux, host string) {
+	w.g.cfg.Load().Settings.DashboardListen = host
 }
 
 // csrfProtectedPaths are the state-changing endpoints that the
@@ -129,7 +197,9 @@ func TestCSRFRejectsForeignOriginStateChangingRequests(t *testing.T) {
 // attacker's name resolves to the gateway, so the browser considers
 // its own page same-origin with the dashboard and says so. Comparing
 // the two headers against each other cannot catch that; only
-// requiring Host to be a name the gateway answers for can.
+// requiring Host to be a name the gateway answers for can. hostGate
+// does that for every request before the chain runs; csrfProtect
+// keeps its own copy of the check for writes.
 func TestCSRFRejectsRebindingWithForeignHost(t *testing.T) {
 	for _, tc := range csrfProtectedPaths {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,7 +208,8 @@ func TestCSRFRejectsRebindingWithForeignHost(t *testing.T) {
 			req.Host = "rebound.evil.example"
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			req.Header.Set("Origin", "https://rebound.evil.example")
-			csrfDenied(t, serveCSRF(w, req))
+			hostRefused(t, serveCSRF(w, req))
+			csrfDenied(t, serveCSRFOnly(w, req))
 		})
 	}
 }
@@ -264,19 +335,223 @@ func TestCSRFExemptsHITLOperationStatusWithoutOrigin(t *testing.T) {
 	}
 }
 
-// GET is not state-changing, so the dashboard keeps rendering for a
-// cross-site navigation rather than breaking on the origin check.
+// GET is not state-changing, so the origin check lets a cross-site
+// navigation through rather than breaking the dashboard on it. What
+// it must still address is the gateway's own name: a rebound GET is
+// how a page reads the dashboard's JSON, and hostGate is what refuses
+// it — see TestHostGate*.
 func TestCSRFIgnoresGETRequests(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	req := csrfTestRequest(http.MethodGet, "/api/hitl/pending", "")
-	req.Host = "rebound.evil.example"
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	csrfNotDenied(t, serveCSRF(w, req))
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	// The same GET on a rebound name is refused — not by csrfProtect,
+	// which is deliberately blind to GET, but by the gate outside it.
+	rebound := csrfTestRequest(http.MethodGet, "/api/hitl/pending", "")
+	rebound.Host = "rebound.evil.example"
+	rebound.Header.Set("Sec-Fetch-Site", "cross-site")
+	hostRefused(t, serveCSRF(w, rebound))
+	if rr := serveCSRFOnly(w, rebound); rr.Body.String() != csrfMarkerBody {
+		t.Fatalf("csrfProtect alone: body = %q, want pass-through of a GET", rr.Body.String())
+	}
+}
+
+// hostGateTestHosts are the names the test gateway serves the
+// dashboard on, one per clause of csrfHostAllowed, each as a browser
+// would send it: public_url host, IP literals, loopback, and the tsnet
+// node's MagicDNS label both bare and fully qualified.
+var hostGateTestHosts = []string{
+	csrfTestHost,                    // public_url host
+	"100.64.0.1:8080",               // tailnet IP literal
+	"[::1]:8080",                    // IPv6 literal
+	"localhost:8080",                // loopback name
+	"claw-gw:8080",                  // bare MagicDNS label
+	"claw-gw.tailnet-abc.ts.net",    // full MagicDNS name (Funnel)
+	"claw-gw.headscale.example.org", // full name on a custom control plane
+}
+
+// A rebound read: the page on attacker.example resolves that name to
+// the gateway and GETs the dashboard's JSON through it. Nothing about
+// the request is wrong except its Host, so the Host is what refuses
+// it, and before anything behind the gate produces output.
+func TestHostGateRefusesForeignHostOnReads(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodGet, "/api/state", "")
+	req.Host = "rebound.evil.example:8080"
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := serveCSRF(w, req)
+	hostRefused(t, rr)
+	if !strings.Contains(rr.Body.String(), `"rebound.evil.example:8080"`) {
+		t.Fatalf("body = %q, want the refused Host named", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "public_url") {
+		t.Fatalf("body = %q, want the public_url remedy", rr.Body.String())
+	}
+}
+
+// Each of the gateway's own names passes the gate, whatever the stack
+// behind it then answers for /api/state.
+func TestHostGateAcceptsOwnNames(t *testing.T) {
+	for _, host := range hostGateTestHosts {
+		t.Run(host, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			setTsnetSelf(w, "claw-gw", "claw-gw.headscale.example.org")
+			req := csrfTestRequest(http.MethodGet, "/api/state", "")
+			req.Host = host
+			hostNotRefused(t, serveCSRF(w, req))
+		})
+	}
+}
+
+// The gate is method-blind: HEAD and OPTIONS, which csrfProtect also
+// skips, are refused on a foreign Host like everything else.
+func TestHostGateRefusesHeadAndOptions(t *testing.T) {
+	for _, method := range []string{http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			req := csrfTestRequest(method, "/api/state", "")
+			req.Host = "rebound.evil.example"
+			hostRefused(t, serveCSRF(w, req))
+		})
+	}
+}
+
+// The Funnel listener carries the node's .ts.net name on every
+// request it forwards: the credential webhooks and the device-flow
+// handshake `clawpatrol join` drives both reach their handlers on it.
+func TestHostGateAdmitsFunnelHost(t *testing.T) {
+	const funnelHost = "claw-gw.tailnet-abc.ts.net"
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/api/cred/slack/interactive", want: http.StatusNotFound},
+		{path: "/api/onboard/start?hostname=funnel-device", want: http.StatusOK},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			setTsnetSelf(w, "claw-gw", "")
+			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req.Host = funnelHost
+			rr := serveCSRF(w, req)
+			csrfNotDenied(t, rr)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %q", rr.Code, tc.want, rr.Body.String())
+			}
+		})
+	}
+}
+
+// Public and self-authenticating routes are not exempt from the gate
+// the way they are from the origin check: a rebound name is refused
+// whatever the route asks for.
+func TestHostGateRefusesForeignHostOnPublicRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, dashboardLoginPath},
+		{http.MethodGet, "/info"},
+		{http.MethodPost, "/api/onboard/start?hostname=x"},
+		{http.MethodPost, "/api/cred/slack/interactive"},
+		{http.MethodGet, hitlOperationStatusPrefix + "op-1" + hitlOperationStatusSuffix},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			w := newCSRFTestWebMux(t)
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Host = "rebound.evil.example"
+			hostRefused(t, serveCSRF(w, req))
+			// The refusal happened before the handler: a refused
+			// /api/onboard/start must not have opened a session.
+			if n := onboardSessionCount(w.onboard); n != 0 {
+				t.Fatalf("onboard registry holds %d session(s) after a refused request, want 0", n)
+			}
+		})
+	}
+}
+
+// hostGate on its own, with nothing but a tripwire behind it: a
+// foreign Host never reaches the next handler.
+func TestHostGateNeverCallsNextOnForeignHost(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	gate := w.hostGate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler behind hostGate reached on a foreign Host")
+	}))
+	req := csrfTestRequest(http.MethodGet, "/api/state", "")
+	req.Host = "rebound.evil.example"
+	rr := httptest.NewRecorder()
+	gate.ServeHTTP(rr, req)
+	hostRefused(t, rr)
+}
+
+// Until control reports the registered node name, the configured one
+// stands in for it, so a dashboard reached by name is not refused for
+// as long as control is slow to answer. Once the registered name is
+// known it is the only one that counts.
+func TestHostGateFallsBackToConfiguredTsnetName(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	ts := w.g.cfg.Load().Settings.Tailscale
+	ts.Hostname = "claw-gw"
+	for _, host := range []string{"claw-gw:8080", "claw-gw.tailnet-abc.ts.net"} {
+		req := csrfTestRequest(http.MethodGet, "/api/state", "")
+		req.Host = host
+		hostNotRefused(t, serveCSRF(w, req))
+	}
+	if w.csrfHostAllowed("claw-gw.evil.example") {
+		t.Error("configured label was accepted outside the .ts.net suffix")
+	}
+
+	// An unset tailscale.hostname means the node asked for the default.
+	ts.Hostname = ""
+	req := csrfTestRequest(http.MethodGet, "/api/state", "")
+	req.Host = defaultTsnetHostname + ":8080"
+	hostNotRefused(t, serveCSRF(w, req))
+	if w.csrfHostAllowed("claw-gw:8080") {
+		t.Error("a configured name that was unset is still allowed")
+	}
+
+	// Once control has reported the registered name the configured one
+	// no longer stands in: tsnet may have renamed the node on conflict.
+	ts.Hostname = "claw-gw"
+	setTsnetSelf(w, "claw-gw-1", "claw-gw-1.tailnet-abc.ts.net")
+	if w.csrfHostAllowed("claw-gw:8080") {
+		t.Error("configured name still allowed once the registered name is known")
+	}
+	for _, host := range []string{"claw-gw-1:8080", "claw-gw-1.tailnet-abc.ts.net"} {
+		if !w.csrfHostAllowed(host) {
+			t.Errorf("registered name %q not allowed", host)
+		}
+	}
+}
+
+// The fallback is a tsnet thing: a WireGuard-only gateway has no node
+// and so no node name to answer for.
+func TestHostGateNoConfiguredTsnetNameInWireGuardMode(t *testing.T) {
+	w := newOnboardAuthTestWebMuxForControl(t, "wireguard")
+	for _, host := range []string{defaultTsnetHostname + ":8080", defaultTsnetHostname + ".tailnet-abc.ts.net"} {
+		if w.csrfHostAllowed(host) {
+			t.Errorf("csrfHostAllowed(%q) = true in WireGuard mode, want false", host)
+		}
+	}
+}
+
+// A request with no Host at all (HTTP/1.0 without the header) names
+// nothing the gateway serves, so it is refused too.
+func TestHostGateRefusesMissingHost(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	req := csrfTestRequest(http.MethodGet, "/info", "")
+	req.Host = ""
+	hostRefused(t, serveCSRF(w, req))
 }
 
 func TestCSRFHostAllowlist(t *testing.T) {
 	w := newCSRFTestWebMux(t)
-	w.g.tailscaleHostname = "claw-gw"
+	setTsnetSelf(w, "claw-gw", "claw-gw.headscale.example.org")
 	w.g.cfg.Load().Settings.DashboardListen = "0.0.0.0:8080"
 
 	allowed := []string{
@@ -290,6 +565,8 @@ func TestCSRFHostAllowlist(t *testing.T) {
 		"dash.localhost",                  // loopback subdomain
 		"claw-gw:8080",                    // bare MagicDNS label
 		"claw-gw.tailnet-abc.ts.net:8080", // full MagicDNS name
+		"claw-gw.headscale.example.org",   // full name on a custom control plane
+		"CLAW-GW.Headscale.Example.org.",  // same, as a browser may spell it
 	}
 	for _, host := range allowed {
 		if !w.csrfHostAllowed(host) {
@@ -303,6 +580,8 @@ func TestCSRFHostAllowlist(t *testing.T) {
 		"gateway.example.test.evil.example",
 		"claw-gw.evil.example", // MagicDNS label outside the ts.net suffix
 		"notgateway.example.test",
+		"other.headscale.example.org", // custom base domain, other node
+		"claw-gw.headscale.example.org.evil.example",
 	}
 	for _, host := range denied {
 		if w.csrfHostAllowed(host) {
@@ -319,6 +598,36 @@ func TestCSRFHostAllowlistIgnoresWildcardBind(t *testing.T) {
 		if w.csrfHostAllowed("evil.example") {
 			t.Errorf("dashboard_listen %q widened the allowlist", listen)
 		}
+	}
+}
+
+// A configured name spelled as an absolute FQDN, with the trailing
+// dot, names the same host as the request's spelling without it.
+func TestCSRFHostAllowlistCanonicalizesConfiguredTrailingDot(t *testing.T) {
+	w := newCSRFTestWebMux(t)
+	w.g.cfg.Load().Settings.PublicURL = "https://gw.example.test."
+	w.g.cfg.Load().Settings.DashboardListen = "dash.internal.:8080"
+	for _, host := range []string{"gw.example.test", "gw.example.test.", "dash.internal:8080", "dash.internal."} {
+		if !w.csrfHostAllowed(host) {
+			t.Errorf("csrfHostAllowed(%q) = false, want true", host)
+		}
+	}
+	if w.csrfHostAllowed("gw.example.test.evil.example") {
+		t.Error("trailing-dot public_url matched as a prefix")
+	}
+}
+
+// The refusal log quotes and caps request-derived fields: a control
+// character cannot forge a line and a header-sized Host cannot grow
+// the log by itself.
+func TestHostGateLogFieldQuotesAndCaps(t *testing.T) {
+	if got := hostGateLogField("evil\nweb: forged"); strings.Contains(got, "\n") || got != `"evil\nweb: forged"` {
+		t.Fatalf("hostGateLogField = %s, want control characters escaped", got)
+	}
+	long := strings.Repeat("a", 4*hostGateLogFieldMax)
+	got := hostGateLogField(long)
+	if len(got) > hostGateLogFieldMax+64 || !strings.HasSuffix(got, fmt.Sprintf("(%d bytes)", len(long))) {
+		t.Fatalf("hostGateLogField(long) = %d bytes %q, want a capped, marked value", len(got), got[:40])
 	}
 }
 
@@ -339,6 +648,7 @@ func TestOnboardApproveReadsCodeAndProfileFromJSONBody(t *testing.T) {
 	h := w.handler()
 
 	startReq := httptest.NewRequest(http.MethodPost, "/api/onboard/start?hostname=body-device", nil)
+	startReq.Host = csrfTestHost
 	startRR := httptest.NewRecorder()
 	h.ServeHTTP(startRR, startReq)
 	if startRR.Code != http.StatusOK {
@@ -421,11 +731,15 @@ func TestActionByIDRejectsNonGET(t *testing.T) {
 // origin stays the external hostname. Checking Origin against the
 // names the gateway answers for, rather than against the request's
 // own Host, is what keeps those deployments working: `public_url` is
-// the operator's declaration of that external hostname.
+// the operator's declaration of that external hostname. The rewritten
+// Host itself still has to be one of the gateway's own names to pass
+// hostGate: an IP literal is, and a backend hostname is once it is
+// the bind address.
 func TestCSRFAllowsProxiedRequestWithRewrittenHost(t *testing.T) {
 	for _, backendHost := range []string{"clawpatrol:8080", "127.0.0.1:8080", "10.0.0.7:8080"} {
 		t.Run(backendHost, func(t *testing.T) {
 			w := newCSRFTestWebMux(t)
+			csrfBindAs(w, "clawpatrol:8080")
 			req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 			req.Host = backendHost
 			req.Header.Set("Origin", "https://"+csrfTestHost)
@@ -444,6 +758,7 @@ func TestCSRFAllowsProxiedRequestWithRewrittenHost(t *testing.T) {
 // it. The scheme is the one public_url declares.
 func TestCSRFAllowsProxiedRequestWithoutSecFetchSite(t *testing.T) {
 	w := newCSRFTestWebMux(t)
+	csrfBindAs(w, "clawpatrol:8080")
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "clawpatrol:8080"
 	req.Header.Set("Origin", "https://"+csrfTestHost)
@@ -463,7 +778,8 @@ func TestCSRFRejectsRebindingReportingSameOrigin(t *testing.T) {
 	req.Host = "rebound.evil.example"
 	req.Header.Set("Origin", "https://rebound.evil.example")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	csrfDenied(t, serveCSRF(w, req))
+	hostRefused(t, serveCSRF(w, req))
+	csrfDenied(t, serveCSRFOnly(w, req))
 }
 
 // The Origin is matched as a full authority, so a page the agent
@@ -490,7 +806,7 @@ func TestCSRFRejectsForeignOriginAuthorities(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newCSRFTestWebMux(t)
-			w.g.tailscaleHostname = "claw-gw"
+			setTsnetSelf(w, "claw-gw", "")
 			req := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
 			req.Host = tc.requestHost
 			req.Header.Set("Origin", tc.origin)
@@ -519,7 +835,7 @@ func TestCSRFAllowsMatchingOriginAuthorities(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newCSRFTestWebMux(t)
-			w.g.tailscaleHostname = "claw-gw"
+			setTsnetSelf(w, "claw-gw", "")
 			req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 			req.Host = tc.requestHost
 			req.Header.Set("Origin", tc.origin)
@@ -553,6 +869,7 @@ func TestCSRFPublicURLPortIsPartOfTheMatch(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	w.publicURL = "http://gw.example.test:8080"
 	w.g.cfg.Load().Settings.PublicURL = "http://gw.example.test:8080"
+	csrfBindAs(w, "backend:9090")
 
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "backend:9090"
@@ -572,6 +889,7 @@ func TestCSRFPublicURLPortIsPartOfTheMatch(t *testing.T) {
 // network can serve without a certificate.
 func TestCSRFRejectsOppositeSchemeOnDeclaredOrigin(t *testing.T) {
 	w := newCSRFTestWebMux(t)
+	csrfBindAs(w, "clawpatrol:8080")
 	req := csrfTestRequest(http.MethodPost, "/api/credentials/set", `{"id":"x"}`)
 	req.Host = "clawpatrol:8080"
 	req.Header.Set("Origin", "http://"+csrfTestHost)
@@ -584,7 +902,7 @@ func TestCSRFRejectsPlaintextOriginOnTLSRequest(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "claw-gw.tailnet-abc.ts.net"
-	w.g.tailscaleHostname = "claw-gw"
+	setTsnetSelf(w, "claw-gw", "")
 	req.TLS = &tls.ConnectionState{}
 	req.Header.Set("Origin", "http://claw-gw.tailnet-abc.ts.net")
 	csrfDenied(t, serveCSRF(w, req))
@@ -662,6 +980,7 @@ func TestCSRFPublicURLWithDefaultPortMatches(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	w.publicURL = "https://gw.example.test:443"
 	w.g.cfg.Load().Settings.PublicURL = "https://gw.example.test:443"
+	csrfBindAs(w, "backend:9090")
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "backend:9090"
 	req.Header.Set("Origin", "https://gw.example.test")
@@ -679,6 +998,7 @@ func TestCSRFLiveConfigPublicURLWinsOverCaptured(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	w.publicURL = "https://old.example.test"
 	w.g.cfg.Load().Settings.PublicURL = "https://new.example.test"
+	csrfBindAs(w, "backend:9090")
 
 	retired := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	retired.Host = "backend:9090"
@@ -694,11 +1014,13 @@ func TestCSRFLiveConfigPublicURLWinsOverCaptured(t *testing.T) {
 		t.Fatalf("body = %q, want the config handler's own answer", rr.Body.String())
 	}
 
-	// The retired hostname must also stop satisfying the Host half.
+	// The retired hostname must also stop satisfying the Host half —
+	// at the gate, and in csrfProtect's own fallback.
 	byHost := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	byHost.Host = "old.example.test"
 	byHost.Header.Set("Origin", "https://old.example.test")
-	csrfDenied(t, serveCSRF(w, byHost))
+	hostRefused(t, serveCSRF(w, byHost))
+	csrfDenied(t, serveCSRFOnly(w, byHost))
 }
 
 // The captured value applies only to a mux with no config to read at
@@ -726,6 +1048,7 @@ func TestCSRFEmptyLiveConfigRetiresCapturedPublicURL(t *testing.T) {
 	if w.csrfHostAllowed("old.example.test") {
 		t.Error("retired public_url host is still allowed")
 	}
+	csrfBindAs(w, "backend:9090")
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "backend:9090"
 	req.Header.Set("Origin", "https://old.example.test")
@@ -815,6 +1138,7 @@ func TestCSRFCanonicalOriginBracketsIPv6(t *testing.T) {
 func TestCSRFPublicURLIPv6DefaultPortMatches(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	w.g.cfg.Load().Settings.PublicURL = "https://[::1]:443"
+	csrfBindAs(w, "backend:9090")
 	req := csrfTestRequest(http.MethodPost, "/api/config/apply", `{}`)
 	req.Host = "backend:9090"
 	req.Header.Set("Origin", "https://[::1]")
@@ -865,8 +1189,10 @@ func TestCSRFAllowsSameSiteLoginPostAndPublicGET(t *testing.T) {
 		t.Fatalf("login status = %d, want %d; body = %q", rr.Code, http.StatusFound, rr.Body.String())
 	}
 
+	// A cross-site navigation to the form still renders it, as long as
+	// it addresses the gateway by one of its own names.
 	get := httptest.NewRequest(http.MethodGet, dashboardLoginPath, nil)
-	get.Host = "anything.example"
+	get.Host = csrfTestHost
 	get.Header.Set("Sec-Fetch-Site", "cross-site")
 	grr := serveCSRF(w, get)
 	csrfNotDenied(t, grr)

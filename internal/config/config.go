@@ -146,7 +146,10 @@ type GatewaySettings struct {
 	// PublicURL is the canonical externally-reachable gateway URL.
 	// Used in generated control-plane links such as join targets, OAuth
 	// redirect URIs, and (when public_url has a host but wireguard.endpoint
-	// doesn't) the host clients dial for WireGuard.
+	// doesn't) the host clients dial for WireGuard, and one of the names
+	// the dashboard answers for: a request addressed to a host that is
+	// not this, a loopback name, an IP literal, the dashboard_listen
+	// hostname or the tsnet node's name is refused.
 	PublicURL string `hcl:"public_url,optional"`
 
 	// StateDir is the directory holding clawpatrol.db (and anything

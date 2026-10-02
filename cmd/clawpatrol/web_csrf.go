@@ -2,12 +2,119 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 )
+
+// hostGate refuses every request addressed to a name the gateway does
+// not serve the dashboard on.
+//
+// It sits outermost — outside csrfProtect, outside both auth gates —
+// and applies to every method and every route, reads and public
+// endpoints included. Everything inside it is reasoned about on the
+// assumption that the Host names this gateway, and that assumption is
+// what DNS rebinding breaks: a page on attacker.example rebinds its
+// own name to the gateway's address and has the operator's browser
+// issue `GET http://attacker.example:8080/api/state`. The request
+// leaves the operator's machine, so tailnetGate attributes the
+// operator from the peer address; it is same-origin to the browser, so
+// the page reads the JSON back. csrfProtect does not see it at all —
+// it skips GET, HEAD and OPTIONS, because for an origin check those
+// methods are safe — and the cookie gate does not either, because the
+// tailnet path asks for no cookie. The only thing wrong with the
+// request is the name it was sent to, so that is what is checked, and
+// it is checked before anything else runs: nothing behind this gate
+// should ever handle, log or answer a rebound request.
+//
+// csrfHostAllowed decides, and is the same allowlist csrfProtect falls
+// back on for writes: loopback names, IP literals (an address cannot
+// be rebound), the `public_url` host, a named `dashboard_listen` host,
+// the tsnet MagicDNS label bare or under `.ts.net`, and the full
+// MagicDNS name control reported (a custom control plane's base
+// domain is not `.ts.net`). Until control has reported the registered
+// name, the configured `tailscale.hostname` stands in for it. The
+// Funnel listener carries the node's `.ts.net` name; `clawpatrol join`
+// and the tailnet-url it writes use IP literals or the bare node name; the
+// host loopback listener is reached as 127.0.0.1. A reverse proxy that
+// forwards the external Host is covered by `public_url`, which is what
+// the refusal tells the operator to set; one that rewrites Host to a
+// backend name has to forward it instead, or that name has to be the
+// `dashboard_listen` bind — from here a backend name the gateway has
+// never heard of looks exactly like a rebound one. A request with no
+// Host at all — HTTP/1.0 without the header — is refused too; no
+// supported client sends one.
+//
+// The status is 421 Misdirected Request: the request was addressed to
+// an authority this server does not represent, which is exactly the
+// case. Nothing is attributed, authenticated or looked up first. A
+// refusal is logged with the Host and the peer address, rate-limited,
+// since a rebound read is something the operator wants to see.
+func (w *webMux) hostGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if !w.csrfHostAllowed(r.Host) {
+			w.hostGateLog.refused(r)
+			http.Error(rw, fmt.Sprintf("Request refused: Host %q is not a name this gateway serves the dashboard on — reach it by its address or tailnet name, or set `public_url` to the URL the dashboard is reached on", r.Host), http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(rw, r)
+	})
+}
+
+// hostGateLogInterval bounds hostGate's refusal log to one line per
+// interval. Refusals in between are counted and reported on the next
+// line, so a burst is still visible as a burst.
+const hostGateLogInterval = 10 * time.Second
+
+// hostGateLog is the rate-limited log of hostGate refusals.
+type hostGateLog struct {
+	mu      sync.Mutex
+	last    time.Time
+	dropped int
+}
+
+// refused records a refused request — the Host it was addressed to and
+// the peer it came from — at most once per hostGateLogInterval. The
+// Host is attacker-chosen, so the log must not be fillable through it.
+func (l *hostGateLog) refused(r *http.Request) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if !l.last.IsZero() && now.Sub(l.last) < hostGateLogInterval {
+		l.dropped++
+		return
+	}
+	suffix := ""
+	if l.dropped > 0 {
+		suffix = fmt.Sprintf(" (%d more refused since the last line)", l.dropped)
+	}
+	l.last = now
+	l.dropped = 0
+	// Host and path are attacker-chosen on exactly the requests logged
+	// here: quoted so a control character cannot forge a line, and
+	// capped so a header-sized value cannot grow the log by itself.
+	log.Printf("web: refused %s %s addressed to Host %s from %s: not a name this gateway serves%s",
+		hostGateLogField(r.Method), hostGateLogField(r.URL.Path), hostGateLogField(r.Host), hostGateLogField(r.RemoteAddr), suffix)
+}
+
+// hostGateLogFieldMax bounds each request-derived field in a refusal
+// log line. Long enough to show any legitimate name in full.
+const hostGateLogFieldMax = 256
+
+// hostGateLogField renders an untrusted request field for the log:
+// truncated to hostGateLogFieldMax bytes (marked when it was) and
+// quoted, which escapes control characters.
+func hostGateLogField(s string) string {
+	if len(s) > hostGateLogFieldMax {
+		return fmt.Sprintf("%q…(%d bytes)", s[:hostGateLogFieldMax], len(s))
+	}
+	return fmt.Sprintf("%q", s)
+}
 
 // csrfProtect rejects state-changing requests a browser was tricked
 // into sending from another site.
@@ -389,10 +496,24 @@ func (w *webMux) csrfHostAllowed(host string) bool {
 			return true
 		}
 	}
+	self := w.g.tsnetIdentity()
 	// The tsnet node's MagicDNS label, reached either bare or as the
 	// full `<node>.<tailnet>.ts.net`. The suffix is required so the
 	// label alone cannot be borrowed by a name the attacker owns.
-	if tsName := strings.ToLower(w.g.tailscaleHostname); tsName != "" {
+	//
+	// Until control has reported the registered name, the configured
+	// one stands in for it: the node asked control for that name, and
+	// status can lag the listener by seconds — or for as long as control
+	// is unreachable — during which a dashboard reached by name would
+	// otherwise be refused outright. Once the registered name is known
+	// it is the only one that counts, since tsnet may have renamed the
+	// node on a conflict and the configured name then resolves to
+	// nothing.
+	tsName := strings.ToLower(self.Hostname)
+	if tsName == "" {
+		tsName = strings.ToLower(w.configuredTsnetHostname())
+	}
+	if tsName != "" {
 		if lower == tsName {
 			return true
 		}
@@ -400,7 +521,31 @@ func (w *webMux) csrfHostAllowed(host string) bool {
 			return true
 		}
 	}
+	// The full name control actually reported, matched exactly. This
+	// is the only clause that admits a custom control plane's base
+	// domain: Headscale hands out `<node>.<its-domain>`, which the
+	// `.ts.net` rule above cannot know about.
+	if self.DNSName != "" && lower == self.DNSName {
+		return true
+	}
 	return false
+}
+
+// configuredTsnetHostname returns the node name the live config asks
+// tsnet for — `tailscale.hostname`, or its default — and "" outside
+// Tailscale control mode, where there is no node to answer for.
+func (w *webMux) configuredTsnetHostname() string {
+	if w.g == nil {
+		return ""
+	}
+	cfg := w.g.cfg.Load()
+	if cfg == nil || !cfg.IsTailscaleEnabled() {
+		return ""
+	}
+	if hn := strings.TrimSpace(cfg.Settings.Tailscale.Hostname); hn != "" {
+		return hn
+	}
+	return defaultTsnetHostname
 }
 
 // csrfHostOfURL extracts the lowercased hostname from a configured
@@ -419,7 +564,9 @@ func csrfHostOfURL(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(u.Hostname())
+	// A trailing dot is a valid FQDN spelling; the request side drops
+	// it before comparing, so the configured side must too.
+	return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 }
 
 // csrfHostOfListen extracts a hostname from a bind address. A
@@ -434,6 +581,7 @@ func csrfHostOfListen(listen string) string {
 		host = h
 	}
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+	host = strings.TrimSuffix(host, ".")
 	switch host {
 	case "", "0.0.0.0", "::", "*":
 		return ""

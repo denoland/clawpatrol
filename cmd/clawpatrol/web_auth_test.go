@@ -35,6 +35,13 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 	return &http.Cookie{Name: cpSessionCookieName, Value: token}
 }
 
+// webTestPublicURL is the public_url the shared test muxes declare.
+// Its host is the Host httptest.NewRequest fills in by default, so a
+// request built without setting one addresses the gateway by a name it
+// serves and passes hostGate; tests about the Host itself set their
+// own.
+const webTestPublicURL = "https://example.com"
+
 // newOnboardAuthTestWebMux builds a webMux backed by a temporary
 // sqlite DB pre-seeded with the root password. Tests that hit
 // /api/* through the full handler need this because dashboardAuthGate
@@ -42,7 +49,7 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 	t.Helper()
 	db := openOnboardAuthTestDB(t)
-	settings := &config.GatewaySettings{}
+	settings := &config.GatewaySettings{PublicURL: webTestPublicURL}
 	switch control {
 	case "tailscale", "":
 		settings.Tailscale = &config.TailscaleBlock{AuthKey: "tskey-test"}
@@ -60,7 +67,7 @@ func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 		onboard: newOnboardRegistry(),
 	}
 	g.cfg.Store(cfg)
-	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, ts: cfg.Join(), publicURL: webTestPublicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	w.routeAuth = routeAuthIndex(w.routes())
 	return w
 }
@@ -389,13 +396,14 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	cfg := &config.Gateway{
 		Settings: &config.GatewaySettings{
+			PublicURL: webTestPublicURL,
 			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
 		},
 		Policy: &config.Policy{},
 	}
 	g := &Gateway{db: db, onboard: newOnboardRegistry()}
 	g.cfg.Store(cfg)
-	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, ts: cfg.Join(), publicURL: webTestPublicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	h := w.handler()
 
 	// API call: 401 with hint about set-dashboard-password.

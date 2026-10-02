@@ -764,13 +764,13 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	if w.g != nil && cfg != nil && cfg.PublicURL() != "" {
 		verifyURL = cfg.PublicURL()
 	}
-	if w.g != nil && w.g.tailscaleIP != "" && cfg != nil && cfg.DashboardListen() != "" {
+	if tsIP := w.g.tsnetIdentity().IP; tsIP != "" && cfg != nil && cfg.DashboardListen() != "" {
 		port := cfg.DashboardListen()
 		if i := strings.LastIndexByte(port, ':'); i >= 0 {
 			port = port[i+1:]
 		}
 		if port != "" {
-			verifyURL = fmt.Sprintf("http://%s:%s", w.g.tailscaleIP, port)
+			verifyURL = fmt.Sprintf("http://%s:%s", tsIP, port)
 		}
 	}
 	if verifyURL == "" {
@@ -1253,18 +1253,19 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 	if s.loginServer == "" {
 		gwHost := w.ts.Hostname
 		if gwHost == "" {
-			gwHost = "clawpatrol-gateway"
+			gwHost = defaultTsnetHostname
 		}
 		// Prefer the actual registered node name (may differ from the
 		// configured hostname when tsnet resolved a conflict, e.g.
 		// "clawpatrol-gateway-1" vs "clawpatrol-gateway").
-		if w.g != nil && w.g.tailscaleHostname != "" {
-			gwHost = w.g.tailscaleHostname
+		self := w.g.tsnetIdentity()
+		if self.Hostname != "" {
+			gwHost = self.Hostname
 		}
 		resp["gateway_host"] = gwHost
 		resp["control_url"] = w.ts.ControlURL
-		if w.g != nil && w.g.tailscaleIP != "" {
-			resp["gateway_ip"] = w.g.tailscaleIP
+		if self.IP != "" {
+			resp["gateway_ip"] = self.IP
 		}
 		// CA cert delivered over the approved Funnel/onboard channel —
 		// the gateway's /ca.crt is intentionally not exposed publicly

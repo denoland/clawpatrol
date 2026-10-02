@@ -242,8 +242,8 @@ reached, so it holds for a deployment fronted by a proxy whatever
 compared. Otherwise the `Origin` must equal the request's `Host` in
 full, port included, and that `Host` must name something the gateway
 serves the dashboard on: a loopback name, an IP literal, the
-`public_url` host, the bind hostname, or the tsnet node's MagicDNS
-name.
+`public_url` host, a hostname given in `dashboard_listen`, or the tsnet
+node's MagicDNS name.
 
 Comparisons are between canonical origins — scheme, host, and the port
 with the scheme's default folded away — so `https://gw:443` and
@@ -291,6 +291,29 @@ anything: `/api/tailscale/connect`, which starts a login and holds a
 tunnel open past the response, is `POST`-only, and its polling
 counterpart `/api/tailscale/status` reports a parked login URL without
 force-acquiring anything.
+
+Separately from the origin check, and before it, every request — reads
+included, on every route — must address the dashboard by one of the
+gateway's own names: a loopback name, an IP literal, the `public_url`
+host, a hostname given in `dashboard_listen`, or the tsnet node's
+MagicDNS name (bare, under `.ts.net`, or exactly as the control plane
+reported it, which is what covers a custom control plane's own base
+domain; until the control plane has reported it, the configured
+`tailscale.hostname` stands in). Anything else is refused with `421
+Misdirected Request` before it is
+attributed, authenticated or handled. The origin check cannot cover
+reads: a page on a name the attacker controls can rebind that name to
+the gateway's address and have an operator's browser `GET` the
+dashboard's JSON through it. The request leaves the operator's machine,
+so the tailnet path attributes the operator; it is same-origin to the
+browser, so the page reads the response. No origin header is wrong on
+such a request — only the `Host` is — so the `Host` is what has to be
+checked, on every method. A deployment that reaches the dashboard on
+some other name declares it with `public_url`; a proxy in front of the
+dashboard therefore has to forward the external `Host` (or the gateway
+has to be bound by the name the proxy rewrites it to), since a backend
+name the gateway has never heard of is indistinguishable from a rebound
+one.
 
 ### First-run root password
 
