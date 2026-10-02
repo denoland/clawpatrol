@@ -74,8 +74,17 @@ func csrfDenied(t *testing.T, rr *httptest.ResponseRecorder) {
 // stack behind it, whatever that stack then decided.
 func csrfNotDenied(t *testing.T, rr *httptest.ResponseRecorder) {
 	t.Helper()
-	if strings.Contains(rr.Body.String(), "CSRF request denied") {
-		t.Fatalf("status = %d body = %q: request was denied by csrfProtect, want pass-through", rr.Code, rr.Body.String())
+	// Every refusal csrfProtect authors, not just the one the
+	// state-changing path writes: a check that matched a single message
+	// would read a read-path denial as a pass-through.
+	for _, denial := range []string{
+		"CSRF request denied",
+		"read denied for unrecognized Host",
+		"cross-site read denied",
+	} {
+		if strings.Contains(rr.Body.String(), denial) {
+			t.Fatalf("status = %d body = %q: request was denied by csrfProtect, want pass-through", rr.Code, rr.Body.String())
+		}
 	}
 }
 
@@ -264,14 +273,21 @@ func TestCSRFExemptsHITLOperationStatusWithoutOrigin(t *testing.T) {
 	}
 }
 
-// GET is not state-changing, so the dashboard keeps rendering for a
-// cross-site navigation rather than breaking on the origin check.
-func TestCSRFIgnoresGETRequests(t *testing.T) {
+// A GET changes nothing, so the origin comparison the state-changing
+// path runs does not apply to one — but the read still has to name a
+// Host the gateway answers for. See TestCSRFRejectsRebindingReads for
+// the read surface, and TestCSRFAllowsCrossSiteNavigationToDashboard
+// for the navigation that must keep rendering.
+func TestCSRFGETSkipsTheOriginComparison(t *testing.T) {
 	w := newCSRFTestWebMux(t)
 	req := csrfTestRequest(http.MethodGet, "/api/hitl/pending", "")
-	req.Host = "rebound.evil.example"
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	csrfNotDenied(t, serveCSRF(w, req))
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := serveCSRF(w, req)
+	csrfNotDenied(t, rr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
 }
 
 func TestCSRFHostAllowlist(t *testing.T) {

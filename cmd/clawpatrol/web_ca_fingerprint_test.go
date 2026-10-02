@@ -22,6 +22,7 @@ func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 	cfg := &config.Gateway{
 		Settings: &config.GatewaySettings{
 			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+			PublicURL: "https://" + webTestGatewayHost,
 		},
 		Policy: &config.Policy{},
 	}
@@ -33,7 +34,7 @@ func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 	w := &webMux{
 		g:         g,
 		ts:        cfg.Join(),
-		publicURL: "https://gateway.example.test",
+		publicURL: "https://" + webTestGatewayHost,
 		sessions:  map[string]*oauthSession{},
 		onboard:   g.onboard,
 	}

@@ -143,6 +143,24 @@ type GatewaySettings struct {
 	// served on the WG netstack / tsnet stack at this port).
 	DashboardListen string `hcl:"dashboard_listen,optional"`
 
+	// DashboardHosts are additional Host header values the dashboard
+	// answers for, beyond the ones the gateway derives from itself: any
+	// IP literal, localhost, public_url's host, dashboard_listen's
+	// host, and the tsnet node's MagicDNS name. Every read of a gated
+	// route is held to that set, so a name the gateway serves on that
+	// none of those cover — a CNAME in front of the dashboard, a
+	// reverse proxy that rewrites Host to a backend name — has to be
+	// declared here or the read is refused. Entries are hostnames, with
+	// or without a port; the port is ignored.
+	//
+	// A proxy that rewrites Host takes on the check itself: once the
+	// name the browser asked for is gone, the gateway cannot tell one
+	// frontend name from another, so such a proxy must refuse the
+	// frontend Host values it does not recognise. One that passes the
+	// original Host through needs no entry here beyond the names it
+	// forwards.
+	DashboardHosts []string `hcl:"dashboard_hosts,optional"`
+
 	// PublicURL is the canonical externally-reachable gateway URL.
 	// Used in generated control-plane links such as join targets, OAuth
 	// redirect URIs, and (when public_url has a host but wireguard.endpoint
@@ -411,6 +429,10 @@ func (g *Gateway) SetPublicURL(s string) {
 // DashboardListen returns the configured dashboard HTTP bind
 // address, or empty string when unset.
 func (g *Gateway) DashboardListen() string { return g.settings().DashboardListen }
+
+// DashboardHosts returns the operator-declared extra Host values the
+// dashboard answers for.
+func (g *Gateway) DashboardHosts() []string { return g.settings().DashboardHosts }
 
 // DashboardConfigWrites reports whether dashboard-originated config
 // mutations are enabled for this gateway.
