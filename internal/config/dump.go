@@ -138,6 +138,9 @@ func dumpDefaults(d *Defaults) map[string]any {
 	if len(d.RelayAllowCIDRs) > 0 {
 		out["relay_allow_cidrs"] = d.RelayAllowCIDRs
 	}
+	if d.UnknownPeer != "" {
+		out["unknown_peer"] = d.UnknownPeer
+	}
 	if d.LLMFailMode != "" {
 		out["llm_fail_mode"] = d.LLMFailMode
 	}

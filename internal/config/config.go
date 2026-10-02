@@ -109,7 +109,7 @@ type Gateway struct {
 	Settings *GatewaySettings `hcl:"gateway,block"`
 
 	// Defaults holds the optional `defaults { ... }` block with the
-	// policy defaults (unknown_host, relay_*, llm_*, human_*). nil when the
+	// policy defaults (unknown_host, unknown_peer, relay_*, llm_*, human_*). nil when the
 	// block is absent — every field has a built-in default.
 	Defaults *Defaults `hcl:"defaults,block"`
 
@@ -389,6 +389,22 @@ type Defaults struct {
 	// where an internal subnet an agent is meant to reach through the
 	// relay goes, rather than turning the policy off wholesale.
 	RelayAllowCIDRs []string `hcl:"relay_allow_cidrs,optional"`
+
+	// UnknownPeer controls the profile a peer with no devices row is
+	// served under. "default_profile" (the default) serves it under the
+	// gateway's default profile, so an un-onboarded tailnet member that
+	// routes through the gateway is handled by whatever that profile
+	// declares — including the credentials it injects. "no_profile"
+	// serves it under a reserved profile that declares nothing, so no
+	// endpoint matches it and no credential is reachable until the peer
+	// is onboarded.
+	//
+	// It withholds the profile, not the network: what happens to
+	// traffic that matches no endpoint is still unknown_host's
+	// decision, and the transparent relay still carries a destination
+	// no endpoint claimed. Set unknown_host = "deny" alongside it for a
+	// peer that should reach nothing at all.
+	UnknownPeer string `hcl:"unknown_peer,optional"`
 
 	// LLMFailMode controls requests guarded by an llm_approver when
 	// the judge is unavailable: transport error or timeout, 429 or

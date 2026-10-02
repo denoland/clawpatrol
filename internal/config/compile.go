@@ -21,6 +21,7 @@ import (
 type CompiledPolicy struct {
 	// Policy fallbacks (mirrored from the top-level Gateway fields).
 	UnknownHost string
+	UnknownPeer string
 	LLMFailMode string
 
 	// RelayDestinations and RelayAllowCIDRs bound the agent-chosen
@@ -306,8 +307,12 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateUnknownPeer(d.UnknownPeer); err != nil {
+		return nil, err
+	}
 	cp := &CompiledPolicy{
 		UnknownHost:       d.UnknownHost,
+		UnknownPeer:       d.UnknownPeer,
 		RelayDestinations: d.RelayDestinations,
 		RelayAllowCIDRs:   allowCIDRs,
 		LLMFailMode:       d.LLMFailMode,
@@ -478,7 +483,57 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		cp.Profiles[name] = profile
 	}
 
+	if err := compileUnknownPeerProfile(cp); err != nil {
+		return nil, err
+	}
+
 	return cp, nil
+}
+
+// UnknownPeerNoProfile is the defaults.unknown_peer value that serves an
+// un-onboarded peer under no profile at all.
+const UnknownPeerNoProfile = "no_profile"
+
+// UnknownPeerEmptyProfile is the profile name profileFor hands a peer
+// that has no devices row when defaults.unknown_peer = "no_profile". It
+// is registered as a real but empty CompiledProfile, and the
+// registration is what makes it withhold: an unregistered name means
+// "no peer-to-profile mapping established" to HostEndpoint and
+// pickEndpointForProfile, and both answer that by searching every
+// profile instead. A registered profile that declares no endpoint and no
+// credential resolves to nothing.
+//
+// The NUL byte puts the name out of normal reach — nobody writes one in
+// a config file by accident — but HCL can express it as \u0000 in a
+// quoted label, so compileUnknownPeerProfile rejects a policy that
+// declares it rather than relying on the spelling.
+const UnknownPeerEmptyProfile = "\x00unknown-peer"
+
+// IsReservedProfile reports whether name is one the compiler owns rather
+// than one an operator declared. A reserved profile exists only so
+// dispatch resolves it; it is not a profile to list, emit, or write into
+// generated HCL.
+func IsReservedProfile(name string) bool {
+	return name == UnknownPeerEmptyProfile
+}
+
+// compileUnknownPeerProfile registers UnknownPeerEmptyProfile when the
+// policy asks for it, and refuses a policy that declares the name
+// itself.
+func compileUnknownPeerProfile(cp *CompiledPolicy) error {
+	if _, declared := cp.Profiles[UnknownPeerEmptyProfile]; declared {
+		return fmt.Errorf("profile %q is reserved for defaults.unknown_peer", UnknownPeerEmptyProfile)
+	}
+	if cp.UnknownPeer != UnknownPeerNoProfile {
+		return nil
+	}
+	cp.Profiles[UnknownPeerEmptyProfile] = &CompiledProfile{
+		Name:                UnknownPeerEmptyProfile,
+		Endpoints:           map[string]*CompiledEndpoint{},
+		HostIndex:           map[string]*CompiledEndpoint{},
+		EndpointCredentials: map[string][]*CompiledCredential{},
+	}
+	return nil
 }
 
 // UnknownInspectEndpoint is the compiled name of endpoint "https" "unknown".
@@ -513,6 +568,15 @@ func parseRelayAllowCIDRs(values []string) ([]netip.Prefix, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func validateUnknownPeer(value string) error {
+	switch value {
+	case "", "default_profile", UnknownPeerNoProfile:
+		return nil
+	default:
+		return fmt.Errorf("defaults.unknown_peer %q must be default_profile or no_profile", value)
+	}
 }
 
 func validateUnknownHost(value string) error {

@@ -9,6 +9,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/match"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // testGatewayPrefix wraps inline test fixtures with a minimal valid
@@ -738,5 +739,86 @@ profile "default" { credentials = [] }
 `)
 	if err == nil || !strings.Contains(err.Error(), "host bits") {
 		t.Fatalf("err = %v, want a host-bits complaint", err)
+	}
+}
+
+func TestCompileUnknownPeerNoProfileRegistersEmptyProfile(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_peer = "no_profile" }
+endpoint "https" "api" { hosts = ["api.example.com"] }
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownPeer != config.UnknownPeerNoProfile {
+		t.Fatalf("UnknownPeer = %q", cp.UnknownPeer)
+	}
+	// Registered — an unregistered name means "no mapping established"
+	// to the dispatcher, which answers it by searching every profile.
+	prof, ok := cp.Profiles[config.UnknownPeerEmptyProfile]
+	if !ok {
+		t.Fatal("empty profile not registered")
+	}
+	if len(prof.Endpoints) != 0 || len(prof.HostIndex) != 0 || len(prof.HostPatterns) != 0 {
+		t.Fatalf("empty profile declares something: %+v", prof)
+	}
+	if len(prof.Credentials) != 0 || len(prof.EndpointCredentials) != 0 {
+		t.Fatalf("empty profile carries credentials: %+v", prof)
+	}
+	// And it resolves to nothing, which is the point.
+	if ep := runtime.HostEndpoint(cp, config.UnknownPeerEmptyProfile, "api.example.com"); ep != nil {
+		t.Fatalf("empty profile resolved %q to %s", "api.example.com", ep.Name)
+	}
+}
+
+func TestCompileUnknownPeerDefaultLeavesProfilesAlone(t *testing.T) {
+	cp, err := loadCompile(t, `
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, ok := cp.Profiles[config.UnknownPeerEmptyProfile]; ok {
+		t.Fatal("empty profile registered without defaults.unknown_peer = no_profile")
+	}
+}
+
+func TestCompileUnknownPeerInvalid(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_peer = "none" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown_peer") {
+		t.Fatalf("err = %v, want invalid unknown_peer", err)
+	}
+}
+
+// The reserved name is out of normal reach but HCL can spell a NUL as
+// \u0000, so the guard is what keeps a policy from declaring it — not
+// the spelling.
+func TestCompileUnknownPeerRejectsDeclaredReservedProfile(t *testing.T) {
+	_, err := loadCompile(t, `
+profile "\u0000unknown-peer" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "reserved for defaults.unknown_peer") {
+		t.Fatalf("err = %v, want the reserved-name guard", err)
+	}
+}
+
+// no_profile withholds the profile, not the network. A destination no
+// endpoint claims is still unknown_host's decision, so the two settings
+// are independent and the test states that rather than leaving a reader
+// to assume no_profile denies traffic.
+func TestCompileUnknownPeerNoProfileLeavesUnknownHostAlone(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_peer = "no_profile" }
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownHost != "" {
+		t.Fatalf("UnknownHost = %q, want it untouched", cp.UnknownHost)
 	}
 }

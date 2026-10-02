@@ -505,9 +505,11 @@ func (g *Gateway) profileFor(peerIP string) string {
 		//   1. Same Tailscale node, different address family — whole-
 		//      machine tsnet traffic arrives on the peer's IPv6 ULA
 		//      (fd7a:115c:a1e0::/48) but only the IPv4 is registered.
-		//   2. Same logical host, new Tailscale node — the host rejoined
-		//      the tailnet and got a fresh 100.x; without coalescing the
-		//      dashboard sprouts a phantom row per rejoin.
+		//   2. Same Tailscale node, address moved — the control plane
+		//      reassigned the node's address, so the device row holds
+		//      one the node no longer has. A host that rejoins as a
+		//      *new* node is a new node and is not coalesced; it gets
+		//      its own row.
 		//
 		// ClaimAliasResolve guards against re-running WhoIs per packet
 		// for peers that have no matching device.
@@ -519,21 +521,52 @@ func (g *Gateway) profileFor(peerIP string) string {
 			}
 		}
 	}
+	return g.unknownPeerProfile()
+}
+
+// unknownPeerProfile is the profile a peer with no devices row and no
+// resolvable alias is served under. defaults.unknown_peer picks between
+// the gateway's default profile and a profile that declares nothing.
+//
+// Returning "" here would withhold nothing: an unregistered profile name
+// means "single-tenant, no mapping established" to HostEndpoint and
+// pickEndpointForProfile, which answer it by searching every declared
+// profile — so an empty name reaches strictly more endpoints than the
+// default profile does. The no_profile arm names a registered but empty
+// profile instead, which resolves to no endpoint at all.
+func (g *Gateway) unknownPeerProfile() string {
+	if policy := g.Policy(); policy != nil && policy.UnknownPeer == config.UnknownPeerNoProfile {
+		return config.UnknownPeerEmptyProfile
+	}
 	return defaultProfileName(g.cfg.Load().Policy)
 }
 
 // resolveTsnetAlias does a one-shot tsnet WhoIs for peerIP and, on a
 // match, registers an alias from peerIP onto the existing device IP.
 // Returns the canonical device IP on success, or "" when no match is
-// found. Both passes (address-match and hostname-match) only consider
-// IPs that already have a devices row, so an unknown tailnet peer with
-// no devices entry can never accidentally absorb traffic from another
+// found. Both passes (address-match and node-match) only consider IPs
+// that already have a devices row, so an unknown tailnet peer with no
+// devices entry can never accidentally absorb traffic from another
 // peer.
 //
-// Hostname matches require exactly one devices row with that name (see
-// UniqueIPForHostname) so ephemeral pools that share a hostname — e.g.
-// the clawpatrol-run-* nodes Tailscale auto-suffixes on collision — are
-// never collapsed into one another.
+// An alias is only ever derived from the identity the control plane
+// issues the node — never from its name. A name is self-asserted
+// (`tailscale set --hostname`) and an ephemeral node releases it when it
+// goes offline, so any tailnet member able to route through the gateway
+// could otherwise claim a privileged agent's name and inherit its
+// profile along with the credentials that profile injects.
+//
+// The address pass is the primary one and carries the full statement:
+// the node names the device's IP among its own addresses, so the two
+// addresses belong to one node. It is also where a devices row written
+// before ts_node_id existed acquires its binding — but only a row that
+// has none. A row already bound elsewhere has had its address moved on
+// to another node, which is what IP reuse looks like, and the fold is
+// refused rather than rebinding the row (see FoldAliasOntoDevice).
+//
+// The node pass covers the case the address pass cannot see — the row
+// holds an address the node no longer has — and requires exactly one
+// devices row bound to the node (see UniqueIPForNodeID).
 func (g *Gateway) resolveTsnetAlias(peerIP string) string {
 	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
 		return ""
@@ -544,25 +577,17 @@ func (g *Gateway) resolveTsnetAlias(peerIP string) string {
 	if err != nil || w == nil || w.Node == nil {
 		return ""
 	}
+	nodeID := string(w.Node.StableID)
 	for _, addr := range w.Node.Addresses {
 		ip := addr.Addr().String()
 		if ip == peerIP {
 			continue
 		}
-		if g.onboard.HasDevice(ip) {
-			g.onboard.RegisterIPAlias(peerIP, ip)
+		if g.onboard.FoldAliasOntoDevice(peerIP, ip, nodeID) {
 			return ip
 		}
 	}
-	hostname := w.Node.ComputedName
-	if hostname == "" && w.Node.Hostinfo.Valid() {
-		hostname = w.Node.Hostinfo.Hostname()
-	}
-	if canonical := g.onboard.UniqueIPForHostname(hostname); canonical != "" && canonical != peerIP {
-		g.onboard.RegisterIPAlias(peerIP, canonical)
-		return canonical
-	}
-	return ""
+	return g.onboard.FoldAliasOntoNode(peerIP, nodeID)
 }
 
 // seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
@@ -571,6 +596,13 @@ func (g *Gateway) resolveTsnetAlias(peerIP string) string {
 // the fd7a:115c:a1e0::/48 ULA rather than the 100.x IPv4 — without
 // the alias profileFor falls back to "default" and dispatch misses
 // every endpoint declared on the actual profile.
+//
+// Both callers reach here holding an approval for peerIP — the device
+// code the operator approved, or the api-token minted against it — so
+// the node WhoIs reports for that address is taken as the device's, and
+// recording it is what lets a later address change be folded back onto
+// the row. The approval is what carries this, not the address: the
+// claim and register calls both take the IP as a parameter.
 func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
 		return
@@ -581,6 +613,7 @@ func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 	if err != nil || w == nil || w.Node == nil {
 		return
 	}
+	g.onboard.SetNodeID(peerIP, string(w.Node.StableID))
 	for _, addr := range w.Node.Addresses {
 		ip := addr.Addr()
 		if !ip.Is6() {

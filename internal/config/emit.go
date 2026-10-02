@@ -286,6 +286,9 @@ func emitDefaultsBlock(body *hclwrite.Body, d *Defaults) {
 	if len(d.RelayAllowCIDRs) > 0 {
 		b.SetAttributeValue("relay_allow_cidrs", StringListVal(d.RelayAllowCIDRs))
 	}
+	if d.UnknownPeer != "" {
+		b.SetAttributeValue("unknown_peer", cty.StringVal(d.UnknownPeer))
+	}
 	if d.LLMFailMode != "" {
 		b.SetAttributeValue("llm_fail_mode", cty.StringVal(d.LLMFailMode))
 	}

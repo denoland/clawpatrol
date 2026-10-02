@@ -269,3 +269,32 @@ func TestTsnetRegisterPromotesSeededPlaceholder(t *testing.T) {
 		t.Errorf("devices row for 100.64.0.7 missing after register promotion")
 	}
 }
+
+// The peer api-token proves an approval, not ownership of the address in
+// the query string. On a token already bound to a real address, an `ip=`
+// that disagrees must not be recorded — seedTsnetIPv6Alias binds a node
+// to it, which writes a devices row.
+func TestTsnetRegisterIgnoresForeignIPOnBoundToken(t *testing.T) {
+	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	const ownIP = "100.1.1.1"
+	const foreignIP = "100.2.2.2"
+
+	token, err := mintAndPersistPeerAPIToken(w.g.db, ownIP)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/peer/tsnet/register?ip="+foreignIP, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	w.handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if w.g.onboard.HasDevice(foreignIP) {
+		t.Fatalf("a devices row was created for %s, which the caller only named", foreignIP)
+	}
+	if got := w.g.onboard.NodeIDForIP(foreignIP); got != "" {
+		t.Fatalf("NodeIDForIP(%s) = %q, want nothing recorded", foreignIP, got)
+	}
+}

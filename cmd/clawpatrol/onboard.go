@@ -88,7 +88,16 @@ type onboardRegistry struct {
 	extV4ByIP        map[string]string
 	extV6ByIP        map[string]string
 	canonicalByAlias map[string]string // alias IP → canonical device IP (e.g. fd7a:115c:a1e0::… → 100.x.x.x)
-	knownDeviceIPs   map[string]bool   // all IPs present in devices table
+	// nodeIDByIP holds the Tailscale StableID of the node each device
+	// IP belongs to. It is the only identity an alias may be derived
+	// from: a hostname is self-asserted by the node (`tailscale set
+	// --hostname`) and freed again when an ephemeral node goes
+	// offline, so matching on one lets any tailnet member that can
+	// reach the gateway claim a privileged device's name and inherit
+	// its profile. A StableID is issued by the control plane and
+	// cannot be asserted by the node.
+	nodeIDByIP     map[string]string
+	knownDeviceIPs map[string]bool // all IPs present in devices table
 	// resolveTriedAt caches the last time we asked tsnet WhoIs whether an
 	// unknown peer IP corresponds to a known device. Without it, traffic
 	// from any IP that genuinely has no devices-table mapping would
@@ -107,6 +116,7 @@ func newOnboardRegistry() *onboardRegistry {
 		extV4ByIP:        map[string]string{},
 		extV6ByIP:        map[string]string{},
 		canonicalByAlias: map[string]string{},
+		nodeIDByIP:       map[string]string{},
 		knownDeviceIPs:   map[string]bool{},
 		resolveTriedAt:   map[string]time.Time{},
 	}
@@ -189,6 +199,10 @@ func (r *onboardRegistry) ProfileForIP(ip string) string {
 func (r *onboardRegistry) RegisterIPAlias(alias, canonical string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.registerIPAliasLocked(alias, canonical)
+}
+
+func (r *onboardRegistry) registerIPAliasLocked(alias, canonical string) {
 	if p := r.profileByIP[canonical]; p != "" {
 		r.profileByIP[alias] = p
 	}
@@ -264,7 +278,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	rows, err := db.Query("SELECT id, name, profile, external_ipv4, external_ipv6 FROM devices")
+	rows, err := db.Query("SELECT id, name, profile, external_ipv4, external_ipv6, ts_node_id FROM devices")
 	if err != nil {
 		return err
 	}
@@ -276,8 +290,9 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 			profile sql.NullString
 			v4      sql.NullString
 			v6      sql.NullString
+			nodeID  sql.NullString
 		)
-		if err := rows.Scan(&ip, &name, &profile, &v4, &v6); err != nil {
+		if err := rows.Scan(&ip, &name, &profile, &v4, &v6, &nodeID); err != nil {
 			return err
 		}
 		r.knownDeviceIPs[ip] = true
@@ -292,6 +307,9 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 		}
 		if v6.Valid {
 			r.extV6ByIP[ip] = v6.String
+		}
+		if nodeID.Valid {
+			r.nodeIDByIP[ip] = nodeID.String
 		}
 	}
 	return rows.Err()
@@ -325,7 +343,9 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 			if _, owner := r.ownerByIP[ip]; !owner {
 				if _, v4 := r.extV4ByIP[ip]; !v4 {
 					if _, v6 := r.extV6ByIP[ip]; !v6 {
-						return
+						if _, nid := r.nodeIDByIP[ip]; !nid {
+							return
+						}
 					}
 				}
 			}
@@ -333,17 +353,18 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 	}
 	now := time.Now().UnixNano()
 	_, _ = r.db.Exec(`
-		INSERT INTO devices (id, name, profile, external_ipv4, external_ipv6, created_ns, last_seen_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO devices (id, name, profile, external_ipv4, external_ipv6, ts_node_id, created_ns, last_seen_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name          = excluded.name,
 			profile       = excluded.profile,
 			external_ipv4 = excluded.external_ipv4,
 			external_ipv6 = excluded.external_ipv6,
+			ts_node_id    = excluded.ts_node_id,
 			last_seen_ns  = excluded.last_seen_ns
 	`, ip, nullStr(r.hostnameByIP[ip]), nullStr(r.profileByIP[ip]),
 		nullStr(r.extV4ByIP[ip]), nullStr(r.extV6ByIP[ip]),
-		now, now)
+		nullStr(r.nodeIDByIP[ip]), now, now)
 	r.knownDeviceIPs[ip] = true
 }
 
@@ -444,21 +465,137 @@ func (r *onboardRegistry) IPForHostname(owner, hostname string) string {
 	return ""
 }
 
-// UniqueIPForHostname returns a device IP iff exactly one devices row has
-// this hostname. Used to coalesce a tailnet peer that has rejoined under
-// a fresh tailnet IP back onto its existing device row. Returns "" on
-// collisions so we never silently merge two distinct hosts that happen
-// to share a hostname (e.g. ephemeral clawpatrol-run nodes that all
-// register as "clawpatrol-run").
-func (r *onboardRegistry) UniqueIPForHostname(hostname string) string {
-	if hostname == "" {
+// SetNodeID binds a device IP to the Tailscale node that owns it,
+// replacing any binding already there. The value is a
+// control-plane-issued StableID, and overwriting is reserved for the
+// onboarding calls that carry an approval for this IP — a device code,
+// or the api-token minted against it — which is the operator saying
+// this IP is now that node's.
+func (r *onboardRegistry) SetNodeID(ip, nodeID string) {
+	if ip == "" || nodeID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setNodeIDLocked(ip, nodeID)
+}
+
+func (r *onboardRegistry) setNodeIDLocked(ip, nodeID string) {
+	if r.nodeIDByIP[ip] == nodeID {
+		return
+	}
+	r.nodeIDByIP[ip] = nodeID
+	r.upsertLocked(ip)
+}
+
+// FoldAliasOntoDevice records alias as another address of the device at
+// canonical, and binds that device to nodeID. Reports whether the fold
+// happened.
+//
+// The whole decision is one critical section, because it is three
+// questions about the same row — does it exist, which node is it, take
+// it — and a delete landing between them would alias onto a row that no
+// longer exists or bind one that has just been re-created.
+//
+// The binding is set once. A row already bound to a different node is a
+// row whose address has moved on, which is what IP reuse after a device
+// is deleted looks like; folding onto it would hand the new node the old
+// device's profile, so the fold is refused instead.
+//
+// An unbound row — one written before ts_node_id existed — has no such
+// protection on its first observation: it is bound to whichever node
+// the caller's WhoIs names holding canonical, and after a
+// delete-and-reuse that is a different node. This inherits what the
+// devices table already assumes, that the row's IP is the device, and
+// it is the same statement the row's profile was already being served
+// on. Every observation after the first is guarded.
+func (r *onboardRegistry) FoldAliasOntoDevice(alias, canonical, nodeID string) bool {
+	if alias == "" || canonical == "" || alias == canonical {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.knownDeviceIPs[canonical] {
+		return false
+	}
+	if bound := r.nodeIDByIP[canonical]; bound != "" && bound != nodeID {
+		return false
+	}
+	if nodeID != "" {
+		r.setNodeIDLocked(canonical, nodeID)
+	}
+	r.registerIPAliasLocked(alias, canonical)
+	return true
+}
+
+// NodeIDForIP returns the Tailscale node bound to a device IP, or ""
+// when none is recorded.
+func (r *onboardRegistry) NodeIDForIP(ip string) string {
+	if ip == "" {
 		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.nodeIDByIP[ip]
+}
+
+// FoldAliasOntoNode records alias as another address of the one device
+// bound to nodeID, and reports whether it did. Returns false when no row
+// is bound to the node, when more than one is, or when the only match is
+// alias itself.
+//
+// One critical section for the same reason FoldAliasOntoDevice has one:
+// looking the row up and then aliasing onto it are two questions about
+// the same row, and a delete landing between them would install an alias
+// pointing at a row that no longer exists.
+func (r *onboardRegistry) FoldAliasOntoNode(alias, nodeID string) string {
+	if alias == "" || nodeID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	canonical := r.uniqueIPForNodeIDLocked(nodeID)
+	if canonical == "" || canonical == alias {
+		return ""
+	}
+	r.registerIPAliasLocked(alias, canonical)
+	return canonical
+}
+
+// UniqueIPForNodeID returns a device IP iff exactly one devices row is
+// bound to this Tailscale node. Used to coalesce a tailnet peer that
+// reaches the gateway from an address its device row does not carry —
+// the control plane reassigned the node's address, or it arrived on a
+// family the row never recorded — back onto that row.
+//
+// The identity is deliberately the node and not its name: a hostname is
+// whatever the node claims (`tailscale set --hostname`), and an
+// ephemeral node frees its name when it goes offline, so a name match
+// would let any tailnet member that can route through the gateway take
+// over a privileged device's profile and the credentials bound to it.
+//
+// A row with no node recorded matches nothing, which is also what makes
+// rows written before ts_node_id existed safe to read: they cannot
+// absorb a peer until the node behind them is observed.
+//
+// Returns "" on collisions, so two rows that somehow share a node are
+// never merged into one another.
+func (r *onboardRegistry) UniqueIPForNodeID(nodeID string) string {
+	if nodeID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.uniqueIPForNodeIDLocked(nodeID)
+}
+
+func (r *onboardRegistry) uniqueIPForNodeIDLocked(nodeID string) string {
+	if nodeID == "" {
+		return ""
+	}
 	found := ""
-	for ip, hn := range r.hostnameByIP {
-		if hn != hostname {
+	for ip, id := range r.nodeIDByIP {
+		if id != nodeID {
 			continue
 		}
 		if !r.knownDeviceIPs[ip] {
@@ -506,6 +643,8 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.profileByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
+	delete(r.nodeIDByIP, ip)
+	delete(r.knownDeviceIPs, ip)
 	// Drop the IP from the alias graph too — both as an alias and as a
 	// canonical. Otherwise a stale alias outlives the device and, after
 	// IP reuse, AssignProfile's alias fan-out could re-stamp a profile
@@ -739,9 +878,15 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// doesn't have to pick it manually. Stored as the session-level
 	// suggestion; the dashboard's approve call can still override.
 	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
-	// `clawpatrol join --whole-machine` → persistent tailnet node
-	// (auth key minted with ephemeral=false). Default = per-process
-	// tsnet (ephemeral=true), matching macOS NE behavior.
+	// `clawpatrol join --whole-machine` → the client installs a
+	// persistent tailnet node (system tailscale on Linux, NE-routed on
+	// macOS) rather than per-process tsnet. It selects which transport
+	// the client sets up; it does not select the key's lifetime. Every
+	// key the Tailscale onboarder mints is non-ephemeral (see
+	// tailscaleOnboarder.MintKey), so no node it registers releases its
+	// MagicDNS name when it goes offline — which is what keeps a
+	// retired node's name from being claimed by another while its
+	// devices row still exists.
 	wm := r.URL.Query().Get("whole_machine") == "1"
 	if hn != "" || prof != "" || wm {
 		w.onboard.mu.Lock()
@@ -1172,7 +1317,16 @@ func (w *webMux) apiPeerTsnetRegister(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
-	if strings.HasPrefix(parentIP, tsnetPlaceholderPrefix) {
+	// The token proves an approval, not ownership of the address in the
+	// query string. Promotion is the one case where the two differ
+	// legitimately: the token is still bound to the placeholder, and
+	// tsnetIP is the real address the daemon is reporting for itself.
+	// On every later call the token already carries the real address, so
+	// a tsnetIP that disagrees with it is somebody naming an address
+	// that is not theirs — and seedTsnetIPv6Alias records a node
+	// binding, which would write a devices row for it.
+	promoting := strings.HasPrefix(parentIP, tsnetPlaceholderPrefix)
+	if promoting {
 		// First call — promote the synthetic placeholder to a real
 		// devices row keyed on the tailnet IP. Rebind the api-token,
 		// drop the placeholder from in-memory state, carry across the
@@ -1204,7 +1358,11 @@ func (w *webMux) apiPeerTsnetRegister(rw http.ResponseWriter, r *http.Request) {
 	}
 	// Map the daemon's IPv6 ULA too — tsnet traffic from this peer
 	// frequently arrives on fd7a:115c:a1e0::/48 rather than the 100.x.
-	w.g.seedTsnetIPv6Alias(tsnetIP)
+	if promoting || tsnetIP == parentIP {
+		w.g.seedTsnetIPv6Alias(tsnetIP)
+	} else {
+		log.Printf("peer tsnet register: ignoring ip=%s for token bound to %s", tsnetIP, parentIP)
+	}
 	rw.WriteHeader(http.StatusNoContent)
 }
 

@@ -294,6 +294,11 @@ func generatedProfileNames(policy *config.CompiledPolicy) []string {
 	}
 	names := make([]string, 0, len(policy.Profiles))
 	for name := range policy.Profiles {
+		// The compiler's own profiles are not names an operator can
+		// write back into a config file.
+		if config.IsReservedProfile(name) {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
