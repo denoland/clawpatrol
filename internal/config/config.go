@@ -109,7 +109,7 @@ type Gateway struct {
 	Settings *GatewaySettings `hcl:"gateway,block"`
 
 	// Defaults holds the optional `defaults { ... }` block with the
-	// policy defaults (unknown_host, llm_*, human_*). nil when the
+	// policy defaults (unknown_host, relay_*, llm_*, human_*). nil when the
 	// block is absent — every field has a built-in default.
 	Defaults *Defaults `hcl:"defaults,block"`
 
@@ -361,6 +361,34 @@ type Defaults struct {
 	// any endpoint. "passthrough" relays it; "deny" closes it;
 	// "inspect" MITMs it as the declared https.unknown endpoint.
 	UnknownHost string `hcl:"unknown_host,optional"`
+
+	// RelayDestinations bounds the addresses the gateway will dial on an
+	// agent's behalf when no endpoint claims the destination — the
+	// transparent TCP and UDP relays, and the SNI passthrough.
+	//
+	// "public" (the default) refuses the unspecified address and the
+	// rest of 0.0.0.0/8, loopback, link-local (where a cloud metadata
+	// service lives), multicast, the private ranges, the broadcast
+	// address, and an address scoped to one of this host's interfaces.
+	// Carrier-grade NAT is refused unless a tailnet is running, since
+	// 100.64.0.0/10 is also a tailnet's whole IPv4 space. An address
+	// that encodes another one — 4via6, NAT64, 6to4, the deprecated
+	// ::a.b.c.d form — is judged on the address it encodes; Teredo is
+	// refused outright because its encoding is obfuscated. It is a list
+	// of refused classes, not a definition of the public internet:
+	// documentation and benchmark ranges, Class E, IPv6 site-local, and
+	// a cloud provider's internal services in public address space are
+	// not refused.
+	//
+	// "any" dials whatever the agent names, the gateway's own networks
+	// included.
+	RelayDestinations string `hcl:"relay_destinations,optional"`
+
+	// RelayAllowCIDRs are destinations relay_destinations = "public"
+	// admits anyway, consulted ahead of every refused class. This is
+	// where an internal subnet an agent is meant to reach through the
+	// relay goes, rather than turning the policy off wholesale.
+	RelayAllowCIDRs []string `hcl:"relay_allow_cidrs,optional"`
 
 	// LLMFailMode controls requests guarded by an llm_approver when
 	// the judge is unavailable: transport error or timeout, 429 or

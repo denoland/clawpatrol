@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -19,8 +20,15 @@ import (
 // Build with Compile after Load.
 type CompiledPolicy struct {
 	// Policy fallbacks (mirrored from the top-level Gateway fields).
-	UnknownHost    string
-	LLMFailMode    string
+	UnknownHost string
+	LLMFailMode string
+
+	// RelayDestinations and RelayAllowCIDRs bound the agent-chosen
+	// dial. The prefixes are parsed here so a typo is a config error
+	// at load rather than a silently inert allowance at dial time.
+	RelayDestinations string
+	RelayAllowCIDRs   []netip.Prefix
+
 	LLMCacheTTL    int
 	HumanTimeout   int
 	HumanOnTimeout string
@@ -291,18 +299,27 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	if err := validateUnknownHost(d.UnknownHost); err != nil {
 		return nil, err
 	}
+	if err := validateRelayDestinations(d.RelayDestinations); err != nil {
+		return nil, err
+	}
+	allowCIDRs, err := parseRelayAllowCIDRs(d.RelayAllowCIDRs)
+	if err != nil {
+		return nil, err
+	}
 	cp := &CompiledPolicy{
-		UnknownHost:    d.UnknownHost,
-		LLMFailMode:    d.LLMFailMode,
-		LLMCacheTTL:    d.LLMCacheTTL,
-		HumanTimeout:   d.HumanTimeout,
-		HumanOnTimeout: d.HumanOnTimeout,
-		DashboardURL:   gw.PublicURL(),
-		Profiles:       map[string]*CompiledProfile{},
-		Endpoints:      map[string]*CompiledEndpoint{},
-		Tunnels:        map[string]*CompiledTunnel{},
-		Approvers:      p.Approvers,
-		Credentials:    p.Credentials,
+		UnknownHost:       d.UnknownHost,
+		RelayDestinations: d.RelayDestinations,
+		RelayAllowCIDRs:   allowCIDRs,
+		LLMFailMode:       d.LLMFailMode,
+		LLMCacheTTL:       d.LLMCacheTTL,
+		HumanTimeout:      d.HumanTimeout,
+		HumanOnTimeout:    d.HumanOnTimeout,
+		DashboardURL:      gw.PublicURL(),
+		Profiles:          map[string]*CompiledProfile{},
+		Endpoints:         map[string]*CompiledEndpoint{},
+		Tunnels:           map[string]*CompiledTunnel{},
+		Approvers:         p.Approvers,
+		Credentials:       p.Credentials,
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve
@@ -466,6 +483,37 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 
 // UnknownInspectEndpoint is the compiled name of endpoint "https" "unknown".
 const UnknownInspectEndpoint = "unknown"
+
+func validateRelayDestinations(value string) error {
+	switch value {
+	case "", "public", "any":
+		return nil
+	default:
+		return fmt.Errorf("defaults.relay_destinations %q must be public or any", value)
+	}
+}
+
+// parseRelayAllowCIDRs turns the declared prefixes into netip form. A
+// prefix is required to be in masked form — 10.0.0.0/8, not 10.1.2.3/8
+// — because the unmasked spelling reads as a host address and covers
+// the whole block, which is not what the operator who wrote it means.
+func parseRelayAllowCIDRs(values []string) ([]netip.Prefix, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make([]netip.Prefix, 0, len(values))
+	for _, raw := range values {
+		p, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("defaults.relay_allow_cidrs %q: %w", raw, err)
+		}
+		if p.Masked() != p {
+			return nil, fmt.Errorf("defaults.relay_allow_cidrs %q has host bits set; write it as %s", raw, p.Masked())
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
 
 func validateUnknownHost(value string) error {
 	switch value {

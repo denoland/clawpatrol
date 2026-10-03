@@ -683,3 +683,60 @@ profile "default" { credentials = [] }
 		t.Fatalf("disabled rule on https.unknown must not require inspect: %v", err)
 	}
 }
+
+func TestCompileRelayDestinations(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults {
+  relay_destinations = "any"
+  relay_allow_cidrs  = ["10.20.0.0/16", "fd00:1234::/32"]
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.RelayDestinations != "any" {
+		t.Fatalf("RelayDestinations = %q", cp.RelayDestinations)
+	}
+	if len(cp.RelayAllowCIDRs) != 2 {
+		t.Fatalf("RelayAllowCIDRs = %v, want 2 prefixes", cp.RelayAllowCIDRs)
+	}
+	if got := cp.RelayAllowCIDRs[0].String(); got != "10.20.0.0/16" {
+		t.Fatalf("RelayAllowCIDRs[0] = %q", got)
+	}
+}
+
+func TestCompileRelayDestinationsInvalid(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { relay_destinations = "private" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "relay_destinations") {
+		t.Fatalf("err = %v, want invalid relay_destinations", err)
+	}
+}
+
+// A malformed prefix has to be a load error. A prefix that only fails
+// to parse at dial time would be a silently inert allowance, which
+// reads in the config file as if it were in force.
+func TestCompileRelayAllowCIDRsRejectsMalformed(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { relay_allow_cidrs = ["10.20.0.0"] }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "relay_allow_cidrs") {
+		t.Fatalf("err = %v, want invalid relay_allow_cidrs", err)
+	}
+}
+
+// An unmasked prefix reads as a host address but covers the whole
+// block, which is not what the operator who wrote it means.
+func TestCompileRelayAllowCIDRsRejectsHostBits(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { relay_allow_cidrs = ["10.20.1.3/16"] }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "host bits") {
+		t.Fatalf("err = %v, want a host-bits complaint", err)
+	}
+}
