@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -158,14 +159,20 @@ func TestRelayDestAnyAllowsEverything(t *testing.T) {
 // classified rather than at the name.
 type recordingDialer struct {
 	asked []string
+	// deadlines is the context deadline each attempt was handed, so a
+	// test can tell a per-address budget from a shared one.
+	deadlines []time.Time
 }
 
 func (d *recordingDialer) Dial(network, address string) (net.Conn, error) {
 	return d.DialContext(context.Background(), network, address)
 }
 
-func (d *recordingDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
+func (d *recordingDialer) DialContext(ctx context.Context, _, address string) (net.Conn, error) {
 	d.asked = append(d.asked, address)
+	if dl, ok := ctx.Deadline(); ok {
+		d.deadlines = append(d.deadlines, dl)
+	}
 	return nil, fmt.Errorf("recordingDialer does not connect")
 }
 
@@ -625,5 +632,40 @@ func TestRelayDestRefusesThisNetworkAndBroadcast(t *testing.T) {
 				t.Fatalf("relayDestAllowed(%s) = nil, want a refusal", raw)
 			}
 		})
+	}
+}
+
+// A name answering with two allowed addresses has each of them tried, in
+// the order the resolver gave them and as literals, and each attempt is
+// handed its own slice of the dial budget rather than the whole of it —
+// so a first address that black-holes cannot leave the second untried.
+// With one shared deadline both attempts would carry the full budget.
+func TestDialRelayHostTriesEachAllowedAddress(t *testing.T) {
+	res := &tableResolver{answers: [][]netip.Addr{
+		addrs(t, "93.184.216.34", "2606:4700:4700::1111"),
+	}}
+	g, d := relayDialTestGateway(t, res, true)
+
+	start := time.Now()
+	if _, err := g.dialRelayHost(context.Background(), "dual.example", 443); err == nil {
+		t.Fatal("dialRelayHost = nil error, want the recording dialer's failure")
+	}
+	if res.calls != 1 {
+		t.Fatalf("resolver called %d times, want exactly 1", res.calls)
+	}
+	want := []string{"93.184.216.34:443", "[2606:4700:4700::1111]:443"}
+	if !slices.Equal(d.asked, want) {
+		t.Fatalf("dialer asked = %v, want %v", d.asked, want)
+	}
+	if len(d.deadlines) != len(want) {
+		t.Fatalf("attempts with a deadline = %d, want %d", len(d.deadlines), len(want))
+	}
+	// Two addresses share relayDialTimeout, so neither attempt may be
+	// given more than half of it (plus slack for the test itself).
+	limit := relayDialTimeout/2 + time.Second
+	for i, dl := range d.deadlines {
+		if budget := dl.Sub(start); budget > limit {
+			t.Fatalf("attempt %d budget %s exceeds its share %s of %s — the deadline is shared, not per-address", i, budget, limit, relayDialTimeout)
+		}
 	}
 }
