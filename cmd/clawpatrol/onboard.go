@@ -498,6 +498,49 @@ func (r *onboardRegistry) setNodeIDLocked(ip, nodeID string) {
 	r.upsertLocked(ip)
 }
 
+// UnboundDeviceIPs returns, in sorted order, the IP of every devices row
+// that has no node recorded. These are rows written before ts_node_id
+// existed (or by a WhoIs that reported no StableID): they match nothing
+// on the alias passes and stay absorbable on exact-IP reuse until the
+// node behind them is observed.
+func (r *onboardRegistry) UnboundDeviceIPs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for ip := range r.knownDeviceIPs {
+		if r.nodeIDByIP[ip] == "" {
+			out = append(out, ip)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// BindNodeIfUnbound records nodeID as the node behind ip's devices row,
+// provided the row exists and carries no binding yet. Reports whether
+// the binding was written.
+//
+// It is the boot-time counterpart of the binding FoldAliasOntoDevice
+// lands on the address pass: the caller's WhoIs names ip among the
+// node's own addresses, which is the control plane's statement of
+// whose that address is. The same guards apply — only an existing row
+// takes a binding, so a row deleted during the WhoIs round-trip is not
+// re-created through upsertLocked, and a row already bound is never
+// rebound, because a different node holding its address is what IP
+// reuse after a delete looks like.
+func (r *onboardRegistry) BindNodeIfUnbound(ip, nodeID string) bool {
+	if ip == "" || nodeID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.knownDeviceIPs[ip] || r.nodeIDByIP[ip] != "" {
+		return false
+	}
+	r.setNodeIDLocked(ip, nodeID)
+	return true
+}
+
 // FoldAliasOntoDevice records alias as another address of the device at
 // canonical, and binds that device to nodeID. Reports whether the fold
 // happened.

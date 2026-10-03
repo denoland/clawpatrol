@@ -391,6 +391,19 @@ Default-profile auto-assignment is a UX convenience for fresh
 registrations; the security-relevant property is the scoping rule
 above.
 
+On a tailnet the registration is the device row, and the row is bound
+to the node's control-plane StableID (`ts_node_id`) — not to its
+hostname, which the node asserts itself and which the control plane
+frees once the node is gone. A peer reaching the gateway from an
+address its row does not carry is folded onto the row only through
+that binding. The binding is recorded where the caller holds an
+approval for the address (onboard claim, tsnet register) and where a
+WhoIs names an unbound row's address among the node's own. Rows that
+predate the column are bound at boot to the node the control plane
+reports holding the row's address — the same node that is already
+served the row's profile on that address — and rows no node holds are
+logged so the operator can delete them.
+
 ## Plugins are untrusted
 
 External plugins (`plugin "<name>" { source = "..." }`) extend the
