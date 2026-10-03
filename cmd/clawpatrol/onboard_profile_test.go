@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 
+	"tailscale.com/client/local"
+
 	"github.com/denoland/clawpatrol/internal/config"
 )
 
@@ -267,5 +269,176 @@ func TestTsnetRegisterPromotesSeededPlaceholder(t *testing.T) {
 	}
 	if !w.g.onboard.HasDevice("100.64.0.7") {
 		t.Errorf("devices row for 100.64.0.7 missing after register promotion")
+	}
+}
+
+// The peer api-token proves an approval, not ownership of the address in
+// the query string. On a token already bound to a real address, an `ip=`
+// that disagrees must not be recorded — seedTsnetIPv6Alias binds a node
+// to it, which writes a devices row.
+func TestTsnetRegisterIgnoresForeignIPOnBoundToken(t *testing.T) {
+	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	const ownIP = "100.1.1.1"
+	const foreignIP = "100.2.2.2"
+
+	token, err := mintAndPersistPeerAPIToken(w.g.db, ownIP)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/peer/tsnet/register?ip="+foreignIP, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	w.handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if w.g.onboard.HasDevice(foreignIP) {
+		t.Fatalf("a devices row was created for %s, which the caller only named", foreignIP)
+	}
+	if got := w.g.onboard.NodeIDForIP(foreignIP); got != "" {
+		t.Fatalf("NodeIDForIP(%s) = %q, want nothing recorded", foreignIP, got)
+	}
+}
+
+// tsnetRegisterTestMux is a Tailscale-mode web mux whose tsnet WhoIs
+// answers with node for every address, so /api/peer/tsnet/register
+// reaches the node binding seedTsnetIPv6Alias records.
+func tsnetRegisterTestMux(t *testing.T, nodeID, ip string) *webMux {
+	t.Helper()
+	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	if err := w.g.onboard.Load(w.g.db); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	w.g.tsnetLC = &local.Client{
+		Transport: whoisRoundTripper{t: t, resp: stubWhoisNode(nodeID, "agent", ip+"/32", "fd7a:115c:a1e0::1234/128")},
+		OmitAuth:  true,
+	}
+	return w
+}
+
+func postTsnetRegister(t *testing.T, w *webMux, token, ip string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/peer/tsnet/register?ip="+ip, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	w.handler().ServeHTTP(rr, req)
+	return rr
+}
+
+func countDeviceRows(t *testing.T, w *webMux, ip string) int {
+	t.Helper()
+	var n int
+	if err := w.g.db.QueryRow("SELECT count(*) FROM devices WHERE id = ?", ip).Scan(&n); err != nil {
+		t.Fatalf("count devices: %v", err)
+	}
+	return n
+}
+
+// Deleting a device from the dashboard revokes its peer api-token with
+// the row. The daemon behind the device keeps running and re-registers
+// on every boot; with the token gone that call is refused, and the
+// device it would have re-created stays deleted.
+func TestAgentDeleteRevokesTokenAndRegisterCannotResurrect(t *testing.T) {
+	const ip = "100.1.1.1"
+	w := tsnetRegisterTestMux(t, "node-a", ip)
+	w.g.onboard.AssignProfile(ip, "default")
+	token, err := mintAndPersistPeerAPIToken(w.g.db, ip)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	// The daemon's ordinary boot-time register binds the row to its node.
+	if rr := postTsnetRegister(t, w, token, ip); rr.Code != http.StatusNoContent {
+		t.Fatalf("register: status = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if got := w.g.onboard.NodeIDForIP(ip); got != "node-a" {
+		t.Fatalf("NodeIDForIP(%s) = %q, want node-a", ip, got)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/delete?ip="+ip, nil)
+	rr := httptest.NewRecorder()
+	w.apiAgentDelete(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete: status = %d; body = %q", rr.Code, rr.Body.String())
+	}
+	if countDeviceRows(t, w, ip) != 0 {
+		t.Fatalf("devices row for %s survived delete", ip)
+	}
+	if got := peerIPForAPIToken(w.g.db, token); got != "" {
+		t.Fatalf("token still resolves to %q after delete, want revoked", got)
+	}
+
+	// The daemon's next boot: the old token is dead and nothing comes back.
+	if rr := postTsnetRegister(t, w, token, ip); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("register with revoked token: status = %d, want %d; body = %q", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+	if w.g.onboard.HasDevice(ip) || countDeviceRows(t, w, ip) != 0 {
+		t.Fatalf("devices row for %s was re-created by a register with a revoked token", ip)
+	}
+	if got := w.g.onboard.NodeIDForIP(ip); got != "" {
+		t.Fatalf("NodeIDForIP(%s) = %q after delete, want nothing recorded", ip, got)
+	}
+}
+
+// Even a token that outlives its row — a delete path that forgot the
+// token — must not let the register no-op branch re-create the device:
+// the branch is gated on the row still existing.
+func TestTsnetRegisterRefusesToResurrectForgottenRow(t *testing.T) {
+	const ip = "100.1.1.1"
+	w := tsnetRegisterTestMux(t, "node-a", ip)
+	w.g.onboard.AssignProfile(ip, "default")
+	token, err := mintAndPersistPeerAPIToken(w.g.db, ip)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	w.g.onboard.ForgetIP(ip)
+	if countDeviceRows(t, w, ip) != 0 {
+		t.Fatalf("devices row for %s survived ForgetIP", ip)
+	}
+
+	if rr := postTsnetRegister(t, w, token, ip); rr.Code != http.StatusNoContent {
+		t.Fatalf("register: status = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if w.g.onboard.HasDevice(ip) || countDeviceRows(t, w, ip) != 0 {
+		t.Fatalf("devices row for %s was re-created by a register on a forgotten row", ip)
+	}
+	if got := w.g.onboard.NodeIDForIP(ip); got != "" {
+		t.Fatalf("NodeIDForIP(%s) = %q, want nothing recorded", ip, got)
+	}
+}
+
+// defaults.unknown_peer = "no_profile" is about peers with no devices
+// row. A registered device whose row carries no profile is not an
+// unknown peer: it keeps the default profile, directly and through its
+// alias, while a peer with no row gets the reserved empty profile.
+func TestProfileForNoProfilePolicySparesRegisteredDevice(t *testing.T) {
+	const deviceIP = "100.1.1.1"
+	const ula = "fd7a:115c:a1e0::1234"
+	const strangerIP = "100.9.9.9"
+	r := newOnboardRegistry()
+	r.knownDeviceIPs[deviceIP] = true // a row with a NULL profile
+	r.RegisterIPAlias(ula, deviceIP)
+	g := &Gateway{onboard: r}
+	g.cfg.Store(&config.Gateway{Policy: &config.Policy{
+		Order:    []string{"default"},
+		Profiles: map[string]*config.Profile{"default": {Name: "default"}},
+	}})
+	g.policy.Store(&config.CompiledPolicy{UnknownPeer: config.UnknownPeerNoProfile})
+
+	if got := g.profileFor(deviceIP); got != "default" {
+		t.Fatalf("profileFor(%s) = %q, want default for a registered device", deviceIP, got)
+	}
+	if got := g.profileFor(ula); got != "default" {
+		t.Fatalf("profileFor(%s) = %q, want default through the alias", ula, got)
+	}
+	if got := g.profileFor(strangerIP); got != config.UnknownPeerEmptyProfile {
+		t.Fatalf("profileFor(%s) = %q, want the reserved empty profile", strangerIP, got)
+	}
+
+	// With the policy off, every arm is the default profile.
+	g.policy.Store(&config.CompiledPolicy{})
+	if got := g.profileFor(strangerIP); got != "default" {
+		t.Fatalf("profileFor(%s) = %q under default_profile, want default", strangerIP, got)
 	}
 }

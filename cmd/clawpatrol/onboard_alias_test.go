@@ -5,36 +5,53 @@ import (
 	"time"
 )
 
-func TestUniqueIPForHostname(t *testing.T) {
+func TestUniqueIPForNodeID(t *testing.T) {
 	r := newOnboardRegistry()
 	r.knownDeviceIPs["100.1.1.1"] = true
-	r.hostnameByIP["100.1.1.1"] = "avocet2"
+	r.nodeIDByIP["100.1.1.1"] = "nodeAAAA"
 
-	if got := r.UniqueIPForHostname("avocet2"); got != "100.1.1.1" {
+	if got := r.UniqueIPForNodeID("nodeAAAA"); got != "100.1.1.1" {
 		t.Fatalf("single-match: got %q, want %q", got, "100.1.1.1")
 	}
-	if got := r.UniqueIPForHostname("unknown-host"); got != "" {
+	if got := r.UniqueIPForNodeID("nodeZZZZ"); got != "" {
 		t.Fatalf("no-match: got %q, want empty", got)
 	}
-	if got := r.UniqueIPForHostname(""); got != "" {
-		t.Fatalf("empty hostname: got %q, want empty", got)
+	if got := r.UniqueIPForNodeID(""); got != "" {
+		t.Fatalf("empty node id: got %q, want empty", got)
 	}
 
-	// Second device with same hostname → collision, must refuse.
+	// Second device bound to the same node → collision, must refuse.
 	r.knownDeviceIPs["100.2.2.2"] = true
-	r.hostnameByIP["100.2.2.2"] = "avocet2"
-	if got := r.UniqueIPForHostname("avocet2"); got != "" {
+	r.nodeIDByIP["100.2.2.2"] = "nodeAAAA"
+	if got := r.UniqueIPForNodeID("nodeAAAA"); got != "" {
 		t.Fatalf("collision: got %q, want empty", got)
 	}
 
-	// Hostname entry without a corresponding devices row (e.g. an
+	// A node binding without a corresponding devices row (e.g. an
 	// in-memory tsnet placeholder) must not satisfy a unique match —
-	// otherwise UniqueIPForHostname would point traffic at a placeholder
+	// otherwise UniqueIPForNodeID would point traffic at a placeholder
 	// ID that isn't actually a device.
 	r2 := newOnboardRegistry()
-	r2.hostnameByIP["tsnet-foo"] = "foo"
-	if got := r2.UniqueIPForHostname("foo"); got != "" {
-		t.Fatalf("placeholder-only hostname: got %q, want empty", got)
+	r2.nodeIDByIP["tsnet-foo"] = "nodeBBBB"
+	if got := r2.UniqueIPForNodeID("nodeBBBB"); got != "" {
+		t.Fatalf("placeholder-only binding: got %q, want empty", got)
+	}
+}
+
+// A hostname is self-asserted by the node and released again when an
+// ephemeral node goes offline, so a device row's name must not be
+// enough to absorb another peer's traffic — and with it the profile's
+// credentials.
+func TestHostnameAloneYieldsNoAlias(t *testing.T) {
+	r := newOnboardRegistry()
+	r.knownDeviceIPs["100.1.1.1"] = true
+	r.hostnameByIP["100.1.1.1"] = "privileged-agent"
+	r.nodeIDByIP["100.1.1.1"] = "nodeAAAA"
+
+	// The name the privileged device row carries, asserted by a node
+	// that is not the one the row is bound to.
+	if got := r.UniqueIPForNodeID("nodeIMPOSTOR"); got != "" {
+		t.Fatalf("impostor node matched %q by name", got)
 	}
 }
 

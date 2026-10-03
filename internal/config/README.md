@@ -84,8 +84,9 @@ declaration.
 
 ### Policy defaults (top-level)
 
-Global fallbacks for fail-mode, cache TTL, unknown-host policy, and the
-destinations an agent may steer a relay dial at.
+Global fallbacks for fail-mode, cache TTL, unknown-host and
+unknown-peer policy, and the destinations an agent may steer a relay
+dial at.
 
 `relay_destinations` bounds the three paths that dial an address the
 agent chose rather than one an endpoint declared: the transparent TCP
@@ -125,10 +126,26 @@ goes, instead of turning the policy off with `"any"`. Endpoints are
 unaffected either way — a declared endpoint dials its own `hosts`, not
 whatever the agent named.
 
+`unknown_peer` is the profile a peer with no device row is served
+under. `default_profile` serves it under the gateway's default profile,
+so an un-onboarded tailnet member that routes through the gateway gets
+whatever that profile declares, credentials included. `no_profile`
+serves it under a profile that declares nothing, so no endpoint matches
+it and no credential is reachable until the peer is onboarded.
+
+`no_profile` withholds the profile, not the network: what happens to
+traffic that matches no endpoint is still `unknown_host`'s decision
+for HTTPS destinations, and the transparent relay still carries every
+other TCP destination no endpoint claimed. `unknown_host = "deny"`
+alongside it closes the HTTPS side; plain TCP to other ports is
+relayed regardless, so the pair does not make an un-onboarded peer
+reach nothing.
+
 ```hcl
 unknown_host     = "passthrough"   # "passthrough" | "deny" | "inspect"
 relay_destinations = "public"      # "public" | "any"
 relay_allow_cidrs  = []            # exceptions to "public"
+unknown_peer     = "default_profile" # "default_profile" | "no_profile"
 llm_fail_mode    = "closed"        # "closed" | "open"
 llm_cache_ttl    = 300             # seconds
 human_timeout    = 600             # seconds
