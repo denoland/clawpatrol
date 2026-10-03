@@ -358,15 +358,9 @@ func (g *Gateway) installTsnetUDPCatchAll(s *tsnet.Server) {
 			// should the two hooks ever disagree.
 			return func(c nettype.ConnPacketConn) { _ = c.Close() }, true
 		case udpRelay:
+			// The dst was classified in tsnetUDPDisposition: a refused one
+			// is udpDrop and never reaches this arm.
 			return func(c nettype.ConnPacketConn) {
-				// relayUDP dials from the gateway host, which reaches
-				// networks the agent does not, so the dst the agent
-				// chose is classified first.
-				if err := g.relayDestOK(dst.Addr().String()); err != nil {
-					log.Printf("relay udp %s: %v", dst, err)
-					_ = c.Close()
-					return
-				}
 				relayUDP(c, dst.Addr().String(), dst.Port())
 			}, true
 		default: // udpPassthrough
@@ -396,6 +390,18 @@ func (g *Gateway) tsnetUDPDisposition(dst netip.AddrPort, src netip.Addr) udpDis
 			return udpDNS
 		}
 	case udpDrop:
+		return udpDrop
+	}
+	// The dst is the agent's, and whichever forwarder takes the flow —
+	// relayUDP for an onboarded peer, tsnet's own for any other — dials
+	// it from the gateway host. So the destination policy is applied
+	// ahead of the peer decision: a stranger's flow must not reach a
+	// private address through tsnet's default forwarder just because
+	// the peer was never onboarded. Deciding it as udpDrop also lets
+	// RejectUDPFlow answer ICMP unreachable rather than leave the flow
+	// to time out.
+	if err := g.relayDestOK(dst.Addr().String()); err != nil {
+		log.Printf("relay udp %s: %v", dst, err)
 		return udpDrop
 	}
 	if g.tsnetUDPPeerOnboarded(src) {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denoland/clawpatrol/cmd/clawpatrol/dnsvip"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // tsnetUDPPeerOnboarded gates the non-DNS UDP relay so the gateway only
@@ -164,5 +165,51 @@ profile "default" { credentials = [] }
 	gInspect.onboard = r
 	if got := gInspect.tsnetUDPDisposition(netip.AddrPortFrom(netip.MustParseAddr("8.8.8.8"), 443), onboarded); got != udpDrop {
 		t.Errorf("inspect UDP/443: disposition = %d, want drop", got)
+	}
+}
+
+// The destination policy is applied ahead of the peer decision. A peer
+// the gateway never onboarded falls through to tsnet's default
+// forwarder, which dials from the host exactly as relayUDP does — so a
+// stranger's UDP to a private address is refused, and only a public
+// destination passes through. An onboarded peer gets the same refusal,
+// as udpDrop rather than a relay that closes.
+func TestTsnetUDPDispositionClassifiesDestination(t *testing.T) {
+	r := newOnboardRegistry()
+	r.knownDeviceIPs["100.64.0.2"] = true
+	g := &Gateway{onboard: r}
+
+	onboarded := netip.MustParseAddr("100.64.0.2")
+	stranger := netip.MustParseAddr("100.99.99.99")
+	mk := netip.AddrPortFrom
+	rfc1918 := netip.MustParseAddr("10.0.0.1")
+	ula := netip.MustParseAddr("fd12::1")
+	metadata := netip.MustParseAddr("169.254.169.254")
+	pub := netip.MustParseAddr("8.8.8.8")
+
+	cases := []struct {
+		name string
+		dst  netip.AddrPort
+		src  netip.Addr
+		want udpDisposition
+	}{
+		{"stranger to rfc1918 refused", mk(rfc1918, 123), stranger, udpDrop},
+		{"stranger to ula refused", mk(ula, 123), stranger, udpDrop},
+		{"stranger to metadata refused", mk(metadata, 123), stranger, udpDrop},
+		{"stranger to public passes through", mk(pub, 123), stranger, udpPassthrough},
+		{"onboarded to rfc1918 refused", mk(rfc1918, 123), onboarded, udpDrop},
+		{"onboarded to ula refused", mk(ula, 123), onboarded, udpDrop},
+		{"onboarded to public relayed", mk(pub, 123), onboarded, udpRelay},
+	}
+	for _, c := range cases {
+		if got := g.tsnetUDPDisposition(c.dst, c.src); got != c.want {
+			t.Errorf("%s: disposition = %d, want %d", c.name, got, c.want)
+		}
+	}
+
+	// relay_destinations = any restores the unclassified passthrough.
+	g.policy.Store(&config.CompiledPolicy{RelayDestinations: relayDestAny})
+	if got := g.tsnetUDPDisposition(mk(rfc1918, 123), stranger); got != udpPassthrough {
+		t.Errorf("relay_destinations=any: stranger to rfc1918 = %d, want passthrough", got)
 	}
 }
