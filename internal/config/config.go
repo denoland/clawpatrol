@@ -401,9 +401,11 @@ type Defaults struct {
 	//
 	// It withholds the profile, not the network: what happens to
 	// traffic that matches no endpoint is still unknown_host's
-	// decision, and the transparent relay still carries a destination
-	// no endpoint claimed. Set unknown_host = "deny" alongside it for a
-	// peer that should reach nothing at all.
+	// decision for HTTPS destinations, and the transparent relay still
+	// carries every other TCP destination no endpoint claimed.
+	// unknown_host = "deny" alongside it closes the HTTPS side; plain
+	// TCP to other ports is relayed regardless, so the pair does not
+	// make an un-onboarded peer reach nothing.
 	UnknownPeer string `hcl:"unknown_peer,optional"`
 
 	// LLMFailMode controls requests guarded by an llm_approver when

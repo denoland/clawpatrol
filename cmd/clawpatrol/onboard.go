@@ -471,12 +471,22 @@ func (r *onboardRegistry) IPForHostname(owner, hostname string) string {
 // onboarding calls that carry an approval for this IP — a device code,
 // or the api-token minted against it — which is the operator saying
 // this IP is now that node's.
+//
+// Only an existing devices row takes a binding, and the check shares
+// the write's critical section: every caller reaches here after the
+// row was created (ClaimIP, or the promotion's AssignProfile/SetOwner)
+// and after a WhoIs round-trip, so a delete landing in between must
+// find the write refused rather than the row re-created through
+// upsertLocked.
 func (r *onboardRegistry) SetNodeID(ip, nodeID string) {
 	if ip == "" || nodeID == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.knownDeviceIPs[ip] {
+		return
+	}
 	r.setNodeIDLocked(ip, nodeID)
 }
 
@@ -1358,10 +1368,23 @@ func (w *webMux) apiPeerTsnetRegister(rw http.ResponseWriter, r *http.Request) {
 	}
 	// Map the daemon's IPv6 ULA too — tsnet traffic from this peer
 	// frequently arrives on fd7a:115c:a1e0::/48 rather than the 100.x.
-	if promoting || tsnetIP == parentIP {
+	//
+	// Outside promotion the devices row must still exist: a token that
+	// outlived a deleted row (the daemon keeps re-registering after the
+	// operator removed the device) must not re-create it through the
+	// node binding seedTsnetIPv6Alias records. SetNodeID re-checks
+	// under its own lock, which is what holds against a delete landing
+	// during the WhoIs; this gate is the cheap early exit with a log
+	// line.
+	switch {
+	case promoting:
 		w.g.seedTsnetIPv6Alias(tsnetIP)
-	} else {
+	case tsnetIP != parentIP:
 		log.Printf("peer tsnet register: ignoring ip=%s for token bound to %s", tsnetIP, parentIP)
+	case !w.g.onboard.HasDevice(tsnetIP):
+		log.Printf("peer tsnet register: ignoring ip=%s, device row was deleted", tsnetIP)
+	default:
+		w.g.seedTsnetIPv6Alias(tsnetIP)
 	}
 	rw.WriteHeader(http.StatusNoContent)
 }

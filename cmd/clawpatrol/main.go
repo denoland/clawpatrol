@@ -521,12 +521,20 @@ func (g *Gateway) profileFor(peerIP string) string {
 			}
 		}
 	}
-	return g.unknownPeerProfile()
+	return g.unknownPeerProfile(peerIP)
 }
 
 // unknownPeerProfile is the profile a peer with no devices row and no
 // resolvable alias is served under. defaults.unknown_peer picks between
 // the gateway's default profile and a profile that declares nothing.
+//
+// The policy is about peers with no row. A registered device whose row
+// carries no profile — onboarded before the config declared any — is
+// not an unknown peer and keeps the default profile it always had, so
+// turning on no_profile does not quietly cut off devices the operator
+// approved. The row is looked up through the alias graph too: a known
+// device reaching the gateway on its other address is still that
+// device.
 //
 // Returning "" here would withhold nothing: an unregistered profile name
 // means "single-tenant, no mapping established" to HostEndpoint and
@@ -534,11 +542,20 @@ func (g *Gateway) profileFor(peerIP string) string {
 // profile — so an empty name reaches strictly more endpoints than the
 // default profile does. The no_profile arm names a registered but empty
 // profile instead, which resolves to no endpoint at all.
-func (g *Gateway) unknownPeerProfile() string {
-	if policy := g.Policy(); policy != nil && policy.UnknownPeer == config.UnknownPeerNoProfile {
+func (g *Gateway) unknownPeerProfile(peerIP string) string {
+	if policy := g.Policy(); policy != nil && policy.UnknownPeer == config.UnknownPeerNoProfile && !g.hasDeviceRow(peerIP) {
 		return config.UnknownPeerEmptyProfile
 	}
 	return defaultProfileName(g.cfg.Load().Policy)
+}
+
+// hasDeviceRow reports whether peerIP, or the device IP it is an alias
+// of, has a devices row.
+func (g *Gateway) hasDeviceRow(peerIP string) bool {
+	if g.onboard == nil || peerIP == "" {
+		return false
+	}
+	return g.onboard.HasDevice(peerIP) || g.onboard.HasDevice(g.onboard.AgentIPFor(peerIP))
 }
 
 // resolveTsnetAlias does a one-shot tsnet WhoIs for peerIP and, on a

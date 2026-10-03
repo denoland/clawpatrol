@@ -134,10 +134,12 @@ serves it under a profile that declares nothing, so no endpoint matches
 it and no credential is reachable until the peer is onboarded.
 
 `no_profile` withholds the profile, not the network: what happens to
-traffic that matches no endpoint is still `unknown_host`'s decision,
-and the transparent relay still carries a destination no endpoint
-claimed. Pair it with `unknown_host = "deny"` for a peer that should
-reach nothing at all.
+traffic that matches no endpoint is still `unknown_host`'s decision
+for HTTPS destinations, and the transparent relay still carries every
+other TCP destination no endpoint claimed. `unknown_host = "deny"`
+alongside it closes the HTTPS side; plain TCP to other ports is
+relayed regardless, so the pair does not make an un-onboarded peer
+reach nothing.
 
 ```hcl
 unknown_host     = "passthrough"   # "passthrough" | "deny" | "inspect"
