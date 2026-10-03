@@ -240,24 +240,47 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         completionHandler()
     }
 
-    // Sleep/wake — without these overrides macOS may restart the
-    // extension when the network interface comes back up after sleep,
-    // causing startProxy to be called again. Setting reasserting=true
-    // during sleep tells the runtime the tunnel is temporarily down;
-    // clearing it on wake avoids a full stop/start cycle.
+    // Sleep/wake. `reasserting = true` tells macOS the tunnel is
+    // temporarily down so it won't tear the extension process down (and
+    // lose the in-memory session registry) when the primary interface
+    // bounces on wake. macOS only restarts the proxy on interface change
+    // when we're NOT reasserting, so this suppresses the restart.
+    //
+    // But it is a trap for the idle case. A NETransparentProxy in the
+    // reasserting state blocks every flow it has claimed, and we claim
+    // ALL outbound UDP (see applyNetworkSettings) — so while reasserting
+    // is set, bypassUDP DNS is blocked too (this is the same mechanism
+    // #187 documents). The flag is cleared only by wake(), and macOS does
+    // NOT reliably deliver wake() after a lid-close / full-sleep cycle.
+    // A missed wake() then leaves the proxy reasserting forever, black-
+    // holing ALL internet — even with no agent running, when the
+    // extension is supposed to be a transparent no-op. The only escape is
+    // disabling the extension (cl-jpya).
+    //
+    // So only enter that fragile state when there is something actually
+    // tunneled to protect: whole-machine mode, or per-process mode with a
+    // live session registered. A pure pass-through (per-process, no agent)
+    // has no in-memory tunnel state worth preserving across a restart, so
+    // it must never reassert — an idle extension survives sleep/wake as a
+    // transparent no-op no matter whether macOS keeps it running
+    // (bypassUDP/passthrough recover on their own) or restarts it
+    // (startProxy rebuilds a clean state; it no longer blocks, per #187).
     override func sleep(completionHandler: @escaping () -> Void) {
-        reasserting = true
+        if wholeMachine || !sessionPids().isEmpty {
+            reasserting = true
+        }
         completionHandler()
     }
 
     override func wake() {
-        // WireGuard auto-initiates a new handshake on the next keepalive
-        // tick (≤10s, per persistent_keepalive_interval). Clear reasserting
-        // immediately — bypassUDP flows don't need the WG tunnel and will
-        // work right away. Tunnel-side flows (clawpatrol children) fail fast
+        // Always clear reasserting on wake — defensively, even though the
+        // idle path never sets it. WireGuard auto-initiates a new
+        // handshake on the next keepalive tick (≤10s, per
+        // persistent_keepalive_interval); bypassUDP and passthrough flows
+        // need nothing. Tunnel-side flows (clawpatrol children) fail fast
         // via the cgo return code until the handshake completes.
         reasserting = false
-        os_log("wake — wg will reconnect via keepalive", log: log, type: .info)
+        os_log("wake — cleared reasserting; wg reconnects via keepalive", log: log, type: .info)
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
