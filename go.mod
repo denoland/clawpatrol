@@ -13,6 +13,7 @@ require (
 	github.com/aws/smithy-go v1.25.1
 	github.com/google/cel-go v0.30.0
 	github.com/google/go-cmp v0.7.0
+	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0

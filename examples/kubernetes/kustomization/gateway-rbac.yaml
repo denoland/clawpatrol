@@ -1,0 +1,56 @@
+# RBAC is split across scopes: TokenReview is cluster-wide, while Pod reads are
+# granted only in the `agents` workload namespace. If workloads enroll from
+# more namespaces, create the Pod-reader Role and RoleBinding in each one.
+# ServiceAccount and namespace values must match gateway-config.yaml,
+# gateway-statefulset.yaml, and agent.yaml.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clawpatrol-gateway
+  namespace: clawpatrol
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clawpatrol-tokenreview
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: clawpatrol-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: clawpatrol-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: clawpatrol-gateway
+    namespace: clawpatrol
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clawpatrol-pod-reader
+  namespace: agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clawpatrol-pod-reader
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: clawpatrol-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: clawpatrol-gateway
+    namespace: clawpatrol

@@ -14,7 +14,14 @@ import { PageTitle } from "./components/PageTitle";
 import { PluginsPage } from "./components/PluginsPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
-import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
+import {
+  getState,
+  type Agent,
+  type EnrolledPeer,
+  type Integration,
+  type UpdateBanner,
+  type Whoami,
+} from "./lib/api";
 
 type Route =
   | { name: "main" }
@@ -56,6 +63,7 @@ function parseRoute(): Route {
 export default function App() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [enrolledPeers, setEnrolledPeers] = useState<EnrolledPeer[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
   const [configFile, setConfigFile] = useState<string>("gateway.hcl");
@@ -76,6 +84,7 @@ export default function App() {
       const s = await getState();
       setIntegrations(s.integrations || []);
       setAgents(s.agents || []);
+      setEnrolledPeers(s.enrolled_peers || []);
       setWhoami(s.whoami);
       setUpdate(s.update ?? null);
       if (s.config_file) setConfigFile(s.config_file);
@@ -137,6 +146,7 @@ export default function App() {
         <DevicePage
           ip={route.ip}
           agents={agents}
+          enrolledPeers={enrolledPeers}
           integrations={integrations}
           configFile={configFile}
           onBack={() => navigate("")}

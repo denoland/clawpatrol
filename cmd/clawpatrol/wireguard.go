@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"expvar"
@@ -52,6 +53,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
+
+// allocateWGPeerMu serializes selection with WireGuard and database updates.
+var allocateWGPeerMu sync.Mutex
 
 // defaultWGListenPort is the UDP port the gateway binds for WG peers
 // when wireguard.listen_port is unset. Also the port advertised to
@@ -290,9 +294,12 @@ func (t *netTun) Close() error {
 }
 
 type WGServer struct {
-	tun       *netTun
-	dev       *device.Device
-	serverIP  netip.Addr
+	tun      *netTun
+	dev      *device.Device
+	serverIP netip.Addr
+	// prefix is wireguard.subnet_cidr. It maps peer IPv4 addresses to their
+	// fd77:: IPv6 addresses and back.
+	prefix    netip.Prefix
 	publicKey string  // hex-encoded, derived from the private key at boot
 	db        *sql.DB // wg_peers row store
 }
@@ -307,6 +314,9 @@ var (
 
 func setWGServer(s *WGServer) { globalWG = s }
 func setDB(d *sql.DB)         { globalDB = d }
+
+// GatewayTunnelIP is the gateway's own address inside the WireGuard subnet
+func (s *WGServer) GatewayTunnelIP() netip.Addr { return s.serverIP }
 
 // StartWGServer brings up a userspace WG endpoint listening on
 // 0.0.0.0:<ListenPort>. Server private key is read from the
@@ -331,7 +341,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 		return nil, fmt.Errorf("wg subnet: %w", err)
 	}
 	serverIP := prefix.Addr().Next() // x.x.x.1
-	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
+	serverIP6 := wg6FromV4(prefix, serverIP)
 
 	tun, err := newNetTUN(serverIP, serverIP6, 1420)
 	if err != nil {
@@ -349,7 +359,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive pub: %w", err)
 	}
-	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, db: globalDB}
+	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, prefix: prefix, publicKey: pub, db: globalDB}
 	// Replay persisted (pubkey → ip) pairs into the in-memory device
 	// so reboots don't strand existing clients.
 	//
@@ -360,7 +370,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	// allowed_ip → dropped → client thinks the gateway is unreachable
 	// after every restart, fixed only by re-joining.
 	for pubkey, ip := range srv.loadPeers() {
-		v6 := wg6FromV4(netip.MustParseAddr(ip))
+		v6 := wg6FromV4(prefix, netip.MustParseAddr(ip))
 		_ = dev.IpcSet(fmt.Sprintf(
 			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
 			pubkey, ip, v6.String()))
@@ -375,27 +385,27 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 // onboards otherwise win the trie race on restart and silently drop
 // the current client's traffic.
 func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	return s.addPeerLocked(pubkeyHex, peerIP)
+}
+
+// addPeerLocked updates the WireGuard device and persists its allocation.
+// Caller holds allocateWGPeerMu.
+func (s *WGServer) addPeerLocked(pubkeyHex, peerIP string) error {
 	if s.db != nil {
-		rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, pubkeyHex)
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			var stale []string
-			for rows.Next() {
-				var k string
-				if rows.Scan(&k) == nil {
-					stale = append(stale, k)
-				}
-			}
-			if err := rows.Err(); err != nil {
-				stale = nil
-			}
-			for _, k := range stale {
-				_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
-				_, _ = s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k)
+		stale, err := peerKeysForIPExcept(s.db, peerIP, pubkeyHex)
+		if err != nil {
+			return fmt.Errorf("query existing peer for %s: %w", peerIP, err)
+		}
+		for _, k := range stale {
+			_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
+			if _, err := s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k); err != nil {
+				return fmt.Errorf("delete replaced peer %s: %w", k, err)
 			}
 		}
 	}
-	peerIP6 := wg6FromV4(netip.MustParseAddr(peerIP))
+	peerIP6 := s.peerIP6(netip.MustParseAddr(peerIP))
 	if err := s.dev.IpcSet(fmt.Sprintf(
 		"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
 		pubkeyHex, peerIP, peerIP6.String(),
@@ -407,15 +417,212 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 			INSERT INTO wg_peers (pubkey, ip, added_ns) VALUES (?, ?, ?)
 			ON CONFLICT(pubkey) DO UPDATE SET ip = excluded.ip
 		`, pubkeyHex, peerIP, time.Now().UnixNano())
+		if err != nil {
+			_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubkeyHex))
+		}
 		return err
 	}
 	return nil
 }
 
-// wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4
-// address: fd77::<last-octet>. ULA prefix; matches unclaw's scheme so
-// no extra HCL config is needed.
-func wg6FromV4(v4 netip.Addr) netip.Addr {
+func peerKeysForIPExcept(db *sql.DB, peerIP, exceptPubkey string) ([]string, error) {
+	rows, err := db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, exceptPubkey)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// allocatePeer selects and persists a free client /32 as one critical section.
+func (s *WGServer) allocatePeer(ts JoinConfig, pubkeyHex string) (string, error) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	return s.allocatePeerLocked(ts, pubkeyHex)
+}
+
+func (s *WGServer) allocatePeerLocked(ts JoinConfig, pubkeyHex string) (string, error) {
+	ip, err := allocateWGPeerIPLocked(s.db, ts)
+	if err != nil {
+		return "", err
+	}
+	if err := s.addPeerLocked(pubkeyHex, ip); err != nil {
+		return "", fmt.Errorf("add peer %s: %w", ip, err)
+	}
+	return ip, nil
+}
+
+// errWGKeyHeldByDurablePeer is returned when an enrollment presents the
+// public key of a non-enrolled (durable) peer.
+var errWGKeyHeldByDurablePeer = errors.New("wireguard public key belongs to a non-enrolled peer")
+
+// wgKeyHeldByDurablePeer reports whether pubkeyHex is on a wg_peers row that
+// is not an enrollment.
+func wgKeyHeldByDurablePeer(db *sql.DB, pubkeyHex string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	var enrolled int
+	err := db.QueryRow(`SELECT enrolled FROM wg_peers WHERE pubkey = ?`, pubkeyHex).Scan(&enrolled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up wireguard peer key: %w", err)
+	}
+	return enrolled == 0, nil
+}
+
+// refuseDurableKeyLocked must run before addPeerLocked: its IpcSet moves the
+// key's allowed IPs on the live device before the database is written.
+// Caller holds allocateWGPeerMu.
+func (s *WGServer) refuseDurableKeyLocked(pubkeyHex string) error {
+	held, err := wgKeyHeldByDurablePeer(s.db, pubkeyHex)
+	if err != nil {
+		return err
+	}
+	if held {
+		return errWGKeyHeldByDurablePeer
+	}
+	return nil
+}
+
+// allocateEnrolledPeer is allocatePeer for workload enrollment. It refuses a
+// public key that a durable peer holds.
+func (s *WGServer) allocateEnrolledPeer(ts JoinConfig, pubkeyHex string) (string, error) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	if err := s.refuseDurableKeyLocked(pubkeyHex); err != nil {
+		return "", err
+	}
+	return s.allocatePeerLocked(ts, pubkeyHex)
+}
+
+// addEnrolledPeer is AddPeer for workload enrollment. It refuses a public key
+// that a durable peer holds.
+func (s *WGServer) addEnrolledPeer(pubkeyHex, peerIP string) error {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	if err := s.refuseDurableKeyLocked(pubkeyHex); err != nil {
+		return err
+	}
+	return s.addPeerLocked(pubkeyHex, peerIP)
+}
+
+// allocateWGPeerIPLocked returns the next free client /32 from WGSubnetCIDR.
+// It searches next-fit: from the address after the newest wg_peers row,
+// wrapping at the end of the subnet. A released address is then reused only
+// after the rest of the subnet, so a new peer rarely takes the address (and
+// the dashboard history) of a peer that just left.
+// Caller holds allocateWGPeerMu, and must persist the result before releasing
+// it so another caller cannot select the same address.
+func allocateWGPeerIPLocked(db *sql.DB, ts JoinConfig) (string, error) {
+	used := map[string]bool{}
+	var newest netip.Addr
+	if db != nil {
+		var err error
+		used, err = usedWGPeerIPs(db)
+		if err != nil {
+			return "", fmt.Errorf("read wireguard peer allocations: %w", err)
+		}
+		newest, err = newestWGPeerIP(db)
+		if err != nil {
+			return "", fmt.Errorf("read newest wireguard peer: %w", err)
+		}
+	}
+	_, cidr, err := net.ParseCIDR(ts.WGSubnetCIDR)
+	if err != nil {
+		return "", err
+	}
+	base := cidr.IP.To4()
+	if base == nil {
+		return "", fmt.Errorf("wireguard subnet must be IPv4")
+	}
+	ones, _ := cidr.Mask.Size()
+	size := uint32(1) << uint(32-ones)
+	if size < 4 {
+		return "", fmt.Errorf("wireguard subnet %s is too small", ts.WGSubnetCIDR)
+	}
+	network := binary.BigEndian.Uint32(base)
+	// Usable offsets are 2..size-2: skip the network address (offset 0), the
+	// gateway's own .1 (offset 1), and the broadcast (offset size-1).
+	const first = uint32(2)
+	span := size - 3
+	start := first
+	if newest.Is4() {
+		n := newest.As4()
+		if off := binary.BigEndian.Uint32(n[:]) - network; off >= first && off < size-1 {
+			start = off + 1
+		}
+	}
+	for i := uint32(0); i < span; i++ {
+		off := first + (start-first+i)%span
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], network+off)
+		ip := net.IP(b[:]).String()
+		if !used[ip] {
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("wireguard subnet %s exhausted", ts.WGSubnetCIDR)
+}
+
+// newestWGPeerIP returns the address of the most recently added wg_peers row,
+// or the zero Addr when there is none.
+func newestWGPeerIP(db *sql.DB) (netip.Addr, error) {
+	var ip string
+	err := db.QueryRow(`SELECT ip FROM wg_peers ORDER BY added_ns DESC LIMIT 1`).Scan(&ip)
+	if errors.Is(err, sql.ErrNoRows) {
+		return netip.Addr{}, nil
+	}
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	// A malformed row yields the zero Addr, and the search starts at .2.
+	addr, _ := netip.ParseAddr(ip)
+	return addr, nil
+}
+
+func usedWGPeerIPs(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query("SELECT ip FROM wg_peers")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	used := map[string]bool{}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		used[ip] = true
+	}
+	return used, rows.Err()
+}
+
+// wgHostMask returns the IPv4 bits that the fd77:: address carries: the host
+// bits of prefix, and always the last octet. For a /24 or narrower prefix
+// that is the last octet only, so those peers keep fd77::<last-octet>.
+func wgHostMask(prefix netip.Prefix) uint32 {
+	var m uint32
+	if bits := prefix.Bits(); bits >= 0 && bits < 32 {
+		m = ^uint32(0) >> uint(bits)
+	}
+	return m | 0xff
+}
+
+// wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4 address:
+// fd77:: plus the address's host bits within prefix (see wgHostMask). ULA
+// prefix; matches unclaw's scheme so no extra HCL config is needed.
+func wg6FromV4(prefix netip.Prefix, v4 netip.Addr) netip.Addr {
 	if !v4.Is4() {
 		return netip.Addr{}
 	}
@@ -423,9 +630,39 @@ func wg6FromV4(v4 netip.Addr) netip.Addr {
 	var b [16]byte
 	b[0] = 0xfd
 	b[1] = 0x77
-	b[15] = o[3]
+	binary.BigEndian.PutUint32(b[12:], binary.BigEndian.Uint32(o[:])&wgHostMask(prefix))
 	return netip.AddrFrom16(b)
 }
+
+// wgV4FromV6 is the inverse of wg6FromV4. ok is false for an address that
+// wg6FromV4 cannot return for prefix.
+func wgV4FromV6(prefix netip.Prefix, v6 netip.Addr) (netip.Addr, bool) {
+	network := prefix.Masked().Addr()
+	if !v6.Is6() || v6.Is4In6() || !network.Is4() {
+		return netip.Addr{}, false
+	}
+	b := v6.As16()
+	if b[0] != 0xfd || b[1] != 0x77 {
+		return netip.Addr{}, false
+	}
+	for _, x := range b[2:12] {
+		if x != 0 {
+			return netip.Addr{}, false
+		}
+	}
+	mask := wgHostMask(prefix)
+	host := binary.BigEndian.Uint32(b[12:])
+	if host&^mask != 0 {
+		return netip.Addr{}, false
+	}
+	n := network.As4()
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], binary.BigEndian.Uint32(n[:])&^mask|host)
+	return netip.AddrFrom4(out), true
+}
+
+// peerIP6 returns the fd77:: address of a peer's IPv4 address.
+func (s *WGServer) peerIP6(v4 netip.Addr) netip.Addr { return wg6FromV4(s.prefix, v4) }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
 // SYNs to ANY destination IP/port reach `tcpHandler`; the wrapped
@@ -640,6 +877,25 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	<-done
 }
 
+// wgDevPeerStat is the per-peer liveness subset of the device's IpcGet
+type wgDevPeerStat struct {
+	rxBytes       uint64
+	lastHandshake time.Time
+}
+
+// PeerStats returns per-peer receive + handshake stats keyed by hex public
+// key, parsed from the device's UAPI dump. nil when the device is down.
+func (s *WGServer) PeerStats() map[string]wgDevPeerStat {
+	if s == nil || s.dev == nil {
+		return nil
+	}
+	uapi, err := s.dev.IpcGet()
+	if err != nil {
+		return nil
+	}
+	return parseAllPeerStats(uapi)
+}
+
 func (s *WGServer) loadPeers() map[string]string {
 	out := map[string]string{}
 	if s.db == nil {
@@ -671,6 +927,13 @@ func (s *WGServer) loadPeers() map[string]string {
 // device from the dashboard so the tunnel + the trie entry don't
 // linger after the (owner, hostname) row is gone.
 func (s *WGServer) RevokePeerByIP(ip string) {
+	allocateWGPeerMu.Lock()
+	defer allocateWGPeerMu.Unlock()
+	s.revokePeerByIPLocked(ip)
+}
+
+// revokePeerByIPLocked removes an allocation while holding allocateWGPeerMu.
+func (s *WGServer) revokePeerByIPLocked(ip string) {
 	if s == nil || s.db == nil {
 		return
 	}
@@ -779,7 +1042,6 @@ func hexToB64(h string) (string, error) {
 
 type wireguardOnboarder struct {
 	ts JoinConfig
-	mu sync.Mutex
 }
 
 // wgClientEndpoint returns the host:port string clients should put in
@@ -854,14 +1116,14 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 		// one row per device. AddPeer evicts the stale pubkey on the same
 		// IP from both the wg-go trie and wg_peers.
 		ip = reuseIP
+		if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
+			return "", "", "", fmt.Errorf("wg add peer: %w", err)
+		}
 	} else {
-		ip, err = w.allocateIP()
+		ip, err = globalWG.allocatePeer(w.ts, clientPubHex)
 		if err != nil {
 			return "", "", "", err
 		}
-	}
-	if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
-		return "", "", "", fmt.Errorf("wg add peer: %w", err)
 	}
 	serverPub, err := globalWG.PublicKey()
 	if err != nil {
@@ -876,7 +1138,7 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 	// Avoiding `DNS =` because wg-quick needs resolvconf/openresolv
 	// for that, which many minimal images lack. Backup-then-restore
 	// keeps system DNS sane after `wg-quick down`.
-	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
+	ip6 := globalWG.peerIP6(netip.MustParseAddr(ip)).String()
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32, %s/128
@@ -897,40 +1159,4 @@ func (w *wireguardOnboarder) iface() string {
 		return w.ts.WGInterface
 	}
 	return "clawpatrol"
-}
-
-// allocateIP grabs the next free IP from WGSubnetCIDR. The allocation
-// set is derived from wg_peers (one row per active peer); a fresh DB
-// = a fresh subnet. AddPeer commits the (pubkey, ip) row.
-func (w *wireguardOnboarder) allocateIP() (string, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	used := map[string]bool{}
-	if globalDB != nil {
-		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			for rows.Next() {
-				var ip string
-				if rows.Scan(&ip) == nil {
-					used[ip] = true
-				}
-			}
-			if err := rows.Err(); err != nil {
-				used = map[string]bool{}
-			}
-		}
-	}
-	_, cidr, err := net.ParseCIDR(w.ts.WGSubnetCIDR)
-	if err != nil {
-		return "", err
-	}
-	first := cidr.IP.To4()
-	for i := 2; i < 255; i++ {
-		ip := net.IPv4(first[0], first[1], first[2], byte(i)).String()
-		if !used[ip] {
-			return ip, nil
-		}
-	}
-	return "", fmt.Errorf("wireguard subnet %s exhausted", w.ts.WGSubnetCIDR)
 }

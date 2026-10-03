@@ -198,6 +198,7 @@ func TestRouteAuthRequirementsDocumentOnboardingBoundary(t *testing.T) {
 		{path: "/api/onboard/approve", want: authDashboardOrTailnetOperator, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/config", want: authDashboard, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/env-pushdown", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
+		{path: enrollmentRegisterPath, want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/api/hitl/operations/hitl_op_test/status", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/info", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/ca.crt", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
@@ -222,6 +223,36 @@ func TestRouteAuthRequirementsDocumentOnboardingBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every method of a multi-method handler has its own row with the same auth.
+func TestRouteTableListsEnrollmentMethods(t *testing.T) {
+	w := newOnboardAuthTestWebMux(t)
+	methods := map[string]authRequirement{}
+	for _, route := range w.routes() {
+		if route.Path == enrollmentRegisterPath {
+			methods[route.Method] = route.Auth
+		}
+	}
+	for _, m := range []string{http.MethodPost, http.MethodDelete} {
+		if got, ok := methods[m]; !ok || got != authSelfAuthenticating {
+			t.Fatalf("%s %s: auth = %v, present = %t; want authSelfAuthenticating", m, enrollmentRegisterPath, got, ok)
+		}
+	}
+	// Building the mux must not register the shared path twice.
+	_ = w.handler()
+}
+
+func TestRouteAuthIndexRejectsConflictingAuth(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("conflicting auth for one path did not panic")
+		}
+	}()
+	routeAuthIndex([]webRoute{
+		{Method: http.MethodPost, Path: "/x", Auth: authPublic},
+		{Method: http.MethodDelete, Path: "/x", Auth: authDashboard},
+	})
 }
 
 func TestCredentialWebhookPrefixAuthPolicyIsSelfAuthenticating(t *testing.T) {

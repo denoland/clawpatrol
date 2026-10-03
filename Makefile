@@ -1,7 +1,23 @@
-.PHONY: build release dashboard test fmt fmt-check lint go-lint dashboard-lint clean install
+.PHONY: build release dashboard test fmt fmt-check lint go-lint dashboard-lint validate-examples e2e clean install
 
 build: dashboard
 	go build -o clawpatrol ./cmd/clawpatrol
+
+# validate-examples compiles every example/e2e gateway config. These HCLs
+# are the source of truth for the Kubernetes ConfigMaps (generated via
+# kustomize configMapGenerator), so validating them keeps "what CI checks"
+# equal to "what deploys" — not just a standalone sample.
+validate-examples: dashboard
+	@set -e; bin="$$(mktemp)"; trap 'rm -f "$$bin"' EXIT; \
+	go build -o "$$bin" ./cmd/clawpatrol; \
+	git ls-files '*.hcl' | grep -E '^(examples|e2e)/' | while read -r f; do \
+		echo "validate $$f"; "$$bin" validate "$$f"; \
+	done
+
+# e2e drives the Kubernetes WireGuard enrollment flow against a local kind
+# cluster (see e2e/kubernetes-wireguard-e2e.sh for prerequisites + knobs).
+e2e:
+	./e2e/kubernetes-wireguard-e2e.sh
 
 # release mirrors .github/workflows/release.yml: strip the symbol
 # table and DWARF (-s -w) and rewrite source paths (-trimpath). On

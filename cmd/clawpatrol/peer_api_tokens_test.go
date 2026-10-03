@@ -43,6 +43,31 @@ func TestPeerAPITokenRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeletePeerAPITokensForIP(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	token, err := mintAndPersistPeerAPIToken(db, "10.55.0.42")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if err := deletePeerAPITokensForIP(db, "10.55.0.42"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got := peerIPForAPIToken(db, token); got != "" {
+		t.Fatalf("deleted token resolved to %q", got)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := deletePeerAPITokensForIP(db, "10.55.0.42"); err == nil {
+		t.Fatal("delete on closed db returned nil")
+	}
+}
+
 // TestBearerFromAuthHeader covers the trivial parser.
 func TestBearerFromAuthHeader(t *testing.T) {
 	cases := []struct {

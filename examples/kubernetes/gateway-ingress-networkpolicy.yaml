@@ -1,0 +1,55 @@
+# Recommended (defense-in-depth) ingress NetworkPolicy for the gateway.
+#
+# This is NOT part of the default Kustomization base. The example gateway
+# listens on 0.0.0.0:8080 for the enrollment API and the dashboard, and until
+# a dashboard password is set the dashboard serves an open first-run
+# set-password form. This policy limits who can reach the gateway at all. Set
+# the dashboard password before you apply the base (see "Deploy the example"
+# in site/doc/kubernetes-enrollment.md).
+#
+# REVIEW THESE FIXED DEPLOYMENT ASSUMPTIONS BEFORE APPLYING:
+#
+# Gateway selection:
+#   - Policy namespace: `clawpatrol`.
+#   - Pod selector: `app: clawpatrol-gateway`.
+#   - Every matching Pod becomes default-deny for ingress except for the rules
+#     below.
+#
+# Allowed clients:
+#   - Agent namespace: `agents`, selected through the standard
+#     `kubernetes.io/metadata.name` namespace label.
+#   - Gateway API and dashboard: TCP 8080. Agent pods need it to enroll, so
+#     they can also reach the dashboard. Keep the dashboard password set.
+#   - WireGuard endpoint: UDP 51820.
+#   - If agents reach the gateway through an ingress controller or load
+#     balancer (for example the gateway public_url behind TLS), add a rule for
+#     that path too.
+#
+# Enforcement behavior:
+#   - The CNI must enforce NetworkPolicy, such as Calico or Cilium, or AWS VPC
+#     CNI with its network policy agent turned on. Some CNIs, including kind's
+#     default kindnet, do not; this manifest is inert there.
+#   - `kubectl port-forward` to the gateway usually does not pass through
+#     NetworkPolicy, so operators can still reach the dashboard that way.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clawpatrol-gateway-ingress
+  namespace: clawpatrol
+spec:
+  podSelector:
+    matchLabels:
+      app: clawpatrol-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # Agent pods: enrollment API + WireGuard endpoint.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agents
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: UDP
+          port: 51820
