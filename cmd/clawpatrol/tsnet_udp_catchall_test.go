@@ -144,6 +144,15 @@ func TestUDPPortDisposition(t *testing.T) {
 			if refused != (udpPortDisposition(port) == udpDrop) {
 				t.Errorf("refuseUDPPort(%d) = %v disagrees with udpPortDisposition", port, refused)
 			}
+			// The port decision is one of two refusals the transports
+			// share. The other is the destination policy, which the
+			// WireGuard forwarder applies in udpDispatch and the tsnet
+			// catch-all in tsnetUDPDisposition — so a dst the relay may
+			// not dial (the VIP here sits in private space) is dropped
+			// on both, whatever the port, once the port is not DNS.
+			if udpPortDisposition(port) != udpDNS && g.relayDestOK(dst.String()) != nil {
+				refused = true
+			}
 			for _, src := range []netip.Addr{onboarded, stranger} {
 				got := g.tsnetUDPDisposition(netip.AddrPortFrom(dst, port), src)
 				if (got == udpDrop) != refused {
