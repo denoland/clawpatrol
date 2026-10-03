@@ -669,3 +669,35 @@ func TestDialRelayHostTriesEachAllowedAddress(t *testing.T) {
 		}
 	}
 }
+
+// A name with many addresses does not starve each attempt: the share is
+// floored at relayDialFloor — eight addresses would otherwise get 1.25s
+// apiece — and the parent deadline is what caps the sum.
+func TestDialRelayHostFloorsThePerAddressBudget(t *testing.T) {
+	many := []string{
+		"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4",
+		"9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220",
+	}
+	res := &tableResolver{answers: [][]netip.Addr{addrs(t, many...)}}
+	g, d := relayDialTestGateway(t, res, true)
+
+	start := time.Now()
+	if _, err := g.dialRelayHost(context.Background(), "many.example", 443); err == nil {
+		t.Fatal("dialRelayHost = nil error, want the recording dialer's failure")
+	}
+	if len(d.asked) != len(many) {
+		t.Fatalf("dialer asked for %d addresses, want %d", len(d.asked), len(many))
+	}
+	if len(d.deadlines) != len(many) {
+		t.Fatalf("attempts with a deadline = %d, want %d", len(d.deadlines), len(many))
+	}
+	for i, dl := range d.deadlines {
+		budget := dl.Sub(start)
+		if budget < relayDialFloor-100*time.Millisecond {
+			t.Fatalf("attempt %d budget %s is under the %s floor", i, budget, relayDialFloor)
+		}
+		if budget > relayDialTimeout {
+			t.Fatalf("attempt %d budget %s exceeds the whole %s budget", i, budget, relayDialTimeout)
+		}
+	}
+}

@@ -252,6 +252,13 @@ func (g *Gateway) relayDestOK(dstIP string) error {
 // resolved separately.
 const relayDialTimeout = 10 * time.Second
 
+// relayDialFloor is the least any one address is given of that budget
+// — the same floor net.Dialer applies when it splits a deadline across
+// the addresses of a name — so a name with many records does not leave
+// each attempt too short to complete a handshake over a slow path. The
+// parent deadline still caps the sum: a late attempt gets what remains.
+const relayDialFloor = 2 * time.Second
+
 // dialRelayHost resolves host, classifies every address it resolved to,
 // and dials the first one that passes — as a literal, so the connection
 // lands on the address that was classified.
@@ -281,6 +288,9 @@ func (g *Gateway) dialRelayHost(ctx context.Context, host string, port int) (net
 	// because it is never handed the name.
 	var lastErr error
 	per := relayDialTimeout / time.Duration(len(addrs))
+	if per < relayDialFloor {
+		per = relayDialFloor
+	}
 	for _, ip := range addrs {
 		attempt, cancelAttempt := context.WithTimeout(ctx, per)
 		conn, err := g.dialer.DialContext(attempt, "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
