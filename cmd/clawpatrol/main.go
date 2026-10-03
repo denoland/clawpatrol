@@ -607,6 +607,166 @@ func (g *Gateway) resolveTsnetAlias(peerIP string) string {
 	return g.onboard.FoldAliasOntoNode(peerIP, nodeID)
 }
 
+// bindUnboundDevicesFromWhoIs binds every devices row that has no node
+// recorded to the node the control plane says holds the row's IP, and
+// returns the rows it bound and the rows it could not.
+//
+// A row written before ts_node_id existed only acquires its binding
+// when its node is observed, and most never are: a per-process daemon
+// re-registers on boot, and a peer arriving on its IPv6 ULA takes the
+// address pass, but a whole-machine install, a macOS client or a
+// long-lived daemon does neither, and an IPv4-only workload never
+// takes the address pass. Until then the row matches nothing on the
+// alias passes and stays absorbable on exact-IP reuse. This pass asks
+// the control plane directly, with the same statement the address
+// pass relies on: the node WhoIs reports for the row's IP must name
+// that IP among its own addresses. A WhoIs that fails, reports no
+// StableID, or names a different address leaves the row unbound — that
+// is a row whose node is gone, and the one summary line is what tells
+// the operator which rows to delete.
+//
+// Only rows at a tailnet address outside the WireGuard subnet are
+// candidates. A gateway running both transports has WireGuard rows on
+// its own subnet, which no node holds; asking about them would be a
+// wasted round-trip and reporting them would tell the operator to
+// delete live devices.
+//
+// The binding goes through BindNodeIfUnbound, so a row already bound
+// is never rebound and a row deleted during the round-trip is never
+// re-created. One WhoIs per unbound row, answered from the local
+// netmap, so the pass is cheap; it is still run once per boot rather
+// than on a timer because the netmap already carries offline peers
+// and a node that is not in it will not appear later without a
+// re-registration that binds the row itself.
+func (g *Gateway) bindUnboundDevicesFromWhoIs() (bound, unbound []string) {
+	if g.tsnetLC == nil || g.onboard == nil {
+		return nil, nil
+	}
+	for _, ip := range g.unboundTailnetDeviceIPs() {
+		if nodeID, name := g.whoisNodeHoldingAddr(ip); nodeID != "" && g.onboard.BindNodeIfUnbound(ip, nodeID) {
+			// devices.name is what the client reported — os.Hostname()
+			// at register, or the operator's hostname override at
+			// claim — while the node name is the control plane's
+			// ComputedName. They legitimately differ in case, by a
+			// MagicDNS dedup suffix, or because the operator chose a
+			// different label, so the name is not a guard on the
+			// binding, which rests on the address alone. A mismatch
+			// is logged so the operator can see which row went to a
+			// node they would not have expected.
+			line := fmt.Sprintf("gateway: bound device %s to tailnet node %s (%s)", ip, nodeID, name)
+			if row := g.onboard.HostnameForIP(ip); row != "" && row != name {
+				line += fmt.Sprintf(" (name mismatch: row %q, node %q)", row, name)
+			}
+			log.Print(line)
+			bound = append(bound, ip)
+			continue
+		}
+		// Report only what is still a row and still unbound. A device
+		// that registered during the round-trip is bound now, and one
+		// deleted during it is gone; neither is a row to delete.
+		if g.onboard.HasDevice(ip) && g.onboard.NodeIDForIP(ip) == "" {
+			unbound = append(unbound, ip)
+		}
+	}
+	if len(unbound) > 0 {
+		log.Printf("gateway: %d device row(s) not bound to a tailnet node — WhoIs failed, reported no node ID, or named another address; delete them if the device is gone: %s",
+			len(unbound), strings.Join(unbound, ", "))
+	}
+	return bound, unbound
+}
+
+// unboundTailnetDeviceIPs returns the unbound devices rows whose IP is
+// one Tailscale assigns and not one the WireGuard transport hands out,
+// in sorted order. The WireGuard subnet is excluded by configuration
+// rather than by range alone, because nothing stops it from being
+// carved out of the CGNAT range Tailscale uses.
+func (g *Gateway) unboundTailnetDeviceIPs() []string {
+	var wgSubnet netip.Prefix
+	if cfg := g.cfg.Load(); cfg != nil && cfg.Settings != nil && cfg.Settings.WireGuard != nil {
+		if p, err := netip.ParsePrefix(cfg.Settings.WireGuard.SubnetCIDR); err == nil {
+			wgSubnet = p
+		}
+	}
+	var out []string
+	for _, ip := range g.onboard.UnboundDeviceIPs() {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil || !isTailnetAddr(addr) {
+			continue
+		}
+		if wgSubnet.IsValid() && wgSubnet.Contains(addr) {
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out
+}
+
+// whoisNodeHoldingAddr returns the StableID and ComputedName of the
+// node a tsnet WhoIs reports for ip, provided that node lists ip among
+// its own addresses. Returns "", "" when WhoIs fails, reports no node
+// or no StableID, or names a node that does not hold ip. The name is
+// for the log only; nothing is decided on it.
+func (g *Gateway) whoisNodeHoldingAddr(ip string) (nodeID, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(ip, "0"))
+	if err != nil || w == nil || w.Node == nil || w.Node.StableID == "" {
+		return "", ""
+	}
+	for _, addr := range w.Node.Addresses {
+		if addr.Addr().String() == ip {
+			return string(w.Node.StableID), w.Node.ComputedName
+		}
+	}
+	return "", ""
+}
+
+// bindUnboundDevicesAtBoot runs bindUnboundDevicesFromWhoIs once the
+// tsnet node has a netmap. LocalClient exists before the netmap
+// arrives from control, and WhoIs answers from the netmap, so asking
+// straight away would report every row's node as missing. The netmap
+// is the whole condition: the backend can sit in Starting with every
+// peer offline and WhoIs already answers, so Running is not waited
+// for.
+//
+// There is no deadline on the wait: a gateway that boots without
+// control connectivity gets its netmap whenever the network comes
+// back, and the rows this pass exists for belong to devices that may
+// never re-register on their own. Polling backs off to one status
+// call every 30s, and the goroutine only exists when there is a row
+// to bind. After five minutes without a netmap one line says the
+// pass is still waiting, so a stall — an expired auth key, control
+// unreachable — is distinguishable from a pass that already ran.
+func (g *Gateway) bindUnboundDevicesAtBoot() {
+	if g.tsnetLC == nil || g.onboard == nil {
+		return
+	}
+	n := len(g.unboundTailnetDeviceIPs())
+	if n == 0 {
+		return
+	}
+	wait := 500 * time.Millisecond
+	start := time.Now()
+	warned := false
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		st, err := g.tsnetLC.StatusWithoutPeers(ctx)
+		cancel()
+		if err == nil && st != nil && st.Self != nil && st.Self.InNetworkMap {
+			g.bindUnboundDevicesFromWhoIs()
+			return
+		}
+		if !warned && time.Since(start) >= 5*time.Minute {
+			log.Printf("gateway: still waiting for tsnet network map before binding %d device row(s); check the Tailscale auth key and control connectivity", n)
+			warned = true
+		}
+		time.Sleep(wait)
+		if wait < 30*time.Second {
+			wait = min(wait*2, 30*time.Second)
+		}
+	}
+}
+
 // seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
 // tsnet WhoIs and mirrors the same profile mapping onto the v6 in the
 // onboard registry. Whole-machine tsnet traffic frequently arrives on
@@ -3689,6 +3849,15 @@ func runGateway(args []string) {
 	// is what keeps a credential's reported expiry live — and what keeps
 	// the first request after an idle period from paying for a refresh.
 	go g.oauth.RunRefresher()
+	// Clean fd77:: ghost rows (WG) and fd7a:: ghost rows (Tailscale IPv6)
+	// left by builds that upserted IPv6 peer addresses as separate device
+	// IDs. Drop them on every boot — the v4 row carries the same metadata.
+	// Before the registry loads the table, so it never learns a row the
+	// table no longer has: a known-but-pruned row would pass the
+	// exists check every binding path relies on and be written back.
+	if _, err := db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'"); err != nil {
+		log.Printf("gateway: prune ghost device rows: %v", err)
+	}
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}
@@ -3697,12 +3866,6 @@ func runGateway(args []string) {
 	// renders them on boot, before any traffic arrives. Without this,
 	// devices disappear after every gateway restart and only reappear
 	// on the next request from each peer.
-	// Clean fd77:: ghost rows (WG) and fd7a:: ghost rows (Tailscale IPv6)
-	// left by builds that upserted IPv6 peer addresses as separate device
-	// IDs. Drop them on every boot — the v4 row carries the same metadata.
-	if _, err := db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'"); err != nil {
-		log.Printf("gateway: prune ghost device rows: %v", err)
-	}
 	if err := seedAgentsFromDevices(db, g.agents); err != nil {
 		log.Printf("gateway: seed agents from devices: %v", err)
 	}
@@ -3922,6 +4085,11 @@ func runGateway(args []string) {
 		if lc, err := tsnetServer.LocalClient(); err == nil {
 			g.agents.SetLocalClient(lc)
 			g.tsnetLC = lc
+			// Rows that predate the node binding (#863) acquire it here
+			// from the control plane's own statement; see
+			// bindUnboundDevicesFromWhoIs for why most never would
+			// otherwise.
+			go g.bindUnboundDevicesAtBoot()
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
