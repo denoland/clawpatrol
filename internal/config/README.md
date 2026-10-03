@@ -94,7 +94,13 @@ transport decides, not the declared config, because a `tailscale {}`
 block only takes effect on restart. An address that encodes another one
 (4via6, NAT64, 6to4, the deprecated `::a.b.c.d` form) is judged on the
 address it encodes, and Teredo is refused outright because its encoding
-is obfuscated.
+is obfuscated. It is a list of refused classes, not a definition of the
+public internet: the documentation and benchmark ranges (`192.0.2.0/24`,
+`198.51.100.0/24`, `203.0.113.0/24`, `198.18.0.0/15`, `2001:db8::/32`),
+Class E (`240.0.0.0/4`), the deprecated IPv6 site-local range, and a
+cloud provider's internal services that sit in public address space
+(Azure's `168.63.129.16`, for one) are not refused, so anything of that
+kind the gateway host can route to stays reachable through the relay.
 
 A destination is classified after the name is resolved and the resolved
 address is what gets dialled, so there is no second lookup for a

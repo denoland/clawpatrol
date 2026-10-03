@@ -356,7 +356,11 @@ type Defaults struct {
 	// 100.64.0.0/10 is also a tailnet's whole IPv4 space. An address
 	// that encodes another one — 4via6, NAT64, 6to4, the deprecated
 	// ::a.b.c.d form — is judged on the address it encodes; Teredo is
-	// refused outright because its encoding is obfuscated.
+	// refused outright because its encoding is obfuscated. It is a list
+	// of refused classes, not a definition of the public internet:
+	// documentation and benchmark ranges, Class E, IPv6 site-local, and
+	// a cloud provider's internal services in public address space are
+	// not refused.
 	//
 	// "any" dials whatever the agent names, the gateway's own networks
 	// included.
