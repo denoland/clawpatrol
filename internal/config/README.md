@@ -28,6 +28,17 @@ gateway {
   state_dir        = "/opt/clawpatrol/state"
   public_url       = "http://gateway.internal:8080"
 
+  # Extra Host values the dashboard answers for, beyond the ones the
+  # gateway derives from itself (any IP literal, localhost,
+  # public_url's host, dashboard_listen's host, the tsnet node's
+  # MagicDNS name). Every read of a gated route is held to that set, so
+  # a CNAME in front of the dashboard — or a reverse proxy that
+  # rewrites Host to a backend name — has to be declared here. Such a
+  # proxy then owns the check: with the name the browser asked for
+  # gone, the gateway cannot tell one frontend name from another, so
+  # the proxy must refuse the frontend Host values it does not know.
+  dashboard_hosts = ["clawpatrol-backend"]
+
   # Transport block presence selects the transport. Both may be enabled.
   wireguard {
     subnet_cidr = "10.55.0.0/24"
@@ -73,10 +84,68 @@ declaration.
 
 ### Policy defaults (top-level)
 
-Global fallbacks for fail-mode, cache TTL, unknown-host policy.
+Global fallbacks for fail-mode, cache TTL, unknown-host and
+unknown-peer policy, and the destinations an agent may steer a relay
+dial at.
+
+`relay_destinations` bounds the three paths that dial an address the
+agent chose rather than one an endpoint declared: the transparent TCP
+relay, the UDP relay, and the SNI passthrough under `unknown_host =
+"passthrough"`. Those dials leave from the gateway host, which sits on
+networks the agent does not — the host's own loopback, the operator's
+LAN, and on a cloud instance a metadata service at `169.254.169.254`
+holding the gateway's own credentials.
+
+`"public"` (the default) refuses the unspecified address and the rest of
+`0.0.0.0/8`, loopback, link-local, multicast, the private ranges, the
+broadcast address, and an address scoped to one of this host's
+interfaces. Carrier-grade NAT (`100.64.0.0/10`) is also the whole of a
+tailnet's IPv4 space, so it is allowed — along with Tailscale's ULA —
+once a tailnet is actually running, and refused otherwise; the running
+transport decides, not the declared config, because a `tailscale {}`
+block only takes effect on restart. An address that encodes another one
+(4via6, NAT64, 6to4, the deprecated `::a.b.c.d` form) is judged on the
+address it encodes, and Teredo is refused outright because its encoding
+is obfuscated. It is a list of refused classes, not a definition of the
+public internet: the documentation and benchmark ranges (`192.0.2.0/24`,
+`198.51.100.0/24`, `203.0.113.0/24`, `198.18.0.0/15`, `2001:db8::/32`),
+Class E (`240.0.0.0/4`), the deprecated IPv6 site-local range, and a
+cloud provider's internal services that sit in public address space
+(Azure's `168.63.129.16`, for one) are not refused, so anything of that
+kind the gateway host can route to stays reachable through the relay.
+
+A destination is classified after the name is resolved and the resolved
+address is what gets dialled, so there is no second lookup for a
+rebinding answer to land in. That is also why the dial cannot race the
+address families itself; each resolved address gets its own slice of the
+dial budget instead.
+
+`relay_allow_cidrs` is consulted ahead of every refused class: it is
+where an internal subnet an agent is meant to reach through the relay
+goes, instead of turning the policy off with `"any"`. Endpoints are
+unaffected either way — a declared endpoint dials its own `hosts`, not
+whatever the agent named.
+
+`unknown_peer` is the profile a peer with no device row is served
+under. `default_profile` serves it under the gateway's default profile,
+so an un-onboarded tailnet member that routes through the gateway gets
+whatever that profile declares, credentials included. `no_profile`
+serves it under a profile that declares nothing, so no endpoint matches
+it and no credential is reachable until the peer is onboarded.
+
+`no_profile` withholds the profile, not the network: what happens to
+traffic that matches no endpoint is still `unknown_host`'s decision
+for HTTPS destinations, and the transparent relay still carries every
+other TCP destination no endpoint claimed. `unknown_host = "deny"`
+alongside it closes the HTTPS side; plain TCP to other ports is
+relayed regardless, so the pair does not make an un-onboarded peer
+reach nothing.
 
 ```hcl
 unknown_host     = "passthrough"   # "passthrough" | "deny" | "inspect"
+relay_destinations = "public"      # "public" | "any"
+relay_allow_cidrs  = []            # exceptions to "public"
+unknown_peer     = "default_profile" # "default_profile" | "no_profile"
 llm_fail_mode    = "closed"        # "closed" | "open"
 llm_cache_ttl    = 300             # seconds
 human_timeout    = 600             # seconds

@@ -30,7 +30,7 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 |-----------|------|----------|-------------|
 | `schema_version` | `int` | no | The config grammar this file targets. The gateway accepts a range of versions and rejects anything newer than it understands with an upgrade error. Omitting it loads as legacy grammar (version 0) with a deprecation warning. |
 | `gateway` | `block` | yes | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
-| `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
+| `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, unknown_peer, relay_*, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
 ## `gateway { ... }`
@@ -40,6 +40,7 @@ The gateway block carries operational settings — listen addresses, the WireGua
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `dashboard_listen` | `string` | no | The bind address for the dashboard + JSON API HTTP server. Default 127.0.0.1:8080. Set to a routable address to expose the dashboard off-host (the same mux is also served on the WG netstack / tsnet stack at this port). |
+| `dashboard_hosts` | `[]string` | no | Additional Host header values the dashboard answers for, beyond the ones the gateway derives from itself: any IP literal, localhost, public_url's host, dashboard_listen's host, and the tsnet node's MagicDNS name. Every read of a gated route is held to that set, so a name the gateway serves on that none of those cover — a CNAME in front of the dashboard, a reverse proxy that rewrites Host to a backend name — has to be declared here or the read is refused. Entries are hostnames, with or without a port; the port is ignored. A proxy that rewrites Host takes on the check itself: once the name the browser asked for is gone, the gateway cannot tell one frontend name from another, so such a proxy must refuse the frontend Host values it does not recognise. One that passes the original Host through needs no entry here beyond the names it forwards. |
 | `public_url` | `string` | no | The canonical externally-reachable gateway URL. Used in generated control-plane links such as join targets, OAuth redirect URIs, and (when public_url has a host but wireguard.endpoint doesn't) the host clients dial for WireGuard. |
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol. |
 | `dashboard_session_ttl` | `string` | no | How long a dashboard login session stays valid after the operator types the password. time.ParseDuration format ("24h", "30m"). Default 24h. |

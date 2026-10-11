@@ -1109,6 +1109,13 @@ func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
 	if w.g.onboard != nil {
 		w.g.onboard.ForgetIP(ip)
 	}
+	// Revoke the device's peer api-token with the row. The daemon
+	// behind a deleted device keeps running and re-registers on every
+	// boot; a token that outlives the row would authenticate that call
+	// and re-create the device.
+	if w.g.db != nil {
+		_, _ = w.g.db.Exec("DELETE FROM peer_api_tokens WHERE peer_ip = ?", ip)
+	}
 	if globalWG != nil {
 		globalWG.RevokePeerByIP(ip)
 	}

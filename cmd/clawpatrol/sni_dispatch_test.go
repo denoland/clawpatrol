@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,12 @@ import (
 )
 
 const unknownHostSNI = "unmatched.example.test"
+
+// unknownHostSNIAddr is what unknownHostSNI resolves to in these
+// tests. splice resolves the name itself and dials the literal, so a
+// passthrough needs a resolver that answers for the name and the dial
+// lands on the address, not the name.
+const unknownHostSNIAddr = "93.184.216.34"
 
 type sniDispatchDialer struct {
 	calls     atomic.Int32
@@ -93,6 +100,9 @@ profile "default" { credentials = [] }
 
 			dialer := newSNIDispatchDialer()
 			g.dialer = dialer
+			g.resolver = staticResolver{byHost: map[string][]netip.Addr{
+				unknownHostSNI: {netip.MustParseAddr(unknownHostSNIAddr)},
+			}}
 			serverConn, clientConn := net.Pipe()
 			g.onboard.profileByIP[peerIP(serverConn)] = "default"
 			t.Cleanup(func() { _ = clientConn.Close() })
@@ -139,7 +149,11 @@ profile "default" { credentials = [] }
 
 				select {
 				case address := <-dialer.addresses:
-					if want := net.JoinHostPort(unknownHostSNI, "443"); address != want {
+					// The literal, not the name: a dial handed the
+					// name would resolve it a second time, and the
+					// second answer is not the one that was
+					// classified.
+					if want := net.JoinHostPort(unknownHostSNIAddr, "443"); address != want {
 						t.Errorf("dial address = %q, want %q", address, want)
 					}
 				default:

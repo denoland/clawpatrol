@@ -41,6 +41,9 @@ func dumpSettings(s *GatewaySettings) map[string]any {
 		}
 	}
 	setStr("dashboard_listen", s.DashboardListen)
+	if len(s.DashboardHosts) > 0 {
+		out["dashboard_hosts"] = s.DashboardHosts
+	}
 	setStr("public_url", s.PublicURL)
 	setStr("state_dir", s.StateDir)
 	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
@@ -128,6 +131,15 @@ func dumpDefaults(d *Defaults) map[string]any {
 	out := map[string]any{}
 	if d.UnknownHost != "" {
 		out["unknown_host"] = d.UnknownHost
+	}
+	if d.RelayDestinations != "" {
+		out["relay_destinations"] = d.RelayDestinations
+	}
+	if len(d.RelayAllowCIDRs) > 0 {
+		out["relay_allow_cidrs"] = d.RelayAllowCIDRs
+	}
+	if d.UnknownPeer != "" {
+		out["unknown_peer"] = d.UnknownPeer
 	}
 	if d.LLMFailMode != "" {
 		out["llm_fail_mode"] = d.LLMFailMode

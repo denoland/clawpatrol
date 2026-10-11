@@ -190,6 +190,9 @@ func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
 		}
 	}
 	setStr("dashboard_listen", s.DashboardListen)
+	if len(s.DashboardHosts) > 0 {
+		gw.SetAttributeValue("dashboard_hosts", StringListVal(s.DashboardHosts))
+	}
 	setStr("public_url", s.PublicURL)
 	setStr("state_dir", s.StateDir)
 	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
@@ -276,6 +279,15 @@ func emitDefaultsBlock(body *hclwrite.Body, d *Defaults) {
 	b := body.AppendNewBlock("defaults", nil).Body()
 	if d.UnknownHost != "" {
 		b.SetAttributeValue("unknown_host", cty.StringVal(d.UnknownHost))
+	}
+	if d.RelayDestinations != "" {
+		b.SetAttributeValue("relay_destinations", cty.StringVal(d.RelayDestinations))
+	}
+	if len(d.RelayAllowCIDRs) > 0 {
+		b.SetAttributeValue("relay_allow_cidrs", StringListVal(d.RelayAllowCIDRs))
+	}
+	if d.UnknownPeer != "" {
+		b.SetAttributeValue("unknown_peer", cty.StringVal(d.UnknownPeer))
 	}
 	if d.LLMFailMode != "" {
 		b.SetAttributeValue("llm_fail_mode", cty.StringVal(d.LLMFailMode))

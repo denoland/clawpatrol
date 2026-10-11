@@ -109,7 +109,7 @@ type Gateway struct {
 	Settings *GatewaySettings `hcl:"gateway,block"`
 
 	// Defaults holds the optional `defaults { ... }` block with the
-	// policy defaults (unknown_host, llm_*, human_*). nil when the
+	// policy defaults (unknown_host, unknown_peer, relay_*, llm_*, human_*). nil when the
 	// block is absent — every field has a built-in default.
 	Defaults *Defaults `hcl:"defaults,block"`
 
@@ -142,6 +142,24 @@ type GatewaySettings struct {
 	// address to expose the dashboard off-host (the same mux is also
 	// served on the WG netstack / tsnet stack at this port).
 	DashboardListen string `hcl:"dashboard_listen,optional"`
+
+	// DashboardHosts are additional Host header values the dashboard
+	// answers for, beyond the ones the gateway derives from itself: any
+	// IP literal, localhost, public_url's host, dashboard_listen's
+	// host, and the tsnet node's MagicDNS name. Every read of a gated
+	// route is held to that set, so a name the gateway serves on that
+	// none of those cover — a CNAME in front of the dashboard, a
+	// reverse proxy that rewrites Host to a backend name — has to be
+	// declared here or the read is refused. Entries are hostnames, with
+	// or without a port; the port is ignored.
+	//
+	// A proxy that rewrites Host takes on the check itself: once the
+	// name the browser asked for is gone, the gateway cannot tell one
+	// frontend name from another, so such a proxy must refuse the
+	// frontend Host values it does not recognise. One that passes the
+	// original Host through needs no entry here beyond the names it
+	// forwards.
+	DashboardHosts []string `hcl:"dashboard_hosts,optional"`
 
 	// PublicURL is the canonical externally-reachable gateway URL.
 	// Used in generated control-plane links such as join targets, OAuth
@@ -344,6 +362,52 @@ type Defaults struct {
 	// "inspect" MITMs it as the declared https.unknown endpoint.
 	UnknownHost string `hcl:"unknown_host,optional"`
 
+	// RelayDestinations bounds the addresses the gateway will dial on an
+	// agent's behalf when no endpoint claims the destination — the
+	// transparent TCP and UDP relays, and the SNI passthrough.
+	//
+	// "public" (the default) refuses the unspecified address and the
+	// rest of 0.0.0.0/8, loopback, link-local (where a cloud metadata
+	// service lives), multicast, the private ranges, the broadcast
+	// address, and an address scoped to one of this host's interfaces.
+	// Carrier-grade NAT is refused unless a tailnet is running, since
+	// 100.64.0.0/10 is also a tailnet's whole IPv4 space. An address
+	// that encodes another one — 4via6, NAT64, 6to4, the deprecated
+	// ::a.b.c.d form — is judged on the address it encodes; Teredo is
+	// refused outright because its encoding is obfuscated. It is a list
+	// of refused classes, not a definition of the public internet:
+	// documentation and benchmark ranges, Class E, IPv6 site-local, and
+	// a cloud provider's internal services in public address space are
+	// not refused.
+	//
+	// "any" dials whatever the agent names, the gateway's own networks
+	// included.
+	RelayDestinations string `hcl:"relay_destinations,optional"`
+
+	// RelayAllowCIDRs are destinations relay_destinations = "public"
+	// admits anyway, consulted ahead of every refused class. This is
+	// where an internal subnet an agent is meant to reach through the
+	// relay goes, rather than turning the policy off wholesale.
+	RelayAllowCIDRs []string `hcl:"relay_allow_cidrs,optional"`
+
+	// UnknownPeer controls the profile a peer with no devices row is
+	// served under. "default_profile" (the default) serves it under the
+	// gateway's default profile, so an un-onboarded tailnet member that
+	// routes through the gateway is handled by whatever that profile
+	// declares — including the credentials it injects. "no_profile"
+	// serves it under a reserved profile that declares nothing, so no
+	// endpoint matches it and no credential is reachable until the peer
+	// is onboarded.
+	//
+	// It withholds the profile, not the network: what happens to
+	// traffic that matches no endpoint is still unknown_host's
+	// decision for HTTPS destinations, and the transparent relay still
+	// carries every other TCP destination no endpoint claimed.
+	// unknown_host = "deny" alongside it closes the HTTPS side; plain
+	// TCP to other ports is relayed regardless, so the pair does not
+	// make an un-onboarded peer reach nothing.
+	UnknownPeer string `hcl:"unknown_peer,optional"`
+
 	// LLMFailMode controls requests guarded by an llm_approver when
 	// the judge is unavailable: transport error or timeout, 429 or
 	// 5xx status, or an undecodable response. "closed" (the default)
@@ -411,6 +475,10 @@ func (g *Gateway) SetPublicURL(s string) {
 // DashboardListen returns the configured dashboard HTTP bind
 // address, or empty string when unset.
 func (g *Gateway) DashboardListen() string { return g.settings().DashboardListen }
+
+// DashboardHosts returns the operator-declared extra Host values the
+// dashboard answers for.
+func (g *Gateway) DashboardHosts() []string { return g.settings().DashboardHosts }
 
 // DashboardConfigWrites reports whether dashboard-originated config
 // mutations are enabled for this gateway.
