@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -20,12 +21,34 @@ import (
 	"time"
 )
 
+// leafCacheMax bounds the number of minted leaves kept in memory.
+// With unknown_host = "inspect" the SNI name space is agent-chosen,
+// so an unbounded map grows by about 1 KB per distinct name.
+const leafCacheMax = 4096
+
+// leafValidity is how long a minted leaf is valid for, and
+// leafRemintBefore is how close to NotAfter a cached leaf may get
+// before mint replaces it, so a long-running gateway never serves an
+// expired leaf.
+const (
+	leafValidity     = 30 * 24 * time.Hour
+	leafRemintBefore = 24 * time.Hour
+)
+
 type CertCache struct {
 	caCert    *x509.Certificate
 	caKey     *ecdsa.PrivateKey
 	caCertPEM []byte
-	mu        sync.RWMutex
-	cache     map[string]*tls.Certificate
+	mu        sync.Mutex
+	cache     map[string]*list.Element // value: *leafEntry
+	lru       *list.List               // front = most recently used
+	now       func() time.Time         // nil = time.Now; tests override
+}
+
+type leafEntry struct {
+	host     string
+	cert     *tls.Certificate
+	notAfter time.Time
 }
 
 // CertPEM returns the PEM-encoded root certificate. Safe to share
@@ -72,28 +95,47 @@ func parseCertCache(certPEM, keyPEM []byte) (*CertCache, error) {
 		caCert:    cert,
 		caKey:     key,
 		caCertPEM: certPEM,
-		cache:     map[string]*tls.Certificate{},
+		cache:     map[string]*list.Element{},
+		lru:       list.New(),
 	}, nil
 }
 
-func (c *CertCache) mint(host string) (*tls.Certificate, error) {
-	c.mu.RLock()
-	if t, ok := c.cache[host]; ok {
-		c.mu.RUnlock()
-		return t, nil
+func (c *CertCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
 	}
-	c.mu.RUnlock()
+	return time.Now()
+}
+
+// mint returns a leaf for host signed by the CA, minting one on a
+// cache miss. Host names are matched case-insensitively, a cached
+// leaf within leafRemintBefore of expiry is replaced, and at most
+// leafCacheMax leaves are kept (least recently used evicted first).
+func (c *CertCache) mint(host string) (*tls.Certificate, error) {
+	host = strings.ToLower(host)
+	now := c.clock()
+	c.mu.Lock()
+	if el, ok := c.cache[host]; ok {
+		e := el.Value.(*leafEntry)
+		if now.Add(leafRemintBefore).Before(e.notAfter) {
+			c.lru.MoveToFront(el)
+			c.mu.Unlock()
+			return e.cert, nil
+		}
+	}
+	c.mu.Unlock()
 
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	notAfter := now.Add(leafValidity)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    time.Now().Add(-1 * time.Hour),
-		NotAfter:     time.Now().Add(30 * 24 * time.Hour),
+		NotBefore:    now.Add(-1 * time.Hour),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -111,8 +153,18 @@ func (c *CertCache) mint(host string) (*tls.Certificate, error) {
 		PrivateKey:  leafKey,
 	}
 	c.mu.Lock()
-	c.cache[host] = t
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if el, ok := c.cache[host]; ok {
+		el.Value = &leafEntry{host: host, cert: t, notAfter: notAfter}
+		c.lru.MoveToFront(el)
+		return t, nil
+	}
+	c.cache[host] = c.lru.PushFront(&leafEntry{host: host, cert: t, notAfter: notAfter})
+	for c.lru.Len() > leafCacheMax {
+		oldest := c.lru.Back()
+		c.lru.Remove(oldest)
+		delete(c.cache, oldest.Value.(*leafEntry).host)
+	}
 	return t, nil
 }
 

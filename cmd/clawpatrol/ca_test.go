@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -133,5 +134,83 @@ func TestTwoCAsHaveDifferentFingerprints(t *testing.T) {
 	}
 	if fa == fb {
 		t.Fatalf("freshly generated CAs share a fingerprint: %s", fa)
+	}
+}
+
+func TestCertCacheMintIgnoresHostCase(t *testing.T) {
+	cc, _ := inMemoryCertCache(t)
+	lower, err := cc.mint("example.com")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	upper, err := cc.mint("EXAMPLE.COM")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if lower != upper {
+		t.Fatalf("EXAMPLE.COM minted a second leaf; want the cached example.com leaf")
+	}
+	if n := len(cc.cache); n != 1 {
+		t.Fatalf("cache holds %d leaves, want 1", n)
+	}
+}
+
+func TestCertCacheRemintsLeafNearExpiry(t *testing.T) {
+	cc, _ := inMemoryCertCache(t)
+	now := time.Now()
+	cc.now = func() time.Time { return now }
+
+	first, err := cc.mint("example.com")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	now = now.Add(leafValidity - 2*leafRemintBefore)
+	if again, _ := cc.mint("example.com"); again != first {
+		t.Fatalf("leaf re-minted while still well inside its validity")
+	}
+
+	now = now.Add(leafRemintBefore + time.Hour)
+	fresh, err := cc.mint("example.com")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if fresh == first {
+		t.Fatalf("cached leaf served within %v of expiry; want a fresh one", leafRemintBefore)
+	}
+	leaf, err := x509.ParseCertificate(fresh.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	if !leaf.NotAfter.After(now.Add(leafRemintBefore)) {
+		t.Fatalf("fresh leaf NotAfter = %v, want after %v", leaf.NotAfter, now.Add(leafRemintBefore))
+	}
+}
+
+func TestCertCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	cc, _ := inMemoryCertCache(t)
+	keep, err := cc.mint("keep.example.com")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	for i := 0; i < leafCacheMax; i++ {
+		if _, err := cc.mint(fmt.Sprintf("h%d.example.com", i)); err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		if i == leafCacheMax/2 {
+			// Touch keep so it is not the oldest entry when the
+			// cache overflows.
+			if got, _ := cc.mint("keep.example.com"); got != keep {
+				t.Fatalf("keep.example.com re-minted before the cache was full")
+			}
+		}
+	}
+	if n := len(cc.cache); n != leafCacheMax {
+		t.Fatalf("cache holds %d leaves, want %d", n, leafCacheMax)
+	}
+	if _, ok := cc.cache["h0.example.com"]; ok {
+		t.Fatalf("least recently used leaf h0.example.com was not evicted")
+	}
+	if got, _ := cc.mint("keep.example.com"); got != keep {
+		t.Fatalf("recently used keep.example.com was evicted")
 	}
 }
