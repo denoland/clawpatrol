@@ -10,7 +10,7 @@ Render every timestamp in the UI as `yyyy-MM-dd HH:mm:ss.SSS` (24-hour,
 locale-independent, millisecond precision). When only the time-of-day
 is shown, use `HH:mm:ss.SSS`.
 
-Helpers live in `cmd/clawpatrol/www/src/lib/format.ts`:
+Helpers live in `dashboard/src/lib/format.ts`:
 
 - `fmtDateTime(t)` — full timestamp.
 - `fmtTime(t)` — time-of-day only.
