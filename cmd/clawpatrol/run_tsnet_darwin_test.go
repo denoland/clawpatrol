@@ -19,6 +19,14 @@ import (
 // skipped the placeholders. WireGuard mode reaches the gateway on the
 // host network and must use the direct fetch.
 func TestEnvPushdownFetcherFollowsTransportMode(t *testing.T) {
+	prevGW, prevNE := envPushdownGatewayFetcher, envPushdownNEFetcher
+	t.Cleanup(func() { envPushdownGatewayFetcher, envPushdownNEFetcher = prevGW, prevNE })
+	var neCalls atomic.Int32
+	envPushdownNEFetcher = func(string) ([]pushdownEnvVar, error) {
+		neCalls.Add(1)
+		return []pushdownEnvVar{{Name: "FOO", Value: "from-extension"}}, nil
+	}
+
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -53,41 +61,53 @@ func TestEnvPushdownFetcherFollowsTransportMode(t *testing.T) {
 		return dir
 	}
 
-	t.Run("wireguard", func(t *testing.T) {
-		hits.Store(0)
-		got, err := envPushdownGatewayFetcher(writePushdownDir(t, "wireguard"))
-		if err != nil {
-			t.Fatalf("fetch: %v", err)
+	for _, tc := range []struct {
+		mode      string
+		wantValue string
+		wantHits  int32
+		wantNE    int32
+	}{
+		{mode: "wireguard", wantValue: "from-gateway", wantHits: 1},
+		{mode: "", wantValue: "from-gateway", wantHits: 1},
+		{mode: "tailscale", wantValue: "from-extension", wantNE: 1},
+	} {
+		name := tc.mode
+		if name == "" {
+			name = "no_mode_file"
 		}
-		if hits.Load() != 1 {
-			t.Fatalf("gateway hits = %d, want 1", hits.Load())
-		}
-		if len(got) != 1 || got[0].Name != "FOO" || got[0].Value != "from-gateway" {
-			t.Fatalf("vars = %#v", got)
-		}
-	})
+		t.Run(name, func(t *testing.T) {
+			hits.Store(0)
+			neCalls.Store(0)
+			got, err := fetchEnvPushdownForMode(writePushdownDir(t, tc.mode))
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if hits.Load() != tc.wantHits || neCalls.Load() != tc.wantNE {
+				t.Fatalf("gateway hits = %d, extension calls = %d; want %d, %d",
+					hits.Load(), neCalls.Load(), tc.wantHits, tc.wantNE)
+			}
+			if len(got) != 1 || got[0].Name != "FOO" || got[0].Value != tc.wantValue {
+				t.Fatalf("vars = %#v, want FOO=%s", got, tc.wantValue)
+			}
+		})
+	}
+}
 
-	t.Run("no_mode_file", func(t *testing.T) {
-		hits.Store(0)
-		if _, err := envPushdownGatewayFetcher(writePushdownDir(t, "")); err != nil {
-			t.Fatalf("fetch: %v", err)
-		}
-		if hits.Load() != 1 {
-			t.Fatalf("gateway hits = %d, want 1", hits.Load())
-		}
-	})
-
-	t.Run("tailscale", func(t *testing.T) {
-		hits.Store(0)
-		_, err := envPushdownGatewayFetcher(writePushdownDir(t, "tailscale"))
-		if hits.Load() != 0 {
-			t.Fatalf("tailscale mode called the gateway %d times", hits.Load())
-		}
-		// No tsnet config in CI or in a WireGuard install: the extension
-		// refuses, or the session socket is not there. Either way the
-		// fetch must have gone to the extension, not to the gateway.
-		if err == nil || (!strings.Contains(err.Error(), "NE refused getenv") && !strings.Contains(err.Error(), "dial NE session socket")) {
-			t.Fatalf("tailscale fetch error = %v, want the extension path", err)
-		}
-	})
+// The WireGuard run path calls envPushdownGatewayFetcher, so init must
+// install the mode-aware fetcher rather than the extension call.
+func TestDarwinInitInstallsModeAwareFetcher(t *testing.T) {
+	prevNE := envPushdownNEFetcher
+	t.Cleanup(func() { envPushdownNEFetcher = prevNE })
+	envPushdownNEFetcher = func(string) ([]pushdownEnvVar, error) {
+		t.Fatal("wireguard mode called the extension fetcher")
+		return nil, nil
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("wireguard\n"), 0o644); err != nil {
+		t.Fatalf("write mode: %v", err)
+	}
+	_, err := envPushdownGatewayFetcher(dir)
+	if err == nil || !strings.Contains(err.Error(), "gateway URL not persisted") {
+		t.Fatalf("err = %v, want the direct fetch's missing gateway URL error", err)
+	}
 }

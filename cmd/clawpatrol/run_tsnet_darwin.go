@@ -43,13 +43,18 @@ func init() {
 	// network (often loopback), and the NE answers `getenv` with
 	// "err" whenever it has no tsnet config, so the direct fetch is
 	// the one that works there.
-	envPushdownGatewayFetcher = func(caDir string) ([]pushdownEnvVar, error) {
-		mode := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "mode")))
-		if mode == "tailscale" {
-			return fetchEnvPushdownViaNESessionSock(caDir)
-		}
-		return fetchEnvPushdownFromGateway(caDir)
+	envPushdownGatewayFetcher = fetchEnvPushdownForMode
+}
+
+// envPushdownNEFetcher is the tailscale-mode fetcher. Tests swap it
+// so they do not depend on the extension running on the host.
+var envPushdownNEFetcher = fetchEnvPushdownViaNESessionSock
+
+func fetchEnvPushdownForMode(caDir string) ([]pushdownEnvVar, error) {
+	if strings.TrimSpace(readFileSilent(filepath.Join(caDir, "mode"))) == "tailscale" {
+		return envPushdownNEFetcher(caDir)
 	}
+	return fetchEnvPushdownFromGateway(caDir)
 }
 
 func runRunTsnet(args []string) {
