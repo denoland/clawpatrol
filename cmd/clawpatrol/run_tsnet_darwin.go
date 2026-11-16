@@ -37,12 +37,19 @@ import (
 
 func init() {
 	// macOS has no tailnet route from the parent CLI — only the NE
-	// does. Route every gateway-tailnet HTTP call (env-pushdown, the
-	// one such call from the parent) through the NE for both
-	// `clawpatrol run` and the `clawpatrol env` shell-rc shim that
-	// fires on every new terminal. Silent skip when the NE isn't
-	// running keeps shell startup quiet between joins / after reboot.
-	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
+	// does. In tailscale mode, route the env-pushdown fetch through
+	// the NE for both `clawpatrol run` and the `clawpatrol env`
+	// shell-rc shim. WireGuard mode reaches the gateway on the host
+	// network (often loopback), and the NE answers `getenv` with
+	// "err" whenever it has no tsnet config, so the direct fetch is
+	// the one that works there.
+	envPushdownGatewayFetcher = func(caDir string) ([]pushdownEnvVar, error) {
+		mode := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "mode")))
+		if mode == "tailscale" {
+			return fetchEnvPushdownViaNESessionSock(caDir)
+		}
+		return fetchEnvPushdownFromGateway(caDir)
+	}
 }
 
 func runRunTsnet(args []string) {
