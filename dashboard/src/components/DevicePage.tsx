@@ -173,7 +173,8 @@ export function DevicePage({
           <div className="min-w-0">
             <div className="text-base font-semibold text-text truncate">{a.hostname || a.ip}</div>
             <div className="text-xs text-text-muted truncate">
-              {a.profile || "—"} ·{" "}
+              {a.profile || "—"}
+              {a.profile_missing && " (not found)"} ·{" "}
               {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
               {a.os && (
                 <>

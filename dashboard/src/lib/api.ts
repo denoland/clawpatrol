@@ -183,6 +183,9 @@ export type Agent = {
   hostname: string;
   user: string;
   profile?: string;
+  // Set when `profile` names a profile the config no longer declares.
+  // The gateway serves such a device nothing until it is reassigned.
+  profile_missing?: boolean;
   os: string;
   ua?: string;
   first_at: string;

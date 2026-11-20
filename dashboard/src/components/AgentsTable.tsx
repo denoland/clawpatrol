@@ -90,7 +90,18 @@ export function AgentsTable({
                   </span>
                 </div>
               </Td>
-              <Td className="text-xs text-text-muted truncate">{a.profile || "—"}</Td>
+              <Td className="text-xs text-text-muted truncate">
+                {a.profile || "—"}
+                {a.profile_missing && (
+                  <span
+                    className="text-danger-500"
+                    title="This profile is not declared in the config. The device gets no endpoints or credentials until it is assigned to a declared profile."
+                  >
+                    {" "}
+                    (not found)
+                  </span>
+                )}
+              </Td>
               <Td>
                 <div className="flex items-center gap-2">
                   <Sparkline data={a.activity} width={120} height={16} />

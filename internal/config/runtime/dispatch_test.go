@@ -77,8 +77,8 @@ func compileFixture(t *testing.T, src string) *config.CompiledPolicy {
 	return cp
 }
 
-// TestHostEndpoint covers the per-profile lookup and the
-// single-tenant fallback path that scans every profile.
+// TestHostEndpoint covers the per-profile lookup, and that a profile
+// name the policy does not declare resolves to nothing.
 func TestHostEndpoint(t *testing.T) {
 	cp := compile(t)
 
@@ -88,9 +88,13 @@ func TestHostEndpoint(t *testing.T) {
 	if got := runtime.HostEndpoint(cp, "default", "unknown.example"); got != nil {
 		t.Errorf("unknown host should resolve to nil, got %+v", got)
 	}
-	// Unknown profile + known host → fallback scan finds it.
-	if got := runtime.HostEndpoint(cp, "no-such-profile", "github.com"); got == nil {
-		t.Errorf("fallback scan should find github.com")
+	// An undeclared profile reaches no endpoint, whether the name is a
+	// stale one or no name at all. It must not borrow another
+	// profile's hosts.
+	for _, profile := range []string{"no-such-profile", ""} {
+		if got := runtime.HostEndpoint(cp, profile, "github.com"); got != nil {
+			t.Errorf("undeclared profile %q resolved github.com to %s", profile, got.Name)
+		}
 	}
 }
 
@@ -131,8 +135,8 @@ profile "default" { credentials = [bearer_token.api-tok] }
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "api" {
 		t.Fatalf("exact port-qualified host resolved to %+v, want api", got)
 	}
-	if got := runtime.HostEndpoint(cp, "missing-profile", "api.example.com"); got == nil || got.Name != "api" {
-		t.Fatalf("fallback scan resolved to %+v, want api", got)
+	if got := runtime.HostEndpoint(cp, "missing-profile", "api.example.com"); got != nil {
+		t.Fatalf("undeclared profile resolved the bare SNI host to %s", got.Name)
 	}
 }
 
@@ -322,7 +326,9 @@ profile "default" { credentials = [bearer_token.aws-tok] }
 	}
 }
 
-func TestHostEndpointWildcardSingleTenantFallback(t *testing.T) {
+// A wildcard declared by one profile is not reachable under a profile
+// name the policy does not declare.
+func TestHostEndpointWildcardUndeclaredProfile(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "https" "aws-ep" {
   hosts = ["*.amazonaws.com"]
@@ -332,8 +338,11 @@ credential "bearer_token" "aws-tok" {
 }
 profile "tenant" { credentials = [bearer_token.aws-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "tenant", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("declared profile: got %+v, want aws-ep", got)
+	}
+	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got != nil {
+		t.Fatalf("undeclared profile resolved a wildcard host to %s", got.Name)
 	}
 }
 
@@ -726,6 +735,90 @@ func TestResolveCredentialSingular(t *testing.T) {
 	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "http", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
+	}
+}
+
+// A profile name the policy does not declare gets no credential, even
+// at an endpoint with exactly one credential bound to it. The name
+// comes from a device row that outlived its profile block; the
+// endpoint's only credential belongs to some other profile.
+func TestResolveCredentialUndeclaredProfile(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" { hosts = ["api.example.com"] }
+endpoint "postgres" "db" { host = "db.example.com:5432" }
+credential "bearer_token" "api-tok" { endpoint = https.api }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "kept" { credentials = [bearer_token.api-tok, postgres_credential.db-cred] }
+`)
+	httpReq := &match.Request{Family: "http", Headers: http.Header{}}
+	sqlReq := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}
+	for _, tc := range []struct {
+		ep  string
+		req *match.Request
+	}{{"api", httpReq}, {"db", sqlReq}} {
+		ep := cp.Endpoints[tc.ep]
+		if len(ep.Credentials) != 1 {
+			t.Fatalf("fixture: endpoint %s has %d credentials, want exactly one", tc.ep, len(ep.Credentials))
+		}
+		if got := runtime.ResolveCredential(cp, "kept", ep, tc.req); got == nil {
+			t.Fatalf("declared profile at %s: no credential", tc.ep)
+		}
+		if got := runtime.ResolveCredential(cp, "removed", ep, tc.req); got != nil {
+			t.Errorf("undeclared profile at %s resolved credential %s", tc.ep, got.Credential.Symbol.Name)
+		}
+		if got := runtime.CredentialMismatchReason(cp, "removed", ep, tc.req); got != "" {
+			t.Errorf("undeclared profile at %s: mismatch reason %q, want none", tc.ep, got)
+		}
+	}
+}
+
+// A config that declares no profile at all is single-tenant: the name
+// a peer is served under scopes nothing, and the endpoint's sole
+// credential is what it gets. Onboarding stores a `join --profile`
+// suggestion verbatim under such a config, so a named peer is as
+// ordinary there as an unnamed one.
+func TestResolveCredentialNoProfilesDeclared(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "postgres" "db" { host = "db.example.com:5432" }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+`)
+	ep := cp.Endpoints["db"]
+	req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}
+	for _, profile := range []string{"", "suggested"} {
+		got := runtime.ResolveCredential(cp, profile, ep, req)
+		if got == nil || got.Credential.Symbol.Name != "db-cred" {
+			t.Fatalf("profile %q under a profile-less config: got %+v, want db-cred", profile, got)
+		}
+	}
+}
+
+// With profiles declared, the empty name is as undeclared as any other
+// and gets nothing; and under unknown_peer = "no_profile" the reserved
+// profile does not count as a declared one.
+func TestResolveCredentialEmptyNameAndReservedProfile(t *testing.T) {
+	const base = `
+endpoint "postgres" "db" { host = "db.example.com:5432" }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+`
+	req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}
+
+	cp := compileFixture(t, base+`profile "kept" { credentials = [postgres_credential.db-cred] }`)
+	if !cp.DeclaresProfiles() {
+		t.Fatal("DeclaresProfiles = false with a profile declared")
+	}
+	if got := runtime.ResolveCredential(cp, "", cp.Endpoints["db"], req); got != nil {
+		t.Fatalf("empty name under declared profiles resolved credential %s", got.Credential.Symbol.Name)
+	}
+
+	cp = compileFixture(t, base+`defaults { unknown_peer = "no_profile" }`)
+	if cp.DeclaresProfiles() {
+		t.Fatal("DeclaresProfiles = true with only the reserved profile registered")
+	}
+	if got := runtime.ResolveCredential(cp, config.UnknownPeerEmptyProfile, cp.Endpoints["db"], req); got != nil {
+		t.Fatalf("reserved profile resolved credential %s", got.Credential.Symbol.Name)
+	}
+	if got := runtime.ResolveCredential(cp, "suggested", cp.Endpoints["db"], req); got == nil {
+		t.Fatal("named peer under a profile-less config got no credential")
 	}
 }
 
