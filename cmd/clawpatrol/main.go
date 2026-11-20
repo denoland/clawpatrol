@@ -387,6 +387,12 @@ type Gateway struct {
 	// set is bounded by the number of declared credentials.
 	credSaveLocks sync.Map
 
+	// missingProfileLogged rate-limits the log line for a device whose
+	// assigned profile the policy no longer declares (device IP ->
+	// missingProfileNote). See declaredProfile. Bounded by the number
+	// of devices.
+	missingProfileLogged sync.Map
+
 	// cfg is the live operational *config.Gateway. Stored as an
 	// atomic pointer because dashboard handlers and the reload loop
 	// read it without holding configMu; configMu only serialises
@@ -495,10 +501,13 @@ func (g *Gateway) Policy() *config.CompiledPolicy {
 // looking up OAuth credentials for a given peer IP. Falls back to the
 // "default" profile when declared, otherwise to the first declared
 // profile (single-tenant default).
+//
+// A device assigned to a profile the policy no longer declares is not
+// served under that name, nor under the default: see declaredProfile.
 func (g *Gateway) profileFor(peerIP string) string {
 	if g.onboard != nil {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
-			return p
+			return g.declaredProfile(peerIP, p)
 		}
 		// Lazy alias resolution via tsnet WhoIs. Two cases this catches:
 		//
@@ -516,12 +525,82 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if g.tsnetLC != nil && g.onboard.ClaimAliasResolve(peerIP, 5*time.Minute) {
 			if canonical := g.resolveTsnetAlias(peerIP); canonical != "" {
 				if p := g.onboard.ProfileForIP(canonical); p != "" {
-					return p
+					return g.declaredProfile(canonical, p)
 				}
 			}
 		}
 	}
 	return g.unknownPeerProfile(peerIP)
+}
+
+// missingProfileLogInterval is how often the gateway repeats the log
+// line for one device stuck on a profile the policy does not declare.
+const missingProfileLogInterval = time.Hour
+
+// missingProfileNote records what declaredProfile last logged for a
+// device, so the line is written once per interval rather than once per
+// connection.
+type missingProfileNote struct {
+	profile string
+	at      time.Time
+}
+
+// declaredProfile maps the profile a device row carries onto the one
+// the device is actually served under. That is the row's profile when
+// the live policy declares it, and the reserved empty profile when it
+// does not.
+//
+// A devices row outlives the profile block it names: deleting
+// `profile "x" {}` from the config leaves every device assigned to x
+// pointing at nothing. Removing a profile has to revoke what it
+// granted, so such a device is served no endpoint and no credential
+// until an operator reassigns it or restores the block. It is not moved
+// to the default profile either — that would hand it a set of
+// credentials nobody assigned to it.
+//
+// The check reads the compiled policy on every call rather than a set
+// captured at boot, so a profile dropped by a config reload stops
+// serving on the next connection, and one that comes back resumes.
+// Before the first policy is loaded there is nothing to check against
+// and nothing to dispatch to, so the row's name is returned as is.
+func (g *Gateway) declaredProfile(deviceIP, profile string) string {
+	policy := g.Policy()
+	if policy == nil {
+		return profile
+	}
+	if _, ok := policy.Profiles[profile]; ok {
+		return profile
+	}
+	g.logMissingProfile(deviceIP, profile)
+	return config.UnknownPeerEmptyProfile
+}
+
+// logMissingProfile tells the operator that a device is assigned to a
+// profile the policy does not declare. It runs on the per-connection
+// path, so it logs once per device and missing profile, and again only
+// after missingProfileLogInterval.
+func (g *Gateway) logMissingProfile(deviceIP, profile string) {
+	// A device reaches the gateway on its alias address too; key on the
+	// device so both addresses share one line.
+	if g.onboard != nil {
+		deviceIP = g.onboard.AgentIPFor(deviceIP)
+	}
+	now := time.Now()
+	if v, ok := g.missingProfileLogged.Load(deviceIP); ok {
+		if n := v.(missingProfileNote); n.profile == profile && now.Sub(n.at) < missingProfileLogInterval {
+			return
+		}
+	}
+	g.missingProfileLogged.Store(deviceIP, missingProfileNote{profile: profile, at: now})
+	name := deviceIP
+	if g.onboard != nil {
+		if h := g.onboard.HostnameForIP(deviceIP); h != "" {
+			name = fmt.Sprintf("%s (%s)", h, deviceIP)
+		}
+	}
+	log.Printf("device %s is assigned to profile %q, which the config does not declare: "+
+		"serving it no endpoints and no credentials until it is reassigned or the profile is restored",
+		name, profile)
 }
 
 // unknownPeerProfile is the profile a peer with no devices row and no
@@ -536,12 +615,11 @@ func (g *Gateway) profileFor(peerIP string) string {
 // device reaching the gateway on its other address is still that
 // device.
 //
-// Returning "" here would withhold nothing: an unregistered profile name
-// means "single-tenant, no mapping established" to HostEndpoint and
-// pickEndpointForProfile, which answer it by searching every declared
-// profile — so an empty name reaches strictly more endpoints than the
-// default profile does. The no_profile arm names a registered but empty
-// profile instead, which resolves to no endpoint at all.
+// Returning "" here would not withhold everything: the empty name is
+// the single-tenant case to pickEndpointForProfile and to credential
+// dispatch, which serve it the first candidate endpoint and an
+// endpoint's sole credential. The no_profile arm names a registered but
+// empty profile instead, which resolves to no endpoint at all.
 func (g *Gateway) unknownPeerProfile(peerIP string) string {
 	if policy := g.Policy(); policy != nil && policy.UnknownPeer == config.UnknownPeerNoProfile && !g.hasDeviceRow(peerIP) {
 		return config.UnknownPeerEmptyProfile
@@ -2230,12 +2308,8 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		if h.Endpoint == nil {
 			continue
 		}
-		if profile != "" {
-			if prof, ok := policy.Profiles[profile]; ok {
-				if _, in := prof.Endpoints[h.Endpoint.Name]; !in {
-					continue
-				}
-			}
+		if !profileHasEndpoint(policy, profile, h.Endpoint.Name) {
+			continue
 		}
 		if dstPort != 0 && h.Port != 0 && dstPort != h.Port {
 			continue
@@ -2405,22 +2479,32 @@ func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
 // touch. Single-tenant configs (no profile bound) fall through to
 // the first candidate.
 func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
-	if len(candidates) == 0 {
-		return nil
-	}
-	if policy == nil || profile == "" {
-		return candidates[0]
-	}
-	prof, ok := policy.Profiles[profile]
-	if !ok {
-		return candidates[0]
-	}
 	for _, c := range candidates {
-		if _, in := prof.Endpoints[c.Name]; in {
+		if profileHasEndpoint(policy, profile, c.Name) {
 			return c
 		}
 	}
 	return nil
+}
+
+// profileHasEndpoint reports whether a peer served under profile may be
+// routed to the named endpoint.
+//
+// The empty profile name is the single-tenant case — the config
+// declares no profile, so nothing scopes endpoints — and reaches every
+// endpoint. Any other name reaches only the endpoints its profile
+// carries, and a name the policy does not declare reaches none: it is a
+// device row that outlived its profile block, not a missing mapping.
+func profileHasEndpoint(policy *config.CompiledPolicy, profile, endpoint string) bool {
+	if policy == nil || profile == "" {
+		return true
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return false
+	}
+	_, in := prof.Endpoints[endpoint]
+	return in
 }
 
 // splice pipes a TLS connection through to the name in its ClientHello

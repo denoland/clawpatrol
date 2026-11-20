@@ -23,32 +23,21 @@ import (
 // longest-suffix-first order. Exact matches always win over wildcards
 // for the same name. Returns nil when nothing matches; the caller
 // then applies the defaults.unknown_host policy.
+//
+// A profile name the policy does not declare resolves to nothing. It
+// is not read as "no mapping established, search every profile": the
+// name a device row carries outlives the profile block it pointed at,
+// and a device whose profile was deleted must lose its endpoints
+// rather than gain every other profile's.
 func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
 	}
-	host = strings.ToLower(host)
 	prof, ok := policy.Profiles[profile]
 	if !ok {
-		// Single-tenant fallback: if no peer-to-profile mapping is
-		// established, walk every profile and return the first match.
-		// Matches main.go's existing profileFor behavior when only
-		// one profile exists. Exact matches are tried across all
-		// profiles before falling back to wildcards so a profile that
-		// declared the exact host wins over a different profile's
-		// wildcard.
-		for _, p := range policy.Profiles {
-			if ep := p.HostIndex[host]; ep != nil {
-				return ep
-			}
-		}
-		for _, p := range policy.Profiles {
-			if ep := config.MatchHostPattern(p.HostPatterns, host); ep != nil {
-				return ep
-			}
-		}
 		return nil
 	}
+	host = strings.ToLower(host)
 	if ep := prof.HostIndex[host]; ep != nil {
 		return ep
 	}
@@ -387,16 +376,27 @@ func disambiguatorMatches(d map[string]string, req *match.Request, sentPlacehold
 }
 
 // profileCredentialsAt returns the per-endpoint dispatch entries for
-// the named profile. When the profile is unknown but the endpoint has
-// a single globally-bound credential, the singleton entry is
-// synthesized so a fallback HostEndpoint match still injects auth —
-// matches the pre-v15 "missing profile but only one credential" path.
+// the named profile.
+//
+// The empty profile name is the single-tenant case: the config declares
+// no profile, so there is no per-profile dispatch table and the peer is
+// served under no name at all. There the endpoint's sole globally bound
+// credential is synthesized, so a config written without profiles still
+// injects auth.
+//
+// Any other name the policy does not declare gets nothing. Such a name
+// comes from a device row that outlived its profile block; handing it
+// the endpoint's only credential would give the device credentials its
+// profile never carried.
 func profileCredentialsAt(policy *config.CompiledPolicy, profile, epName string) []*config.CompiledCredential {
 	if policy == nil {
 		return nil
 	}
 	if prof, ok := policy.Profiles[profile]; ok {
 		return prof.EndpointCredentials[epName]
+	}
+	if profile != "" {
+		return nil
 	}
 	ep, ok := policy.Endpoints[epName]
 	if !ok {

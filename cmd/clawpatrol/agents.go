@@ -45,6 +45,11 @@ type Agent struct {
 	Integrations []string   `json:"integrations"`
 	Sessions     []*Session `json:"sessions,omitempty"`
 	prevTotal    int64
+
+	// ProfileMissing is set when Profile names a profile the policy
+	// does not declare. The gateway serves such a device no endpoints
+	// and no credentials (see Gateway.declaredProfile).
+	ProfileMissing bool `json:"profile_missing,omitempty"`
 }
 
 // Session = one coding-agent conversation on a device. Identified by
@@ -1068,6 +1073,9 @@ func (w *webMux) agentsList() []*Agent {
 		profile := w.onboard.ProfileForIP(a.IP)
 		if profile == "" {
 			continue
+		}
+		if _, declared := policy.Profiles[profile]; !declared {
+			a.ProfileMissing = true
 		}
 		allowed := credentialsInProfile(policy, profile)
 		if allowed == nil {

@@ -754,8 +754,7 @@ profile "default" { credentials = [] }
 	if cp.UnknownPeer != config.UnknownPeerNoProfile {
 		t.Fatalf("UnknownPeer = %q", cp.UnknownPeer)
 	}
-	// Registered — an unregistered name means "no mapping established"
-	// to the dispatcher, which answers it by searching every profile.
+	// Registered as a profile that declares nothing.
 	prof, ok := cp.Profiles[config.UnknownPeerEmptyProfile]
 	if !ok {
 		t.Fatal("empty profile not registered")

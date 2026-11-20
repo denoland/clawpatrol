@@ -495,13 +495,14 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 const UnknownPeerNoProfile = "no_profile"
 
 // UnknownPeerEmptyProfile is the profile name profileFor hands a peer
-// that has no devices row when defaults.unknown_peer = "no_profile". It
-// is registered as a real but empty CompiledProfile, and the
-// registration is what makes it withhold: an unregistered name means
-// "no peer-to-profile mapping established" to HostEndpoint and
-// pickEndpointForProfile, and both answer that by searching every
-// profile instead. A registered profile that declares no endpoint and no
-// credential resolves to nothing.
+// it serves nothing: one that has no devices row when
+// defaults.unknown_peer = "no_profile", and a device whose row names a
+// profile the policy does not declare. Under no_profile it is
+// registered as a real but empty CompiledProfile, which declares no
+// endpoint and no credential and so resolves to nothing. Where it is
+// not registered it withholds just the same, because dispatch gives a
+// non-empty profile name the policy does not declare no endpoint and no
+// credential.
 //
 // The NUL byte puts the name out of normal reach — nobody writes one in
 // a config file by accident — but HCL can express it as \u0000 in a
