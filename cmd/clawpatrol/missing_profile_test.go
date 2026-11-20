@@ -178,10 +178,9 @@ func TestLogMissingProfileRateLimit(t *testing.T) {
 	if lines() != 1 {
 		t.Fatalf("logged %d lines, want 1", lines())
 	}
-	v, _ := g.missingProfileLogged.Load(ip)
-	note := v.(missingProfileNote)
+	note := g.missingProfileLogged[ip]
 	note.at = note.at.Add(-missingProfileLogInterval - 1)
-	g.missingProfileLogged.Store(ip, note)
+	g.missingProfileLogged[ip] = note
 	g.profileFor(ip)
 	if lines() != 2 {
 		t.Fatalf("logged %d lines after the interval, want 2", lines())
@@ -193,37 +192,41 @@ func TestLogMissingProfileRateLimit(t *testing.T) {
 	}
 }
 
-// A config that declares no profile at all is single-tenant. A device
-// whose row carries no profile is served under the empty name, which
-// still reaches the endpoint that claims its destination and that
-// endpoint's sole credential. A device whose row does name a profile
-// is still an orphan there.
+// A config that declares no profile at all is single-tenant, and the
+// name on a device row scopes nothing there: onboarding stores a
+// `join --profile` suggestion verbatim because it has nothing to check
+// it against. Such a device is served like one with no profile on its
+// row, and is not reported as missing its profile.
 func TestProfileForNoProfilesDeclared(t *testing.T) {
 	const blankIP = "100.1.1.1"
-	const orphanIP = "100.1.1.2"
+	const namedIP = "100.1.1.2"
 	r := newOnboardRegistry()
 	r.knownDeviceIPs[blankIP] = true
-	r.AssignProfile(orphanIP, "removed")
-	g := &Gateway{onboard: r}
+	r.AssignProfile(namedIP, "suggested")
+	g := &Gateway{onboard: r, agents: NewAgentRegistry()}
+	g.agents.onboard = r
+	g.agents.Seed(namedIP)
 	policy := loadMissingProfilePolicy(t, g, "")
-	captureLog(t)
+	logged := captureLog(t)
 
-	for _, ip := range []string{blankIP, "100.9.9.9"} {
+	for ip, want := range map[string]string{blankIP: "", "100.9.9.9": "", namedIP: "suggested"} {
 		profile := g.profileFor(ip)
-		if profile != "" {
-			t.Fatalf("profileFor(%s) = %q under a profile-less config, want the empty name", ip, profile)
+		if profile != want {
+			t.Fatalf("profileFor(%s) = %q under a profile-less config, want %q", ip, profile, want)
 		}
 		eps, creds := reachable(policy, profile)
 		if strings.Join(eps, ",") != "db" || !strings.Contains(strings.Join(creds, ","), "db-cred") {
 			t.Fatalf("%s reaches endpoints %v credentials %v, want db / db-cred", ip, eps, creds)
 		}
 	}
-	profile := g.profileFor(orphanIP)
-	if profile != config.UnknownPeerEmptyProfile {
-		t.Fatalf("profileFor(%s) = %q, want the reserved empty profile", orphanIP, profile)
+	if logged.Len() != 0 {
+		t.Fatalf("logged under a profile-less config: %q", logged.String())
 	}
-	if eps, creds := reachable(policy, profile); len(eps) != 0 || len(creds) != 0 {
-		t.Fatalf("orphan reaches endpoints %v credentials %v, want none", eps, creds)
+	w := &webMux{g: g, onboard: r}
+	for _, a := range w.agentsList() {
+		if a.ProfileMissing {
+			t.Fatalf("%s flagged as missing its profile under a profile-less config", a.IP)
+		}
 	}
 }
 

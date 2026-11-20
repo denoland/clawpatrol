@@ -772,9 +772,11 @@ profile "kept" { credentials = [bearer_token.api-tok, postgres_credential.db-cre
 	}
 }
 
-// A config that declares no profile at all is single-tenant: the peer
-// is served under the empty profile name and the endpoint's sole
-// credential is what it gets.
+// A config that declares no profile at all is single-tenant: the name
+// a peer is served under scopes nothing, and the endpoint's sole
+// credential is what it gets. Onboarding stores a `join --profile`
+// suggestion verbatim under such a config, so a named peer is as
+// ordinary there as an unnamed one.
 func TestResolveCredentialNoProfilesDeclared(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "postgres" "db" { host = "db.example.com:5432" }
@@ -782,13 +784,41 @@ credential "postgres_credential" "db-cred" { endpoint = postgres.db }
 `)
 	ep := cp.Endpoints["db"]
 	req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}
-	got := runtime.ResolveCredential(cp, "", ep, req)
-	if got == nil || got.Credential.Symbol.Name != "db-cred" {
-		t.Fatalf("empty profile under a profile-less config: got %+v, want db-cred", got)
+	for _, profile := range []string{"", "suggested"} {
+		got := runtime.ResolveCredential(cp, profile, ep, req)
+		if got == nil || got.Credential.Symbol.Name != "db-cred" {
+			t.Fatalf("profile %q under a profile-less config: got %+v, want db-cred", profile, got)
+		}
 	}
-	// A named profile is still an undeclared one here.
-	if got := runtime.ResolveCredential(cp, "removed", ep, req); got != nil {
-		t.Fatalf("undeclared profile resolved credential %s", got.Credential.Symbol.Name)
+}
+
+// With profiles declared, the empty name is as undeclared as any other
+// and gets nothing; and under unknown_peer = "no_profile" the reserved
+// profile does not count as a declared one.
+func TestResolveCredentialEmptyNameAndReservedProfile(t *testing.T) {
+	const base = `
+endpoint "postgres" "db" { host = "db.example.com:5432" }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+`
+	req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}
+
+	cp := compileFixture(t, base+`profile "kept" { credentials = [postgres_credential.db-cred] }`)
+	if !cp.DeclaresProfiles() {
+		t.Fatal("DeclaresProfiles = false with a profile declared")
+	}
+	if got := runtime.ResolveCredential(cp, "", cp.Endpoints["db"], req); got != nil {
+		t.Fatalf("empty name under declared profiles resolved credential %s", got.Credential.Symbol.Name)
+	}
+
+	cp = compileFixture(t, base+`defaults { unknown_peer = "no_profile" }`)
+	if cp.DeclaresProfiles() {
+		t.Fatal("DeclaresProfiles = true with only the reserved profile registered")
+	}
+	if got := runtime.ResolveCredential(cp, config.UnknownPeerEmptyProfile, cp.Endpoints["db"], req); got != nil {
+		t.Fatalf("reserved profile resolved credential %s", got.Credential.Symbol.Name)
+	}
+	if got := runtime.ResolveCredential(cp, "suggested", cp.Endpoints["db"], req); got == nil {
+		t.Fatal("named peer under a profile-less config got no credential")
 	}
 }
 

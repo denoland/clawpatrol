@@ -388,10 +388,10 @@ type Gateway struct {
 	credSaveLocks sync.Map
 
 	// missingProfileLogged rate-limits the log line for a device whose
-	// assigned profile the policy no longer declares (device IP ->
-	// missingProfileNote). See declaredProfile. Bounded by the number
-	// of devices.
-	missingProfileLogged sync.Map
+	// assigned profile the policy no longer declares. Keyed by device
+	// IP, so bounded by the number of devices. See declaredProfile.
+	missingProfileMu     sync.Mutex
+	missingProfileLogged map[string]missingProfileNote
 
 	// cfg is the live operational *config.Gateway. Stored as an
 	// atomic pointer because dashboard handlers and the reload loop
@@ -563,16 +563,31 @@ type missingProfileNote struct {
 // serving on the next connection, and one that comes back resumes.
 // Before the first policy is loaded there is nothing to check against
 // and nothing to dispatch to, so the row's name is returned as is.
+//
+// A config that declares no profile at all is the exception. It is
+// single-tenant, onboarding stores whatever `join --profile` suggested
+// because there is nothing to validate it against, and the name scopes
+// nothing: such a device is served exactly like one with no profile on
+// its row.
 func (g *Gateway) declaredProfile(deviceIP, profile string) string {
 	policy := g.Policy()
-	if policy == nil {
-		return profile
-	}
-	if _, ok := policy.Profiles[profile]; ok {
+	if !profileMissing(policy, profile) {
 		return profile
 	}
 	g.logMissingProfile(deviceIP, profile)
 	return config.UnknownPeerEmptyProfile
+}
+
+// profileMissing reports whether a device row's profile names something
+// the policy does not declare, under a policy that declares profiles.
+func profileMissing(policy *config.CompiledPolicy, profile string) bool {
+	if policy == nil || profile == "" {
+		return false
+	}
+	if _, ok := policy.Profiles[profile]; ok {
+		return false
+	}
+	return policy.DeclaresProfiles()
 }
 
 // logMissingProfile tells the operator that a device is assigned to a
@@ -586,12 +601,17 @@ func (g *Gateway) logMissingProfile(deviceIP, profile string) {
 		deviceIP = g.onboard.AgentIPFor(deviceIP)
 	}
 	now := time.Now()
-	if v, ok := g.missingProfileLogged.Load(deviceIP); ok {
-		if n := v.(missingProfileNote); n.profile == profile && now.Sub(n.at) < missingProfileLogInterval {
-			return
-		}
+	g.missingProfileMu.Lock()
+	n, seen := g.missingProfileLogged[deviceIP]
+	if seen && n.profile == profile && now.Sub(n.at) < missingProfileLogInterval {
+		g.missingProfileMu.Unlock()
+		return
 	}
-	g.missingProfileLogged.Store(deviceIP, missingProfileNote{profile: profile, at: now})
+	if g.missingProfileLogged == nil {
+		g.missingProfileLogged = map[string]missingProfileNote{}
+	}
+	g.missingProfileLogged[deviceIP] = missingProfileNote{profile: profile, at: now}
+	g.missingProfileMu.Unlock()
 	name := deviceIP
 	if g.onboard != nil {
 		if h := g.onboard.HostnameForIP(deviceIP); h != "" {
@@ -615,9 +635,9 @@ func (g *Gateway) logMissingProfile(deviceIP, profile string) {
 // device reaching the gateway on its other address is still that
 // device.
 //
-// Returning "" here would not withhold everything: the empty name is
-// the single-tenant case to pickEndpointForProfile and to credential
-// dispatch, which serve it the first candidate endpoint and an
+// Returning "" here would not withhold everything: under a config that
+// declares no profile, pickEndpointForProfile and credential dispatch
+// serve any unregistered name the first candidate endpoint and an
 // endpoint's sole credential. The no_profile arm names a registered but
 // empty profile instead, which resolves to no endpoint at all.
 func (g *Gateway) unknownPeerProfile(peerIP string) string {
@@ -2490,18 +2510,19 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 // profileHasEndpoint reports whether a peer served under profile may be
 // routed to the named endpoint.
 //
-// The empty profile name is the single-tenant case — the config
-// declares no profile, so nothing scopes endpoints — and reaches every
-// endpoint. Any other name reaches only the endpoints its profile
-// carries, and a name the policy does not declare reaches none: it is a
-// device row that outlived its profile block, not a missing mapping.
+// A declared profile reaches the endpoints it carries. A config that
+// declares no profile is single-tenant: nothing scopes endpoints, so
+// every peer reaches every endpoint whatever name it is served under.
+// Once the config declares any profile, a name it does not declare
+// reaches none: it is a device row that outlived its profile block, not
+// a missing mapping.
 func profileHasEndpoint(policy *config.CompiledPolicy, profile, endpoint string) bool {
-	if policy == nil || profile == "" {
+	if policy == nil {
 		return true
 	}
 	prof, ok := policy.Profiles[profile]
 	if !ok {
-		return false
+		return !policy.DeclaresProfiles()
 	}
 	_, in := prof.Endpoints[endpoint]
 	return in

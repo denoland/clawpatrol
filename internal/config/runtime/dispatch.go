@@ -378,16 +378,16 @@ func disambiguatorMatches(d map[string]string, req *match.Request, sentPlacehold
 // profileCredentialsAt returns the per-endpoint dispatch entries for
 // the named profile.
 //
-// The empty profile name is the single-tenant case: the config declares
-// no profile, so there is no per-profile dispatch table and the peer is
-// served under no name at all. There the endpoint's sole globally bound
+// A config that declares no profile at all is single-tenant: there is
+// no per-profile dispatch table, and whatever name the peer is served
+// under means nothing. There the endpoint's sole globally bound
 // credential is synthesized, so a config written without profiles still
 // injects auth.
 //
-// Any other name the policy does not declare gets nothing. Such a name
-// comes from a device row that outlived its profile block; handing it
-// the endpoint's only credential would give the device credentials its
-// profile never carried.
+// Once the config declares any profile, a name it does not declare gets
+// nothing. Such a name comes from a device row that outlived its
+// profile block; handing it the endpoint's only credential would give
+// the device credentials its profile never carried.
 func profileCredentialsAt(policy *config.CompiledPolicy, profile, epName string) []*config.CompiledCredential {
 	if policy == nil {
 		return nil
@@ -395,7 +395,7 @@ func profileCredentialsAt(policy *config.CompiledPolicy, profile, epName string)
 	if prof, ok := policy.Profiles[profile]; ok {
 		return prof.EndpointCredentials[epName]
 	}
-	if profile != "" {
+	if policy.DeclaresProfiles() {
 		return nil
 	}
 	ep, ok := policy.Endpoints[epName]

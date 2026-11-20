@@ -1074,9 +1074,7 @@ func (w *webMux) agentsList() []*Agent {
 		if profile == "" {
 			continue
 		}
-		if _, declared := policy.Profiles[profile]; !declared {
-			a.ProfileMissing = true
-		}
+		a.ProfileMissing = profileMissing(policy, profile)
 		allowed := credentialsInProfile(policy, profile)
 		if allowed == nil {
 			// No profile filter — surface every declared credential.

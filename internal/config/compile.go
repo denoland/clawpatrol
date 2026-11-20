@@ -500,9 +500,9 @@ const UnknownPeerNoProfile = "no_profile"
 // profile the policy does not declare. Under no_profile it is
 // registered as a real but empty CompiledProfile, which declares no
 // endpoint and no credential and so resolves to nothing. Where it is
-// not registered it withholds just the same, because dispatch gives a
-// non-empty profile name the policy does not declare no endpoint and no
-// credential.
+// not registered it withholds just the same: profileFor only hands it
+// out under a policy that declares profiles, and there dispatch gives a
+// name the policy does not declare no endpoint and no credential.
 //
 // The NUL byte puts the name out of normal reach — nobody writes one in
 // a config file by accident — but HCL can express it as \u0000 in a
@@ -516,6 +516,24 @@ const UnknownPeerEmptyProfile = "\x00unknown-peer"
 // generated HCL.
 func IsReservedProfile(name string) bool {
 	return name == UnknownPeerEmptyProfile
+}
+
+// DeclaresProfiles reports whether the operator declared at least one
+// profile. A policy that declares none is single-tenant: nothing scopes
+// endpoints or credentials to a profile, so the profile name a peer is
+// served under carries no meaning there. Once any profile is declared,
+// a name the policy does not know is a stale one and resolves to
+// nothing.
+func (cp *CompiledPolicy) DeclaresProfiles() bool {
+	if cp == nil {
+		return false
+	}
+	for name := range cp.Profiles {
+		if !IsReservedProfile(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // compileUnknownPeerProfile registers UnknownPeerEmptyProfile when the
