@@ -167,11 +167,10 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 // (so TLS verification keeps working) but surface the error so the
 // caller can warn the operator.
 func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
-	// Pin the gateway fetcher to the direct-HTTP path — on darwin the
-	// init() in run_tsnet_darwin.go rewires this to the NE session
-	// socket, which would dial /tmp/clawpatrol.sock and return whatever
-	// the host's running NE happens to have to say, instead of the
-	// gateway-URL-missing error this test exercises.
+	// Pin the gateway fetcher to the direct-HTTP path. The darwin init
+	// installs a mode-aware fetcher, and this test wants the missing
+	// gateway URL error from that HTTP path rather than whatever a
+	// local Network Extension would answer in tailscale mode.
 	prev := envPushdownGatewayFetcher
 	prevDaemon := envPushdownDaemonFetcher
 	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
