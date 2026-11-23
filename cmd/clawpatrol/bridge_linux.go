@@ -60,6 +60,10 @@ func (s *bridgeSession) close() {
 
 // bridgeRun is the resident, privileged data plane behind `clawpatrol bridge`.
 func bridgeRun(ctx context.Context, opt bridgeOptions) error {
+	// The handoff volume survives a restart of only the sidecar.
+	if err := clearBridgeReady(opt.ReadyFile); err != nil {
+		return err
+	}
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -90,23 +94,28 @@ func bridgeRun(ctx context.Context, opt bridgeOptions) error {
 
 		select {
 		case <-sigCtx.Done():
-			// Graceful shutdown: best-effort deregister (bounded so a hung
-			// gateway/DNS call can't delay pod termination past the grace
-			// period), then tear the tunnel down. The netns goes with the pod.
+		case <-sess.reconnect:
+		}
+		clearErr := clearBridgeReady(opt.ReadyFile)
+		if sigCtx.Err() != nil {
+			// Bound best-effort deregistration so a hung gateway or DNS call
+			// cannot delay Pod termination, then tear the tunnel down.
 			delCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			enrollmentDeregister(delCtx, opt.GatewayURL, sess.apiToken)
 			cancel()
 			sess.close()
-			return nil
-		case <-sess.reconnect:
-			// The watchdog gave up on this session. Tear it down — egress fails
-			// closed during the gap — and loop: bring-up re-discovers DNS +
-			// underlay and reconciles the tagged pins before re-enrolling. Skip
-			// deregister: the peer is either reaped already or reused by IP.
-			st.reconnects++
-			log.Printf("bridge: liveness lost — reconnecting in-process (reconnect #%d)", st.reconnects)
-			sess.close()
+			return clearErr
 		}
+		// The watchdog gave up on this session. Tunnel egress fails closed
+		// during the gap. Bring-up re-discovers DNS and the underlay before it
+		// re-enrolls; skip deregister, because the peer is reaped already or
+		// reused by IP.
+		sess.close()
+		if clearErr != nil {
+			return clearErr
+		}
+		st.reconnects++
+		log.Printf("bridge: liveness lost — reconnecting in-process (reconnect #%d)", st.reconnects)
 	}
 }
 
@@ -280,6 +289,9 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 			return nil, err
 		}
 		st.handoffWritten = true
+	}
+	if err := writeBridgeReady(opt.ReadyFile); err != nil {
+		return nil, err
 	}
 
 	// Watchdog: rx_bytes is the cheap positive signal, an ICMP echo to the
@@ -487,9 +499,6 @@ func writeTunFiles(opt bridgeOptions, vars []pushdownEnvVar, caPEM string) error
 	if err := os.MkdirAll(filepath.Dir(opt.CAOut), 0o755); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(opt.ReadyFile), 0o755); err != nil {
-		return err
-	}
 	if caPEM != "" {
 		if err := os.WriteFile(opt.CAOut, []byte(caPEM), 0o644); err != nil {
 			return fmt.Errorf("write ca: %w", err)
@@ -508,7 +517,21 @@ func writeTunFiles(opt bridgeOptions, vars []pushdownEnvVar, caPEM string) error
 	if err := os.WriteFile(opt.EnvOut, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write env: %w", err)
 	}
-	if err := os.WriteFile(opt.ReadyFile, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+	return nil
+}
+
+func clearBridgeReady(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear ready: %w", err)
+	}
+	return nil
+}
+
+func writeBridgeReady(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := atomicWriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write ready: %w", err)
 	}
 	return nil

@@ -3,15 +3,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
@@ -247,4 +251,151 @@ func restoreDefaultRoute(t *testing.T) {
 			t.Errorf("restore default route %q: %v\n%s", orig, err, out)
 		}
 	})
+}
+
+// With loose rp_filter and no main-table default (the tunnel is gone), a
+// reply to a marked control-plane socket is accepted only because of the
+// loopback fallback route.
+func TestMarkedRepliesWithoutTunnelInNetns(t *testing.T) {
+	if os.Getenv("CLAWPATROL_NETNS_TEST") != "1" {
+		t.Skip("set CLAWPATROL_NETNS_TEST=1 to change this network namespace's routes")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	restoreDefaultRoute(t)
+	peer := exec.Command("sleep", "infinity")
+	peer.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNET}
+	if err := peer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Process.Kill(); _ = peer.Wait() })
+	pid := strconv.Itoa(peer.Process.Pid)
+	peerRun := func(args ...string) string {
+		t.Helper()
+		return run(append([]string{"nsenter", "-t", pid, "-n", "--"}, args...)...)
+	}
+	const gw, server = "10.47.0.1", "10.47.0.140"
+	run("ip", "link", "add", "veth-under", "type", "veth", "peer", "name", "cni", "netns", pid)
+	run("ip", "link", "set", "veth-under", "up")
+	run("ip", "addr", "add", "10.47.0.22/32", "dev", "veth-under")
+	peerRun("ip", "link", "set", "lo", "up")
+	peerRun("ip", "link", "set", "cni", "up")
+	peerRun("ip", "addr", "add", gw+"/32", "dev", "cni")
+	peerRun("ip", "addr", "add", server+"/32", "dev", "cni")
+	peerRun("ip", "route", "add", "10.47.0.22/32", "dev", "cni")
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "link", "del", "veth-under").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
+		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
+		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
+	})
+	for _, scope := range []string{"all", "veth-under"} {
+		for key, value := range map[string]string{"rp_filter": "2", "src_valid_mark": "0"} {
+			if err := os.WriteFile("/proc/sys/net/ipv4/conf/"+scope+"/"+key, []byte(value), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	under := linuxDefaultRoute{Via: gw, Dev: "veth-under", OnLink: true}
+	if err := installUnderlayRouting(under, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
+		t.Fatal(err)
+	}
+	// No main-table default other than the loopback fallback.
+	for _, line := range strings.Split(strings.TrimSpace(run("ip", "-4", "route", "show", "default")), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && !strings.Contains(line, "dev lo ") {
+			run(append([]string{"ip", "-4", "route", "del"}, f...)...)
+		}
+	}
+	if route := run("ip", "-4", "route", "get", server); !strings.Contains(route, "dev lo") {
+		t.Fatalf("unmarked route without the tunnel: %s", route)
+	}
+
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := startBridgeBootstrapPeer(t, bin, pid, server)
+	if err := markedBootstrapRoundTrip(addr, defaultBridgeFwmark); err != nil {
+		t.Fatalf("marked reply with the loopback fallback: %v", err)
+	}
+	run("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric)
+	if err := markedBootstrapRoundTrip(addr, defaultBridgeFwmark); !os.IsTimeout(err) {
+		t.Fatalf("marked reply without any main default: %v, want timeout", err)
+	}
+}
+
+func startBridgeBootstrapPeer(t *testing.T, bin, pid, addr string) string {
+	t.Helper()
+	cmd := exec.Command("nsenter", "-t", pid, "-n", "--", bin, "-test.run=^TestBridgeBootstrapPeer$")
+	cmd.Env = append(os.Environ(), "CLAWPATROL_TEST_BOOTSTRAP_PEER="+addr)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	endpoint, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("open bootstrap peer: %v", err)
+	}
+	return strings.TrimSpace(endpoint)
+}
+
+func markedBootstrapRoundTrip(addr string, mark int) error {
+	dialer := net.Dialer{Timeout: time.Second, Control: markControl(mark)}
+	conn, err := dialer.DialContext(context.Background(), "udp4", addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
+	}
+	if _, err := conn.Write([]byte{1}); err != nil {
+		return err
+	}
+	var reply [1]byte
+	if _, err := conn.Read(reply[:]); err != nil {
+		return err
+	}
+	if reply[0] != 1 {
+		return fmt.Errorf("unexpected bootstrap reply: %v", reply)
+	}
+	return nil
+}
+
+func TestBridgeBootstrapPeer(t *testing.T) {
+	addr := os.Getenv("CLAWPATROL_TEST_BOOTSTRAP_PEER")
+	if addr == "" {
+		t.Skip("helper for the isolated packet test")
+	}
+	conn, err := net.ListenPacket("udp4", net.JoinHostPort(addr, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintln(os.Stdout, conn.LocalAddr())
+	var packet [32]byte
+	for {
+		n, peer, err := conn.ReadFrom(packet[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.WriteTo(packet[:n], peer); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

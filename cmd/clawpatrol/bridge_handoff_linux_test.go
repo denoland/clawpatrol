@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,5 +77,39 @@ func TestWriteTunFilesDropsGatewayCAVars(t *testing.T) {
 	}
 	if !strings.Contains(string(env), `export EXAMPLE="value"`) {
 		t.Fatalf("non-CA var missing from the env file:\n%s", env)
+	}
+}
+
+func TestBridgeClearsStaleReadyOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	opt := bridgeOptions{
+		AuthorizerType: "unsupported",
+		FWMark:         defaultBridgeFwmark,
+		EnvOut:         filepath.Join(dir, "env"),
+		ReadyFile:      filepath.Join(dir, "ready"),
+	}
+	for path, data := range map[string]string{opt.EnvOut: "existing handoff", opt.ReadyFile: "old readiness"} {
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolver, client := bridgeResolver, enrollmentHTTPClient
+	t.Cleanup(func() { bridgeResolver, enrollmentHTTPClient = resolver, client })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := bridgeRun(ctx, opt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(opt.ReadyFile); !os.IsNotExist(err) {
+		t.Fatalf("old readiness marker survived startup: %v", err)
+	}
+	if err := writeBridgeReady(opt.ReadyFile); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(opt.ReadyFile); err != nil || string(data) == "old readiness" || len(data) == 0 {
+		t.Fatalf("new readiness marker = %q, err = %v", data, err)
+	}
+	if data, err := os.ReadFile(opt.EnvOut); err != nil || string(data) != "existing handoff" {
+		t.Fatalf("handoff after a readiness update = %q, err = %v", data, err)
 	}
 }

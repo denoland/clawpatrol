@@ -57,6 +57,11 @@ spec:
           command: ["test", "-f", "/clawpatrol/ready"]
         periodSeconds: 1
         failureThreshold: 120
+      readinessProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 3
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -154,6 +159,11 @@ spec:
           command: ["test", "-f", "/clawpatrol/ready"]
         periodSeconds: 1
         failureThreshold: 120
+      readinessProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 3
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:

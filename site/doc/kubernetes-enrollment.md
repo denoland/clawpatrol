@@ -269,6 +269,11 @@ initContainers:
         command: ["test", "-f", "/clawpatrol/ready"]
       periodSeconds: 1
       failureThreshold: 120
+    readinessProbe:
+      exec:
+        command: ["test", "-f", "/clawpatrol/ready"]
+      periodSeconds: 1
+      failureThreshold: 3
     securityContext:
       allowPrivilegeEscalation: false
       capabilities:
@@ -395,10 +400,18 @@ On startup, the bridge:
 6. writes `/clawpatrol/ready`.
 
 When tunnel connectivity is lost, the bridge first attempts a local tunnel
-rebuild. If connectivity remains unavailable, it re-enrolls without exiting
-the container. Traffic through the tunnel fails closed while the tunnel is
-unavailable, and a
-re-enrolling bridge keeps its peer IP when it represents the same subject.
+rebuild. If connectivity remains unavailable, it clears the readiness marker
+and re-enrolls without exiting the container. The readiness probe marks the
+Pod unready during this gap. On a container restart, the bridge also clears
+any marker left in the shared volume and writes it again after the new
+tunnel passes its health checks. Traffic through the tunnel fails closed
+during the gap, and a re-enrolling bridge keeps its peer IP for the same
+subject.
+
+After a restart of only the bridge container, its startup probe runs again.
+The bridge must enroll and pass its health checks within the startup budget
+(120 s with `periodSeconds: 1` and `failureThreshold: 120`), or the kubelet
+restarts it again.
 
 Recovery does not increment the container restart count. Use the bridge
 lifecycle logs to observe local rebuilds and re-enrollment.

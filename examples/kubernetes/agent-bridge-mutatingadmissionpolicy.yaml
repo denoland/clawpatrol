@@ -229,6 +229,13 @@ spec:
                   "periodSeconds": dyn(1),
                   "failureThreshold": dyn(120)
                 }),
+                "readinessProbe": dyn({
+                  "exec": dyn({
+                    "command": dyn(["test", "-f", "/clawpatrol/ready"])
+                  }),
+                  "periodSeconds": dyn(1),
+                  "failureThreshold": dyn(3)
+                }),
                 "securityContext": dyn({
                   "allowPrivilegeEscalation": dyn(false),
                   "capabilities": dyn({
@@ -301,6 +308,13 @@ spec:
                   }),
                   "periodSeconds": dyn(1),
                   "failureThreshold": dyn(120)
+                }),
+                "readinessProbe": dyn({
+                  "exec": dyn({
+                    "command": dyn(["test", "-f", "/clawpatrol/ready"])
+                  }),
+                  "periodSeconds": dyn(1),
+                  "failureThreshold": dyn(3)
                 }),
                 "securityContext": dyn({
                   "allowPrivilegeEscalation": dyn(false),
