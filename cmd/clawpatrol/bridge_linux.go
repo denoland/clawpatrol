@@ -223,6 +223,12 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		}
 		log.Printf("bridge: WARNING: %v. Set the pod sysctl net.ipv4.ping_group_range=\"0 2147483647\" or keep NET_RAW on the bridge container. Until then the watchdog uses WireGuard handshake age, which detects a dead tunnel more slowly.", err)
 		prober = nil
+	} else {
+		kind := "datagram"
+		if prober.raw {
+			kind = "raw"
+		}
+		log.Printf("bridge: liveness probe uses a %s ICMP socket", kind)
 	}
 	defer func() {
 		if !ok {

@@ -37,6 +37,15 @@ The script validates:
 - rx_bytes liveness (a live tunnel holds its peer past the liveness window),
 - sidecar self-heal (a severed tunnel drives in-process re-enrollment with a
   fresh key at the reused peer IP and no container restart),
+- bridge variants: the raw ICMP socket fallback, the handshake-age watchdog
+  when no ICMP socket opens, with no reconnect on a healthy tunnel (set
+  `CLAWPATROL_E2E_CHECK_VARIANTS=0` to skip),
+- the example MutatingAdmissionPolicy, applied from
+  `examples/kubernetes/` with the e2e namespace, gateway, and image: it
+  injects the bridge and the `ping_group_range` sysctl, keeps existing
+  sysctls, skips hostNetwork and opted-out Pods, and an injected Pod enrolls
+  (set `CLAWPATROL_E2E_CHECK_ADMISSION=0` to skip; skipped when the cluster
+  does not serve `MutatingAdmissionPolicy` v1),
 - graceful deregistration and peer revocation.
 
 By default the script deletes the e2e namespaces and cluster-scoped RBAC

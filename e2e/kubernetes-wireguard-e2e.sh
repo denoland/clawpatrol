@@ -15,6 +15,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OVERLAY="${ROOT}/e2e/kubernetes-wireguard-e2e-overlay"
 DOCKERFILE="${ROOT}/Dockerfile"
+VARIANTS="${ROOT}/e2e/kubernetes-wireguard-e2e-variants.yaml"
+ADMISSION_POLICY="${ROOT}/examples/kubernetes/agent-bridge-mutatingadmissionpolicy.yaml"
 
 CLUSTER_NAME="${CLAWPATROL_E2E_CLUSTER:-kind}"
 KUBE_CONTEXT="${CLAWPATROL_E2E_CONTEXT:-kind-${CLUSTER_NAME}}"
@@ -24,6 +26,8 @@ KEEP_RESOURCES="${CLAWPATROL_E2E_KEEP_RESOURCES:-0}"
 CHECK_LIVENESS="${CLAWPATROL_E2E_CHECK_LIVENESS:-1}"
 CHECK_EXPIRY="${CLAWPATROL_E2E_CHECK_EXPIRY:-0}"
 CHECK_ESCALATION="${CLAWPATROL_E2E_CHECK_ESCALATION:-1}"
+CHECK_VARIANTS="${CLAWPATROL_E2E_CHECK_VARIANTS:-1}"
+CHECK_ADMISSION="${CLAWPATROL_E2E_CHECK_ADMISSION:-1}"
 GOARCH_OVERRIDE="${CLAWPATROL_E2E_GOARCH:-}"
 
 # These are fixed by the overlay (images: transformer, namespaces, RBAC
@@ -61,6 +65,11 @@ Environment knobs:
                                  (gateway → 0 → ICMP probe fails → sidecar fails
                                  closed and re-enrolls in process with a fresh
                                  key, no container restart)
+  CLAWPATROL_E2E_CHECK_VARIANTS  set 0 to skip the bridge variants (raw ICMP
+                                 socket, no ICMP socket)
+  CLAWPATROL_E2E_CHECK_ADMISSION set 0 to skip the example admission policy
+                                 check (skipped anyway when the cluster does
+                                 not serve MutatingAdmissionPolicy v1)
   CLAWPATROL_E2E_GOARCH          override node arch for the Linux build
 
 Image tag, namespaces, peer TTL, and RBAC names live in the overlay
@@ -98,6 +107,8 @@ wait_until() {
 }
 
 cleanup_cluster() {
+  "${KUBECTL[@]}" delete mutatingadmissionpolicybinding clawpatrol-agent-bridge --ignore-not-found >/dev/null 2>&1 || true
+  "${KUBECTL[@]}" delete mutatingadmissionpolicy clawpatrol-agent-bridge --ignore-not-found >/dev/null 2>&1 || true
   "${KUBECTL[@]}" delete clusterrolebinding "${CLUSTER_ROLE_NAME}" --ignore-not-found >/dev/null 2>&1 || true
   "${KUBECTL[@]}" delete clusterrole "${CLUSTER_ROLE_NAME}" --ignore-not-found >/dev/null 2>&1 || true
   "${KUBECTL[@]}" delete namespace "${AGENTS_NS}" "${GATEWAY_NS}" --ignore-not-found --wait=true --timeout="${TIMEOUT}" >/dev/null 2>&1 || true
@@ -347,6 +358,112 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   wait_until "tunnel restored after self-heal" 60 \
     agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
   log "sidecar self-healed in-process: 0 container restarts, re-enrolled ${PEER_IP} with a fresh key"
+fi
+
+if [[ "${CHECK_VARIANTS}" == "1" ]]; then
+  log "starting bridge variants: raw ICMP socket, no ICMP socket"
+  VARIANT_PODS=(clawpatrol-agent-raw-probe clawpatrol-agent-no-probe)
+  variant_exec() { local pod="$1"; shift; "${KUBECTL[@]}" -n "${AGENTS_NS}" exec "${pod}" -c agent -- "$@"; }
+  bridge_log() { "${KUBECTL[@]}" -n "${AGENTS_NS}" logs "$1" -c clawpatrol-bridge; }
+  variant_absent() { [[ "$(sqlite_query "SELECT count(*) FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/$1';" 2>/dev/null || printf '1')" -eq 0 ]]; }
+  "${KUBECTL[@]}" apply -f "${VARIANTS}"
+  for pod in "${VARIANT_PODS[@]}"; do
+    "${KUBECTL[@]}" -n "${AGENTS_NS}" wait --for=condition=Ready "pod/${pod}" --timeout="${TIMEOUT}"
+    wait_until "${pod} reaches the echo service through the tunnel" 30 \
+      variant_exec "${pod}" sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
+  done
+  bridge_log clawpatrol-agent-raw-probe | grep -q 'liveness probe uses a raw ICMP socket' ||
+    fail "raw-probe bridge did not fall back to a raw ICMP socket"
+  bridge_log clawpatrol-agent-no-probe | grep -q 'icmp probe unavailable' ||
+    fail "no-probe bridge did not report the probe as unavailable"
+
+  # Without a probe the watchdog uses the handshake age. A healthy tunnel must
+  # not flap: stay past two liveness windows without a reconnect.
+  NO_PROBE_PUBKEY="$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/clawpatrol-agent-no-probe' LIMIT 1;")"
+  VARIANT_WAIT=$(( 2 * $(seconds_from_duration "${PEER_TTL}") + 10 ))
+  log "waiting ${VARIANT_WAIT}s to confirm the no-probe bridge holds its tunnel"
+  sleep "${VARIANT_WAIT}"
+  ! bridge_log clawpatrol-agent-no-probe | grep -q 'reconnecting in-process' ||
+    fail "no-probe bridge reconnected on a healthy tunnel"
+  [[ "$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/clawpatrol-agent-no-probe' LIMIT 1;")" == "${NO_PROBE_PUBKEY}" ]] ||
+    fail "no-probe bridge re-enrolled on a healthy tunnel"
+  log "no-probe bridge held its tunnel"
+
+  "${KUBECTL[@]}" delete -f "${VARIANTS}" --wait=true --timeout=60s >/dev/null
+  for pod in "${VARIANT_PODS[@]}"; do
+    wait_until "${pod} deregistered" 45 variant_absent "${pod}"
+  done
+fi
+
+if [[ "${CHECK_ADMISSION}" == "1" ]] && "${KUBECTL[@]}" api-resources --api-group=admissionregistration.k8s.io -o name | grep -qx 'mutatingadmissionpolicies.admissionregistration.k8s.io'; then
+  log "checking the example admission policy"
+  # The example is applied as-is, pointed at the e2e namespace, gateway,
+  # and image.
+  sed -e 's#kubernetes.io/metadata.name: agents$#kubernetes.io/metadata.name: '"${AGENTS_NS}"'#' \
+    -e 's#clawpatrol-api.clawpatrol.svc#clawpatrol-api.'"${GATEWAY_NS}"'.svc#g' \
+    -e 's#ghcr.io/denoland/clawpatrol:latest#'"${IMAGE}"'#g' \
+    "${ADMISSION_POLICY}" >"${WORKDIR}/admission-policy.yaml"
+  "${KUBECTL[@]}" apply -f "${WORKDIR}/admission-policy.yaml"
+
+  admission_pod() { # name, extra spec lines (indented two spaces), extra metadata lines
+    cat >"${WORKDIR}/$1.yaml" <<POD
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $1
+  namespace: ${AGENTS_NS}
+$3
+spec:
+  serviceAccountName: agent-runner
+  automountServiceAccountToken: false
+  restartPolicy: Never
+$2
+  containers:
+    - name: agent
+      image: ${IMAGE}
+      command: ["/bin/sh", "-lc", "while [ ! -f /clawpatrol/ready ]; do sleep 0.2; done; exec sleep infinity"]
+POD
+  }
+  admission_dry() { "${KUBECTL[@]}" create --dry-run=server -f "${WORKDIR}/$1.yaml" -o jsonpath="$2"; }
+  admission_pod clawpatrol-admission-plain "" ""
+  admission_pod clawpatrol-admission-sysctl "  securityContext:
+    sysctls:
+      - name: net.ipv4.ip_unprivileged_port_start
+        value: \"0\"" ""
+  admission_pod clawpatrol-admission-ping "  securityContext:
+    sysctls:
+      - name: net.ipv4.ping_group_range
+        value: \"0 1000\"" ""
+  admission_pod clawpatrol-admission-hostnet "  hostNetwork: true" ""
+  admission_pod clawpatrol-admission-optout "" "  annotations:
+    clawpatrol.dev/inject: \"false\""
+
+  admission_injects() { [[ "$(admission_dry clawpatrol-admission-plain '{.spec.initContainers[*].name}')" == *clawpatrol-bridge* ]]; }
+  wait_until "admission policy injects the bridge" 60 admission_injects
+  SYSCTLS='{range .spec.securityContext.sysctls[*]}{.name}={.value}{"\n"}{end}'
+  admission_dry clawpatrol-admission-plain "${SYSCTLS}" | grep -qx 'net.ipv4.ping_group_range=0 2147483647' ||
+    fail "admission policy did not add the ping_group_range sysctl"
+  [[ "$(admission_dry clawpatrol-admission-plain '{.metadata.labels.clawpatrol\.dev/profile}')" == "default" ]] ||
+    fail "admission policy did not add the default profile label"
+  admission_dry clawpatrol-admission-sysctl "${SYSCTLS}" | grep -qx 'net.ipv4.ip_unprivileged_port_start=0' ||
+    fail "admission policy dropped an existing sysctl"
+  admission_dry clawpatrol-admission-sysctl "${SYSCTLS}" | grep -qx 'net.ipv4.ping_group_range=0 2147483647' ||
+    fail "admission policy did not add ping_group_range next to an existing sysctl"
+  [[ "$(admission_dry clawpatrol-admission-ping "${SYSCTLS}")" == "net.ipv4.ping_group_range=0 1000" ]] ||
+    fail "admission policy changed a ping_group_range the Pod already sets"
+  [[ -z "$(admission_dry clawpatrol-admission-hostnet '{.spec.initContainers[*].name}')" ]] ||
+    fail "admission policy injected the bridge into a hostNetwork Pod"
+  [[ -z "$(admission_dry clawpatrol-admission-optout '{.spec.initContainers[*].name}')" ]] ||
+    fail "admission policy injected the bridge into an opted-out Pod"
+
+  log "checking that an injected Pod enrolls and tunnels"
+  "${KUBECTL[@]}" create -f "${WORKDIR}/clawpatrol-admission-plain.yaml"
+  "${KUBECTL[@]}" -n "${AGENTS_NS}" wait --for=condition=Ready pod/clawpatrol-admission-plain --timeout="${TIMEOUT}"
+  wait_until "injected Pod reaches the echo service through the tunnel" 30 \
+    "${KUBECTL[@]}" -n "${AGENTS_NS}" exec clawpatrol-admission-plain -c agent -- sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
+  "${KUBECTL[@]}" -n "${AGENTS_NS}" delete pod clawpatrol-admission-plain --wait=true --timeout=60s >/dev/null
+  "${KUBECTL[@]}" delete -f "${WORKDIR}/admission-policy.yaml" --ignore-not-found >/dev/null
+  log "example admission policy injects, skips hostNetwork and opted-out Pods, and keeps existing sysctls"
 fi
 
 if [[ "${CHECK_EXPIRY}" == "1" ]]; then
