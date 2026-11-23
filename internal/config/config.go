@@ -265,6 +265,17 @@ type GenAITelemetryBlock struct {
 	IncludeMessageContent bool `hcl:"include_message_content,optional"`
 }
 
+const (
+	// WireGuardDefaultMTU is the inner MTU in bytes when no override is set.
+	WireGuardDefaultMTU = 1420
+	// WireGuardMinMTU and WireGuardMaxMTU bound the inner MTU. The tunnel
+	// carries IPv6, which needs 1280. The upper limit fits a maximum-length
+	// IPv4 datagram after 20 bytes of IP, 8 of UDP, and 32 of WireGuard
+	// overhead.
+	WireGuardMinMTU = 1280
+	WireGuardMaxMTU = 65535 - 20 - 8 - 32
+)
+
 // WireGuardBlock is the body of the `wireguard { ... }` sub-block
 // inside `gateway { ... }`. Presence of the block enables the WG
 // transport.
@@ -276,6 +287,11 @@ type WireGuardBlock struct {
 	// ListenPort is the UDP port the gateway binds for WG peers.
 	// Default 51820.
 	ListenPort int `hcl:"listen_port,optional"`
+
+	// MTU is the inner packet size in bytes for the gateway WireGuard TUN
+	// and enrolled bridges. Default 1420. Changes take effect on gateway
+	// restart. `clawpatrol run` and the macOS client always use 1420.
+	MTU *int `hcl:"mtu,optional"`
 
 	// HostLoopbackPort is the TCP port the gateway binds on
 	// 127.0.0.1 for host-local clients (single-host deployments where
@@ -582,6 +598,7 @@ type JoinConfig struct {
 	WGInterface       string
 	WGEndpoint        string
 	WGListenPort      int
+	WGMTU             int
 	WGServerPub       string
 	WGSubnetCIDR      string
 	TailscaleEnabled  bool
@@ -614,6 +631,10 @@ func (g *Gateway) Join() JoinConfig {
 		jc.WGInterface = w.Interface
 		jc.WGEndpoint = w.Endpoint
 		jc.WGListenPort = w.ListenPort
+		jc.WGMTU = WireGuardDefaultMTU
+		if w.MTU != nil {
+			jc.WGMTU = *w.MTU
+		}
 		jc.WGServerPub = w.ServerPub
 		jc.WGSubnetCIDR = w.SubnetCIDR
 	}
@@ -1172,6 +1193,13 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 
 	if gw.IsWireGuardEnabled() {
 		w := gw.Settings.WireGuard
+		if w.MTU != nil && (*w.MTU < WireGuardMinMTU || *w.MTU > WireGuardMaxMTU) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid wireguard.mtu",
+				Detail:   fmt.Sprintf("mtu = %d must be between %d and %d bytes.", *w.MTU, WireGuardMinMTU, WireGuardMaxMTU),
+			})
+		}
 		if w.SubnetCIDR == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,

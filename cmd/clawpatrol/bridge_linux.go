@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config"
+
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
@@ -155,11 +157,13 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	if err != nil {
 		return nil, err
 	}
-	if registerResp.MTU != 0 {
-		opt.MTU = registerResp.MTU
+	opt.MTU = bridgeEffectiveMTU(registerResp.MTU, opt.MTU)
+	if registerResp.MTU != 0 && registerResp.MTU != opt.MTU {
+		log.Printf("bridge: gateway mtu=%d is outside %d-%d; using --mtu=%d",
+			registerResp.MTU, config.WireGuardMinMTU, config.WireGuardMaxMTU, opt.MTU)
 	}
-	log.Printf("bridge: enrolled peer_ip=%s keepalive=%ds reap_count=%d gateway_tunnel_ip=%s",
-		registerResp.PeerIP, registerResp.KeepaliveIntervalSeconds, registerResp.KeepaliveReapCount, registerResp.GatewayTunnelIP)
+	log.Printf("bridge: enrolled peer_ip=%s mtu=%d keepalive=%ds reap_count=%d gateway_tunnel_ip=%s",
+		registerResp.PeerIP, opt.MTU, registerResp.KeepaliveIntervalSeconds, registerResp.KeepaliveReapCount, registerResp.GatewayTunnelIP)
 
 	endpointIP, endpointAddr, err := resolveWGEndpoint(registerResp.Endpoint)
 	if err != nil {

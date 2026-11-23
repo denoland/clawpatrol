@@ -1031,6 +1031,9 @@ func (g *Gateway) reloadConfigFromFileLocked(path string) error {
 	if prev := g.cfg.Load(); prev != nil && prev.LogPath() != next.LogPath() {
 		log.Printf("config reload: log_path changed to %q; takes effect on restart", next.LogPath())
 	}
+	if prev := g.cfg.Load(); prev != nil && prev.Join().WGMTU != next.Join().WGMTU {
+		log.Printf("config reload: wireguard.mtu changed to %d; takes effect on restart", next.Join().WGMTU)
+	}
 	g.cfg.Store(next)
 	log.Printf("config reloaded: %d endpoints across %d profile(s)",
 		len(policy.Endpoints), len(policy.Profiles))

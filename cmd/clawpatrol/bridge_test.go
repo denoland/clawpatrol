@@ -61,3 +61,25 @@ func TestGatewayURLIsPlaintext(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeEffectiveMTU(t *testing.T) {
+	for _, tc := range []struct {
+		enrolled int
+		local    int
+		want     int
+	}{
+		{enrolled: 1404, local: 1420, want: 1404},
+		{enrolled: 1420, local: 1404, want: 1420},
+		{enrolled: 0, local: 1420, want: 1420},
+		{enrolled: 0, local: 1404, want: 1404},
+		{enrolled: 1280, local: 1420, want: 1280},
+		{enrolled: 65475, local: 1420, want: 65475},
+		{enrolled: 576, local: 1420, want: 1420},
+		{enrolled: 65476, local: 1420, want: 1420},
+		{enrolled: -1, local: 1420, want: 1420},
+	} {
+		if got := bridgeEffectiveMTU(tc.enrolled, tc.local); got != tc.want {
+			t.Errorf("bridgeEffectiveMTU(%d, %d) = %d, want %d", tc.enrolled, tc.local, got, tc.want)
+		}
+	}
+}

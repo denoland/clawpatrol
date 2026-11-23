@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // kubernetesDefaultTokenPath is the projected ServiceAccount token the
@@ -89,7 +91,7 @@ func runBridge(args []string) {
 	fs.StringVar(&opt.CAOut, "ca-out", "/clawpatrol/ca.crt", "path to write the gateway CA bundle")
 	fs.StringVar(&opt.ReadyFile, "ready-file", "/clawpatrol/ready", "path to touch after network and env setup succeed")
 	fs.StringVar(&opt.Iface, "iface", "clawpatrol0", "TUN interface name")
-	fs.IntVar(&opt.MTU, "mtu", enrollmentDefaultMTU, "TUN MTU")
+	fs.IntVar(&opt.MTU, "mtu", config.WireGuardDefaultMTU, "TUN MTU when enrollment omits it or sends a value outside 1280-65475")
 	fs.IntVar(&opt.LocalResetMisses, "local-reset-missed", bridgeWatchdogDefaultResetMisses,
 		"missed keepalives before an in-place tunnel rebuild; 0 disables it, and a value at or above the gateway's reconnect threshold skips directly to re-enrollment")
 	fs.StringVar(&opt.RouteProto, "route-proto", defaultRouteProto,
@@ -123,6 +125,16 @@ func runBridge(args []string) {
 		log.Printf("bridge: %v", err)
 		os.Exit(1)
 	}
+}
+
+// bridgeEffectiveMTU uses the gateway's value when it is in the valid range.
+// Older enrollment responses omit it, and a value out of range would fail
+// every bring-up, so in both cases the sidecar uses its local flag.
+func bridgeEffectiveMTU(enrolled, local int) int {
+	if enrolled >= config.WireGuardMinMTU && enrolled <= config.WireGuardMaxMTU {
+		return enrolled
+	}
+	return local
 }
 
 // preferV4 returns the first IPv4 address (unmapped), falling back to the

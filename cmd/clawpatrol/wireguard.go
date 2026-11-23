@@ -37,6 +37,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config"
+
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
@@ -343,7 +345,11 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	serverIP := prefix.Addr().Next() // x.x.x.1
 	serverIP6 := wg6FromV4(prefix, serverIP)
 
-	tun, err := newNetTUN(serverIP, serverIP6, 1420)
+	mtu := ts.WGMTU
+	if mtu == 0 {
+		mtu = config.WireGuardDefaultMTU
+	}
+	tun, err := newNetTUN(serverIP, serverIP6, mtu)
 	if err != nil {
 		return nil, err
 	}

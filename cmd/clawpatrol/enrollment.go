@@ -32,7 +32,6 @@ const (
 	enrollmentRegisterPath                 = "/api/enrollment/register"
 	enrollmentTransportWireGuard           = "wireguard"
 	enrollmentAuthorizerKubernetesTokenRev = "kubernetes_token_review"
-	enrollmentDefaultMTU                   = 1420
 	// enrollmentReaperInterval is how often the reaper wakes to sample each
 	// enrolled peer's WireGuard rx and revoke peers past their liveness
 	// window.
@@ -535,6 +534,8 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 		return enrollmentRegisterResponse{}, err
 	}
 
+	// Use the running TUN's MTU so config reloads cannot advertise a
+	// value that takes effect on the gateway only after restart.
 	resp := enrollmentRegisterResponse{
 		Transport:       enrollmentTransportWireGuard,
 		PeerIP:          peerIP,
@@ -542,7 +543,7 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 		ServerPublicKey: serverPubB64,
 		Endpoint:        endpoint,
 		AllowedIPs:      []string{"0.0.0.0/0", "::/0"},
-		MTU:             enrollmentDefaultMTU,
+		MTU:             globalWG.tun.mtu,
 		APIToken:        apiToken,
 
 		KeepaliveIntervalSeconds: int(keepalive.Seconds()),

@@ -83,6 +83,9 @@ func dumpWireGuard(w *WireGuardBlock) map[string]any {
 	if w.ListenPort != 0 {
 		out["listen_port"] = w.ListenPort
 	}
+	if w.MTU != nil {
+		out["mtu"] = *w.MTU
+	}
 	if w.HostLoopbackPort != 0 {
 		out["host_loopback_port"] = w.HostLoopbackPort
 	}
