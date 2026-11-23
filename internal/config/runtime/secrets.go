@@ -16,6 +16,7 @@ import (
 var envParts = []string{
 	"CA", "CERT", "KEY",
 	"ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "SESSION_TOKEN",
+	"PRIVATE_KEY", "PASSPHRASE", "PASSWORD", "HOST_PUBKEY",
 }
 
 // SecretStore returns the secret material a credential plugin's
