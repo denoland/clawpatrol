@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -145,6 +146,86 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 	if !ok || src != "table" || route != underlay {
 		t.Fatalf("discoverUnderlayRoute = %+v, %q, %t; want the table copy", route, src, ok)
 	}
+}
+
+// The owned routes use the original gateway, a CNI route for the same prefix
+// wins, the routes survive a tunnel teardown, and a new list reconciles.
+func TestReconcileTunnelSplitRoutesInNetns(t *testing.T) {
+	if os.Getenv("CLAWPATROL_NETNS_TEST") != "1" {
+		t.Skip("set CLAWPATROL_NETNS_TEST=1 to change this network namespace's routes")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	restoreDefaultRoute(t)
+	for _, l := range []struct{ name, addr string }{
+		{"under0", "10.99.0.2/24"}, {"under1", "10.98.0.2/24"}, {"tun0", "10.55.0.2/32"},
+	} {
+		run("ip", "link", "add", l.name, "type", "dummy")
+		run("ip", "link", "set", l.name, "up")
+		run("ip", "addr", "add", l.addr, "dev", l.name)
+	}
+	t.Cleanup(func() {
+		for _, l := range []string{"under0", "under1", "tun0"} {
+			_ = exec.Command("ip", "link", "del", l).Run()
+		}
+		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
+		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
+		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
+	})
+	owned := func() int { return strings.Count(run("ip", "route", "show", "proto", "111"), "metric 42760") }
+	routeGet := func(addr, want string) {
+		t.Helper()
+		if got := run("ip", "route", "get", addr); !strings.Contains(got, want) {
+			t.Fatalf("route to %s = %q, want %q", addr, got, want)
+		}
+	}
+
+	under := linuxDefaultRoute{Via: "10.99.0.1", Dev: "under0"}
+	if err := installUnderlayRouting(under, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
+		t.Fatal(err)
+	}
+	run("ip", "route", "add", "10.200.0.0/16", "dev", "under1") // a CNI route
+	cidrs := []netip.Prefix{netip.MustParsePrefix("10.244.0.0/16"), netip.MustParsePrefix("10.200.0.0/16")}
+	for range 2 { // idempotent
+		if err := reconcileTunnelSplitRoutes(cidrs, under, linuxDefaultRoute{}, false, "111"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("ip", "route", "replace", "default", "dev", "tun0")
+	if n := owned(); n != 2 {
+		t.Fatalf("owned routes = %d, want 2", n)
+	}
+	routeGet("10.244.1.5", "via 10.99.0.1 dev under0")
+	routeGet("10.200.1.1", "dev under1") // the CNI route wins
+	routeGet("192.0.2.10", "dev tun0")
+
+	run("ip", "link", "set", "tun0", "down") // the reconnect gap
+	routeGet("10.244.1.5", "via 10.99.0.1 dev under0")
+	routeGet("192.0.2.10", "dev lo")
+
+	// A narrowed list on a new underlay device.
+	under = linuxDefaultRoute{Via: "10.98.0.1", Dev: "under1"}
+	if err := reconcileTunnelSplitRoutes(cidrs[:1], under, linuxDefaultRoute{}, false, "111"); err != nil {
+		t.Fatal(err)
+	}
+	if n := owned(); n != 1 {
+		t.Fatalf("owned routes after narrowing = %d, want 1", n)
+	}
+	routeGet("10.244.1.5", "via 10.98.0.1 dev under1")
+	if err := reconcileTunnelSplitRoutes(nil, under, linuxDefaultRoute{}, false, "111"); err != nil {
+		t.Fatal(err)
+	}
+	if n := owned(); n != 0 {
+		t.Fatalf("owned routes after removal = %d, want 0", n)
+	}
+	routeGet("10.200.1.1", "dev under1") // the CNI route is untouched
 }
 
 // restoreDefaultRoute puts the namespace's IPv4 default route back after a

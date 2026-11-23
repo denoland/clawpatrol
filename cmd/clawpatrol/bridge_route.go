@@ -2,8 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // Control-plane routing for `clawpatrol bridge`.
@@ -37,22 +42,26 @@ const (
 )
 
 type linuxDefaultRoute struct {
-	Dev string
-	Via string
+	Dev    string
+	Via    string
+	OnLink bool
 }
 
 func parseDefaultRoute(out []byte) (linuxDefaultRoute, error) {
-	fields := strings.Fields(string(out))
+	line, _, _ := strings.Cut(string(out), "\n")
+	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return linuxDefaultRoute{}, fmt.Errorf("no default route")
 	}
 	var r linuxDefaultRoute
-	for i := 0; i < len(fields)-1; i++ {
-		switch fields[i] {
-		case "via":
+	for i, field := range fields {
+		switch {
+		case field == "via" && i+1 < len(fields):
 			r.Via = fields[i+1]
-		case "dev":
+		case field == "dev" && i+1 < len(fields):
 			r.Dev = fields[i+1]
+		case field == "onlink":
+			r.OnLink = true
 		}
 	}
 	if r.Dev == "" {
@@ -99,7 +108,62 @@ func underlayTableArgs(family string, route linuxDefaultRoute, table int, proto 
 	if route.Via != "" {
 		args = append(args, "via", route.Via)
 	}
-	return append(args, "dev", route.Dev, "table", strconv.Itoa(table), "proto", proto)
+	args = append(args, "dev", route.Dev, "table", strconv.Itoa(table), "proto", proto)
+	if route.OnLink {
+		args = append(args, "onlink")
+	}
+	return args
+}
+
+// tunnelSplitRouteMetric and the route protocol mark the main-table routes
+// the bridge owns for tunnel_split_cidrs. The high metric lets a route
+// that the CNI installed for the same prefix win.
+const tunnelSplitRouteMetric = 42760
+
+// bridgeTunnelSplitCIDRs parses the enrolled list. It logs and skips entries
+// that are invalid, that contain a tunnel address, or that are IPv6 when the
+// Pod has no IPv6 underlay. The gateway validates the list too, so this only
+// covers version skew.
+func bridgeTunnelSplitCIDRs(raw []string, tunnel []netip.Addr, have6 bool) []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range raw {
+		p, err := config.ParseTunnelSplitCIDRs([]string{s})
+		if err != nil {
+			log.Printf("bridge: ignoring tunnel_split_cidrs entry: %v", err)
+			continue
+		}
+		c := p[0]
+		if c.Addr().Is6() && !have6 {
+			log.Printf("bridge: ignoring %s: the Pod has no IPv6 underlay route", c)
+			continue
+		}
+		if i := slices.IndexFunc(tunnel, c.Contains); i >= 0 {
+			log.Printf("bridge: ignoring %s: it contains tunnel address %s", c, tunnel[i])
+			continue
+		}
+		if !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// tunnelSplitRouteArgs builds the ip command for one owned route. Only
+// replace needs the next hop.
+func tunnelSplitRouteArgs(action string, cidr netip.Prefix, under linuxDefaultRoute, proto string) []string {
+	family := "-4"
+	if cidr.Addr().Is6() {
+		family = "-6"
+	}
+	args := []string{"ip", family, "route", action, cidr.String()}
+	if action == "replace" && under.Via != "" {
+		args = append(args, "via", under.Via)
+	}
+	args = append(args, "dev", under.Dev, "proto", proto, "metric", strconv.Itoa(tunnelSplitRouteMetric))
+	if action == "replace" && under.OnLink {
+		args = append(args, "onlink")
+	}
+	return args
 }
 
 // markRuleArgs returns the two policy rules for marked packets, in the order

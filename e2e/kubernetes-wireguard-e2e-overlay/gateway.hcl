@@ -26,6 +26,10 @@ enrollment "kubernetes_token_review" "agents" {
   # Fast reap for the e2e: 10s keepalive × 3 missed = 30s liveness window.
   keepalive_interval = "10s"
   keepalive_reap_count = 3
+
+  # Only the direct echo Service skips the tunnel; the other checks still
+  # send in-cluster traffic through the gateway.
+  tunnel_split_cidrs = ["10.96.200.10/32"]
 }
 
 # The e2e targets are cluster Service and Pod IPs, which the relay refuses

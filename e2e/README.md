@@ -37,6 +37,8 @@ The script validates:
 - rx_bytes liveness (a live tunnel holds its peer past the liveness window),
 - sidecar self-heal (a severed tunnel drives in-process re-enrollment with a
   fresh key at the reused peer IP and no container restart),
+- `tunnel_split_cidrs`: a listed Service IP routes through the CNI
+  and answers, an unlisted one still routes through the tunnel,
 - bridge variants: the raw ICMP socket fallback, the handshake-age watchdog
   when no ICMP socket opens, with no reconnect on a healthy tunnel (set
   `CLAWPATROL_E2E_CHECK_VARIANTS=0` to skip),

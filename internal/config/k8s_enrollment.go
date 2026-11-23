@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -34,6 +36,8 @@ type K8sEnrollment struct {
 	// liveness window is derived (keepalive × reap count), never set directly.
 	KeepaliveInterval  string `json:"keepalive_interval,omitempty"`
 	KeepaliveReapCount *int   `json:"keepalive_reap_count,omitempty"`
+	// TunnelSplitCIDRs is the raw tunnel_split_cidrs list.
+	TunnelSplitCIDRs []string `json:"tunnel_split_cidrs,omitempty"`
 }
 
 // K8sMatch is one identity → profile-binding rule. A Pod is matched on
@@ -72,6 +76,11 @@ type k8sEnrollmentBody struct {
 	// 0 to disable reaping (and the sidecar's self-heal escalation) entirely;
 	// any other value must be 2 or greater.
 	KeepaliveReapCount *int `hcl:"keepalive_reap_count,optional"`
+	// TunnelSplitCIDRs are ranges, such as the Pod and Service ranges, that
+	// the bridge routes through the Pod's original default gateway instead of
+	// the tunnel. The list adds routes; it does not limit the routes the CNI
+	// installs. It is not an enforcement control: use NetworkPolicy.
+	TunnelSplitCIDRs []string `hcl:"tunnel_split_cidrs,optional"`
 }
 
 // k8sMatchBody is one identity → profile-binding rule inside a
@@ -145,6 +154,10 @@ func validateK8sEnrollment(decoded any, name string, ctx *BuildCtx) hcl.Diagnost
 
 	diags = append(diags, validateEnrollmentKeepaliveInterval(ctx, name, body.KeepaliveInterval)...)
 	diags = append(diags, validateEnrollmentReapCount(ctx, name, body.KeepaliveReapCount)...)
+	if _, err := ParseTunnelSplitCIDRs(body.TunnelSplitCIDRs); err != nil {
+		diags = append(diags, enrollmentDiag(ctx, "Invalid enrollment tunnel_split_cidrs",
+			fmt.Sprintf("enrollment %q tunnel_split_cidrs: %v", name, err)))
+	}
 	return diags
 }
 
@@ -154,6 +167,7 @@ func buildK8sEnrollment(decoded any, _ string, _ *BuildCtx) (any, hcl.Diagnostic
 		Audience:           body.Audience,
 		KeepaliveInterval:  body.KeepaliveInterval,
 		KeepaliveReapCount: body.KeepaliveReapCount,
+		TunnelSplitCIDRs:   body.TunnelSplitCIDRs,
 	}
 	for _, m := range body.Matches {
 		label := strings.TrimSpace(m.ProfileLabel)
@@ -188,6 +202,68 @@ func emitK8sEnrollment(body any, _ string, b *hclwrite.Body) {
 	if ke.KeepaliveReapCount != nil {
 		b.SetAttributeValue("keepalive_reap_count", cty.NumberIntVal(int64(*ke.KeepaliveReapCount)))
 	}
+	if len(ke.TunnelSplitCIDRs) > 0 {
+		b.SetAttributeValue("tunnel_split_cidrs", StringListVal(ke.TunnelSplitCIDRs))
+	}
+}
+
+// ParseTunnelSplitCIDRs parses and masks tunnel_split_cidrs entries and
+// drops duplicates. A /0 is rejected because the tunnel must stay the default
+// route.
+func ParseTunnelSplitCIDRs(raw []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(raw))
+	for _, s := range raw {
+		p, err := netip.ParsePrefix(strings.TrimSpace(s))
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a CIDR", s)
+		}
+		if p.Bits() == 0 {
+			return nil, fmt.Errorf("%q covers every address; the tunnel must stay the default route", s)
+		}
+		if p = p.Masked(); !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// WireGuardIPv6Subnet is the IPv6 range of the tunnel addresses derived from
+// the IPv4 subnet: fd77:: plus the subnet's host bits, and always at least
+// the last octet (see wgHostMask and wg6FromV4 in cmd/clawpatrol).
+func WireGuardIPv6Subnet(subnet netip.Prefix) netip.Prefix {
+	return netip.PrefixFrom(netip.AddrFrom16([16]byte{0xfd, 0x77}), 96+min(subnet.Bits(), 24))
+}
+
+// validateTunnelSplitCIDRs rejects tunnel_split_cidrs entries that
+// overlap the WireGuard tunnel ranges.
+func validateTunnelSplitCIDRs(gw *Gateway) hcl.Diagnostics {
+	subnet, err := netip.ParsePrefix(gw.Settings.WireGuard.SubnetCIDR)
+	if err != nil {
+		return nil // validateOperational reports it
+	}
+	tunnel := []netip.Prefix{subnet.Masked(), WireGuardIPv6Subnet(subnet)}
+	var diags hcl.Diagnostics
+	for _, name := range slices.Sorted(maps.Keys(gw.Policy.Enrollments)) {
+		ke, ok := gw.Policy.Enrollments[name].Body.(*K8sEnrollment)
+		if !ok {
+			continue
+		}
+		cidrs, err := ParseTunnelSplitCIDRs(ke.TunnelSplitCIDRs)
+		if err != nil {
+			continue // validateK8sEnrollment reports it
+		}
+		for _, c := range cidrs {
+			if i := slices.IndexFunc(tunnel, c.Overlaps); i >= 0 {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid enrollment tunnel_split_cidrs",
+					Detail: fmt.Sprintf("enrollment %q: %s overlaps the WireGuard subnet %s; tunnel traffic would leave through the CNI.",
+						name, c, tunnel[i]),
+				})
+			}
+		}
+	}
+	return diags
 }
 
 // validateEnrollmentGateway enforces the cross-block invariants of workload
@@ -214,7 +290,7 @@ func validateEnrollmentGateway(gw *Gateway) hcl.Diagnostics {
 			Detail:   fmt.Sprintf("Workloads register over the dashboard listener before they have a tunnel, but %s. Set `dashboard_listen` to an address they can reach, for example \"0.0.0.0:8080\".", reason),
 		}}
 	}
-	return nil
+	return validateTunnelSplitCIDRs(gw)
 }
 
 // enrollmentListenerProblem returns why listen cannot accept registrations

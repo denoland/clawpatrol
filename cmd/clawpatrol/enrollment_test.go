@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -923,6 +924,55 @@ func TestApiEnrollmentRegisterDeniesGenerically(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "ref="+ref) || !strings.Contains(buf.String(), "pod UID mismatch") {
 		t.Fatalf("log does not have the reference and the detail:\n%s", buf.String())
+	}
+}
+
+// The register response carries the enrollment's tunnel_split_cidrs,
+// masked, and omits the field once the setting is removed.
+func TestApiEnrollmentRegisterTunnelSplitCIDRs(t *testing.T) {
+	g := newEnrollmentTestGateway(t)
+	startEnrollmentTestWGServer(t, g)
+	g.k8sVerifier = fakeK8sVerifier(func(_ context.Context, _ string, claims k8sEnrollmentClaims, _ *config.CompiledK8sEnrollment) (k8sVerifiedPod, error) {
+		return k8sVerifiedPod{
+			Namespace: claims.PodNamespace, Name: claims.PodName, UID: claims.PodUID,
+			ServiceAccount: "agent-runner", Profile: "default",
+		}, nil
+	})
+	w := &webMux{g: g}
+	for _, tc := range []struct {
+		key  string
+		attr string
+		want []string
+	}{
+		{key: keyA, attr: `  tunnel_split_cidrs = ["10.244.3.4/16", "10.96.0.0/12"]` + "\n",
+			want: []string{"10.244.0.0/16", "10.96.0.0/12"}},
+		{key: keyB}, // re-enroll after removing the setting
+	} {
+		cfg, diags := config.LoadBytes([]byte(strings.Replace(enabledEnrollmentHCL, "  match {", tc.attr+"  match {", 1)), "cidrs.hcl")
+		if diags.HasErrors() {
+			t.Fatal(diags)
+		}
+		cp, err := config.Compile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.cfg.Store(cfg)
+		g.policy.Store(cp)
+		body := `{"transport":"wireguard","authorizer":"agents","wireguard_public_key":"` + tc.key + `","claims":{"pod_name":"a","pod_namespace":"agents","pod_uid":"u"}}`
+		rec := doRegister(w, http.MethodPost, "tok", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("register = %d: %s", rec.Code, rec.Body)
+		}
+		if got := strings.Contains(rec.Body.String(), `"tunnel_split_cidrs"`); got != (tc.want != nil) {
+			t.Fatalf("tunnel_split_cidrs present = %t, want %t", got, tc.want != nil)
+		}
+		var resp enrollmentRegisterResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(resp.TunnelSplitCIDRs, tc.want) {
+			t.Fatalf("tunnel_split_cidrs = %v, want %v", resp.TunnelSplitCIDRs, tc.want)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"time"
 )
 
@@ -10,6 +11,8 @@ import (
 type CompiledK8sEnrollment struct {
 	Audience string
 	Matches  []CompiledK8sMatch
+	// TunnelSplitCIDRs are parsed and masked, in config order.
+	TunnelSplitCIDRs []netip.Prefix
 }
 
 // CompiledK8sMatch is one identity → profile-binding rule.
@@ -29,7 +32,11 @@ func compileK8sEnrollment(body any, name string, profiles map[string]*CompiledPr
 	if err != nil {
 		return nil, EnrollmentLiveness{}, fmt.Errorf("enrollment %q keepalive_interval: %w", name, err)
 	}
-	compiled := &CompiledK8sEnrollment{Audience: ke.Audience}
+	cidrs, err := ParseTunnelSplitCIDRs(ke.TunnelSplitCIDRs)
+	if err != nil {
+		return nil, EnrollmentLiveness{}, fmt.Errorf("enrollment %q tunnel_split_cidrs: %w", name, err)
+	}
+	compiled := &CompiledK8sEnrollment{Audience: ke.Audience, TunnelSplitCIDRs: cidrs}
 	for _, m := range ke.Matches {
 		for _, prof := range m.Profiles {
 			if _, ok := profiles[prof]; !ok {

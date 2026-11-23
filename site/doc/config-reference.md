@@ -653,6 +653,7 @@ projected ServiceAccount token with the Kubernetes TokenReview API.
 | `match` | `block` | yes | The repeated `match { ... }` rules. Each binds one namespace + service_account identity to a profile allowlist. At least one is required. |
 | `keepalive_interval` | `string` | no | The WireGuard persistent-keepalive interval (time.ParseDuration) the sidecar applies to enrolled peers and pushed to it at enroll. Optional; defaults to 25s and must be at least 10s (the floor is pinned to the gateway reaper's sample cadence). There is no upper bound: a longer interval just means fewer keepalive packets and a longer liveness window (keepalive_interval × keepalive_reap_count). |
 | `keepalive_reap_count` | `int` | no | How many missed keepalives elapse before an enrolled peer is reaped; the liveness window is keepalive_interval × keepalive_reap_count. Expressing it as a count keeps the safety ratio an integer that can't be misconfigured. Optional; defaults to 3. Set to 0 to disable reaping (and the sidecar's self-heal escalation) entirely; any other value must be 2 or greater. |
+| `tunnel_split_cidrs` | `[]string` | no | Ranges, such as the Pod and Service ranges, that the bridge routes through the Pod's original default gateway instead of the tunnel. The list adds routes; it does not limit the routes the CNI installs. It is not an enforcement control: use NetworkPolicy. |
 
 **Nested block `match {}`:**
 

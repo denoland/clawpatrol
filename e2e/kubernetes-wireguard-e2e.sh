@@ -265,6 +265,19 @@ if agent_exec sh -lc "! ip route get '${ECHO_POD_IP}' | grep -q 'dev clawpatrol0
     agent_exec sh -lc "test \"\$(curl -sS --max-time 5 'http://${ECHO_POD_IP}:8081/')\" = 'ok'"
 fi
 
+log "checking tunnel_split_cidrs routes skip the tunnel"
+DIRECT_IP=10.96.200.10
+wait_until "agent has a CNI route for ${DIRECT_IP}" 30 \
+  agent_exec sh -lc "ip -4 route show '${DIRECT_IP}/32' | grep -q 'metric 42760'"
+agent_exec sh -lc "! ip route get '${DIRECT_IP}' | grep -q 'dev clawpatrol0'" ||
+  fail "${DIRECT_IP} still routes through the tunnel"
+wait_until "agent reaches the direct echo Service" 30 \
+  agent_exec sh -lc "test \"\$(curl -sS --max-time 5 'http://${DIRECT_IP}:8081/')\" = 'ok'"
+agent_exec sh -lc "ip route get '${HTTP_CLUSTER_IP}' | grep -q 'dev clawpatrol0'" ||
+  fail "the unlisted echo Service ${HTTP_CLUSTER_IP} no longer uses the tunnel"
+"${KUBECTL[@]}" -n "${AGENTS_NS}" logs "${E2E_POD}" -c clawpatrol-bridge | grep -q 'split-tunnel routes for \[10.96.200.10/32\]' ||
+  fail "bridge did not log its CNI routes"
+
 log "checking inbound connections to the agent pod get replies"
 # The kubelet httpGet readiness probe (from the node) and a request from the
 # echo pod both need their replies to leave on the underlay. Whether they do

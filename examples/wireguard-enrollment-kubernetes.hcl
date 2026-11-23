@@ -32,6 +32,11 @@ enrollment "kubernetes_token_review" "agents" {
   # keepalive_interval has no upper bound (minimum 10s).
   keepalive_interval = "25s"
   keepalive_reap_count = 3
+
+  # Pod and Service ranges that skip the tunnel. Routing only; use NetworkPolicy
+  # to restrict them.
+  # See "Split tunnel" in the Kubernetes enrollment docs.
+  # tunnel_split_cidrs = ["10.244.0.0/16", "10.96.0.0/12"]
 }
 
 # Agents reach in-cluster Services through the gateway relay, which refuses

@@ -202,6 +202,14 @@ and routes that processes in the Pod add later, stay in the main table, and
 unmarked traffic uses them outside the tunnel. The cluster controls that
 traffic with NetworkPolicy.
 
+The enrollment's optional `tunnel_split_cidrs` lists ranges that skip the
+tunnel, for example cluster ranges on a CNI that gives the Pod only a
+default route (Cilium). At each
+enrollment the bridge reconciles one main-table route per range through the
+original default route, tagged with its route protocol and metric 42760. The
+high metric lets a CNI route for the same prefix win, and the bridge removes
+only the routes it owns.
+
 The bridge watchdog samples its receive counter every 5 seconds. Because an
 idle tunnel may have no inbound traffic, receive silence alone is not treated
 as failure. After one keepalive interval of silence, the watchdog probes the
@@ -220,6 +228,7 @@ table 111, and reinstalls the table and rules.
 
 The process does not exit during recovery. Closing the TUN removes the Pod's
 default route, so general egress fails closed until the next session is ready.
+Routes for `tunnel_split_cidrs` are not default routes and stay in place.
 The environment, CA, and ready handoff are written only after the first
 successful bring-up; subsequent sessions reuse the same workload handoff.
 

@@ -72,6 +72,9 @@ type enrollmentRegisterResponse struct {
 	MTU             int      `json:"mtu"`
 	APIToken        string   `json:"api_token"`
 	CAPEM           string   `json:"ca_pem,omitempty"`
+	// TunnelSplitCIDRs are ranges the bridge routes through the Pod's
+	// original default gateway, from the enrollment's tunnel_split_cidrs.
+	TunnelSplitCIDRs []string `json:"tunnel_split_cidrs,omitempty"`
 	// KeepaliveIntervalSeconds is the persistent-keepalive interval the
 	// sidecar applies to its tunnel.
 	KeepaliveIntervalSeconds int `json:"keepalive_interval_s,omitempty"`
@@ -549,6 +552,11 @@ func (g *Gateway) registerEnrolledPeer(ctx context.Context, cfg *config.Gateway,
 		KeepaliveIntervalSeconds: int(keepalive.Seconds()),
 		KeepaliveReapCount:       reapCount,
 		GatewayTunnelIP:          globalWG.GatewayTunnelIP().String(),
+	}
+	if a, ok := authorizer.(*kubernetesTokenReviewAuthorizer); ok {
+		for _, c := range a.enr.TunnelSplitCIDRs {
+			resp.TunnelSplitCIDRs = append(resp.TunnelSplitCIDRs, c.String())
+		}
 	}
 	if g.certs != nil {
 		resp.CAPEM = string(g.certs.CertPEM())

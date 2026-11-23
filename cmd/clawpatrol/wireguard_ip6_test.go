@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // The fd77:: mapping round-trips through canonicalPeerIP's inverse for every
@@ -187,5 +189,25 @@ func TestAllocateWGPeerIPExhausted(t *testing.T) {
 	seedWGPeerRows(t, g, "10.55.0.2", "10.55.0.3", "10.55.0.4", "10.55.0.5", "10.55.0.6")
 	if ip, err := allocateWGPeerIPLocked(g.db, JoinConfig{WGSubnetCIDR: "10.55.0.0/29"}); err == nil {
 		t.Fatalf("allocated %s from a full /29, want an exhausted error", ip)
+	}
+}
+
+// The config-side IPv6 tunnel range holds every derived peer address.
+func TestWireGuardIPv6SubnetHoldsDerivedAddresses(t *testing.T) {
+	for _, s := range []string{"10.55.0.0/24", "10.55.0.128/25", "10.55.0.0/30", "100.64.0.0/10", "10.0.0.0/8"} {
+		prefix := netip.MustParsePrefix(s)
+		sub := config.WireGuardIPv6Subnet(prefix)
+		last := netip.AddrFrom4(func() [4]byte {
+			b := prefix.Masked().Addr().As4()
+			for i := range b {
+				b[i] |= byte(^uint32(0) >> uint(prefix.Bits()) >> (8 * (3 - i)))
+			}
+			return b
+		}())
+		for _, v4 := range []netip.Addr{prefix.Masked().Addr().Next(), last.Prev()} {
+			if v6 := wg6FromV4(prefix, v4); !sub.Contains(v6) {
+				t.Fatalf("%s: wg6FromV4(%s) = %s is outside %s", s, v4, v6, sub)
+			}
+		}
 	}
 }

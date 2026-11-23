@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +20,10 @@ func TestParseDefaultRoute(t *testing.T) {
 	if _, err := parseDefaultRoute(nil); err == nil {
 		t.Fatal("empty output parsed")
 	}
+	r, err = parseDefaultRoute([]byte("default via 10.47.0.1 dev eth0 onlink\ndefault via 10.99.0.1 dev eth1 metric 100\n"))
+	if err != nil || r != (linuxDefaultRoute{Via: "10.47.0.1", Dev: "eth0", OnLink: true}) {
+		t.Fatalf("parseDefaultRoute(onlink) = %+v, %v", r, err)
+	}
 }
 
 func TestUnderlayRoutingArgs(t *testing.T) {
@@ -29,6 +35,10 @@ func TestUnderlayRoutingArgs(t *testing.T) {
 	got = underlayTableArgs("-6", linuxDefaultRoute{Dev: "eth0"}, 111, "111")
 	if slices.Contains(got, "via") {
 		t.Fatalf("underlayTableArgs without a gateway = %q", got)
+	}
+	got = underlayTableArgs("-4", linuxDefaultRoute{Via: "10.47.0.1", Dev: "eth0", OnLink: true}, 111, "111")
+	if got[len(got)-1] != "onlink" {
+		t.Fatalf("underlayTableArgs lost onlink: %v", got)
 	}
 
 	rules := markRuleArgs("-4", 111, 111)
@@ -85,5 +95,40 @@ func TestFirstDefaultRoute(t *testing.T) {
 	}
 	if got := strings.Join(fallbackDefaultArgs("111"), " "); got != "ip -4 route replace default dev lo metric 4294967295 proto 111" {
 		t.Fatalf("fallbackDefaultArgs = %q", got)
+	}
+}
+
+func TestBridgeTunnelSplitCIDRs(t *testing.T) {
+	peer := netip.MustParseAddr("10.55.0.7")
+	gw := netip.MustParseAddr("10.55.0.1")
+	got := bridgeTunnelSplitCIDRs([]string{
+		"10.244.1.0/16", // masked
+		"10.244.0.0/16", // duplicate after masking
+		"bad",           // skipped
+		"10.55.0.0/24",  // contains a tunnel address
+		"fd00:10::/64",  // no IPv6 underlay
+		"10.96.0.0/12",
+	}, []netip.Addr{peer, gw}, false)
+	if fmt.Sprint(got) != "[10.244.0.0/16 10.96.0.0/12]" {
+		t.Fatalf("got %v", got)
+	}
+	if got := bridgeTunnelSplitCIDRs([]string{"fd00:10::/64"}, nil, true); fmt.Sprint(got) != "[fd00:10::/64]" {
+		t.Fatalf("IPv6 with an underlay: %v", got)
+	}
+}
+
+func TestTunnelSplitRouteArgs(t *testing.T) {
+	under := linuxDefaultRoute{Via: "10.0.1.97", Dev: "eth0", OnLink: true}
+	for _, tc := range []struct {
+		action, cidr, want string
+	}{
+		{"replace", "10.244.0.0/16", "ip -4 route replace 10.244.0.0/16 via 10.0.1.97 dev eth0 proto 111 metric 42760 onlink"},
+		{"del", "10.244.0.0/16", "ip -4 route del 10.244.0.0/16 dev eth0 proto 111 metric 42760"},
+		{"replace", "fd00:10::/64", "ip -6 route replace fd00:10::/64 via 10.0.1.97 dev eth0 proto 111 metric 42760 onlink"},
+	} {
+		got := strings.Join(tunnelSplitRouteArgs(tc.action, netip.MustParsePrefix(tc.cidr), under, "111"), " ")
+		if got != tc.want {
+			t.Fatalf("%s %s = %q, want %q", tc.action, tc.cidr, got, tc.want)
+		}
 	}
 }

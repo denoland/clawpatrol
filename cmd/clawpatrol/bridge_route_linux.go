@@ -3,11 +3,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os/exec"
+	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +87,62 @@ func ensureMarkRules(family string, mark, table int) error {
 		}
 		if err := runIP(markRuleArgs(family, mark, table)[i]...); err != nil {
 			return fmt.Errorf("mark rule: %w", err)
+		}
+	}
+	return nil
+}
+
+// reconcileTunnelSplitRoutes makes the owned main-table routes match cidrs,
+// through the original default route of each family. It removes owned routes
+// that are no longer listed or that use another device, and never changes
+// routes it does not own.
+func reconcileTunnelSplitRoutes(cidrs []netip.Prefix, route4, route6 linuxDefaultRoute, have6 bool, proto string) error {
+	metric := strconv.Itoa(tunnelSplitRouteMetric)
+	for _, fam := range []struct {
+		flag, host string
+		under      linuxDefaultRoute
+		v6         bool
+	}{{"-4", "/32", route4, false}, {"-6", "/128", route6, true}} {
+		if fam.v6 && !have6 {
+			continue
+		}
+		var want []netip.Prefix
+		for _, c := range cidrs {
+			if c.Addr().Is6() == fam.v6 {
+				want = append(want, c)
+			}
+		}
+		out, err := exec.Command("ip", fam.flag, "-j", "route", "show", "table", "main", "proto", proto).Output()
+		if err != nil {
+			return fmt.Errorf("list owned %s routes: %w", fam.flag, err)
+		}
+		var routes []struct {
+			Dst    string
+			Dev    string
+			Metric int
+		}
+		if err := json.Unmarshal(out, &routes); err != nil {
+			return fmt.Errorf("decode owned %s routes: %w", fam.flag, err)
+		}
+		for _, r := range routes {
+			if r.Metric != tunnelSplitRouteMetric || r.Dst == "default" {
+				continue
+			}
+			dst := r.Dst
+			if !strings.Contains(dst, "/") {
+				dst += fam.host
+			}
+			if p, err := netip.ParsePrefix(dst); err == nil && r.Dev == fam.under.Dev && slices.Contains(want, p) {
+				continue
+			}
+			if err := runIP("ip", fam.flag, "route", "del", r.Dst, "dev", r.Dev, "proto", proto, "metric", metric); err != nil {
+				return fmt.Errorf("remove tunnel split route: %w", err)
+			}
+		}
+		for _, c := range want {
+			if err := runIP(tunnelSplitRouteArgs("replace", c, fam.under, proto)...); err != nil {
+				return fmt.Errorf("tunnel split route: %w", err)
+			}
 		}
 	}
 	return nil

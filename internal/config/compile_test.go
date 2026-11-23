@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,6 +131,7 @@ func TestEnrollmentConfigValidation(t *testing.T) {
 
   keepalive_interval = "20s"
   keepalive_reap_count = 6
+  tunnel_split_cidrs = ["10.244.1.7/16", "fd00:10:244::/56"]
 }
 `
 	valid := `gateway {
@@ -188,6 +190,16 @@ profile "default" { credentials = [] }
 	if enr.Audience != "clawpatrol" || len(enr.Matches) != 1 {
 		t.Fatalf("unexpected compiled enrollment body: %+v", enr)
 	}
+	if got := fmt.Sprint(enr.TunnelSplitCIDRs); got != "[10.244.0.0/16 fd00:10:244::/56]" {
+		t.Fatalf("compiled tunnel_split_cidrs = %s", got)
+	}
+	emitted, err := config.Emit(gw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(emitted), "tunnel_split_cidrs") {
+		t.Fatal("emit dropped tunnel_split_cidrs")
+	}
 	// Liveness is derived and shared: keepalive_interval × keepalive_reap_count = 20s×6 = 2m.
 	l := enrollment.Liveness
 	if l.KeepaliveInterval != 20*time.Second || l.ReapCount != 6 || l.LivenessWindow() != 2*time.Minute {
@@ -219,6 +231,26 @@ profile "default" { credentials = [] }
 		body string
 		want string
 	}{
+		{
+			name: "split-tunnel CIDR not a CIDR",
+			body: strings.Replace(valid, `"10.244.1.7/16"`, `"10.244.1.7"`, 1),
+			want: "Invalid enrollment tunnel_split_cidrs",
+		},
+		{
+			name: "split-tunnel CIDR covers everything",
+			body: strings.Replace(valid, `"10.244.1.7/16"`, `"0.0.0.0/0"`, 1),
+			want: "Invalid enrollment tunnel_split_cidrs",
+		},
+		{
+			name: "split-tunnel CIDR overlaps the tunnel subnet",
+			body: strings.Replace(valid, `"10.244.1.7/16"`, `"10.55.0.128/25"`, 1),
+			want: "overlaps the WireGuard subnet",
+		},
+		{
+			name: "split-tunnel CIDR overlaps the IPv6 tunnel subnet",
+			body: strings.Replace(valid, `"fd00:10:244::/56"`, `"fd77::/16"`, 1),
+			want: "overlaps the WireGuard subnet",
+		},
 		{
 			name: "missing audience",
 			body: strings.Replace(valid, `  audience = "clawpatrol"`+"\n", "", 1),

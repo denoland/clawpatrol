@@ -91,18 +91,64 @@ The enrollment configuration follows these rules:
   gives 253 peer addresses (`.2` to `.254`; `.1` is the gateway), shared with
   onboarded devices. A replaced Pod releases its address at once. A Pod that
   stops sending releases it after the liveness window.
-- **In-cluster destinations:** Workload traffic, DNS included, goes through
-  the tunnel, and the gateway dials the destination for it. By default
-  (`defaults.relay_destinations = "public"`) the gateway refuses private
-  addresses, which include cluster Service and Pod IPs. To let agents reach
-  in-cluster Services, list the cluster's Service and Pod CIDRs in
-  `defaults.relay_allow_cidrs`.
+- **In-cluster destinations:** Traffic that follows the default route, DNS
+  included, goes through the tunnel, and the gateway dials the destination for
+  it. By default (`defaults.relay_destinations = "public"`) the gateway
+  refuses private addresses, which include cluster Service and Pod IPs. To let
+  agents reach in-cluster Services through the gateway, list the cluster's
+  Service and Pod CIDRs in `defaults.relay_allow_cidrs`. To send them through
+  the CNI instead, see "Split tunnel".
 - **Registration load:** The gateway runs at most 4 registrations at a time
   past the request checks. Each one sends a TokenReview and a Pod read to the
   apiserver. Extra requests get HTTP 429, and the bridge retries with backoff.
 
 The complete standalone example is
 [`examples/wireguard-enrollment-kubernetes.hcl`](https://github.com/denoland/clawpatrol/blob/main/examples/wireguard-enrollment-kubernetes.hcl).
+
+## Split tunnel
+
+The bridge replaces only the Pod's default route with `clawpatrol0`. It
+leaves every other route in place: the CNI's link and subnet routes, and
+routes that processes add later, such as `docker0`. Traffic on those routes
+does not go through the tunnel.
+
+Set `tunnel_split_cidrs` on the enrollment to send Pod and Service traffic
+outside the tunnel. The bridge routes each listed range through the Pod's
+original default gateway. Use it for cluster ranges that the CNI does not
+route, for example on Cilium, which gives the Pod a /32 address and a
+default route through the Cilium gateway. It also works for other ranges,
+such as the Service range on flannel or a VPC range:
+
+```hcl
+enrollment "kubernetes_token_review" "agents" {
+  tunnel_split_cidrs = ["10.244.0.0/16", "10.96.0.0/12"]
+  # ...
+}
+```
+
+- **Additive:** the list adds routes. It does not remove or limit the routes
+  the CNI installs. A CNI route for the same prefix takes priority.
+- **Next hop:** the bridge uses the Pod's original default route of the same
+  address family. With several default routes, it uses the first one. IPv6
+  entries need an IPv6 default route.
+- **Service range:** a Pod routes a Service IP before kube-proxy translates
+  it, so list the Service range for Service traffic to skip the tunnel.
+  Cilium socket-level load balancing translates the address in the Pod, so
+  there the Pod range is enough.
+- **Reconnects:** the routes stay while the tunnel reconnects, so traffic to
+  the listed ranges continues. Other traffic fails closed.
+- **Not an enforcement control:** the list only changes routing. Traffic to
+  the listed ranges, and on the CNI's own routes, does not reach clawpatrol
+  and is not audited. Use NetworkPolicy to restrict it (see "Restrict Pod
+  egress"). `defaults.relay_allow_cidrs` is needed only for in-cluster
+  traffic that still goes through the tunnel.
+- **Inbound clients:** replies follow normal routing. A client outside the
+  listed ranges and the CNI's routes, for example behind a LoadBalancer with
+  `externalTrafficPolicy: Local`, gets its replies through the tunnel, and
+  they fail. Add those ranges to the list.
+
+The gateway rejects a `/0` and any range that overlaps
+`wireguard.subnet_cidr` or its IPv6 tunnel range.
 
 ## Security boundary
 
@@ -350,7 +396,8 @@ On startup, the bridge:
 
 When tunnel connectivity is lost, the bridge first attempts a local tunnel
 rebuild. If connectivity remains unavailable, it re-enrolls without exiting
-the container. Traffic fails closed while the tunnel is unavailable, and a
+the container. Traffic through the tunnel fails closed while the tunnel is
+unavailable, and a
 re-enrolling bridge keeps its peer IP when it represents the same subject.
 
 Recovery does not increment the container restart count. Use the bridge
@@ -467,8 +514,9 @@ volume assumptions that must be reviewed before applying it.
 ### Restrict Pod egress (recommended)
 
 The bridge replaces only the Pod's default route. Traffic on other routes,
-for example a CNI subnet route or a `docker0` bridge inside the sandbox, does
-not go through the tunnel. Use a NetworkPolicy to control in-cluster egress.
+for example a CNI subnet route, a `tunnel_split_cidrs` range, or a `docker0`
+bridge inside the sandbox, does not go through the tunnel. Use a
+NetworkPolicy to control in-cluster egress.
 For agents that may reach only clawpatrol, permit only:
 
 - the gateway API and WireGuard endpoint, and

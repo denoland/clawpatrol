@@ -177,6 +177,15 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	if err != nil {
 		return nil, fmt.Errorf("gateway did not return a usable tunnel IP %q: %w", registerResp.GatewayTunnelIP, err)
 	}
+	peer4, _ := netip.ParseAddr(registerResp.PeerIP)
+	peer6, _ := netip.ParseAddr(registerResp.PeerIPv6)
+	splitCIDRs := bridgeTunnelSplitCIDRs(registerResp.TunnelSplitCIDRs, []netip.Addr{peer4, peer6, gwTunIP}, have6)
+	if err := reconcileTunnelSplitRoutes(splitCIDRs, route4, route6, have6, opt.RouteProto); err != nil {
+		return nil, err
+	}
+	if len(splitCIDRs) > 0 {
+		log.Printf("bridge: split-tunnel routes for %v via %s dev %s", splitCIDRs, route4.Via, route4.Dev)
+	}
 
 	tunDev, err := wgtun.CreateTUN(opt.Iface, opt.MTU)
 	if err != nil {
