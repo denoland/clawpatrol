@@ -44,14 +44,23 @@ func newEnrollmentTestGateway(t *testing.T) *Gateway {
 // device won't start; CI runs it for real.
 func startEnrollmentTestWGServer(t *testing.T, g *Gateway) *WGServer {
 	t.Helper()
+	wg, _ := startTestWGServer(t, g, "10.55.0.0/24")
+	return wg
+}
+
+// startTestWGServer starts a real userspace WGServer on subnet, backed by
+// g's database, and returns it with the JoinConfig it was started from.
+func startTestWGServer(t *testing.T, g *Gateway, subnet string) (*WGServer, JoinConfig) {
+	t.Helper()
 	prevDB := globalDB
 	prevWG := globalWG
 	globalDB = g.db
-	wg, err := StartWGServer(JoinConfig{
-		WGSubnetCIDR: "10.55.0.0/24",
+	join := JoinConfig{
+		WGSubnetCIDR: subnet,
 		WGListenPort: freeUDPPort(t),
 		PublicURL:    "https://gateway.example.com",
-	})
+	}
+	wg, err := StartWGServer(join)
 	if err != nil {
 		globalDB = prevDB
 		t.Skipf("WGServer unavailable in this environment: %v", err)
@@ -62,7 +71,7 @@ func startEnrollmentTestWGServer(t *testing.T, g *Gateway) *WGServer {
 		globalWG = prevWG
 		globalDB = prevDB
 	})
-	return wg
+	return wg, join
 }
 
 func wgPeerRowsForIP(t *testing.T, g *Gateway, ip string) int {

@@ -103,19 +103,7 @@ func TestCanonicalPeerIPUsesServerPrefix(t *testing.T) {
 // allowed IPs on the live device.
 func TestAllocatePeerIPv6UniqueInWideSubnet(t *testing.T) {
 	g := newEnrollmentTestGateway(t)
-	prevDB, prevWG := globalDB, globalWG
-	globalDB = g.db
-	join := JoinConfig{WGSubnetCIDR: "10.55.0.0/16", WGListenPort: freeUDPPort(t), PublicURL: "https://gateway.example.com"}
-	wg, err := StartWGServer(join)
-	if err != nil {
-		globalDB = prevDB
-		t.Skipf("WGServer unavailable in this environment: %v", err)
-	}
-	setWGServer(wg)
-	t.Cleanup(func() {
-		wg.dev.Close()
-		globalWG, globalDB = prevWG, prevDB
-	})
+	wg, join := startTestWGServer(t, g, "10.55.0.0/16")
 
 	for i := range 300 {
 		var key [32]byte
