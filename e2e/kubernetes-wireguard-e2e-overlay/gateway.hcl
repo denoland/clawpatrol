@@ -28,6 +28,12 @@ enrollment "kubernetes_token_review" "agents" {
   keepalive_reap_count = 3
 }
 
+# The e2e targets are cluster Service and Pod IPs, which the relay refuses
+# by default. These are kind's default Service and Pod CIDRs.
+defaults {
+  relay_allow_cidrs = ["10.96.0.0/12", "10.244.0.0/16"]
+}
+
 profile "default" {
   credentials = []
 }

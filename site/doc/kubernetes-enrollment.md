@@ -63,6 +63,12 @@ enrollment "kubernetes_token_review" "agents" {
   keepalive_reap_count = 3
 }
 
+# Optional: let agents reach in-cluster Services through the gateway.
+# Use your cluster's Service and Pod CIDRs.
+defaults {
+  relay_allow_cidrs = ["10.96.0.0/12", "10.244.0.0/16"]
+}
+
 profile "default" {
   credentials = []
 }
@@ -85,6 +91,12 @@ The enrollment configuration follows these rules:
   gives 253 peer addresses (`.2` to `.254`; `.1` is the gateway), shared with
   onboarded devices. A replaced Pod releases its address at once. A Pod that
   stops sending releases it after the liveness window.
+- **In-cluster destinations:** Workload traffic, DNS included, goes through
+  the tunnel, and the gateway dials the destination for it. By default
+  (`defaults.relay_destinations = "public"`) the gateway refuses private
+  addresses, which include cluster Service and Pod IPs. To let agents reach
+  in-cluster Services, list the cluster's Service and Pod CIDRs in
+  `defaults.relay_allow_cidrs`.
 - **Registration load:** The gateway runs at most 4 registrations at a time
   past the request checks. Each one sends a TokenReview and a Pod read to the
   apiserver. Extra requests get HTTP 429, and the bridge retries with backoff.
