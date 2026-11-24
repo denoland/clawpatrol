@@ -19,10 +19,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// bridgeResolver resolves the gateway API and WireGuard endpoint names. The
-// bridge replaces it with a marked resolver at startup.
-var bridgeResolver = net.DefaultResolver
-
 // markControl sets SO_MARK on a socket before it connects.
 func markControl(mark int) func(network, address string, c syscall.RawConn) error {
 	return func(_, _ string, c syscall.RawConn) error {
@@ -40,13 +36,14 @@ func markControl(mark int) func(network, address string, c syscall.RawConn) erro
 }
 
 // newMarkedNet returns a resolver and an HTTP client whose sockets carry
-// mark, so their packets use the underlay routes (see bridge_route.go).
-func newMarkedNet(mark int) (*net.Resolver, *http.Client) {
+// mark, so their packets use the underlay routes (see bridge_route.go). The
+// client dials hosts with a --resolve entry at their entry.
+func newMarkedNet(mark int, hosts *bridgeHosts) (*net.Resolver, *http.Client) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: markControl(mark)}
 	resolver := &net.Resolver{PreferGo: true, Dial: dialer.DialContext}
 	dialer.Resolver = resolver
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = dialer.DialContext
+	transport.DialContext = hosts.dialContext(dialer.DialContext)
 	return resolver, &http.Client{Timeout: enrollmentHTTPTimeout, Transport: transport}
 }
 

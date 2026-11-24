@@ -140,8 +140,11 @@ enrollment "kubernetes_token_review" "agents" {
 - **Not an enforcement control:** the list only changes routing. Traffic to
   the listed ranges, and on the CNI's own routes, does not reach clawpatrol
   and is not audited. Use NetworkPolicy to restrict it (see "Restrict Pod
-  egress"). `defaults.relay_allow_cidrs` is needed only for in-cluster
-  traffic that still goes through the tunnel.
+  egress" and "Lock down Pod egress"). `defaults.relay_allow_cidrs` is
+  needed only for in-cluster traffic that still goes through the tunnel.
+- **Workload DNS:** the Pod's DNS server is usually a Service IP. A listed
+  Service range sends workload DNS to it around the tunnel, unless a strict
+  egress policy blocks it.
 - **Inbound clients:** replies follow normal routing. A client outside the
   listed ranges and the CNI's routes, for example behind a LoadBalancer with
   `externalTrafficPolicy: Local`, gets its replies through the tunnel, and
@@ -218,6 +221,27 @@ volumeMounts:
 
 The bridge logs a warning at startup when `--gateway-url` uses `http://`.
 
+### Redirects to another gateway
+
+The bridge resolves two names: the `--gateway-url` host and the WireGuard
+endpoint host from the enrollment response. A name without a `--resolve`
+entry uses the Pod's DNS configuration. The workload shares that
+configuration: all containers in the Pod use the same `/etc/hosts` and
+`/etc/resolv.conf`, and a workload that runs as root can change them. A
+workload that can redirect the bridge can make it send its ServiceAccount
+token to a fake gateway.
+
+`--resolve` is a convenience, not a security control. Limit this exposure
+outside the Pod:
+
+- restrict the register endpoint with the gateway ingress policy (see
+  "Restrict gateway ingress"),
+- use TLS with a verified certificate, so that a fake gateway cannot
+  complete the handshake (see "Transport security for enrollment"),
+- keep the token lifetime short (`expirationSeconds` on the projected
+  token), and
+- run workload containers as non-root (see "Agent pod contract").
+
 ## Gateway RBAC
 
 The gateway ServiceAccount needs:
@@ -244,8 +268,16 @@ The agent container should:
 - drop all Linux capabilities (`drop: ["ALL"]`). With `NET_ADMIN` or
   `NET_RAW` it could set the bridge's socket mark and send traffic around the
   tunnel,
+- run as non-root (`runAsNonRoot: true`). The workload namespace uses the
+  "privileged" Pod Security level (see "Pod Security"), which does not
+  enforce it. A root workload can change the Pod's shared `/etc/hosts` and
+  `/etc/resolv.conf`, which the bridge also reads (see "Redirects to another
+  gateway"),
 - mount `/clawpatrol` read-only, and
 - source `/clawpatrol/env` before starting the workload.
+
+Do not set `shareProcessNamespace: true` on the Pod. The workload could then
+send signals to the bridge.
 
 Do not run the bridge in a Pod with `hostNetwork: true`. The Pod then shares
 the node's network namespace, and the bridge replaces the node's default
@@ -337,7 +369,8 @@ kubectl label namespace agents pod-security.kubernetes.io/enforce=privileged
 ```
 
 The agent container itself stays restricted: no capabilities, no token, and a
-read-only handoff volume.
+read-only handoff volume. The "privileged" level does not enforce this, so set
+it in the Pod spec, including `runAsNonRoot: true`.
 
 ## Deploy the example
 
@@ -556,7 +589,68 @@ For agents that may reach only clawpatrol, permit only:
 
 A ready-to-adapt example is
 [`examples/kubernetes/agent-egress-networkpolicy.yaml`](https://github.com/denoland/clawpatrol/blob/main/examples/kubernetes/agent-egress-networkpolicy.yaml).
-It takes effect only on a CNI that enforces NetworkPolicy.
+It takes effect only on a CNI that enforces NetworkPolicy. Its DNS rule also
+lets the workload query kube-dns Pods directly, outside the tunnel. To remove
+the DNS rule, see "Lock down Pod egress".
+
+### Lock down Pod egress
+
+For an egress policy without a DNS rule, the bridge must reach the gateway
+without DNS. The Kustomize component in
+[`examples/kubernetes/lockdown`](https://github.com/denoland/clawpatrol/tree/main/examples/kubernetes/lockdown)
+does this:
+
+1. It pins the ClusterIPs of the gateway API Service `clawpatrol-api` (TCP
+   8080) and the WireGuard Service `clawpatrol-wg` (UDP 51820).
+2. It maps each Service name to its pinned address with the bridge flag
+   `--resolve=<host>=<ip>`, one entry for each name. A name with a
+   `--resolve` entry does not use DNS, at enrollment and at each reconnect.
+3. It adds an egress policy that allows only the gateway Pods on TCP 8080
+   and UDP 51820.
+
+Add the component to an overlay of the base:
+
+```yaml
+resources:
+  - ../kustomization
+components:
+  - ../lockdown
+```
+
+With this policy, agent traffic outside the tunnel is blocked: CNI routes
+other than the default, `tunnel_split_cidrs` ranges, and direct queries to
+kube-dns Pods. Workload DNS still works, because it goes through the tunnel
+and the gateway answers it. Replies to inbound connections, such as kubelet
+probes, still pass, because NetworkPolicy is stateful.
+
+Review these points:
+
+- **CNI:** the policy takes effect only on a CNI that enforces NetworkPolicy.
+  Without it, `--resolve` still works, but traffic outside the tunnel is not
+  blocked.
+- **Gateway config:** the component does not change `gateway.hcl`. Keep
+  `wireguard.endpoint` set to the `clawpatrol-wg` Service name, which has a
+  `--resolve` entry.
+- **Pinned addresses:** use two free addresses in the cluster's Service CIDR,
+  and set each one in its Service and in its `--resolve` argument.
+  `spec.clusterIP` is immutable, so delete an existing Service before you pin
+  it. Any stable address works, for example a LoadBalancer IP.
+- **Logs:** the bridge logs each `--resolve` entry at startup. When it has
+  entries, it logs `resolving <host> through DNS (no --resolve entry)` once
+  for each other name. In a locked-down Pod, that line shows the missing
+  entry.
+- **TLS:** `--resolve` changes only the address that the bridge connects to.
+  TLS SNI, certificate verification, and the `Host` header use the name, so
+  the certificate needs no IP SAN. With `--gateway-url` set to a
+  `public_url` behind an ingress, map the ingress name to the ingress
+  address, and allow the ingress in the policy instead of the gateway Pods.
+- **Gateway DNS:** the gateway Pod still needs cluster DNS. It resolves the
+  workload's A and AAAA queries with its own resolver, and relays other query
+  types to their original destination.
+- **Gateway ports:** NetworkPolicy cannot tell the bridge from the workload,
+  because both use the Pod IP. The workload can also reach the gateway Pods
+  on the two allowed ports: the dashboard, behind its password, and the
+  register endpoint, which needs a token.
 
 ### Restrict gateway ingress (recommended)
 
@@ -575,9 +669,9 @@ The repository includes a kind-based validation flow:
 ./e2e/kubernetes-wireguard-e2e.sh
 ```
 
-It builds the current workspace image, deploys the Kustomize example, checks
-the restricted agent contract and tunneled traffic, exercises reaping and
-in-process recovery, and verifies cleanup.
+It builds the current workspace image, deploys the Kustomize example with the
+lockdown component, checks the restricted agent contract and tunneled traffic,
+exercises reaping and in-process recovery, and verifies cleanup.
 
 ## Limitations
 

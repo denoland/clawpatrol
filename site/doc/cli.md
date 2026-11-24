@@ -206,6 +206,7 @@ clawpatrol bridge \
 | Flag | Default | Notes |
 |---|---|---|
 | `--gateway-url URL` | required | Gateway API URL used for enrollment and env pushdown |
+| `--resolve HOST=IP` | none | Connect to `HOST` at `IP` without DNS. Repeatable. Use it for the `--gateway-url` host and the WireGuard endpoint host; TLS and the `Host` header keep the name |
 | `--authorizer TYPE/NAME` | required | Enrollment provider and configured authorizer, for example `kubernetes_token_review/agents` |
 | `--kubernetes-token-path PATH` | `/var/run/secrets/tokens/clawpatrol-token` | Projected ServiceAccount token presented by the Kubernetes enrollment provider |
 | `--env-out PATH` | `/clawpatrol/env` | Shell exports written for the workload container |

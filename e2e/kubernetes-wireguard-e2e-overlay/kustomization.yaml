@@ -5,6 +5,13 @@ resources:
   - ../../examples/kubernetes/kustomization
   - http-echo.yaml
 
+# Pinned ClusterIPs for the gateway Services, the bridge --resolve entries, and
+# the strict egress policy. The policy selects only Pods with the
+# clawpatrol.dev/egress=strict label, which the script adds to the agent for
+# the lockdown checks.
+components:
+  - ../../examples/kubernetes/lockdown
+
 # Swap the gateway config for the e2e one (short liveness window + *-e2e namespaces).
 # behavior: replace targets the base configMapGenerator by name+namespace;
 # the namespace is then renamed to clawpatrol-e2e by the patch below.
@@ -44,12 +51,23 @@ patches:
   - target: { group: apps, version: v1, kind: StatefulSet, name: clawpatrol-gateway }
     patch: |-
       - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+  # Free addresses in kind's Service range (10.96.0.0/12). Keep them in sync
+  # with the --resolve patches below.
   - target: { version: v1, kind: Service, name: clawpatrol-api }
     patch: |-
       - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+      - { op: replace, path: /spec/clusterIP, value: 10.96.200.20 }
   - target: { version: v1, kind: Service, name: clawpatrol-wg }
     patch: |-
       - { op: replace, path: /metadata/namespace, value: clawpatrol-e2e }
+      - { op: replace, path: /spec/clusterIP, value: 10.96.200.21 }
+  - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: clawpatrol-agent-egress }
+    patch: |-
+      - { op: replace, path: /metadata/namespace, value: agents-e2e }
+      - { op: replace, path: /spec/podSelector/matchLabels, value: { clawpatrol.dev/egress: strict } }
+      - op: replace
+        path: /spec/egress/0/to/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+        value: clawpatrol-e2e
   - target: { group: rbac.authorization.k8s.io, version: v1, kind: ClusterRole, name: clawpatrol-tokenreview }
     patch: |-
       - { op: replace, path: /metadata/name, value: clawpatrol-tokenreview-e2e }
@@ -76,6 +94,12 @@ patches:
       - op: replace
         path: /spec/initContainers/0/args/1
         value: --gateway-url=http://clawpatrol-api.clawpatrol-e2e.svc:8080
+      - op: replace
+        path: /spec/initContainers/0/args/2
+        value: --resolve=clawpatrol-api.clawpatrol-e2e.svc=10.96.200.20
+      - op: replace
+        path: /spec/initContainers/0/args/3
+        value: --resolve=clawpatrol-wg.clawpatrol-e2e.svc=10.96.200.21
       - { op: replace, path: /spec/containers/0/image, value: ghcr.io/denoland/clawpatrol:latest }
       # An HTTP listener in the agent container and a kubelet readiness probe
       # on it: replies to inbound connections must leave the pod even though

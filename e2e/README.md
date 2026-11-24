@@ -18,9 +18,12 @@ applies the checked-in overlay at
 `e2e/kubernetes-wireguard-e2e-overlay`.
 
 The overlay reuses the example base at
-`examples/kubernetes/kustomization` and changes it to use:
+`examples/kubernetes/kustomization` with the lockdown component at
+`examples/kubernetes/lockdown`, and changes it to use:
 
 - `clawpatrol-e2e` and `agents-e2e` namespaces,
+- the pinned ClusterIPs `10.96.200.20` for `clawpatrol-api` and
+  `10.96.200.21` for `clawpatrol-wg`, and the agent's `--resolve` entries,
 - the local `clawpatrol-kind-e2e:dev` image,
 - a short liveness window (a small `keepalive_interval`),
 - an e2e HTTP target used to prove tunneled data-path traffic.
@@ -39,6 +42,13 @@ The script validates:
   fresh key at the reused peer IP and no container restart),
 - `tunnel_split_cidrs`: a listed Service IP routes through the CNI
   and answers, an unlisted one still routes through the tunnel,
+- the lockdown component: the agent bridge uses its `--resolve` entries for
+  both gateway names and no DNS. With the strict egress policy, the agent cannot reach the echo pod on
+  its CNI route, the `tunnel_split_cidrs` Service, or a kube-dns pod
+  directly. Workload DNS, inbound replies, and the readiness probe still
+  work, and self-heal re-enrolls without DNS (set
+  `CLAWPATROL_E2E_CHECK_LOCKDOWN=0` to skip; skipped when the CNI does not
+  enforce NetworkPolicy),
 - bridge variants: the raw ICMP socket fallback, the handshake-age watchdog
   when no ICMP socket opens, with no reconnect on a healthy tunnel (set
   `CLAWPATROL_E2E_CHECK_VARIANTS=0` to skip),

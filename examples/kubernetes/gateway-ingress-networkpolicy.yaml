@@ -26,9 +26,10 @@
 #     that path too.
 #
 # Enforcement behavior:
-#   - The CNI must enforce NetworkPolicy, such as Calico or Cilium, or AWS VPC
-#     CNI with its network policy agent turned on. Some CNIs, including kind's
-#     default kindnet, do not; this manifest is inert there.
+#   - The CNI must enforce NetworkPolicy, such as Calico, Cilium, kind's
+#     default kindnet (kind v0.24 and later), or AWS VPC CNI with its network
+#     policy agent turned on. On a CNI that does not, this manifest has no
+#     effect.
 #   - `kubectl port-forward` to the gateway usually does not pass through
 #     NetworkPolicy, so operators can still reach the dashboard that way.
 apiVersion: networking.k8s.io/v1

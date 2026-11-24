@@ -38,6 +38,8 @@
 #   - ../agent-bridge-mutatingadmissionpolicy.yaml
 #   - ../agent-egress-networkpolicy.yaml
 #   - ../gateway-ingress-networkpolicy.yaml
+#   - ../lockdown: a Kustomize component for agent Pod egress without
+#     cluster DNS (pinned ClusterIPs, bridge --resolve, strict egress policy).
 #
 # Set the dashboard password before applying; see "Deploy the example" in
 # site/doc/kubernetes-enrollment.md.

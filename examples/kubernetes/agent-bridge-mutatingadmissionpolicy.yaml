@@ -20,6 +20,8 @@
 # Gateway and enrollment:
 #   - Gateway URL: `http://clawpatrol-api.clawpatrol.svc:8080`, assuming
 #     Service `clawpatrol-api` in namespace `clawpatrol` on port 8080.
+#   - With the lockdown component (../lockdown), uncomment the two
+#     `--resolve` arguments in both mutations below.
 #   - Authorizer: `kubernetes_token_review/agents`.
 #   - Projected ServiceAccount token audience: `clawpatrol`.
 #   - Projected token lifetime: 600 seconds.
@@ -216,6 +218,10 @@ spec:
                 "args": dyn([
                   "bridge",
                   "--gateway-url=http://clawpatrol-api.clawpatrol.svc:8080",
+                  // With the lockdown component (../lockdown), map the gateway
+                  // names to their pinned ClusterIPs so the bridge needs no DNS:
+                  // "--resolve=clawpatrol-api.clawpatrol.svc=10.96.100.10",
+                  // "--resolve=clawpatrol-wg.clawpatrol.svc=10.96.100.11",
                   "--authorizer=kubernetes_token_review/agents",
                   "--kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token",
                   "--env-out=/clawpatrol/env",
@@ -296,6 +302,10 @@ spec:
                 "args": dyn([
                   "bridge",
                   "--gateway-url=http://clawpatrol-api.clawpatrol.svc:8080",
+                  // With the lockdown component (../lockdown), map the gateway
+                  // names to their pinned ClusterIPs so the bridge needs no DNS:
+                  // "--resolve=clawpatrol-api.clawpatrol.svc=10.96.100.10",
+                  // "--resolve=clawpatrol-wg.clawpatrol.svc=10.96.100.11",
                   "--authorizer=kubernetes_token_review/agents",
                   "--kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token",
                   "--env-out=/clawpatrol/env",

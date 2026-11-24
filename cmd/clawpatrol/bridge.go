@@ -29,6 +29,10 @@ const kubernetesDefaultTokenPath = "/var/run/secrets/tokens/clawpatrol-token"
 type bridgeOptions struct {
 	GatewayURL string
 
+	// Resolve maps the gateway API and WireGuard endpoint names to fixed IPs,
+	// so the bridge does not need DNS for them (--resolve).
+	Resolve bridgeHostMap
+
 	// AuthorizerType/Name mirror the gateway's two-label enrollment block
 	// `enrollment "<type>" "<name>"`. Type selects the client-side claims
 	// provider (how identity is gathered); Name is what's sent on the wire
@@ -85,6 +89,7 @@ func runBridge(args []string) {
 		opt        bridgeOptions
 	)
 	fs.StringVar(&opt.GatewayURL, "gateway-url", "", "gateway API URL, e.g. https://clawpatrol.clawpatrol.svc:8443")
+	fs.Var(&opt.Resolve, "resolve", "map a gateway host name to an IP as <host>=<ip>, so the bridge does not use DNS for it; repeatable")
 	fs.StringVar(&authorizer, "authorizer", "", "enrollment authorizer to register through, as <type>/<name> (e.g. kubernetes_token_review/agents)")
 	fs.StringVar(&opt.KubeTokenPath, "kubernetes-token-path", kubernetesDefaultTokenPath, "kubernetes_token_review: projected ServiceAccount token path")
 	fs.StringVar(&opt.EnvOut, "env-out", "/clawpatrol/env", "path to write shell exports for the workload container")

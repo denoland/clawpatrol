@@ -28,6 +28,7 @@ CHECK_EXPIRY="${CLAWPATROL_E2E_CHECK_EXPIRY:-0}"
 CHECK_ESCALATION="${CLAWPATROL_E2E_CHECK_ESCALATION:-1}"
 CHECK_VARIANTS="${CLAWPATROL_E2E_CHECK_VARIANTS:-1}"
 CHECK_ADMISSION="${CLAWPATROL_E2E_CHECK_ADMISSION:-1}"
+CHECK_LOCKDOWN="${CLAWPATROL_E2E_CHECK_LOCKDOWN:-1}"
 GOARCH_OVERRIDE="${CLAWPATROL_E2E_GOARCH:-}"
 
 # These are fixed by the overlay (images: transformer, namespaces, RBAC
@@ -38,6 +39,10 @@ AGENTS_NS="agents-e2e"
 CLUSTER_ROLE_NAME="clawpatrol-tokenreview-e2e"
 E2E_POD="clawpatrol-agent-example"
 E2E_HTTP="clawpatrol-e2e-http"
+# Pinned ClusterIPs of clawpatrol-api and clawpatrol-wg, and the agent's
+# --resolve entries.
+LOCKDOWN_API_IP="10.96.200.20"
+LOCKDOWN_WG_IP="10.96.200.21"
 
 KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/clawpatrol-k8s-e2e.XXXXXX")"
@@ -70,6 +75,9 @@ Environment knobs:
   CLAWPATROL_E2E_CHECK_ADMISSION set 0 to skip the example admission policy
                                  check (skipped anyway when the cluster does
                                  not serve MutatingAdmissionPolicy v1)
+  CLAWPATROL_E2E_CHECK_LOCKDOWN  set 0 to skip the strict egress policy checks
+                                 of the lockdown component (skipped anyway when
+                                 the CNI does not enforce NetworkPolicy)
   CLAWPATROL_E2E_GOARCH          override node arch for the Linux build
 
 Image tag, namespaces, peer TTL, and RBAC names live in the overlay
@@ -293,6 +301,80 @@ inbound_reply() {
 }
 wait_until "reply from the agent pod to an inbound request" 30 inbound_reply
 
+LOCKDOWN_ACTIVE=0
+if [[ "${CHECK_LOCKDOWN}" == "1" ]]; then
+  log "checking the lockdown component: --resolve and the strict egress policy"
+  agent_bridge_log() { "${KUBECTL[@]}" -n "${AGENTS_NS}" logs "${E2E_POD}" -c clawpatrol-bridge; }
+  WG_CLUSTER_IP="$("${KUBECTL[@]}" -n "${GATEWAY_NS}" get svc clawpatrol-wg -o jsonpath='{.spec.clusterIP}')"
+  [[ "${API_CLUSTER_IP}" == "${LOCKDOWN_API_IP}" ]] ||
+    fail "clawpatrol-api has ClusterIP ${API_CLUSTER_IP}, want the pinned ${LOCKDOWN_API_IP}"
+  [[ "${WG_CLUSTER_IP}" == "${LOCKDOWN_WG_IP}" ]] ||
+    fail "clawpatrol-wg has ClusterIP ${WG_CLUSTER_IP}, want the pinned ${LOCKDOWN_WG_IP}"
+  agent_bridge_log | grep -q "resolve maps clawpatrol-api.${GATEWAY_NS}.svc to ${LOCKDOWN_API_IP}" ||
+    fail "bridge did not log its --resolve entry for clawpatrol-api"
+  agent_bridge_log | grep -q "resolve maps clawpatrol-wg.${GATEWAY_NS}.svc to ${LOCKDOWN_WG_IP}" ||
+    fail "bridge did not log its --resolve entry for clawpatrol-wg"
+  # The bridge logs every name without an entry that it resolves through DNS,
+  # so no such line means neither gateway name used DNS.
+  ! agent_bridge_log | grep -q 'through DNS' ||
+    fail "bridge resolved a gateway name through DNS"
+
+  # Each helper passes only when three attempts in a row fail, so a short
+  # restart gap of a one-connection listener does not count as blocked.
+  http_blocked() {
+    local i
+    for i in 1 2 3; do
+      agent_exec sh -lc "test \"\$(curl -sS --max-time 3 '$1' 2>/dev/null)\" = 'ok'" && return 1
+      sleep 1
+    done
+  }
+  tcp_blocked() {
+    local i
+    for i in 1 2 3; do
+      agent_exec nc -z -w 3 "$1" "$2" && return 1
+      sleep 1
+    done
+  }
+  via_cni() { agent_exec sh -lc "! ip route get '$1' | grep -q 'dev clawpatrol0'"; }
+
+  DNS_POD_IP="$("${KUBECTL[@]}" -n kube-system get pod -l k8s-app=kube-dns -o jsonpath='{.items[0].status.podIP}')"
+  [[ -n "${DNS_POD_IP}" ]] || fail "could not resolve a kube-dns pod IP"
+  if via_cni "${DNS_POD_IP}"; then
+    wait_until "agent reaches the kube-dns pod ${DNS_POD_IP} directly before the strict policy" 30 \
+      agent_exec nc -z -w 3 "${DNS_POD_IP}" 53
+  fi
+
+  if ! via_cni "${ECHO_POD_IP}"; then
+    log "the echo pod is not on a CNI route; cannot test NetworkPolicy enforcement, skipping the strict egress policy checks"
+  else
+    "${KUBECTL[@]}" -n "${AGENTS_NS}" label pod "${E2E_POD}" clawpatrol.dev/egress=strict --overwrite >/dev/null
+    if wait_until "strict egress policy blocks the echo pod on its CNI route" 45 \
+      http_blocked "http://${ECHO_POD_IP}:8081/"; then
+      LOCKDOWN_ACTIVE=1
+    else
+      log "the CNI does not enforce NetworkPolicy; skipping the strict egress policy checks"
+      "${KUBECTL[@]}" -n "${AGENTS_NS}" label pod "${E2E_POD}" clawpatrol.dev/egress- >/dev/null
+    fi
+  fi
+
+  if [[ "${LOCKDOWN_ACTIVE}" == "1" ]]; then
+    wait_until "strict egress policy blocks the tunnel_split_cidrs Service ${DIRECT_IP}" 30 \
+      http_blocked "http://${DIRECT_IP}:8081/"
+    if via_cni "${DNS_POD_IP}"; then
+      wait_until "strict egress policy blocks a direct connection to the kube-dns pod" 30 \
+        tcp_blocked "${DNS_POD_IP}" 53
+    fi
+    wait_until "workload DNS resolves through the tunnel under the strict policy" 30 \
+      agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
+    wait_until "reply from the agent pod to an inbound request under the strict policy" 30 inbound_reply
+    # The policy has been in place for longer than the readiness probe's
+    # failure window (3 x 2s), so a probe that fails shows here.
+    "${KUBECTL[@]}" -n "${AGENTS_NS}" wait --for=condition=Ready "pod/${E2E_POD}" --timeout=30s >/dev/null ||
+      fail "agent readiness probe fails under the strict policy"
+    log "strict egress policy blocks traffic outside the tunnel; DNS, inbound replies, and probes still work"
+  fi
+fi
+
 log "checking enrolled peer row and WireGuard peer tables"
 gateway_exec sh -lc 'command -v sqlite3 >/dev/null'
 wait_until "enrolled peer row is present" 60 enrolled_present
@@ -381,6 +463,12 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   wait_until "tunnel restored after self-heal" 60 \
     agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
   log "sidecar self-healed in-process: 0 container restarts, re-enrolled ${PEER_IP} with a fresh key"
+
+  if [[ "${LOCKDOWN_ACTIVE}" == "1" ]]; then
+    ! agent_bridge_log | grep -q 'through DNS' ||
+      fail "bridge resolved a gateway name through DNS during self-heal"
+    log "self-heal re-enrolled under the strict egress policy without DNS"
+  fi
 fi
 
 if [[ "${CHECK_VARIANTS}" == "1" ]]; then

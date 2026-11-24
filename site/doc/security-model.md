@@ -153,7 +153,10 @@ DNS included, goes through the tunnel once setup is complete. Other
 routes stay outside the tunnel: the CNI's link and subnet routes,
 routes that a process in the pod adds later (for example `docker0`),
 and the enrollment's `tunnel_split_cidrs` ranges. The gateway does not
-see or audit that traffic. Use NetworkPolicy to control it. This
+see or audit that traffic. Use NetworkPolicy to control it. With the
+strict egress policy of the lockdown component, which allows only the
+gateway Pods, that traffic is blocked. Without such a policy, it is
+unaudited. This
 matches `clawpatrol join --whole-machine` with WireGuard, where the
 host's specific routes also stay outside the tunnel.
 

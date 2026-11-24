@@ -1,9 +1,12 @@
 # Recommended (defense-in-depth) egress NetworkPolicy for agent pods.
 #
 # This is NOT part of the default Kustomization base and nothing in the
-# enrollment path depends on it. The bridge already fails closed at the
-# routing layer. This policy adds a second, cluster-enforced layer that allows
-# only the egress paths needed for enrollment and the WireGuard tunnel.
+# enrollment path depends on it. The bridge sends only the default route
+# through the tunnel. Other routes, such as the CNI's Pod routes and
+# `tunnel_split_cidrs`, stay outside the tunnel. This policy adds a
+# cluster-enforced layer that allows only enrollment, the WireGuard tunnel,
+# and DNS. For a policy without the DNS rule, see the lockdown component in
+# ../lockdown.
 #
 # REVIEW THESE FIXED DEPLOYMENT ASSUMPTIONS BEFORE APPLYING:
 #
@@ -30,13 +33,17 @@
 #   - DNS ports: UDP and TCP 53.
 #   - Replace these selectors if the cluster uses different CoreDNS/kube-dns
 #     labels or an external DNS service.
+#   - The workload can also use this rule to query kube-dns Pods directly,
+#     outside the tunnel. The lockdown component removes the rule.
 #
 # Enforcement behavior:
-#   - The CNI must enforce NetworkPolicy, such as Calico or Cilium. Some CNIs,
-#     including kind's default kindnet, do not; this manifest is inert there.
-#   - Once the tunnel is up, workload traffic leaves the Pod as WireGuard
-#     traffic to the gateway. If the tunnel drops, the bridge removes the
-#     default route, so traffic also fails closed at the routing layer.
+#   - The CNI must enforce NetworkPolicy, such as Calico, Cilium, or kind's
+#     default kindnet (kind v0.24 and later). On a CNI that does not, this
+#     manifest has no effect.
+#   - Once the tunnel is up, traffic on the default route leaves the Pod as
+#     WireGuard traffic to the gateway. If the tunnel drops, the bridge
+#     removes the default route, so that traffic fails closed. Traffic on
+#     other routes does not change.
 #   - Add explicit rules before applying if matching workloads need other
 #     direct cluster services, metadata endpoints, or control planes.
 apiVersion: networking.k8s.io/v1

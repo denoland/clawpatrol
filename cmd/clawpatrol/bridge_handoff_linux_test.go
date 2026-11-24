@@ -93,8 +93,8 @@ func TestBridgeClearsStaleReadyOnStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	resolver, client := bridgeResolver, enrollmentHTTPClient
-	t.Cleanup(func() { bridgeResolver, enrollmentHTTPClient = resolver, client })
+	resolver, client, hosts := bridgeResolver, enrollmentHTTPClient, bridgeStaticHosts
+	t.Cleanup(func() { bridgeResolver, enrollmentHTTPClient, bridgeStaticHosts = resolver, client, hosts })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := bridgeRun(ctx, opt); err != nil {

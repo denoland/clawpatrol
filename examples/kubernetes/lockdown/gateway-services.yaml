@@ -1,0 +1,22 @@
+# Pinned ClusterIPs for the gateway API and WireGuard Services. The agent
+# bridge maps each Service name to its address with --resolve. Keep the
+# addresses in sync with the --resolve patch in kustomization.yaml.
+#
+# Placeholders: replace them with free addresses in the cluster's Service
+# CIDR. `spec.clusterIP` is immutable, so delete an existing Service before
+# you pin it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clawpatrol-api
+  namespace: clawpatrol
+spec:
+  clusterIP: 10.96.100.10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clawpatrol-wg
+  namespace: clawpatrol
+spec:
+  clusterIP: 10.96.100.11

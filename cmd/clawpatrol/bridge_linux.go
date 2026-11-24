@@ -68,8 +68,11 @@ func bridgeRun(ctx context.Context, opt bridgeOptions) error {
 	defer stop()
 
 	// The bridge's own traffic to the gateway and DNS carries the mark, so it
-	// uses the underlay routes while workload traffic uses the tunnel.
-	bridgeResolver, enrollmentHTTPClient = newMarkedNet(opt.FWMark)
+	// uses the underlay routes while workload traffic uses the tunnel. Names
+	// with a --resolve entry skip DNS.
+	bridgeStaticHosts = newBridgeHosts(opt.Resolve)
+	bridgeStaticHosts.logMappings()
+	bridgeResolver, enrollmentHTTPClient = newMarkedNet(opt.FWMark, bridgeStaticHosts)
 
 	st := &bridgeState{}
 	backoff := time.Second
@@ -457,27 +460,6 @@ func resolveWGEndpoint(endpoint string) (netip.Addr, string, error) {
 		return netip.Addr{}, "", fmt.Errorf("resolve endpoint %q: no A/AAAA records", host)
 	}
 	return ip, net.JoinHostPort(ip.String(), port), nil
-}
-
-func lookupHostIPs(host string) ([]netip.Addr, error) {
-	if host == "" {
-		return nil, nil
-	}
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return []netip.Addr{ip.Unmap()}, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	addrs, err := bridgeResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]netip.Addr, 0, len(addrs))
-	for _, addr := range addrs {
-		// Unmap 4-in-6 so Is4()/family checks behave.
-		out = append(out, addr.Unmap())
-	}
-	return out, nil
 }
 
 func runIP(args ...string) error {

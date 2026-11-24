@@ -1,0 +1,50 @@
+# Optional Kustomize component: lock down agent Pod egress without cluster
+# DNS. Add it to an overlay of the base:
+#
+#   resources:
+#     - ../kustomization
+#   components:
+#     - ../lockdown
+#
+# The component makes these changes to the base:
+#   - gateway-services.yaml: the `clawpatrol-api` (TCP 8080) and
+#     `clawpatrol-wg` (UDP 51820) Services get pinned ClusterIPs.
+#   - The agent bridge gets one `--resolve` entry for each Service name, so it
+#     reaches the gateway API and the WireGuard endpoint without DNS.
+#   - agent-egress-networkpolicy.yaml: agent Pods can send only to the gateway
+#     Pods on TCP 8080 and UDP 51820. There is no DNS rule.
+#
+# The component does not change gateway.hcl. `wireguard.endpoint` must stay
+# `clawpatrol-wg.clawpatrol.svc:51820`, the name that the second `--resolve`
+# entry maps.
+#
+# FIXED ASSUMPTIONS TO REVIEW:
+#   - Pinned ClusterIPs: `10.96.100.10` (`clawpatrol-api`) and `10.96.100.11`
+#     (`clawpatrol-wg`). Use free addresses in the cluster's Service CIDR, and
+#     change them in gateway-services.yaml and in the `--resolve` patch below
+#     together.
+#   - `spec.clusterIP` is immutable. To pin an existing Service, delete it
+#     before you apply.
+#   - The CNI must enforce NetworkPolicy. If it does not, the policy has no
+#     effect, but `--resolve` still works.
+#   - The gateway Pod still needs cluster DNS for the A and AAAA queries that
+#     it answers for the workload.
+#
+# See "Lock down Pod egress" in site/doc/kubernetes-enrollment.md.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - agent-egress-networkpolicy.yaml
+
+patches:
+  - path: gateway-services.yaml
+  # Insert the --resolve entries after --gateway-url (args/1).
+  - target: { version: v1, kind: Pod, name: clawpatrol-agent-example }
+    patch: |-
+      - op: add
+        path: /spec/initContainers/0/args/2
+        value: --resolve=clawpatrol-api.clawpatrol.svc=10.96.100.10
+      - op: add
+        path: /spec/initContainers/0/args/3
+        value: --resolve=clawpatrol-wg.clawpatrol.svc=10.96.100.11

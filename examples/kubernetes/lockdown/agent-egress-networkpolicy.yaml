@@ -1,0 +1,45 @@
+# Strict egress NetworkPolicy for agent Pods: the gateway Pods on TCP 8080 and
+# UDP 51820, and nothing else. There is no DNS rule, so the bridge needs a
+# --resolve entry for each gateway name.
+#
+# The policy has the same name as ../agent-egress-networkpolicy.yaml and
+# replaces it. Policies add up: if another policy selects the same Pods and
+# allows DNS or other destinations, that traffic is also allowed.
+#
+# With this policy, agent traffic that does not go through the tunnel is
+# blocked: routes from the CNI other than the default, `tunnel_split_cidrs`,
+# and direct queries to kube-dns Pods. Replies to inbound connections, such
+# as kubelet probes, still pass, because policies are stateful.
+#
+# NetworkPolicy cannot tell the bridge from the workload, because both use the
+# Pod IP. The workload can reach the gateway Pods on these two ports too: the
+# dashboard (behind its password) and the register endpoint (needs a token).
+#
+# The CNI must enforce NetworkPolicy, such as Calico or Cilium.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clawpatrol-agent-egress
+  namespace: agents
+spec:
+  podSelector:
+    matchLabels:
+      clawpatrol.dev/profile: default
+  policyTypes:
+    - Egress
+  egress:
+    # clawpatrol gateway: API + WireGuard endpoint. The rule selects the
+    # gateway Pods; the policy applies after the Service ClusterIP is
+    # translated to a Pod IP.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: clawpatrol
+          podSelector:
+            matchLabels:
+              app: clawpatrol-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: UDP
+          port: 51820
