@@ -411,3 +411,45 @@ func TestBridgeBootstrapPeer(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureCharDeviceKeepsExistingPath(t *testing.T) {
+	path := t.TempDir() + "/tun"
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCharDevice(path, 10, 200); err != nil {
+		t.Fatalf("ensureCharDevice: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.Mode().IsRegular() {
+		t.Fatalf("existing path was replaced: mode %v", fi.Mode())
+	}
+}
+
+// Needs CAP_MKNOD.
+func TestEnsureCharDeviceCreatesNode(t *testing.T) {
+	path := t.TempDir() + "/net/tun"
+	if err := ensureCharDevice(path, 10, 200); err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("no permission to mknod: %v", err)
+		}
+		t.Fatalf("ensureCharDevice: %v", err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFCHR {
+		t.Fatalf("mode %#o: not a character device", st.Mode)
+	}
+	if maj, mnr := unix.Major(st.Rdev), unix.Minor(st.Rdev); maj != 10 || mnr != 200 {
+		t.Fatalf("device %d:%d, want 10:200", maj, mnr)
+	}
+	// A second call is a no-op.
+	if err := ensureCharDevice(path, 10, 200); err != nil {
+		t.Fatalf("second ensureCharDevice: %v", err)
+	}
+}

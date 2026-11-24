@@ -30,12 +30,12 @@
 #   - Bridge image: `ghcr.io/denoland/clawpatrol:latest`. Pin an immutable
 #     release or digest for production, and add imagePullSecrets if required.
 #   - Reserved container name: `clawpatrol-bridge`.
-#   - Reserved volume names: `clawpatrol`, `clawpatrol-token`, and
-#     `dev-net-tun`. Existing volumes with these names are reused.
-#   - Reserved paths: `/clawpatrol`, `/var/run/secrets/tokens`, and
-#     `/dev/net/tun`. If changed, update every matching argument, mount, and
-#     probe below together.
-#   - Nodes must expose `/dev/net/tun`; the bridge receives `NET_ADMIN`.
+#   - Reserved volume names: `clawpatrol` and `clawpatrol-token`. Existing
+#     volumes with these names are reused.
+#   - Reserved paths: `/clawpatrol` and `/var/run/secrets/tokens`. If changed,
+#     update every matching argument, mount, and probe below together.
+#   - The bridge receives `NET_ADMIN`. It creates `/dev/net/tun` when the
+#     runtime does not supply it, which needs the default `CAP_MKNOD`.
 #   - The Pod gets the safe sysctl `net.ipv4.ping_group_range: "0 2147483647"`
 #     so the bridge can send its ICMP liveness probe without `NET_RAW`.
 #
@@ -120,7 +120,7 @@ spec:
               value: {"name": "net.ipv4.ping_group_range", "value": "0 2147483647"}
             }]
 
-    # Add the handoff, projected-token, and TUN volumes without replacing
+    # Add the handoff and projected-token volumes without replacing
     # unrelated volumes already declared by the workload.
     - patchType: JSONPatch
       jsonPatch:
@@ -156,20 +156,6 @@ spec:
                     })
                   }
                 }])
-            +
-            (object.spec.volumes.exists(v, v.name == "dev-net-tun")
-              ? []
-              : [JSONPatch{
-                  op: "add",
-                  path: "/spec/volumes/-",
-                  value: {
-                    "name": dyn("dev-net-tun"),
-                    "hostPath": dyn({
-                      "path": dyn("/dev/net/tun"),
-                      "type": dyn("CharDevice")
-                    })
-                  }
-                }])
           )
           : [JSONPatch{
               op: "add",
@@ -189,13 +175,6 @@ spec:
                         "expirationSeconds": dyn(600)
                       })
                     }])
-                  })
-                },
-                {
-                  "name": dyn("dev-net-tun"),
-                  "hostPath": dyn({
-                    "path": dyn("/dev/net/tun"),
-                    "type": dyn("CharDevice")
                   })
                 }
               ]
@@ -283,10 +262,6 @@ spec:
                     "name": dyn("clawpatrol-token"),
                     "mountPath": dyn("/var/run/secrets/tokens"),
                     "readOnly": dyn(true)
-                  },
-                  {
-                    "name": dyn("dev-net-tun"),
-                    "mountPath": dyn("/dev/net/tun")
                   }
                 ])
               }
@@ -367,10 +342,6 @@ spec:
                     "name": dyn("clawpatrol-token"),
                     "mountPath": dyn("/var/run/secrets/tokens"),
                     "readOnly": dyn(true)
-                  },
-                  {
-                    "name": dyn("dev-net-tun"),
-                    "mountPath": dyn("/dev/net/tun")
                   }
                 ])
               }]

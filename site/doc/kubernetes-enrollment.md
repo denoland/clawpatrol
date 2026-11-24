@@ -20,10 +20,10 @@ The deployment has three parts:
   userspace WireGuard server. It can create Kubernetes TokenReviews and read
   allowed agent Pods.
 - **Clawpatrol bridge:** Runs `clawpatrol bridge` as a restartable native
-  sidecar under `initContainers`. It owns the projected token, `/dev/net/tun`,
+  sidecar under `initContainers`. It owns the projected token, the TUN device,
   `NET_ADMIN`, enrollment, and pod routing.
-- **Agent container:** Runs the workload without a Kubernetes token,
-  `/dev/net/tun`, or added capabilities. It receives only a read-only handoff
+- **Agent container:** Runs the workload without a Kubernetes token, a TUN
+  device, or added capabilities. It receives only a read-only handoff
   volume from the bridge.
 
 The bridge startup probe checks `/clawpatrol/ready`. Kubernetes does not start
@@ -166,7 +166,7 @@ The bridge owns all privileged and enrollment-sensitive state:
 
 - the projected Kubernetes token,
 - the WireGuard private key and peer API token in memory,
-- `/dev/net/tun` and `NET_ADMIN`, and
+- the TUN device and `NET_ADMIN`, and
 - pod routing.
 
 The agent container receives only:
@@ -256,7 +256,8 @@ The example RBAC grants only those permissions.
 The bridge needs:
 
 - `NET_ADMIN`,
-- `/dev/net/tun`,
+- `CAP_MKNOD`, which the container runtime grants by default, to create
+  `/dev/net/tun` when the runtime does not supply it,
 - a projected ServiceAccount token using the configured audience,
 - Downward API values for `POD_NAME`, `POD_NAMESPACE`, `POD_UID`, and
   `NODE_NAME`, and
@@ -264,7 +265,7 @@ The bridge needs:
 
 The agent container should:
 
-- omit the Kubernetes token and `/dev/net/tun`,
+- omit the Kubernetes token,
 - drop all Linux capabilities (`drop: ["ALL"]`). With `NET_ADMIN` or
   `NET_RAW` it could set the bridge's socket mark and send traffic around the
   tunnel,
@@ -340,7 +341,10 @@ their interface MTU separately.
 ## Runtime compatibility
 
 The bridge needs a network namespace that it can change with `NET_ADMIN` and
-a TUN device from the hostPath `/dev/net/tun`.
+a TUN device. When `/dev/net/tun` is missing, the bridge creates it (character
+device 10:200). This needs `CAP_MKNOD` and a device cgroup that allows the
+device; the containerd and CRI-O defaults allow both. If a security context
+drops all capabilities and adds only `NET_ADMIN`, also add `MKNOD`.
 
 | Runtime | Status |
 |---------|--------|
@@ -351,17 +355,17 @@ a TUN device from the hostPath `/dev/net/tun`.
 Kata runs the Pod in a guest kernel, and gVisor has its own network stack, so
 check these before you rely on either:
 
-- the bridge can open `/dev/net/tun` and create `clawpatrol0`,
+- the bridge can create and open `/dev/net/tun` and create `clawpatrol0`,
 - `NET_ADMIN` lets it change routes and policy rules in the Pod, and
 - the ICMP liveness probe can open a socket (see "Liveness probe
   permissions").
 
-The bridge's error message for a missing TUN device points to this section.
+The bridge's error messages for TUN setup point to this section.
 
 ### Pod Security
 
-The Pod Security "baseline" and "restricted" levels do not allow `hostPath`
-volumes or the `NET_ADMIN` capability, so the workload namespace needs the
+The Pod Security "baseline" and "restricted" levels do not allow the
+`NET_ADMIN` capability, so the workload namespace needs the
 "privileged" level:
 
 ```bash

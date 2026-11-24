@@ -218,8 +218,7 @@ clawpatrol bridge \
 | `--route-proto PROTO` | `111` | Route protocol tag on the underlay routes in the bridge's routing table |
 | `--fwmark N` | `111` | Socket mark on the bridge's own gateway, DNS, and WireGuard traffic, and the ID of the routing table that sends marked packets to the underlay |
 
-The bridge needs `NET_ADMIN`, `/dev/net/tun`, the projected token, and
-the downward-API `POD_NAME`, `POD_NAMESPACE`, and `POD_UID` environment
+The bridge needs `NET_ADMIN`, the projected token, and the downward-API `POD_NAME`, `POD_NAMESPACE`, and `POD_UID` environment
 variables. It remains in the foreground, heals a failed tunnel in
 process, and best-effort deregisters on shutdown. See
 [Kubernetes Enrollment](kubernetes-enrollment) for the complete pod

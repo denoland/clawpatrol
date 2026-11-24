@@ -35,10 +35,6 @@ spec:
               path: clawpatrol-token
               audience: clawpatrol
               expirationSeconds: 600
-    - name: dev-net-tun
-      hostPath:
-        path: /dev/net/tun
-        type: CharDevice
   initContainers:
     - name: clawpatrol-bridge
       restartPolicy: Always
@@ -89,8 +85,6 @@ spec:
         - name: clawpatrol-token
           mountPath: /var/run/secrets/tokens
           readOnly: true
-        - name: dev-net-tun
-          mountPath: /dev/net/tun
   containers:
     - name: agent
       image: clawpatrol-kind-e2e:dev
@@ -137,10 +131,6 @@ spec:
               path: clawpatrol-token
               audience: clawpatrol
               expirationSeconds: 600
-    - name: dev-net-tun
-      hostPath:
-        path: /dev/net/tun
-        type: CharDevice
   initContainers:
     - name: clawpatrol-bridge
       restartPolicy: Always
@@ -192,8 +182,6 @@ spec:
         - name: clawpatrol-token
           mountPath: /var/run/secrets/tokens
           readOnly: true
-        - name: dev-net-tun
-          mountPath: /dev/net/tun
   containers:
     - name: agent
       image: clawpatrol-kind-e2e:dev

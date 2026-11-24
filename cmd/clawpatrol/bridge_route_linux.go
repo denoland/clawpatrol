@@ -4,12 +4,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +21,30 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// tunDevicePath is the device node that wireguard-go opens to create a TUN.
+const tunDevicePath = "/dev/net/tun"
+
+// ensureCharDevice creates the character device node path (major:minor) when
+// it does not exist. Container runtimes do not always expose /dev/net/tun,
+// but the default device cgroup allows 10:200, so a bridge with CAP_MKNOD can
+// create the node itself.
+func ensureCharDevice(path string, major, minor uint32) error {
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	err := unix.Mknod(path, unix.S_IFCHR|0o666, int(unix.Mkdev(major, minor)))
+	if err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("mknod %s: %w", path, err)
+	}
+	if err == nil {
+		log.Printf("bridge: created %s (%d:%d)", path, major, minor)
+	}
+	return nil
+}
 
 // markControl sets SO_MARK on a socket before it connects.
 func markControl(mark int) func(network, address string, c syscall.RawConn) error {

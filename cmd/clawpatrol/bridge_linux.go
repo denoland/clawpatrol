@@ -199,9 +199,12 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		log.Printf("bridge: split-tunnel routes: %s", tunnelSplitRouteSummary(splitCIDRs, route4, route6))
 	}
 
+	if err := ensureCharDevice(tunDevicePath, 10, 200); err != nil {
+		return nil, fmt.Errorf("prepare %s: %w (the bridge needs CAP_MKNOD or a %s device from the runtime; see \"Runtime compatibility\" in the Kubernetes enrollment docs)", tunDevicePath, err, tunDevicePath)
+	}
 	tunDev, err := wgtun.CreateTUN(opt.Iface, opt.MTU)
 	if err != nil {
-		return nil, fmt.Errorf("create tun %s: %w (the bridge needs the /dev/net/tun device and NET_ADMIN; see \"Runtime compatibility\" in the Kubernetes enrollment docs)", opt.Iface, err)
+		return nil, fmt.Errorf("create tun %s: %w (the bridge needs NET_ADMIN and access to %s; see \"Runtime compatibility\" in the Kubernetes enrollment docs)", opt.Iface, err, tunDevicePath)
 	}
 	ok := false
 	defer func() {

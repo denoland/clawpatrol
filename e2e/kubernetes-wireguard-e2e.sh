@@ -234,6 +234,11 @@ agent_exec sh -lc 'head -1 /clawpatrol/ca.crt | grep -q "^-----BEGIN CERTIFICATE
 agent_exec sh -lc '. /clawpatrol/env; test "$SSL_CERT_FILE" = /clawpatrol/ca-bundle.crt; test -s "$SSL_CERT_FILE"; test "$(grep -c "^-----BEGIN CERTIFICATE-----" "$SSL_CERT_FILE")" -gt 1; lines="$(wc -l < /clawpatrol/ca.crt)"; tail -n "$lines" "$SSL_CERT_FILE" | cmp - /clawpatrol/ca.crt'
 agent_exec sh -lc '. /clawpatrol/env; test "$NODE_EXTRA_CA_CERTS" = /clawpatrol/ca.crt'
 
+log "checking that the bridge created its own TUN device"
+"${KUBECTL[@]}" -n "${AGENTS_NS}" logs "${E2E_POD}" -c clawpatrol-bridge |
+  grep -Fq 'bridge: created /dev/net/tun (10:200)' ||
+  fail "the bridge log does not show that it created /dev/net/tun"
+
 log "checking restricted agent container contract"
 agent_exec sh -lc 'test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token'
 agent_exec sh -lc 'test ! -e /var/run/secrets/tokens/clawpatrol-token'
