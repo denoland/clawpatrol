@@ -268,11 +268,11 @@ type GenAITelemetryBlock struct {
 const (
 	// WireGuardDefaultMTU is the inner MTU in bytes when no override is set.
 	WireGuardDefaultMTU = 1420
-	// WireGuardMinMTU and WireGuardMaxMTU bound the inner MTU. The tunnel
-	// carries IPv6, which needs 1280. The upper limit fits a maximum-length
-	// IPv4 datagram after 20 bytes of IP, 8 of UDP, and 32 of WireGuard
-	// overhead.
+	// WireGuardMinMTU is the lowest inner MTU. The tunnel carries IPv6, which
+	// needs 1280.
 	WireGuardMinMTU = 1280
+	// WireGuardMaxMTU is the highest inner MTU. It fits a maximum-length IPv4
+	// datagram after 20 bytes of IP, 8 of UDP, and 32 of WireGuard overhead.
 	WireGuardMaxMTU = 65535 - 20 - 8 - 32
 )
 

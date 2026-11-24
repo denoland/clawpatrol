@@ -237,11 +237,14 @@ func WireGuardIPv6Subnet(subnet netip.Prefix) netip.Prefix {
 // validateTunnelSplitCIDRs rejects tunnel_split_cidrs entries that
 // overlap the WireGuard tunnel ranges.
 func validateTunnelSplitCIDRs(gw *Gateway) hcl.Diagnostics {
-	subnet, err := netip.ParsePrefix(gw.Settings.WireGuard.SubnetCIDR)
-	if err != nil {
-		return nil // validateOperational reports it
+	var tunnel []netip.Prefix
+	// validateOperational reports an invalid subnet.
+	if subnet, err := netip.ParsePrefix(gw.Settings.WireGuard.SubnetCIDR); err == nil {
+		tunnel = []netip.Prefix{subnet.Masked(), WireGuardIPv6Subnet(subnet)}
 	}
-	tunnel := []netip.Prefix{subnet.Masked(), WireGuardIPv6Subnet(subnet)}
+	if len(tunnel) == 0 {
+		return nil
+	}
 	var diags hcl.Diagnostics
 	for _, name := range slices.Sorted(maps.Keys(gw.Policy.Enrollments)) {
 		ke, ok := gw.Policy.Enrollments[name].Body.(*K8sEnrollment)
