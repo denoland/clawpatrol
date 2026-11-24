@@ -24,7 +24,7 @@ TIMEOUT="${CLAWPATROL_E2E_TIMEOUT:-180s}"
 SKIP_BUILD="${CLAWPATROL_E2E_SKIP_BUILD:-0}"
 KEEP_RESOURCES="${CLAWPATROL_E2E_KEEP_RESOURCES:-0}"
 CHECK_LIVENESS="${CLAWPATROL_E2E_CHECK_LIVENESS:-1}"
-CHECK_EXPIRY="${CLAWPATROL_E2E_CHECK_EXPIRY:-0}"
+CHECK_EXPIRY="${CLAWPATROL_E2E_CHECK_EXPIRY:-1}"
 CHECK_ESCALATION="${CLAWPATROL_E2E_CHECK_ESCALATION:-1}"
 CHECK_VARIANTS="${CLAWPATROL_E2E_CHECK_VARIANTS:-1}"
 CHECK_ADMISSION="${CLAWPATROL_E2E_CHECK_ADMISSION:-1}"
@@ -65,7 +65,9 @@ Environment knobs:
   CLAWPATROL_E2E_SKIP_BUILD      set 1 to skip go/docker build + kind load
   CLAWPATROL_E2E_KEEP_RESOURCES  set 1 to skip final namespace cleanup
   CLAWPATROL_E2E_CHECK_LIVENESS  set 0 to skip the rx_bytes liveness check
-  CLAWPATROL_E2E_CHECK_EXPIRY    set 1 to test reap cleanup (force-delete sidecar)
+  CLAWPATROL_E2E_CHECK_EXPIRY    set 0 to skip the reaper check (SIGSTOP the
+                                 bridge from the kind node, wait for the reap,
+                                 resume it, and check that it re-enrolls)
   CLAWPATROL_E2E_CHECK_ESCALATION set 0 to skip the sidecar self-heal check
                                  (gateway → 0 → ICMP probe fails → sidecar fails
                                  closed and re-enrolls in process with a fresh
@@ -578,15 +580,61 @@ POD
 fi
 
 if [[ "${CHECK_EXPIRY}" == "1" ]]; then
+  # Reaper: stop the bridge with SIGSTOP from the kind node, so it sends no
+  # keepalive, does not deregister, and does not reconnect. A force delete is
+  # not enough: kubelet still sends SIGTERM and the bridge deregisters. A
+  # signal from inside the container to its PID 1 is ignored, so send it from
+  # the node's PID namespace.
+  need docker
   TTL_SECONDS="$(seconds_from_duration "${PEER_TTL}")"
-  log "force deleting sidecar pod to test rx_bytes reap cleanup"
-  "${KUBECTL[@]}" -n "${AGENTS_NS}" delete pod "${E2E_POD}" --force --grace-period=0 --wait=true
-  wait_until "enrolled peer went stale and was reaped" "$((TTL_SECONDS + 90))" enrolled_absent
-else
-  log "deleting e2e pod and checking graceful deregistration"
-  "${KUBECTL[@]}" -n "${AGENTS_NS}" delete pod "${E2E_POD}" --wait=true --timeout=60s
-  wait_until "enrolled peer removed" 45 enrolled_absent
+  bridge_restarts() {
+    "${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" \
+      -o jsonpath='{.status.initContainerStatuses[?(@.name=="clawpatrol-bridge")].restartCount}' 2>/dev/null
+  }
+  reap_lines() {
+    "${KUBECTL[@]}" -n "${GATEWAY_NS}" logs "${GATEWAY_POD}" -c gateway 2>/dev/null |
+      grep -c "reaping peer ip=${PEER_IP} name=\"${AGENTS_NS}/${E2E_POD}\"" || true
+  }
+  REAP_NODE="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" -o jsonpath='{.spec.nodeName}')"
+  REAP_CID="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" \
+    -o jsonpath='{.status.initContainerStatuses[?(@.name=="clawpatrol-bridge")].containerID}')"
+  REAP_PID="$(docker exec "${REAP_NODE}" crictl inspect --output go-template --template '{{.info.pid}}' "${REAP_CID#*://}")"
+  [[ "${REAP_PID}" =~ ^[0-9]+$ ]] || fail "could not find the bridge PID on node ${REAP_NODE} (got '${REAP_PID}')"
+  BEFORE_RESTARTS="$(bridge_restarts)"
+  BEFORE_RESTARTS="${BEFORE_RESTARTS:-0}"
+  BEFORE_PUBKEY="$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;")"
+  BEFORE_REAPS="$(reap_lines)"
+
+  log "stopping the bridge (PID ${REAP_PID} on ${REAP_NODE}) to test the reaper"
+  docker exec "${REAP_NODE}" kill -STOP "${REAP_PID}"
+  reaped() { (( $(reap_lines) > BEFORE_REAPS )) && enrolled_absent; }
+  if ! wait_until "gateway reaped the stopped peer ${PEER_IP}" "$((TTL_SECONDS + 60))" reaped; then
+    docker exec "${REAP_NODE}" kill -CONT "${REAP_PID}" || true
+    fail "gateway did not reap ${PEER_IP} within $((TTL_SECONDS + 60))s of the bridge stopping"
+  fi
+
+  log "resuming the bridge"
+  docker exec "${REAP_NODE}" kill -CONT "${REAP_PID}"
+  reap_reenrolled() {
+    local pk
+    pk="$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;" 2>/dev/null)"
+    [[ -n "${pk}" && "${pk}" != "${BEFORE_PUBKEY}" ]]
+  }
+  wait_until "bridge re-enrolled in-process after the reap" 180 reap_reenrolled ||
+    fail "bridge did not re-enroll after the gateway reaped it"
+  [[ "$(bridge_restarts)" == "${BEFORE_RESTARTS}" ]] ||
+    fail "bridge container restarted after the reap (was ${BEFORE_RESTARTS}, now $(bridge_restarts)); recovery must be in-process"
+  PEER_IP="$(sqlite_query "SELECT ip FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;")"
+  wait_until "tunnel restored after the reap" 60 \
+    agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'" ||
+    fail "tunnel did not work after the bridge re-enrolled"
+  log "reaped peer recovered in-process: 0 container restarts, re-enrolled ${PEER_IP}"
 fi
+
+log "deleting e2e pod and checking graceful deregistration"
+"${KUBECTL[@]}" -n "${AGENTS_NS}" delete pod "${E2E_POD}" --wait=true --timeout=60s
+wait_until "enrolled peer removed" 45 enrolled_absent ||
+  fail "enrolled peer ${PEER_IP} was not removed after a graceful delete"
 
 sqlite_query "SELECT count(*) FROM wg_peers WHERE ip = '${PEER_IP}';" | grep -qx '0'
 log "WireGuard peer ${PEER_IP} was revoked"

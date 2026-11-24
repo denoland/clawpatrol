@@ -40,6 +40,9 @@ The script validates:
 - rx_bytes liveness (a live tunnel holds its peer past the liveness window),
 - sidecar self-heal (a severed tunnel drives in-process re-enrollment with a
   fresh key at the reused peer IP and no container restart),
+- the reaper: the bridge is stopped with SIGSTOP from the kind node, so it
+  cannot deregister; the gateway reaps the peer, and after SIGCONT the bridge
+  re-enrolls in-process (set `CLAWPATROL_E2E_CHECK_EXPIRY=0` to skip),
 - `tunnel_split_cidrs`: a listed Service IP routes through the CNI
   and answers, an unlisted one still routes through the tunnel,
 - the lockdown component: the agent bridge uses its `--resolve` entries for
@@ -84,7 +87,7 @@ CLAWPATROL_E2E_CONTEXT=kind-kind-dev ./e2e/kubernetes-wireguard-e2e.sh
 CLAWPATROL_E2E_SKIP_BUILD=1 ./e2e/kubernetes-wireguard-e2e.sh
 CLAWPATROL_E2E_KEEP_RESOURCES=1 ./e2e/kubernetes-wireguard-e2e.sh
 CLAWPATROL_E2E_CHECK_LIVENESS=0 ./e2e/kubernetes-wireguard-e2e.sh
-CLAWPATROL_E2E_CHECK_EXPIRY=1 ./e2e/kubernetes-wireguard-e2e.sh
+CLAWPATROL_E2E_CHECK_EXPIRY=0 ./e2e/kubernetes-wireguard-e2e.sh
 CLAWPATROL_E2E_GOARCH=arm64 ./e2e/kubernetes-wireguard-e2e.sh
 ```
 
