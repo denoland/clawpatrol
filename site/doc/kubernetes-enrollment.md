@@ -466,16 +466,17 @@ volume assumptions that must be reviewed before applying it.
 
 ### Restrict Pod egress (recommended)
 
-The bridge already fails closed at the routing layer. For a second,
-cluster-enforced layer, use a NetworkPolicy that permits only:
+The bridge replaces only the Pod's default route. Traffic on other routes,
+for example a CNI subnet route or a `docker0` bridge inside the sandbox, does
+not go through the tunnel. Use a NetworkPolicy to control in-cluster egress.
+For agents that may reach only clawpatrol, permit only:
 
 - the gateway API and WireGuard endpoint, and
 - cluster DNS.
 
 A ready-to-adapt example is
 [`examples/kubernetes/agent-egress-networkpolicy.yaml`](https://github.com/denoland/clawpatrol/blob/main/examples/kubernetes/agent-egress-networkpolicy.yaml).
-It is optional defense-in-depth and only takes effect on a CNI that enforces
-NetworkPolicy.
+It takes effect only on a CNI that enforces NetworkPolicy.
 
 ### Restrict gateway ingress (recommended)
 

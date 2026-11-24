@@ -255,6 +255,16 @@ agent_exec sh -lc "ip route get '${AGENT_DNS_IP}' | grep -q 'dev clawpatrol0'"
 wait_until "agent reaches the echo Service by DNS name through the tunnel" 30 \
   agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${E2E_HTTP}.${AGENTS_NS}.svc.cluster.local:8081/')\" = 'ok'"
 
+log "checking CNI routes other than the default still work"
+# The bridge replaces only the default route. On kindnet the same-node echo
+# pod is on a more specific CNI route, so the agent reaches it directly.
+ECHO_POD_IP="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get pod -l "app=${E2E_HTTP}" -o jsonpath='{.items[0].status.podIP}')"
+[[ -n "${ECHO_POD_IP}" ]] || fail "could not resolve the echo pod IP"
+if agent_exec sh -lc "! ip route get '${ECHO_POD_IP}' | grep -q 'dev clawpatrol0'"; then
+  wait_until "agent reaches the echo pod on its CNI route" 30 \
+    agent_exec sh -lc "test \"\$(curl -sS --max-time 5 'http://${ECHO_POD_IP}:8081/')\" = 'ok'"
+fi
+
 log "checking inbound connections to the agent pod get replies"
 # The kubelet httpGet readiness probe (from the node) and a request from the
 # echo pod both need their replies to leave on the underlay. Whether they do

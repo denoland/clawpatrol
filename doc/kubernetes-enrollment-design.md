@@ -197,6 +197,11 @@ default route would drop the replies from DNS and the gateway API to the
 bridge, and it could not re-enroll. Unmarked packets that use the loopback
 route are dropped, so the gap still fails closed.
 
+The bridge changes only the default route. The CNI's link and subnet routes,
+and routes that processes in the Pod add later, stay in the main table, and
+unmarked traffic uses them outside the tunnel. The cluster controls that
+traffic with NetworkPolicy.
+
 The bridge watchdog samples its receive counter every 5 seconds. Because an
 idle tunnel may have no inbound traffic, receive silence alone is not treated
 as failure. After one keepalive interval of silence, the watchdog probes the
