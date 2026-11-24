@@ -42,7 +42,7 @@ func TestUnderlayRoutingArgs(t *testing.T) {
 	}
 
 	rules := markRuleArgs("-4", 111, 111)
-	if len(rules) != 2 {
+	if len(rules) != len(bridgeMarkRulePrefs) {
 		t.Fatalf("markRuleArgs returned %d rules", len(rules))
 	}
 	if got := strings.Join(rules[0], " "); got != "ip -4 rule add pref 90 fwmark 0x6f lookup main suppress_prefixlength 0" {
@@ -51,14 +51,18 @@ func TestUnderlayRoutingArgs(t *testing.T) {
 	if got := strings.Join(rules[1], " "); got != "ip -4 rule add pref 91 fwmark 0x6f lookup 111" {
 		t.Fatalf("table rule = %q", got)
 	}
+	if got := strings.Join(rules[2], " "); got != "ip -4 rule add pref 92 fwmark 0x6f unreachable" {
+		t.Fatalf("unreachable rule = %q", got)
+	}
 }
 
 func TestRuleShowHas(t *testing.T) {
 	out := "0:\tfrom all lookup local\n" +
 		"90:\tfrom all fwmark 0x6f lookup main suppress_prefixlength 0\n" +
 		"91:\tfrom all fwmark 0x6f lookup 111\n" +
+		"92:\tfrom all fwmark 0x6f unreachable\n" +
 		"32766:\tfrom all lookup main\n"
-	if !ruleShowHas(out, "90", 111) || !ruleShowHas(out, "91", 111) {
+	if !ruleShowHas(out, "90", 111) || !ruleShowHas(out, "91", 111) || !ruleShowHas(out, "92", 111) {
 		t.Fatal("existing rules not found")
 	}
 	if ruleShowHas(out, "91", 112) {

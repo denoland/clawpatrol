@@ -110,6 +110,7 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 		_ = exec.Command("ip", "link", "del", "tun0").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "92").Run()
 		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
 		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
 	})
@@ -120,8 +121,8 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 			t.Fatalf("installUnderlayRouting: %v", err)
 		}
 	}
-	if n := strings.Count(run("ip", "rule", "show"), "fwmark 0x6f"); n != 2 {
-		t.Fatalf("fwmark rules = %d, want 2 after two installs", n)
+	if n := strings.Count(run("ip", "rule", "show"), "fwmark 0x6f"); n != 3 {
+		t.Fatalf("fwmark rules = %d, want 3 after two installs", n)
 	}
 	run("ip", "route", "replace", "default", "dev", "tun0")
 
@@ -149,6 +150,15 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 	route, src, ok := discoverUnderlayRoute("-4", 111, "tun0")
 	if !ok || src != "table" || route != underlay {
 		t.Fatalf("discoverUnderlayRoute = %+v, %q, %t; want the table copy", route, src, ok)
+	}
+
+	// Table 111 without its route: a marked packet is unreachable. It does
+	// not fall through to the main table's default route into the tunnel.
+	run("ip", "link", "set", "tun0", "up")
+	run("ip", "route", "replace", "default", "dev", "tun0")
+	run("ip", "route", "flush", "table", "111")
+	if out, err := exec.Command("ip", "route", "get", "192.0.2.10", "mark", "0x6f").CombinedOutput(); err == nil || !strings.Contains(string(out), "unreachable") {
+		t.Fatalf("marked route without table 111 = %q (err %v), want unreachable", out, err)
 	}
 }
 
@@ -180,6 +190,7 @@ func TestReconcileTunnelSplitRoutesInNetns(t *testing.T) {
 		}
 		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "92").Run()
 		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
 		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
 	})
@@ -293,6 +304,7 @@ func TestMarkedRepliesWithoutTunnelInNetns(t *testing.T) {
 		_ = exec.Command("ip", "link", "del", "veth-under").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "90").Run()
 		_ = exec.Command("ip", "rule", "del", "pref", "91").Run()
+		_ = exec.Command("ip", "rule", "del", "pref", "92").Run()
 		_ = exec.Command("ip", "route", "flush", "table", "111").Run()
 		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
 	})

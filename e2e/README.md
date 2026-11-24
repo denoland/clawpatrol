@@ -40,6 +40,9 @@ The script validates:
 - rx_bytes liveness (a live tunnel holds its peer past the liveness window),
 - sidecar self-heal (a severed tunnel drives in-process re-enrollment with a
   fresh key at the reused peer IP and no container restart),
+- rule loss: without the bridge's rule 91, a marked packet is unreachable
+  and does not loop into the tunnel; the bridge reconnects and restores the
+  rule (part of the self-heal check),
 - the reaper: the bridge is stopped with SIGSTOP from the kind node, so it
   cannot deregister; the gateway reaps the peer, and after SIGCONT the bridge
   re-enrolls in-process (set `CLAWPATROL_E2E_CHECK_EXPIRY=0` to skip),

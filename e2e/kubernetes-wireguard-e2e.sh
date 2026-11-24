@@ -211,6 +211,10 @@ HTTP_CLUSTER_IP="$("${KUBECTL[@]}" -n "${AGENTS_NS}" get svc "${E2E_HTTP}" -o js
 agent_exec() { "${KUBECTL[@]}" -n "${AGENTS_NS}" exec "${E2E_POD}" -c agent -- "$@"; }
 gateway_exec() { "${KUBECTL[@]}" -n "${GATEWAY_NS}" exec "${GATEWAY_POD}" -c gateway -- "$@"; }
 sqlite_query() { gateway_exec sqlite3 -cmd '.timeout 5000' /opt/clawpatrol/clawpatrol.db "$1"; }
+bridge_restarts() {
+  "${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" \
+    -o jsonpath='{.status.initContainerStatuses[?(@.name=="clawpatrol-bridge")].restartCount}' 2>/dev/null
+}
 
 # Enrollment state lives on the wg_peers row (enrolled = 1); there is no
 # separate lease table. The reaper only ever touches enrolled rows.
@@ -245,11 +249,13 @@ agent_exec sh -lc "ip route get '${HTTP_CLUSTER_IP}' | grep -q 'dev clawpatrol0'
 agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'"
 
 log "checking that only the sidecar's marked traffic uses the underlay"
-# The sidecar marks its own sockets (fwmark 0x6f). Two policy rules send
-# marked packets to routing table 111, which holds the pod's original default
-# route. Unmarked traffic, which is all workload traffic, uses the tunnel.
+# The sidecar marks its own sockets (fwmark 0x6f). Policy rules send marked
+# packets to routing table 111, which holds the pod's original default route,
+# and make a marked packet without an underlay route unreachable. Unmarked
+# traffic, which is all workload traffic, uses the tunnel.
 agent_exec sh -lc "ip rule show | grep -q 'fwmark 0x6f lookup main suppress_prefixlength 0'"
 agent_exec sh -lc "ip rule show | grep -q 'fwmark 0x6f lookup 111'"
+agent_exec sh -lc "ip rule show | grep -q 'fwmark 0x6f unreachable'"
 agent_exec sh -lc "ip route show table 111 | grep -q '^default '"
 API_CLUSTER_IP="$("${KUBECTL[@]}" -n "${GATEWAY_NS}" get svc clawpatrol-api -o jsonpath='{.spec.clusterIP}')"
 [[ -n "${API_CLUSTER_IP}" ]] || fail "could not resolve clawpatrol-api ClusterIP"
@@ -473,6 +479,42 @@ if [[ "${CHECK_ESCALATION}" == "1" ]]; then
   fi
 fi
 
+if [[ "${CHECK_ESCALATION}" == "1" ]]; then
+  # Without rule 91, a marked packet must hit the unreachable rule (pref 92),
+  # not the tunnel default: the bridge's WireGuard packets must not loop back
+  # into clawpatrol0. The watchdog then reconnects, and bring-up restores the
+  # rule.
+  bridge_exec() { "${KUBECTL[@]}" -n "${AGENTS_NS}" exec "${E2E_POD}" -c clawpatrol-bridge -- "$@"; }
+  tun_tx() { bridge_exec cat /sys/class/net/clawpatrol0/statistics/tx_packets; }
+  BEFORE_RESTARTS="$(bridge_restarts)"
+  BEFORE_RESTARTS="${BEFORE_RESTARTS:-0}"
+  BEFORE_PUBKEY="$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;")"
+
+  log "deleting the bridge's table rule (pref 91) to check that marked packets do not loop"
+  bridge_exec ip -4 rule del pref 91
+  agent_exec sh -lc "ip route get '${API_CLUSTER_IP}' mark 0x6f 2>&1 | grep -q unreachable" ||
+    fail "a marked packet without rule 91 is not unreachable"
+  TX_BEFORE="$(tun_tx)"
+  sleep 5
+  TX_AFTER="$(tun_tx)"
+  (( TX_AFTER - TX_BEFORE < 1000 )) ||
+    fail "clawpatrol0 sent $((TX_AFTER - TX_BEFORE)) packets in 5s without rule 91 (routing loop)"
+  log "marked packets are unreachable without rule 91, no loop ($((TX_AFTER - TX_BEFORE)) packets in 5s)"
+
+  rule_restored() {
+    bridge_exec sh -c "ip -4 rule show | grep -q '^91:.*fwmark 0x6f lookup 111'" &&
+      [[ "$(sqlite_query "SELECT pubkey FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;" 2>/dev/null)" != "${BEFORE_PUBKEY}" ]]
+  }
+  wait_until "bridge reconnected and restored rule 91" 180 rule_restored ||
+    fail "bridge did not reconnect and restore rule 91 within 180s"
+  [[ "$(bridge_restarts)" == "${BEFORE_RESTARTS}" ]] ||
+    fail "bridge container restarted after the rule loss (was ${BEFORE_RESTARTS}, now $(bridge_restarts))"
+  PEER_IP="$(sqlite_query "SELECT ip FROM wg_peers WHERE enrolled = 1 AND display_name = '${AGENTS_NS}/${E2E_POD}' LIMIT 1;")"
+  wait_until "tunnel restored after the rule loss" 60 \
+    agent_exec sh -lc "test \"\$(curl -sS --max-time 10 'http://${HTTP_CLUSTER_IP}:8081/')\" = 'ok'" ||
+    fail "tunnel did not work after the bridge restored rule 91"
+fi
+
 if [[ "${CHECK_VARIANTS}" == "1" ]]; then
   log "starting bridge variants: raw ICMP socket, no ICMP socket"
   VARIANT_PODS=(clawpatrol-agent-raw-probe clawpatrol-agent-no-probe)
@@ -587,10 +629,6 @@ if [[ "${CHECK_EXPIRY}" == "1" ]]; then
   # the node's PID namespace.
   need docker
   TTL_SECONDS="$(seconds_from_duration "${PEER_TTL}")"
-  bridge_restarts() {
-    "${KUBECTL[@]}" -n "${AGENTS_NS}" get pod "${E2E_POD}" \
-      -o jsonpath='{.status.initContainerStatuses[?(@.name=="clawpatrol-bridge")].restartCount}' 2>/dev/null
-  }
   reap_lines() {
     "${KUBECTL[@]}" -n "${GATEWAY_NS}" logs "${GATEWAY_POD}" -c gateway 2>/dev/null |
       grep -c "reaping peer ip=${PEER_IP} name=\"${AGENTS_NS}/${E2E_POD}\"" || true

@@ -14,15 +14,19 @@ import (
 // Control-plane routing for `clawpatrol bridge`.
 //
 // The bridge's own sockets (WireGuard, gateway API, DNS lookups) carry a
-// firewall mark. Two policy rules send marked packets to the underlay:
+// firewall mark. Three policy rules send marked packets to the underlay:
 //
 //	pref 90: fwmark M lookup main suppress_prefixlength 0
 //	pref 91: fwmark M lookup T
+//	pref 92: fwmark M unreachable
 //
 // The first lets marked packets use the specific routes of the main table
 // (the CNI's link and subnet routes) but not its default route, which points
 // at the tunnel. The second sends the rest to table T, which holds a copy of
-// the pod's original default route. Unmarked packets, which is all workload
+// the pod's original default route. The third stops a marked packet that
+// neither rule routes, for example when table T loses its route. Without it
+// the packet falls through to the main table's default route, so the
+// bridge's WireGuard packets loop back into the tunnel. Unmarked packets, which is all workload
 // traffic, use the main table and so the tunnel. A container that shares the
 // netns cannot set the mark without CAP_NET_ADMIN or CAP_NET_RAW.
 //
@@ -34,8 +38,9 @@ import (
 // to the bridge would be dropped and it could not re-enroll. Unmarked packets
 // that use the loopback route are dropped, so the pod still fails closed.
 const (
-	bridgeRuleSuppressPref = "90"
-	bridgeRuleTablePref    = "91"
+	bridgeRuleSuppressPref    = "90"
+	bridgeRuleTablePref       = "91"
+	bridgeRuleUnreachablePref = "92"
 	// defaultBridgeFwmark is the default --fwmark. The same number is the
 	// routing table ID.
 	defaultBridgeFwmark = 111
@@ -192,15 +197,18 @@ func tunnelSplitRouteSummary(cidrs []netip.Prefix, route4, route6 linuxDefaultRo
 	return strings.Join(parts, "; ")
 }
 
-// markRuleArgs returns the two policy rules for marked packets, in the order
-// of bridgeRuleSuppressPref and bridgeRuleTablePref.
+// markRuleArgs returns the policy rules for marked packets, in the order of
+// bridgeMarkRulePrefs.
 func markRuleArgs(family string, mark, table int) [][]string {
 	m := fmt.Sprintf("%#x", mark)
 	return [][]string{
 		{"ip", family, "rule", "add", "pref", bridgeRuleSuppressPref, "fwmark", m, "lookup", "main", "suppress_prefixlength", "0"},
 		{"ip", family, "rule", "add", "pref", bridgeRuleTablePref, "fwmark", m, "lookup", strconv.Itoa(table)},
+		{"ip", family, "rule", "add", "pref", bridgeRuleUnreachablePref, "fwmark", m, "unreachable"},
 	}
 }
+
+var bridgeMarkRulePrefs = []string{bridgeRuleSuppressPref, bridgeRuleTablePref, bridgeRuleUnreachablePref}
 
 // ruleShowHas reports whether `ip rule show` output has a rule at pref that
 // matches mark.

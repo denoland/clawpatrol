@@ -78,7 +78,7 @@ func ensureMarkRules(family string, mark, table int) error {
 	if err != nil {
 		return fmt.Errorf("ip %s rule show: %w", family, err)
 	}
-	for i, pref := range []string{bridgeRuleSuppressPref, bridgeRuleTablePref} {
+	for i, pref := range bridgeMarkRulePrefs {
 		if ruleShowHas(string(out), pref, mark) {
 			continue
 		}

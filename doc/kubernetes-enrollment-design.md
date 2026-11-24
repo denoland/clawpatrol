@@ -177,9 +177,13 @@ Before replacing the Pod's default route, the bridge:
 - discovers the original IPv4 route and optional IPv6 route,
 - copies them into routing table 111 (`--fwmark`), tagged with route
   protocol 111 (`--route-proto`), and
-- adds two policy rules for packets with firewall mark 0x6f:
+- adds three policy rules for packets with firewall mark 0x6f:
   `lookup main suppress_prefixlength 0` (the CNI's specific routes, but not
-  the tunnel default) and `lookup 111` (the original default route).
+  the tunnel default), `lookup 111` (the original default route), and
+  `unreachable`. The last rule stops a marked packet that the other two do
+  not route, for example when table 111 loses its route. Without it, the
+  packet would use the tunnel default, and the bridge's WireGuard packets
+  would loop back into the tunnel.
 
 The bridge sets that mark on its own sockets only: the WireGuard UDP socket
 (`fwmark` in the device configuration), the HTTP client for enrollment and
