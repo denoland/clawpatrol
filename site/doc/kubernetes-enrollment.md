@@ -437,6 +437,13 @@ address. It opens the probe socket once per session:
    every three minutes, so this mode detects a dead tunnel in about five
    minutes instead of about one.
 
+The sysctl is optional; without it the bridge uses step 2 or 3. It applies
+to the whole Pod network namespace, so the workload container can also open
+unprivileged ICMP echo sockets. That is the same as the containerd 2.0
+default for every container. The examples use `"0 2147483647"` to match that
+default. The stock image runs the bridge as root (GID 0), so `"0 0"` is
+enough. A bridge image that runs as another user needs that GID in the range.
+
 ## Reaper
 
 Kubernetes Pod peers are transient. The bridge sends WireGuard keepalives, and
@@ -523,6 +530,18 @@ A ready-to-adapt policy and binding are in
 [`examples/kubernetes/agent-bridge-mutatingadmissionpolicy.yaml`](https://github.com/denoland/clawpatrol/blob/main/examples/kubernetes/agent-bridge-mutatingadmissionpolicy.yaml).
 Its header lists the namespace, selector, service, image, authorizer, and
 volume assumptions that must be reviewed before applying it.
+
+For each Pod it admits, the policy:
+
+- adds the bridge as a native sidecar, with its volumes, startup and
+  readiness probes, and a read-only `/clawpatrol` mount in every
+  application container;
+- adds the default profile label when the Pod does not select a profile;
+- adds the `net.ipv4.ping_group_range` sysctl to `spec.securityContext`,
+  and keeps other sysctls and a `ping_group_range` value the Pod already
+  sets;
+- skips `hostNetwork` Pods, Pods annotated `clawpatrol.dev/inject: "false"`,
+  and Pods that already have a `clawpatrol-bridge` container.
 
 ### Restrict Pod egress (recommended)
 

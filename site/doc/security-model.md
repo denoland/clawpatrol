@@ -147,9 +147,17 @@ The gateway also derives the pod's profile from the live Pod label,
 not from a client-submitted field, so an agent cannot choose a more
 privileged profile by changing the registration request.
 
-This is still a pod-level network boundary: the sidecar changes routes
-for the whole pod network namespace, so the agent's traffic goes
-through the tunnel once setup is complete. The security bar is that
+This is a pod-level network boundary. The sidecar replaces the default
+route of the pod network namespace, so traffic on the default route,
+DNS included, goes through the tunnel once setup is complete. Other
+routes stay outside the tunnel: the CNI's link and subnet routes,
+routes that a process in the pod adds later (for example `docker0`),
+and the enrollment's `tunnel_split_cidrs` ranges. The gateway does not
+see or audit that traffic. Use NetworkPolicy to control it. This
+matches `clawpatrol join --whole-machine` with WireGuard, where the
+host's specific routes also stay outside the tunnel.
+
+The security bar is that
 the execution container does not receive the Kubernetes token, routing
 capabilities, peer API token, WireGuard private key, gateway
 state, or upstream credentials. Management APIs remain protected by
