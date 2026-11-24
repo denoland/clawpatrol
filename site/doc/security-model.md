@@ -159,6 +159,20 @@ unaudited. This
 matches `clawpatrol join --whole-machine` with WireGuard, where the
 host's specific routes also stay outside the tunnel.
 
+The sidecar resolves the gateway API host and the WireGuard endpoint
+host through the pod's DNS configuration. The agent container shares
+that configuration (`/etc/hosts` and `/etc/resolv.conf`), and an agent
+that runs as root can change it. An agent that redirects these names
+can make the sidecar send its ServiceAccount token to a fake gateway.
+The bridge flag `--resolve <host>=<ip>` connects to a name without DNS,
+and the lockdown component uses it so that its egress policy needs no
+DNS rule. `--resolve` is a convenience, not a security control: names
+without an entry still use DNS. Limit the exposure outside the pod
+with TLS and a verified certificate, the gateway ingress policy, a
+short projected token lifetime, and a non-root agent container (see
+[Redirects to another
+gateway](kubernetes-enrollment.md#redirects-to-another-gateway)).
+
 The security bar is that
 the execution container does not receive the Kubernetes token, routing
 capabilities, peer API token, WireGuard private key, gateway
