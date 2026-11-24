@@ -132,3 +132,27 @@ func TestTunnelSplitRouteArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestTunnelSplitRouteSummary(t *testing.T) {
+	route4 := linuxDefaultRoute{Via: "169.254.172.1", Dev: "v4if0"}
+	route6 := linuxDefaultRoute{Via: "fe80::1", Dev: "eth0"}
+	cidrs := []netip.Prefix{
+		netip.MustParsePrefix("10.244.0.0/16"),
+		netip.MustParsePrefix("2600:1f14::/56"),
+		netip.MustParsePrefix("10.96.0.0/12"),
+	}
+	for _, tc := range []struct {
+		name  string
+		cidrs []netip.Prefix
+		r6    linuxDefaultRoute
+		want  string
+	}{
+		{"both families", cidrs, route6, "[10.244.0.0/16 10.96.0.0/12] via 169.254.172.1 dev v4if0; [2600:1f14::/56] via fe80::1 dev eth0"},
+		{"IPv6 only", cidrs[1:2], route6, "[2600:1f14::/56] via fe80::1 dev eth0"},
+		{"no next hop", cidrs[1:2], linuxDefaultRoute{Dev: "eth0"}, "[2600:1f14::/56] dev eth0"},
+	} {
+		if got := tunnelSplitRouteSummary(tc.cidrs, route4, tc.r6); got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

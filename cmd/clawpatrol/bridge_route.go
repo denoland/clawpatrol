@@ -166,6 +166,32 @@ func tunnelSplitRouteArgs(action string, cidr netip.Prefix, under linuxDefaultRo
 	return args
 }
 
+// tunnelSplitRouteSummary describes the split routes of each family with the
+// underlay route that carries them, for the bring-up log.
+func tunnelSplitRouteSummary(cidrs []netip.Prefix, route4, route6 linuxDefaultRoute) string {
+	var parts []string
+	for _, fam := range []struct {
+		under linuxDefaultRoute
+		v6    bool
+	}{{route4, false}, {route6, true}} {
+		var cs []netip.Prefix
+		for _, c := range cidrs {
+			if c.Addr().Is6() == fam.v6 {
+				cs = append(cs, c)
+			}
+		}
+		if len(cs) == 0 {
+			continue
+		}
+		part := fmt.Sprintf("%v", cs)
+		if fam.under.Via != "" {
+			part += " via " + fam.under.Via
+		}
+		parts = append(parts, part+" dev "+fam.under.Dev)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // markRuleArgs returns the two policy rules for marked packets, in the order
 // of bridgeRuleSuppressPref and bridgeRuleTablePref.
 func markRuleArgs(family string, mark, table int) [][]string {

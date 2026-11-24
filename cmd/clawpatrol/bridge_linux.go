@@ -196,7 +196,7 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		return nil, err
 	}
 	if len(splitCIDRs) > 0 {
-		log.Printf("bridge: split-tunnel routes for %v via %s dev %s", splitCIDRs, route4.Via, route4.Dev)
+		log.Printf("bridge: split-tunnel routes: %s", tunnelSplitRouteSummary(splitCIDRs, route4, route6))
 	}
 
 	tunDev, err := wgtun.CreateTUN(opt.Iface, opt.MTU)

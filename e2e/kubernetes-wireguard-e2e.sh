@@ -283,7 +283,7 @@ wait_until "agent reaches the direct echo Service" 30 \
   agent_exec sh -lc "test \"\$(curl -sS --max-time 5 'http://${DIRECT_IP}:8081/')\" = 'ok'"
 agent_exec sh -lc "ip route get '${HTTP_CLUSTER_IP}' | grep -q 'dev clawpatrol0'" ||
   fail "the unlisted echo Service ${HTTP_CLUSTER_IP} no longer uses the tunnel"
-"${KUBECTL[@]}" -n "${AGENTS_NS}" logs "${E2E_POD}" -c clawpatrol-bridge | grep -q 'split-tunnel routes for \[10.96.200.10/32\]' ||
+"${KUBECTL[@]}" -n "${AGENTS_NS}" logs "${E2E_POD}" -c clawpatrol-bridge | grep -q 'split-tunnel routes: \[10.96.200.10/32\] via ' ||
   fail "bridge did not log its CNI routes"
 
 log "checking inbound connections to the agent pod get replies"
