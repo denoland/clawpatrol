@@ -117,7 +117,9 @@ outside the tunnel. The bridge routes each listed range through the Pod's
 original default gateway. Use it for cluster ranges that the CNI does not
 route, for example on Cilium, which gives the Pod a /32 address and a
 default route through the Cilium gateway. It also works for other ranges,
-such as the Service range on flannel or a VPC range:
+such as the Service range on flannel or a VPC range. The Amazon VPC CNI
+gives the Pod only default routes, so there list the VPC range for replies
+to kubelet probes and other Pods. For example:
 
 ```hcl
 enrollment "kubernetes_token_review" "agents" {
@@ -348,12 +350,18 @@ drops all capabilities and adds only `NET_ADMIN`, also add `MKNOD`.
 
 | Runtime | Status |
 |---------|--------|
-| runc (containerd, CRI-O) | Tested by the kind e2e |
-| Kata Containers | Not tested yet |
+| runc (containerd, CRI-O) | Tested by the kind e2e (kindnet) and on EKS |
+| Kata Containers | Tested on EKS with the QEMU and Cloud Hypervisor handlers |
 | gVisor | Not tested yet |
 
-Kata runs the Pod in a guest kernel, and gVisor has its own network stack, so
-check these before you rely on either:
+The EKS tests used the Amazon VPC CNI on an IPv6 cluster.
+
+Under Kata, the bridge runs in the guest kernel and creates `/dev/net/tun`
+there, so the Pod needs no hostPath. This matters on clusters that refuse
+hostPath volumes for Kata Pods.
+
+gVisor has its own network stack. Before you rely on gVisor or another
+untested runtime, check that:
 
 - the bridge can create and open `/dev/net/tun` and create `clawpatrol0`,
 - `NET_ADMIN` lets it change routes and policy rules in the Pod, and
