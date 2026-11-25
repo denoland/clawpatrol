@@ -174,7 +174,8 @@ The Linux implementation is in
 
 Before replacing the Pod's default route, the bridge:
 
-- discovers the original IPv4 route and optional IPv6 route,
+- discovers the original IPv4 and IPv6 default routes (it needs at least
+  one),
 - copies them into routing table 111 (`--fwmark`), tagged with route
   protocol 111 (`--route-proto`), and
 - adds three policy rules for packets with firewall mark 0x6f:
@@ -183,7 +184,8 @@ Before replacing the Pod's default route, the bridge:
   `unreachable`. The last rule stops a marked packet that the other two do
   not route, for example when table 111 loses its route. Without it, the
   packet would use the tunnel default, and the bridge's WireGuard packets
-  would loop back into the tunnel.
+  would loop back into the tunnel. A family without an underlay route gets
+  the rules but no table route, so its marked packets are unreachable.
 
 The bridge sets that mark on its own sockets only: the WireGuard UDP socket
 (`fwmark` in the device configuration), the HTTP client for enrollment and

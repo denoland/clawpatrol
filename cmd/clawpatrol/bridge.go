@@ -142,20 +142,27 @@ func bridgeEffectiveMTU(enrolled, local int) int {
 	return local
 }
 
-// preferV4 returns the first IPv4 address (unmapped), falling back to the
-// first address of any family when there is no IPv4. The IPv4 underlay route
-// is always present, and the gateway WireGuard endpoint is reached over IPv4
-// in typical clusters; the IPv6 underlay is optional.
-func preferV4(ips []netip.Addr) (netip.Addr, bool) {
+// pickEndpointIP chooses the WireGuard endpoint address from ips (4-in-6
+// addresses are unmapped). It prefers IPv4 and uses only a family that has
+// an underlay route, because the tunnel's UDP packets use that route.
+func pickEndpointIP(ips []netip.Addr, have4, have6 bool) (netip.Addr, error) {
 	if len(ips) == 0 {
-		return netip.Addr{}, false
+		return netip.Addr{}, fmt.Errorf("no A/AAAA records")
 	}
+	var v6 netip.Addr
 	for _, ip := range ips {
-		if ip.Unmap().Is4() {
-			return ip.Unmap(), true
+		ip = ip.Unmap()
+		if ip.Is4() && have4 {
+			return ip, nil
+		}
+		if ip.Is6() && have6 && !v6.IsValid() {
+			v6 = ip
 		}
 	}
-	return ips[0].Unmap(), true
+	if v6.IsValid() {
+		return v6, nil
+	}
+	return netip.Addr{}, fmt.Errorf("no address in a family with an underlay route (IPv4 underlay %t, IPv6 underlay %t): %v", have4, have6, ips)
 }
 
 // validateRouteProto checks the --route-proto value. iproute2 accepts either

@@ -76,10 +76,17 @@ func newMarkedNet(mark int, hosts *bridgeHosts) (*net.Resolver, *http.Client) {
 
 // installUnderlayRouting copies the pod's original default routes into table
 // and adds the rules for marked packets. It is idempotent, so every bring-up
-// runs it. IPv6 is best-effort, like the rest of the bridge's IPv6 setup.
-func installUnderlayRouting(route4, route6 linuxDefaultRoute, have6 bool, mark, table int, proto string) error {
-	if err := runIP(underlayTableArgs("-4", route4, table, proto)...); err != nil {
-		return fmt.Errorf("underlay table: %w", err)
+// runs it. A family without an underlay route gets only the rules, so its
+// marked packets are unreachable. The IPv6 setup is best-effort when IPv4 has
+// an underlay, and required when IPv6 is the only underlay.
+func installUnderlayRouting(route4 linuxDefaultRoute, have4 bool, route6 linuxDefaultRoute, have6 bool, mark, table int, proto string) error {
+	if !have4 && !have6 {
+		return fmt.Errorf("no underlay route in either family")
+	}
+	if have4 {
+		if err := runIP(underlayTableArgs("-4", route4, table, proto)...); err != nil {
+			return fmt.Errorf("underlay table: %w", err)
+		}
 	}
 	if err := ensureMarkRules("-4", mark, table); err != nil {
 		return err
@@ -90,12 +97,15 @@ func installUnderlayRouting(route4, route6 linuxDefaultRoute, have6 bool, mark, 
 	if !have6 {
 		return nil
 	}
-	if err := runIP(underlayTableArgs("-6", route6, table, proto)...); err != nil {
-		log.Printf("bridge: IPv6 underlay table: %v — continuing without IPv6 control-plane routes", err)
-		return nil
+	err := runIP(underlayTableArgs("-6", route6, table, proto)...)
+	if err == nil {
+		err = ensureMarkRules("-6", mark, table)
 	}
-	if err := ensureMarkRules("-6", mark, table); err != nil {
-		log.Printf("bridge: IPv6 mark rules: %v — continuing without IPv6 control-plane routes", err)
+	if err != nil {
+		if !have4 {
+			return fmt.Errorf("IPv6 underlay: %w", err)
+		}
+		log.Printf("bridge: IPv6 underlay: %v — continuing without IPv6 control-plane routes", err)
 	}
 	return nil
 }
@@ -120,14 +130,14 @@ func ensureMarkRules(family string, mark, table int) error {
 // through the original default route of each family. It removes owned routes
 // that are no longer listed or that use another device, and never changes
 // routes it does not own.
-func reconcileTunnelSplitRoutes(cidrs []netip.Prefix, route4, route6 linuxDefaultRoute, have6 bool, proto string) error {
+func reconcileTunnelSplitRoutes(cidrs []netip.Prefix, route4 linuxDefaultRoute, have4 bool, route6 linuxDefaultRoute, have6 bool, proto string) error {
 	metric := strconv.Itoa(tunnelSplitRouteMetric)
 	for _, fam := range []struct {
 		flag, host string
 		under      linuxDefaultRoute
 		v6         bool
 	}{{"-4", "/32", route4, false}, {"-6", "/128", route6, true}} {
-		if fam.v6 && !have6 {
+		if (fam.v6 && !have6) || (!fam.v6 && !have4) {
 			continue
 		}
 		var want []netip.Prefix

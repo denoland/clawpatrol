@@ -5,22 +5,37 @@ import (
 	"testing"
 )
 
-func TestPreferV4(t *testing.T) {
+func TestPickEndpointIP(t *testing.T) {
 	v4 := netip.MustParseAddr("10.55.0.2")
 	v6 := netip.MustParseAddr("fd00::1")
+	v6b := netip.MustParseAddr("fd00::2")
 	v4in6 := netip.MustParseAddr("::ffff:10.55.0.2")
 
-	if got, ok := preferV4([]netip.Addr{v6, v4}); !ok || got != v4 {
-		t.Fatalf("preferV4([v6,v4]) = %v (ok=%v), want %v", got, ok, v4)
+	for _, tc := range []struct {
+		name         string
+		ips          []netip.Addr
+		have4, have6 bool
+		want         netip.Addr
+	}{
+		{"both underlays prefer IPv4", []netip.Addr{v6, v4}, true, true, v4},
+		{"IPv6 only record", []netip.Addr{v6}, true, true, v6},
+		{"4-in-6 is unmapped", []netip.Addr{v4in6}, true, false, v4},
+		{"no IPv4 underlay skips A records", []netip.Addr{v4, v6, v6b}, false, true, v6},
+		{"no IPv6 underlay skips AAAA records", []netip.Addr{v6, v4}, true, false, v4},
+	} {
+		got, err := pickEndpointIP(tc.ips, tc.have4, tc.have6)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: pickEndpointIP = %v, %v; want %v", tc.name, got, err, tc.want)
+		}
 	}
-	if got, ok := preferV4([]netip.Addr{v6}); !ok || got != v6 {
-		t.Fatalf("preferV4(v6-only) = %v (ok=%v), want %v", got, ok, v6)
+	if _, err := pickEndpointIP(nil, true, true); err == nil {
+		t.Error("no records: want an error")
 	}
-	if got, ok := preferV4([]netip.Addr{v4in6}); !ok || !got.Is4() || got != v4 {
-		t.Fatalf("preferV4(4-in-6) = %v (ok=%v), want unmapped %v", got, ok, v4)
+	if _, err := pickEndpointIP([]netip.Addr{v4}, false, true); err == nil {
+		t.Error("IPv4 record without an IPv4 underlay: want an error")
 	}
-	if _, ok := preferV4(nil); ok {
-		t.Fatal("preferV4(nil) should be ok=false")
+	if _, err := pickEndpointIP([]netip.Addr{v6}, true, false); err == nil {
+		t.Error("IPv6 record without an IPv6 underlay: want an error")
 	}
 }
 

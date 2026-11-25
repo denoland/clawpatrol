@@ -117,7 +117,7 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 	underlay := linuxDefaultRoute{Via: "10.99.0.1", Dev: "under0"}
 
 	for range 2 { // idempotent
-		if err := installUnderlayRouting(underlay, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
+		if err := installUnderlayRouting(underlay, true, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
 			t.Fatalf("installUnderlayRouting: %v", err)
 		}
 	}
@@ -162,6 +162,89 @@ func TestInstallUnderlayRoutingInNetns(t *testing.T) {
 	}
 }
 
+// IPv6 is the only underlay, as on a single-stack IPv6 cluster: marked IPv6
+// uses the underlay, marked IPv4 is unreachable, and unmarked traffic of both
+// families uses the tunnel.
+func TestInstallUnderlayRoutingIPv6OnlyInNetns(t *testing.T) {
+	if os.Getenv("CLAWPATROL_NETNS_TEST") != "1" {
+		t.Skip("set CLAWPATROL_NETNS_TEST=1 to change this network namespace's routes")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	restoreDefaultRoute(t)
+	_ = exec.Command("ip", "-4", "route", "del", "default").Run()
+	run("ip", "link", "add", "under0", "type", "dummy")
+	run("ip", "link", "set", "under0", "up")
+	run("ip", "-6", "addr", "add", "fd99::2/64", "dev", "under0", "nodad")
+	run("ip", "link", "add", "tun0", "type", "dummy")
+	run("ip", "link", "set", "tun0", "up")
+	run("ip", "addr", "add", "10.55.0.2/32", "dev", "tun0")
+	run("ip", "-6", "addr", "add", "fd77::2/128", "dev", "tun0", "nodad")
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "link", "del", "under0").Run()
+		_ = exec.Command("ip", "link", "del", "tun0").Run()
+		for _, fam := range []string{"-4", "-6"} {
+			for _, pref := range bridgeMarkRulePrefs {
+				_ = exec.Command("ip", fam, "rule", "del", "pref", pref).Run()
+			}
+			_ = exec.Command("ip", fam, "route", "flush", "table", "111").Run()
+		}
+		_ = exec.Command("ip", "route", "del", "default", "dev", "lo", "metric", bridgeFallbackMetric).Run()
+	})
+	under6 := linuxDefaultRoute{Via: "fd99::1", Dev: "under0"}
+
+	if _, _, ok := discoverUnderlayRoute("-4", 111, "tun0"); ok {
+		t.Fatal("discoverUnderlayRoute(-4) found a route; the test needs a netns without an IPv4 default")
+	}
+	for range 2 { // idempotent
+		if err := installUnderlayRouting(linuxDefaultRoute{}, false, under6, true, 111, 111, "111"); err != nil {
+			t.Fatalf("installUnderlayRouting: %v", err)
+		}
+	}
+	for _, fam := range []string{"-4", "-6"} {
+		if n := strings.Count(run("ip", fam, "rule", "show"), "fwmark 0x6f"); n != 3 {
+			t.Fatalf("ip %s fwmark rules = %d, want 3", fam, n)
+		}
+	}
+	if got := run("ip", "-4", "route", "show", "table", "111"); strings.TrimSpace(got) != "" {
+		t.Fatalf("IPv4 table 111 = %q, want empty", got)
+	}
+	run("ip", "-4", "route", "replace", "default", "dev", "tun0")
+	run("ip", "-6", "route", "replace", "default", "dev", "tun0")
+
+	if got := run("ip", "route", "get", "192.0.2.10"); !strings.Contains(got, "dev tun0") {
+		t.Fatalf("unmarked IPv4 = %q, want dev tun0", got)
+	}
+	if out, err := exec.Command("ip", "route", "get", "192.0.2.10", "mark", "0x6f").CombinedOutput(); err == nil || !strings.Contains(string(out), "unreachable") {
+		t.Fatalf("marked IPv4 = %q (err %v), want unreachable", out, err)
+	}
+	if got := run("ip", "-6", "route", "get", "2001:db8::10"); !strings.Contains(got, "dev tun0") {
+		t.Fatalf("unmarked IPv6 = %q, want dev tun0", got)
+	}
+	if got := run("ip", "-6", "route", "get", "2001:db8::10", "mark", "0x6f"); !strings.Contains(got, "via fd99::1 dev under0") {
+		t.Fatalf("marked IPv6 = %q, want via fd99::1 dev under0", got)
+	}
+
+	// After a restart the main table has only the tunnel default; the IPv6
+	// underlay comes back from the table and IPv4 stays absent.
+	if r, src, ok := discoverUnderlayRoute("-6", 111, "tun0"); !ok || src != "table" || r != under6 {
+		t.Fatalf("discoverUnderlayRoute(-6) = %+v, %q, %t; want the table copy", r, src, ok)
+	}
+	if _, _, ok := discoverUnderlayRoute("-4", 111, "tun0"); ok {
+		t.Fatal("discoverUnderlayRoute(-4) found a route; want none")
+	}
+
+	if err := installUnderlayRouting(linuxDefaultRoute{}, false, linuxDefaultRoute{}, false, 111, 111, "111"); err == nil {
+		t.Fatal("installUnderlayRouting without any underlay: want an error")
+	}
+}
+
 // The owned routes use the original gateway, a CNI route for the same prefix
 // wins, the routes survive a tunnel teardown, and a new list reconciles.
 func TestReconcileTunnelSplitRoutesInNetns(t *testing.T) {
@@ -203,13 +286,13 @@ func TestReconcileTunnelSplitRoutesInNetns(t *testing.T) {
 	}
 
 	under := linuxDefaultRoute{Via: "10.99.0.1", Dev: "under0"}
-	if err := installUnderlayRouting(under, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
+	if err := installUnderlayRouting(under, true, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
 		t.Fatal(err)
 	}
 	run("ip", "route", "add", "10.200.0.0/16", "dev", "under1") // a CNI route
 	cidrs := []netip.Prefix{netip.MustParsePrefix("10.244.0.0/16"), netip.MustParsePrefix("10.200.0.0/16")}
 	for range 2 { // idempotent
-		if err := reconcileTunnelSplitRoutes(cidrs, under, linuxDefaultRoute{}, false, "111"); err != nil {
+		if err := reconcileTunnelSplitRoutes(cidrs, under, true, linuxDefaultRoute{}, false, "111"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -227,14 +310,14 @@ func TestReconcileTunnelSplitRoutesInNetns(t *testing.T) {
 
 	// A narrowed list on a new underlay device.
 	under = linuxDefaultRoute{Via: "10.98.0.1", Dev: "under1"}
-	if err := reconcileTunnelSplitRoutes(cidrs[:1], under, linuxDefaultRoute{}, false, "111"); err != nil {
+	if err := reconcileTunnelSplitRoutes(cidrs[:1], under, true, linuxDefaultRoute{}, false, "111"); err != nil {
 		t.Fatal(err)
 	}
 	if n := owned(); n != 1 {
 		t.Fatalf("owned routes after narrowing = %d, want 1", n)
 	}
 	routeGet("10.244.1.5", "via 10.98.0.1 dev under1")
-	if err := reconcileTunnelSplitRoutes(nil, under, linuxDefaultRoute{}, false, "111"); err != nil {
+	if err := reconcileTunnelSplitRoutes(nil, under, true, linuxDefaultRoute{}, false, "111"); err != nil {
 		t.Fatal(err)
 	}
 	if n := owned(); n != 0 {
@@ -316,7 +399,7 @@ func TestMarkedRepliesWithoutTunnelInNetns(t *testing.T) {
 		}
 	}
 	under := linuxDefaultRoute{Via: gw, Dev: "veth-under", OnLink: true}
-	if err := installUnderlayRouting(under, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
+	if err := installUnderlayRouting(under, true, linuxDefaultRoute{}, false, 111, 111, "111"); err != nil {
 		t.Fatal(err)
 	}
 	// No main-table default other than the loopback fallback.

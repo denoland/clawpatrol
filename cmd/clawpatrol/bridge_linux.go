@@ -135,24 +135,25 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 		return nil, fmt.Errorf("generate wireguard keypair: %w", err)
 	}
 
-	// Underlay route: the pod's pre-tunnel default on first boot, or the copy
-	// in the bridge's table after an in-process reconnect or a restart
-	// (clawpatrol0 is gone, so the main table has no default route).
-	route4, src4, ok4 := discoverUnderlayRoute("-4", opt.FWMark, opt.Iface)
-	if !ok4 {
-		return nil, fmt.Errorf("no usable underlay route: neither a default route nor the bridge's routing table %d has one", opt.FWMark)
+	// Underlay routes: the pod's pre-tunnel defaults on first boot, or the
+	// copies in the bridge's table after an in-process reconnect or a restart
+	// (clawpatrol0 is gone, so the main table has no default route). One
+	// family is enough; the tunnel carries both.
+	route4, src4, have4 := discoverUnderlayRoute("-4", opt.FWMark, opt.Iface)
+	route6, src6, have6 := discoverUnderlayRoute("-6", opt.FWMark, opt.Iface)
+	if !have4 && !have6 {
+		return nil, fmt.Errorf("no usable underlay route: neither the default routes nor the bridge's routing table %d has an IPv4 or IPv6 route", opt.FWMark)
 	}
-	// IPv6 is optional: present only when the pod already has a v6 underlay route.
-	route6, _, have6 := discoverUnderlayRoute("-6", opt.FWMark, opt.Iface)
 
 	if st.reconnects == 0 && st.bringUpFails == 0 {
-		if src4 == "table" {
-			log.Printf("bridge: no default route at start — recovered underlay gateway via %s dev %s from routing table %d; recovery boot, re-enrolling", route4.Via, route4.Dev, opt.FWMark)
+		summary := underlaySummary(route4, have4, route6, have6)
+		if (have4 && src4 == "table") || (have6 && src6 == "table") {
+			log.Printf("bridge: no default route at start — recovered underlay %s from routing table %d; recovery boot, re-enrolling", summary, opt.FWMark)
 		} else {
-			log.Printf("bridge: starting; underlay gateway via %s dev %s, enrolling with %s", route4.Via, route4.Dev, opt.AuthorizerName)
+			log.Printf("bridge: starting; underlay %s, enrolling with %s", summary, opt.AuthorizerName)
 		}
 	}
-	if err := installUnderlayRouting(route4, route6, have6, opt.FWMark, opt.FWMark, opt.RouteProto); err != nil {
+	if err := installUnderlayRouting(route4, have4, route6, have6, opt.FWMark, opt.FWMark, opt.RouteProto); err != nil {
 		return nil, err
 	}
 
@@ -177,12 +178,9 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	log.Printf("bridge: enrolled peer_ip=%s mtu=%d keepalive=%ds reap_count=%d gateway_tunnel_ip=%s",
 		registerResp.PeerIP, opt.MTU, registerResp.KeepaliveIntervalSeconds, registerResp.KeepaliveReapCount, registerResp.GatewayTunnelIP)
 
-	endpointIP, endpointAddr, err := resolveWGEndpoint(registerResp.Endpoint)
+	endpointAddr, err := resolveWGEndpoint(registerResp.Endpoint, have4, have6)
 	if err != nil {
 		return nil, err
-	}
-	if endpointIP.Is6() && !have6 {
-		return nil, fmt.Errorf("wireguard endpoint %s is IPv6 but the pod has no IPv6 underlay route", endpointAddr)
 	}
 
 	gwTunIP, err := netip.ParseAddr(strings.TrimSpace(registerResp.GatewayTunnelIP))
@@ -191,8 +189,8 @@ func bridgeBringUp(ctx context.Context, opt bridgeOptions, st *bridgeState) (_ *
 	}
 	peer4, _ := netip.ParseAddr(registerResp.PeerIP)
 	peer6, _ := netip.ParseAddr(registerResp.PeerIPv6)
-	splitCIDRs := bridgeTunnelSplitCIDRs(registerResp.TunnelSplitCIDRs, []netip.Addr{peer4, peer6, gwTunIP}, have6)
-	if err := reconcileTunnelSplitRoutes(splitCIDRs, route4, route6, have6, opt.RouteProto); err != nil {
+	splitCIDRs := bridgeTunnelSplitCIDRs(registerResp.TunnelSplitCIDRs, []netip.Addr{peer4, peer6, gwTunIP}, have4, have6)
+	if err := reconcileTunnelSplitRoutes(splitCIDRs, route4, have4, route6, have6, opt.RouteProto); err != nil {
 		return nil, err
 	}
 	if len(splitCIDRs) > 0 {
@@ -415,8 +413,8 @@ func setupTunDevice(iface string, mtu int, peerIP, peerIPv6 string) error {
 // (the normal first boot) and falls back to the copy in the bridge's routing
 // table, which is how a reconnect or a restarted bridge recovers the underlay
 // when clawpatrol0 and its default route are gone. The middle return value is
-// the source: "default" or "table". ok=false means neither has a route; for v4
-// that's fatal to bring-up, for v6 it just means "no IPv6 underlay".
+// the source: "default" or "table". ok=false means the family has no
+// underlay; bring-up needs at least one family.
 func discoverUnderlayRoute(family string, table int, iface string) (linuxDefaultRoute, string, bool) {
 	// Skip the tunnel default and the bridge's loopback fallback route.
 	if out, err := exec.Command("ip", family, "route", "show", "default").Output(); err == nil {
@@ -447,22 +445,42 @@ func replaceDefaultRoutes(iface string, replace6 bool) error {
 }
 
 // resolveWGEndpoint resolves the WireGuard endpoint host:port to a concrete
-// ip:port, preferring IPv4 (see preferV4). Returns the chosen IP so the
-// caller can check that its family has an underlay route.
-func resolveWGEndpoint(endpoint string) (netip.Addr, string, error) {
+// ip:port in a family that has an underlay route (see pickEndpointIP).
+func resolveWGEndpoint(endpoint string, have4, have6 bool) (string, error) {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
-		return netip.Addr{}, "", fmt.Errorf("endpoint %q: %w", endpoint, err)
+		return "", fmt.Errorf("endpoint %q: %w", endpoint, err)
 	}
 	ips, err := lookupHostIPs(host)
 	if err != nil {
-		return netip.Addr{}, "", fmt.Errorf("resolve endpoint %q: %w", host, err)
+		return "", fmt.Errorf("resolve endpoint %q: %w", host, err)
 	}
-	ip, ok := preferV4(ips)
-	if !ok {
-		return netip.Addr{}, "", fmt.Errorf("resolve endpoint %q: no A/AAAA records", host)
+	ip, err := pickEndpointIP(ips, have4, have6)
+	if err != nil {
+		return "", fmt.Errorf("resolve endpoint %q: %w", host, err)
 	}
-	return ip, net.JoinHostPort(ip.String(), port), nil
+	return net.JoinHostPort(ip.String(), port), nil
+}
+
+// underlaySummary describes the underlay routes for the bring-up log.
+func underlaySummary(route4 linuxDefaultRoute, have4 bool, route6 linuxDefaultRoute, have6 bool) string {
+	var parts []string
+	for _, fam := range []struct {
+		name string
+		r    linuxDefaultRoute
+		ok   bool
+	}{{"IPv4", route4, have4}, {"IPv6", route6, have6}} {
+		if !fam.ok {
+			parts = append(parts, fam.name+" none")
+			continue
+		}
+		part := fam.name
+		if fam.r.Via != "" {
+			part += " via " + fam.r.Via
+		}
+		parts = append(parts, part+" dev "+fam.r.Dev)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func runIP(args ...string) error {

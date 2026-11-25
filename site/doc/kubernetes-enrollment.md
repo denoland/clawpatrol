@@ -131,8 +131,8 @@ enrollment "kubernetes_token_review" "agents" {
 - **Additive:** the list adds routes. It does not remove or limit the routes
   the CNI installs. A CNI route for the same prefix takes priority.
 - **Next hop:** the bridge uses the Pod's original default route of the same
-  address family. With several default routes, it uses the first one. IPv6
-  entries need an IPv6 default route.
+  address family. With several default routes, it uses the first one. An
+  entry needs a default route of its family; the bridge ignores the others.
 - **Service range:** a Pod routes a Service IP before kube-proxy translates
   it, so list the Service range for Service traffic to skip the tunnel.
   Cilium socket-level load balancing translates the address in the Pod, so
@@ -355,6 +355,11 @@ drops all capabilities and adds only `NET_ADMIN`, also add `MKNOD`.
 | gVisor | Not tested yet |
 
 The EKS tests used the Amazon VPC CNI on an IPv6 cluster.
+
+> **IPv6 EKS with the Amazon VPC CNI:** the CNI gives each Pod an IPv4
+> egress interface, `v4if0`, that stays outside the tunnel. Set
+> `ENABLE_V4_EGRESS=false` on `aws-node`, or accept that the bridge does not
+> enforce IPv4 traffic on that route.
 
 Under Kata, the bridge runs in the guest kernel and creates `/dev/net/tun`
 there, so the Pod needs no hostPath. This matters on clusters that refuse

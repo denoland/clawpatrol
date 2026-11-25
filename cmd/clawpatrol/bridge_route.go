@@ -30,6 +30,11 @@ import (
 // traffic, use the main table and so the tunnel. A container that shares the
 // netns cannot set the mark without CAP_NET_ADMIN or CAP_NET_RAW.
 //
+// The bridge needs an underlay default route in at least one family. A family
+// without one still gets the rules, so its marked packets are unreachable,
+// and the tunnel still carries its workload traffic. On a single-stack IPv6
+// cluster the workload then reaches IPv4 only through the tunnel.
+//
 // The main table also gets a last-resort IPv4 default route to loopback with
 // the highest metric. Reverse-path filtering drops a received packet whose
 // source has no route in the main table, and the pod's netns runs loose
@@ -126,10 +131,10 @@ func underlayTableArgs(family string, route linuxDefaultRoute, table int, proto 
 const tunnelSplitRouteMetric = 42760
 
 // bridgeTunnelSplitCIDRs parses the enrolled list. It logs and skips entries
-// that are invalid, that contain a tunnel address, or that are IPv6 when the
-// Pod has no IPv6 underlay. The gateway validates the list too, so this only
-// covers version skew.
-func bridgeTunnelSplitCIDRs(raw []string, tunnel []netip.Addr, have6 bool) []netip.Prefix {
+// that are invalid, that contain a tunnel address, or whose family has no
+// underlay route in the Pod. The gateway validates the list too, so the
+// first two checks only cover version skew.
+func bridgeTunnelSplitCIDRs(raw []string, tunnel []netip.Addr, have4, have6 bool) []netip.Prefix {
 	var out []netip.Prefix
 	for _, s := range raw {
 		p, err := config.ParseTunnelSplitCIDRs([]string{s})
@@ -140,6 +145,10 @@ func bridgeTunnelSplitCIDRs(raw []string, tunnel []netip.Addr, have6 bool) []net
 		c := p[0]
 		if c.Addr().Is6() && !have6 {
 			log.Printf("bridge: ignoring %s: the Pod has no IPv6 underlay route", c)
+			continue
+		}
+		if c.Addr().Is4() && !have4 {
+			log.Printf("bridge: ignoring %s: the Pod has no IPv4 underlay route", c)
 			continue
 		}
 		if i := slices.IndexFunc(tunnel, c.Contains); i >= 0 {

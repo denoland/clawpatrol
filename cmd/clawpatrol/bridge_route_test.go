@@ -112,12 +112,15 @@ func TestBridgeTunnelSplitCIDRs(t *testing.T) {
 		"10.55.0.0/24",  // contains a tunnel address
 		"fd00:10::/64",  // no IPv6 underlay
 		"10.96.0.0/12",
-	}, []netip.Addr{peer, gw}, false)
+	}, []netip.Addr{peer, gw}, true, false)
 	if fmt.Sprint(got) != "[10.244.0.0/16 10.96.0.0/12]" {
 		t.Fatalf("got %v", got)
 	}
-	if got := bridgeTunnelSplitCIDRs([]string{"fd00:10::/64"}, nil, true); fmt.Sprint(got) != "[fd00:10::/64]" {
+	if got := bridgeTunnelSplitCIDRs([]string{"fd00:10::/64"}, nil, true, true); fmt.Sprint(got) != "[fd00:10::/64]" {
 		t.Fatalf("IPv6 with an underlay: %v", got)
+	}
+	if got := bridgeTunnelSplitCIDRs([]string{"10.96.0.0/12", "fd00:10::/64"}, nil, false, true); fmt.Sprint(got) != "[fd00:10::/64]" {
+		t.Fatalf("no IPv4 underlay: %v", got)
 	}
 }
 
