@@ -23,6 +23,11 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 )
 
+// noMarkBind is a conn.Bind that does not set SO_MARK.
+type noMarkBind struct{ conn.Bind }
+
+func (noMarkBind) SetMark(uint32) error { return nil }
+
 func TestBuildTunWGIpcSetsFwmark(t *testing.T) {
 	priv, _, pub, err := wgGenKeypair()
 	if err != nil {
@@ -35,8 +40,10 @@ func TestBuildTunWGIpcSetsFwmark(t *testing.T) {
 	if !strings.Contains(ipc, "\nfwmark=111\n") {
 		t.Fatalf("IPC has no fwmark line:\n%s", ipc)
 	}
-	// wireguard-go must accept it as a device-level key.
-	dev := device.NewDevice(tuntest.NewChannelTUN().TUN(), conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	// wireguard-go must accept it as a device-level key. The TUN up event can
+	// bring the device up before IpcSet, and SO_MARK on a real socket needs
+	// CAP_NET_ADMIN, so the bind does not apply the mark.
+	dev := device.NewDevice(tuntest.NewChannelTUN().TUN(), noMarkBind{conn.NewDefaultBind()}, device.NewLogger(device.LogLevelSilent, ""))
 	defer dev.Close()
 	if err := dev.IpcSet(ipc); err != nil {
 		t.Fatalf("IpcSet: %v", err)
