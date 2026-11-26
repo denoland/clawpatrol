@@ -1328,8 +1328,8 @@ func (w *webMux) retirePlaceholderForClaim(dc, realIP string) {
 	if w.g.agents != nil {
 		w.g.agents.Delete(placeholderID)
 	}
-	if w.g.db != nil {
-		_, _ = w.g.db.Exec("DELETE FROM peer_api_tokens WHERE peer_ip = ?", placeholderID)
+	if err := deletePeerAPITokensForIP(w.g.db, placeholderID); err != nil {
+		log.Printf("onboard: retire placeholder api tokens for %s: %v", placeholderID, err)
 	}
 }
 

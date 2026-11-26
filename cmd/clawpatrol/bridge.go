@@ -1,0 +1,207 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/netip"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/denoland/clawpatrol/internal/config"
+)
+
+// kubernetesDefaultTokenPath is the projected ServiceAccount token the
+// kubernetes_token_review provider presents by default.
+const kubernetesDefaultTokenPath = "/var/run/secrets/tokens/clawpatrol-token"
+
+// bridgeOptions configures `clawpatrol bridge`: a resident, foreground,
+// privileged data plane that self-enrolls through an authorizer, hosts a
+// userspace WireGuard tunnel, and routes the whole network namespace through
+// the gateway — bridging the netns to the gateway. It stays up for the netns
+// lifetime (the userspace device dies with the process) and deregisters
+// best-effort on SIGTERM. The execution workload runs in a sibling,
+// unprivileged container that shares this netns and reads the handoff files
+// below.
+type bridgeOptions struct {
+	GatewayURL string
+
+	// Resolve maps the gateway API and WireGuard endpoint names to fixed IPs,
+	// so the bridge does not need DNS for them (--resolve).
+	Resolve bridgeHostMap
+
+	// AuthorizerType/Name mirror the gateway's two-label enrollment block
+	// `enrollment "<type>" "<name>"`. Type selects the client-side claims
+	// provider (how identity is gathered); Name is what's sent on the wire
+	// to pick the server authorizer.
+	AuthorizerType string
+	AuthorizerName string
+
+	// KubeTokenPath is the kubernetes_token_review provider's credential.
+	// Provider-scoped on purpose — not every authorizer authenticates with
+	// a token file.
+	KubeTokenPath string
+
+	// Sibling-handoff outputs: files the unprivileged workload container
+	// reads off the shared volume once the tunnel is up.
+	EnvOut    string
+	CAOut     string
+	ReadyFile string
+
+	Iface string
+	MTU   int
+
+	// LocalResetMisses is how many missed keepalives trigger an in-place
+	// tunnel rebuild before the server-dictated reconnect horizon. A
+	// client-side knob — the reap horizon comes from the gateway, but how
+	// eagerly to attempt a cheap local recovery first is the sidecar's call.
+	// Capped below the reconnect horizon; 0 disables the local rebuild.
+	LocalResetMisses int
+
+	// RouteProto is the rt_proto tag stamped on the underlay routes the bridge
+	// installs in its routing table. Escape hatch: override only if the
+	// default collides with a route protocol another component already uses
+	// in the netns.
+	RouteProto string
+
+	// FWMark is the socket mark on the bridge's own control-plane traffic, and
+	// the ID of the routing table that holds the underlay default route (see
+	// bridge_route.go).
+	FWMark int
+}
+
+// defaultRouteProto is the rt_proto the bridge tags its underlay routes with
+// by default (overridable via --route-proto). Arbitrary and unregistered; it
+// only has to be stable and unlikely to collide with the CNI's own routes.
+const defaultRouteProto = "111"
+
+// runBridge parses the `clawpatrol bridge` flags and dispatches to the
+// platform implementation. Kept cross-platform (no wireguard imports) so
+// the flag surface and validation errors are identical everywhere; bridgeRun
+// is linux-only.
+func runBridge(args []string) {
+	fs := flag.NewFlagSet("bridge", flag.ExitOnError)
+	var (
+		authorizer string
+		opt        bridgeOptions
+	)
+	fs.StringVar(&opt.GatewayURL, "gateway-url", "", "gateway API URL, e.g. https://clawpatrol.clawpatrol.svc:8443")
+	fs.Var(&opt.Resolve, "resolve", "map a gateway host name to an IP as <host>=<ip>, so the bridge does not use DNS for it; repeatable")
+	fs.StringVar(&authorizer, "authorizer", "", "enrollment authorizer to register through, as <type>/<name> (e.g. kubernetes_token_review/agents)")
+	fs.StringVar(&opt.KubeTokenPath, "kubernetes-token-path", kubernetesDefaultTokenPath, "kubernetes_token_review: projected ServiceAccount token path")
+	fs.StringVar(&opt.EnvOut, "env-out", "/clawpatrol/env", "path to write shell exports for the workload container")
+	fs.StringVar(&opt.CAOut, "ca-out", "/clawpatrol/ca.crt", "path to write the gateway CA bundle")
+	fs.StringVar(&opt.ReadyFile, "ready-file", "/clawpatrol/ready", "path to touch after network and env setup succeed")
+	fs.StringVar(&opt.Iface, "iface", "clawpatrol0", "TUN interface name")
+	fs.IntVar(&opt.MTU, "mtu", config.WireGuardDefaultMTU, "TUN MTU when enrollment omits it or sends a value outside 1280-65475")
+	fs.IntVar(&opt.LocalResetMisses, "local-reset-missed", bridgeWatchdogDefaultResetMisses,
+		"missed keepalives before an in-place tunnel rebuild; 0 disables it, and a value at or above the gateway's reconnect threshold skips directly to re-enrollment")
+	fs.StringVar(&opt.RouteProto, "route-proto", defaultRouteProto,
+		"rt_proto tag for the underlay routes in the bridge's routing table; override only if it collides with another component's routes")
+	fs.IntVar(&opt.FWMark, "fwmark", defaultBridgeFwmark,
+		"socket mark for the bridge's own gateway, DNS, and WireGuard traffic, and the ID of the routing table that sends it to the underlay")
+	_ = fs.Parse(args)
+
+	if len(fs.Args()) > 0 {
+		fail("clawpatrol bridge does not take a command; the workload runs in a sibling container sharing this netns")
+	}
+	if strings.TrimSpace(opt.GatewayURL) == "" {
+		fail("clawpatrol bridge: --gateway-url is required")
+	}
+	if err := validateRouteProto(opt.RouteProto); err != nil {
+		fail("clawpatrol bridge: %v", err)
+	}
+	if err := validateBridgeFwmark(opt.FWMark); err != nil {
+		fail("clawpatrol bridge: %v", err)
+	}
+	if gatewayURLIsPlaintext(opt.GatewayURL) {
+		log.Printf("bridge: WARNING: --gateway-url %s is plain HTTP; the ServiceAccount token and the peer API token cross the network unencrypted. Use the gateway's public_url behind TLS.", opt.GatewayURL)
+	}
+	typ, name, err := parseBridgeAuthorizer(authorizer)
+	if err != nil {
+		fail("%v", err)
+	}
+	opt.AuthorizerType, opt.AuthorizerName = typ, name
+
+	if err := bridgeRun(context.Background(), opt); err != nil {
+		log.Printf("bridge: %v", err)
+		os.Exit(1)
+	}
+}
+
+// bridgeEffectiveMTU uses the gateway's value when it is in the valid range.
+// Older enrollment responses omit it, and a value out of range would fail
+// every bring-up, so in both cases the sidecar uses its local flag.
+func bridgeEffectiveMTU(enrolled, local int) int {
+	if enrolled >= config.WireGuardMinMTU && enrolled <= config.WireGuardMaxMTU {
+		return enrolled
+	}
+	return local
+}
+
+// pickEndpointIP chooses the WireGuard endpoint address from ips (4-in-6
+// addresses are unmapped). It prefers IPv4 and uses only a family that has
+// an underlay route, because the tunnel's UDP packets use that route.
+func pickEndpointIP(ips []netip.Addr, have4, have6 bool) (netip.Addr, error) {
+	if len(ips) == 0 {
+		return netip.Addr{}, fmt.Errorf("no A/AAAA records")
+	}
+	var v6 netip.Addr
+	for _, ip := range ips {
+		ip = ip.Unmap()
+		if ip.Is4() && have4 {
+			return ip, nil
+		}
+		if ip.Is6() && have6 && !v6.IsValid() {
+			v6 = ip
+		}
+	}
+	if v6.IsValid() {
+		return v6, nil
+	}
+	return netip.Addr{}, fmt.Errorf("no address in a family with an underlay route (IPv4 underlay %t, IPv6 underlay %t): %v", have4, have6, ips)
+}
+
+// validateRouteProto checks the --route-proto value. iproute2 accepts either
+// a numeric rt_proto (1–255) or a name defined in /etc/iproute2/rt_protos; we
+// only reject the clearly invalid cases (empty, or a number out of range) and
+// leave name resolution to `ip` at runtime.
+func validateRouteProto(p string) error {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return fmt.Errorf("--route-proto must not be empty")
+	}
+	if n, err := strconv.Atoi(p); err == nil && (n < 1 || n > 255) {
+		return fmt.Errorf("--route-proto %q must be in 1..255 (or an rt_protos name)", p)
+	}
+	return nil
+}
+
+// gatewayURLIsPlaintext reports whether the bridge would send its credentials
+// to the gateway without TLS.
+func gatewayURLIsPlaintext(gatewayURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(gatewayURL))
+	return err == nil && strings.EqualFold(u.Scheme, "http")
+}
+
+// parseBridgeAuthorizer splits the `--authorizer <type>/<name>` value,
+// mirroring the gateway's `enrollment "<type>" "<name>"` block. The type
+// selects the client claims provider; the name is sent on the wire.
+func parseBridgeAuthorizer(s string) (typ, name string, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", fmt.Errorf("--authorizer is required (form: <type>/<name>, e.g. kubernetes_token_review/agents)")
+	}
+	typ, name, ok := strings.Cut(s, "/")
+	typ, name = strings.TrimSpace(typ), strings.TrimSpace(name)
+	if !ok || typ == "" || name == "" {
+		return "", "", fmt.Errorf("--authorizer %q must be <type>/<name>, e.g. kubernetes_token_review/agents", s)
+	}
+	if typ != enrollmentAuthorizerKubernetesTokenRev {
+		return "", "", fmt.Errorf("unsupported authorizer type %q (supported: %s)", typ, enrollmentAuthorizerKubernetesTokenRev)
+	}
+	return typ, name, nil
+}

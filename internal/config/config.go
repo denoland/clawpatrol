@@ -265,6 +265,17 @@ type GenAITelemetryBlock struct {
 	IncludeMessageContent bool `hcl:"include_message_content,optional"`
 }
 
+const (
+	// WireGuardDefaultMTU is the inner MTU in bytes when no override is set.
+	WireGuardDefaultMTU = 1420
+	// WireGuardMinMTU is the lowest inner MTU. The tunnel carries IPv6, which
+	// needs 1280.
+	WireGuardMinMTU = 1280
+	// WireGuardMaxMTU is the highest inner MTU. It fits a maximum-length IPv4
+	// datagram after 20 bytes of IP, 8 of UDP, and 32 of WireGuard overhead.
+	WireGuardMaxMTU = 65535 - 20 - 8 - 32
+)
+
 // WireGuardBlock is the body of the `wireguard { ... }` sub-block
 // inside `gateway { ... }`. Presence of the block enables the WG
 // transport.
@@ -276,6 +287,11 @@ type WireGuardBlock struct {
 	// ListenPort is the UDP port the gateway binds for WG peers.
 	// Default 51820.
 	ListenPort int `hcl:"listen_port,optional"`
+
+	// MTU is the inner packet size in bytes for the gateway WireGuard TUN
+	// and enrolled bridges. Default 1420. Changes take effect on gateway
+	// restart. `clawpatrol run` and the macOS client always use 1420.
+	MTU *int `hcl:"mtu,optional"`
 
 	// HostLoopbackPort is the TCP port the gateway binds on
 	// 127.0.0.1 for host-local clients (single-host deployments where
@@ -446,6 +462,14 @@ func (g *Gateway) IsTailscaleEnabled() bool {
 	return g != nil && g.Settings != nil && g.Settings.Tailscale != nil
 }
 
+// IsEnrollmentEnabled reports whether workload self-enrollment is
+// configured. Presence of at least one `enrollment "<type>" "<name>"`
+// block (routed through the config-plugin registry into
+// Policy.Enrollments) enables it.
+func (g *Gateway) IsEnrollmentEnabled() bool {
+	return g != nil && g.Policy != nil && len(g.Policy.Enrollments) > 0
+}
+
 // settings returns g.Settings, or a zero-value pointer when nil so
 // callers can read fields without a nil check. Internal helper —
 // validateOperational rejects configs with a nil Settings block.
@@ -574,6 +598,7 @@ type JoinConfig struct {
 	WGInterface       string
 	WGEndpoint        string
 	WGListenPort      int
+	WGMTU             int
 	WGServerPub       string
 	WGSubnetCIDR      string
 	TailscaleEnabled  bool
@@ -606,6 +631,10 @@ func (g *Gateway) Join() JoinConfig {
 		jc.WGInterface = w.Interface
 		jc.WGEndpoint = w.Endpoint
 		jc.WGListenPort = w.ListenPort
+		jc.WGMTU = WireGuardDefaultMTU
+		if w.MTU != nil {
+			jc.WGMTU = *w.MTU
+		}
 		jc.WGServerPub = w.ServerPub
 		jc.WGSubnetCIDR = w.SubnetCIDR
 	}
@@ -622,6 +651,7 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
+	Enrollments map[string]*Entity
 
 	Profiles map[string]*Profile
 
@@ -1043,6 +1073,7 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
+		Enrollments: make(map[string]*Entity),
 		Profiles:    make(map[string]*Profile),
 	}
 
@@ -1076,6 +1107,10 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
+	// Cross-block precondition: workload enrollment provisions WireGuard
+	// peers, so it requires a wireguard data-plane block. Mirrors how
+	// #753 runs validateOIDCEnrollmentsForGateway after the policy decode.
+	diags = append(diags, validateEnrollmentGateway(gw)...)
 
 	// Post-decode pass: substitute `<<file:NAME>>` markers in plugin
 	// body fields that opted in via FileIncludable. Runs after Build
@@ -1158,6 +1193,13 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 
 	if gw.IsWireGuardEnabled() {
 		w := gw.Settings.WireGuard
+		if w.MTU != nil && (*w.MTU < WireGuardMinMTU || *w.MTU > WireGuardMaxMTU) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid wireguard.mtu",
+				Detail:   fmt.Sprintf("mtu = %d must be between %d and %d bytes.", *w.MTU, WireGuardMinMTU, WireGuardMaxMTU),
+			})
+		}
 		if w.SubnetCIDR == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -1318,6 +1360,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
+			{Type: "enrollment", LabelNames: []string{"type", "name"}},
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
@@ -1403,7 +1446,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule, KindEnrollment} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -1435,7 +1478,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block}
+			ctx := &BuildCtx{Refs: refs, Symbols: table, Policy: p, Block: sym.Block}
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
@@ -1459,6 +1502,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Endpoints[sym.Name] = ent
 			case KindRule:
 				p.Rules[sym.Name] = ent
+			case KindEnrollment:
+				p.Enrollments[sym.Name] = ent
 			}
 			p.Order = append(p.Order, sym.Name)
 		}

@@ -83,6 +83,9 @@ func dumpWireGuard(w *WireGuardBlock) map[string]any {
 	if w.ListenPort != 0 {
 		out["listen_port"] = w.ListenPort
 	}
+	if w.MTU != nil {
+		out["mtu"] = *w.MTU
+	}
 	if w.HostLoopbackPort != 0 {
 		out["host_loopback_port"] = w.HostLoopbackPort
 	}
@@ -172,6 +175,9 @@ func dumpPolicy(p *Policy) map[string]any {
 	}
 	if v := dumpEntityMap(p.Tunnels); v != nil {
 		out["tunnels"] = v
+	}
+	if v := dumpEntityMap(p.Enrollments); v != nil {
+		out["enrollments"] = v
 	}
 	if v := dumpProfiles(p.Profiles); v != nil {
 		out["profiles"] = v

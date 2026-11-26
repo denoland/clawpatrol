@@ -189,6 +189,41 @@ Setting `kernel.apparmor_restrict_unprivileged_userns=0` also works
 but removes the restriction for every program on the host, which is
 what it exists to prevent.
 
+### `clawpatrol bridge`
+
+Run the resident Linux data plane used by Kubernetes agent pods. The
+bridge self-enrolls through a configured authorizer, creates a userspace
+WireGuard tunnel, routes the pod network namespace through the gateway,
+and writes the environment and CA handoff files consumed by the
+unprivileged workload container.
+
+```bash
+clawpatrol bridge \
+  --gateway-url=http://clawpatrol-api.clawpatrol.svc:8080 \
+  --authorizer=kubernetes_token_review/agents
+```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--gateway-url URL` | required | Gateway API URL used for enrollment and env pushdown |
+| `--resolve HOST=IP` | none | Connect to `HOST` at `IP` without DNS. Repeatable. Use it for the `--gateway-url` host and the WireGuard endpoint host; TLS and the `Host` header keep the name |
+| `--authorizer TYPE/NAME` | required | Enrollment provider and configured authorizer, for example `kubernetes_token_review/agents` |
+| `--kubernetes-token-path PATH` | `/var/run/secrets/tokens/clawpatrol-token` | Projected ServiceAccount token presented by the Kubernetes enrollment provider |
+| `--env-out PATH` | `/clawpatrol/env` | Shell exports written for the workload container |
+| `--ca-out PATH` | `/clawpatrol/ca.crt` | Gateway CA bundle written for the workload container |
+| `--ready-file PATH` | `/clawpatrol/ready` | Marker written after tunnel and handoff setup succeed |
+| `--iface NAME` | `clawpatrol0` | TUN interface name |
+| `--mtu N` | `1420` | TUN MTU when the enrollment response omits it or sends a value outside 1280-65475 |
+| `--local-reset-missed N` | `2` | Failed liveness probes before rebuilding the peer in place; `0` disables the local reset stage |
+| `--route-proto PROTO` | `111` | Route protocol tag on the underlay routes in the bridge's routing table |
+| `--fwmark N` | `111` | Socket mark on the bridge's own gateway, DNS, and WireGuard traffic, and the ID of the routing table that sends marked packets to the underlay |
+
+The bridge needs `NET_ADMIN`, the projected token, and the downward-API `POD_NAME`, `POD_NAMESPACE`, and `POD_UID` environment
+variables. It remains in the foreground, heals a failed tunnel in
+process, and best-effort deregisters on shutdown. See
+[Kubernetes Enrollment](kubernetes-enrollment) for the complete pod
+contract, gateway configuration, and lifecycle.
+
 ### `clawpatrol test`
 
 Replay recorded gateway actions against a candidate HCL policy and

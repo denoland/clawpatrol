@@ -47,6 +47,7 @@ func (r *renderer) run() (string, error) {
 		config.KindApprover,
 		config.KindCredential,
 		config.KindEndpoint,
+		config.KindEnrollment,
 		config.KindRule,
 		config.KindTunnel,
 	} {
@@ -60,7 +61,7 @@ func (r *renderer) writeHeader() {
 
 A clawpatrol gateway config mixes **operational** settings in the
 required top-level ` + "`gateway { ... }`" + ` block with **policy** blocks.
-Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `enrollment`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -77,7 +78,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `enrollment`, `rule`" + `)
 list one subsection per registered type.
 
 `)
@@ -146,7 +147,7 @@ func upperFirst(s string) string {
 
 func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level blocks\n\n")
-	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
+	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `enrollment`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 	r.out.WriteString("## `gateway { ... }`\n\n")
 	r.out.WriteString("The gateway block carries operational settings — listen addresses, the WireGuard / Tailscale transport sub-blocks, session and retention windows, telemetry, and the resolver.\n\n")
@@ -345,6 +346,9 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		if pkgName == "config" && typeName == "Gateway" && f.Name == "Settings" {
 			required = true
 		}
+		if pkgName == "config" && typeName == "k8sEnrollmentBody" && f.Name == "Matches" {
+			required = true
+		}
 		row := fieldRow{
 			Name:        name,
 			Type:        typeStr,
@@ -373,7 +377,7 @@ func skipPublicConfigReferenceField(pkgName, typeName, fieldName string) bool {
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule, config.KindEnrollment,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)
@@ -484,6 +488,13 @@ func exampleBody(kind, typ string, rt reflect.Type) string {
 			continue
 		}
 		fmt.Fprintf(&sb, "  %s = %s\n", name, val)
+	}
+	if kind == "enrollment" && typ == "kubernetes_token_review" {
+		fmt.Fprintln(&sb, "  match {")
+		fmt.Fprintln(&sb, `    namespace = "example"`)
+		fmt.Fprintln(&sb, `    service_account = "example"`)
+		fmt.Fprintln(&sb, `    profiles = ["example"]`)
+		fmt.Fprintln(&sb, "  }")
 	}
 	return sb.String()
 }

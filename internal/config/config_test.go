@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,5 +162,65 @@ func writeGolden(t *testing.T, path string, content []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, content, 0644); err != nil {
 		t.Fatalf("write golden %s: %v", path, err)
+	}
+}
+
+func TestWireGuardMTU(t *testing.T) {
+	const cfg = `
+gateway {
+  public_url = "https://gateway.example.com"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    %s
+  }
+}
+`
+	for _, tc := range []struct {
+		attr string
+		want int
+	}{
+		{attr: "", want: 1420},
+		{attr: "mtu = 1404", want: 1404},
+		{attr: "mtu = 1280", want: 1280},
+		{attr: "mtu = 65475", want: 65475},
+		{attr: "mtu = -1"},
+		{attr: "mtu = 0"},
+		{attr: "mtu = 1279"},
+		{attr: "mtu = 65476"},
+	} {
+		t.Run(tc.attr, func(t *testing.T) {
+			gw, diags := config.LoadBytes([]byte(fmt.Sprintf(cfg, tc.attr)), "mtu.hcl")
+			if tc.want == 0 {
+				if !diags.HasErrors() || !strings.Contains(diags.Error(), "Invalid wireguard.mtu") {
+					t.Fatalf("want invalid wireguard.mtu, got %v", diags)
+				}
+				return
+			}
+			if diags.HasErrors() {
+				t.Fatal(diags)
+			}
+			if got := gw.Join().WGMTU; got != tc.want {
+				t.Errorf("resolved MTU = %d, want %d", got, tc.want)
+			}
+			hcl, err := config.Emit(gw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			roundTrip, diags := config.LoadBytes(hcl, "emitted.hcl")
+			if diags.HasErrors() {
+				t.Fatal(diags)
+			}
+			if diff := cmp.Diff(gw.Settings.WireGuard.MTU, roundTrip.Settings.WireGuard.MTU); diff != "" {
+				t.Errorf("MTU changed after HCL round trip (-want +got): %s", diff)
+			}
+			dump, err := gw.Dump()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantMTUKey := tc.attr != ""
+			if bytes.Contains(dump, []byte(`"mtu":`)) != wantMTUKey {
+				t.Errorf("expected MTU in dump=%t, got %s", wantMTUKey, dump)
+			}
+		})
 	}
 }

@@ -1,0 +1,204 @@
+# e2e-only bridge variants, applied by kubernetes-wireguard-e2e.sh after the
+# main checks. Not part of the overlay's resources. Each Pod changes one thing
+# against the base agent Pod:
+#
+#   clawpatrol-agent-raw-probe   ping_group_range allows no group, so the
+#                                bridge's liveness probe needs a raw socket
+#                                (NET_RAW, which the bridge keeps by default).
+#   clawpatrol-agent-no-probe    the same, and the bridge drops NET_RAW, so no
+#                                ICMP socket opens and the watchdog uses the
+#                                WireGuard handshake age.
+#
+# Names, namespace, image, and gateway URL must match the e2e overlay.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: clawpatrol-agent-raw-probe
+  namespace: agents-e2e
+  labels:
+    clawpatrol.dev/profile: default
+spec:
+  serviceAccountName: agent-runner
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    sysctls:
+      - name: net.ipv4.ping_group_range
+        value: "1 0"
+  volumes:
+    - name: clawpatrol
+      emptyDir: {}
+    - name: clawpatrol-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: clawpatrol-token
+              audience: clawpatrol
+              expirationSeconds: 600
+  initContainers:
+    - name: clawpatrol-bridge
+      restartPolicy: Always
+      image: clawpatrol-kind-e2e:dev
+      imagePullPolicy: Never
+      args:
+        - bridge
+        - --gateway-url=http://clawpatrol-api.clawpatrol-e2e.svc:8080
+        - --authorizer=kubernetes_token_review/agents
+        - --kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token
+        - --env-out=/clawpatrol/env
+        - --ca-out=/clawpatrol/ca.crt
+        - --ready-file=/clawpatrol/ready
+      startupProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 120
+      readinessProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 3
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add: ["NET_ADMIN"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+        - name: clawpatrol-token
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+  containers:
+    - name: agent
+      image: clawpatrol-kind-e2e:dev
+      imagePullPolicy: Never
+      command: ["/bin/sh", "-lc"]
+      args:
+        - while [ ! -f /clawpatrol/ready ]; do sleep 0.2; done; exec sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+          readOnly: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: clawpatrol-agent-no-probe
+  namespace: agents-e2e
+  labels:
+    clawpatrol.dev/profile: default
+spec:
+  serviceAccountName: agent-runner
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    sysctls:
+      - name: net.ipv4.ping_group_range
+        value: "1 0"
+  volumes:
+    - name: clawpatrol
+      emptyDir: {}
+    - name: clawpatrol-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: clawpatrol-token
+              audience: clawpatrol
+              expirationSeconds: 600
+  initContainers:
+    - name: clawpatrol-bridge
+      restartPolicy: Always
+      image: clawpatrol-kind-e2e:dev
+      imagePullPolicy: Never
+      args:
+        - bridge
+        - --gateway-url=http://clawpatrol-api.clawpatrol-e2e.svc:8080
+        - --authorizer=kubernetes_token_review/agents
+        - --kubernetes-token-path=/var/run/secrets/tokens/clawpatrol-token
+        - --env-out=/clawpatrol/env
+        - --ca-out=/clawpatrol/ca.crt
+        - --ready-file=/clawpatrol/ready
+      startupProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 120
+      readinessProbe:
+        exec:
+          command: ["test", "-f", "/clawpatrol/ready"]
+        periodSeconds: 1
+        failureThreshold: 3
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add: ["NET_ADMIN"]
+          drop: ["NET_RAW"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+        - name: clawpatrol-token
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+  containers:
+    - name: agent
+      image: clawpatrol-kind-e2e:dev
+      imagePullPolicy: Never
+      command: ["/bin/sh", "-lc"]
+      args:
+        - while [ ! -f /clawpatrol/ready ]; do sleep 0.2; done; exec sleep infinity
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: clawpatrol
+          mountPath: /clawpatrol
+          readOnly: true

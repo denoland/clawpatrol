@@ -76,10 +76,17 @@ func tightenDBPerms(dbPath string) {
 	}
 }
 
+// migrationsDir is where migrationsFS holds the .sql files.
+const migrationsDir = "migrations/sqlite"
+
 // migrate applies any unapplied .sql files from migrations/sqlite/.
 // File names must start with a zero-padded number (0001_*, 0002_*),
 // applied in ascending order.
-func migrate(db *sql.DB) error {
+func migrate(db *sql.DB) error { return migrateFS(db, migrationsFS) }
+
+// migrateFS is migrate over any file system with the same layout, so tests
+// can apply a subset of the migrations.
+func migrateFS(db *sql.DB, fsys fs.FS) error {
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS _schema (version INTEGER NOT NULL)"); err != nil {
 		return fmt.Errorf("migrate: create _schema: %w", err)
 	}
@@ -87,7 +94,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM _schema").Scan(&current); err != nil {
 		return fmt.Errorf("migrate: read current version: %w", err)
 	}
-	files, err := fs.ReadDir(migrationsFS, "migrations/sqlite")
+	files, err := fs.ReadDir(fsys, migrationsDir)
 	if err != nil {
 		return fmt.Errorf("migrate: list migration files: %w", err)
 	}
@@ -115,7 +122,7 @@ func migrate(db *sql.DB) error {
 	}
 	sort.Slice(pending, func(i, j int) bool { return pending[i].num < pending[j].num })
 	for _, p := range pending {
-		body, err := fs.ReadFile(migrationsFS, "migrations/sqlite/"+p.name)
+		body, err := fs.ReadFile(fsys, migrationsDir+"/"+p.name)
 		if err != nil {
 			return fmt.Errorf("migrate %s: read file: %w", p.name, err)
 		}
